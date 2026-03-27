@@ -2,9 +2,9 @@ NVCC = /usr/local/cuda/bin/nvcc
 CXX = g++
 ARCH = -arch=sm_86
 
-NVFLAGS = $(ARCH) -O3 --use_fast_math -Xcompiler "-O2 -Wall -std=c++11" -std=c++11
+NVFLAGS = $(ARCH) -O3 --use_fast_math -Xcompiler "-O2 -Wall -std=c++11 -fopenmp" -std=c++11
 CXXFLAGS = -O2 -Wall -std=c++11
-LDFLAGS = -L/usr/local/cuda/lib64 -lcudart -lcublas -lcusolver -lm -lstdc++
+LDFLAGS = -L/usr/local/cuda/lib64 -lcudart -lcublas -lcusolver -lcufft -lgomp -lm -lstdc++
 
 SRCDIR = src
 BINDIR = bin
@@ -13,7 +13,8 @@ TARGET = $(BINDIR)/bem_cuda
 # Source files
 CU_SRCS = $(SRCDIR)/assembly.cu $(SRCDIR)/pmchwt.cu $(SRCDIR)/solver.cu $(SRCDIR)/farfield.cu \
           $(SRCDIR)/p2p.cu $(SRCDIR)/fmm.cu $(SRCDIR)/bem_fmm.cu $(SRCDIR)/gmres.cu \
-          $(SRCDIR)/block_gmres.cu $(SRCDIR)/gmres_dr.cu $(SRCDIR)/precond.cu
+          $(SRCDIR)/block_gmres.cu $(SRCDIR)/gmres_dr.cu $(SRCDIR)/precond.cu \
+          $(SRCDIR)/pfft.cu $(SRCDIR)/surface_pfft.cu
 CPP_SRCS = $(SRCDIR)/mesh.cpp $(SRCDIR)/rwg.cpp $(SRCDIR)/rhs.cpp \
            $(SRCDIR)/orient.cpp $(SRCDIR)/output.cpp \
            $(SRCDIR)/main.cpp

@@ -4,3 +4,9 @@ src/*.o
 *.npz
 *.pyc
 __pycache__/
+MANUAL.aux
+MANUAL.log
+MANUAL.out
+MANUAL.toc
+*.o
+bin/

@@ -1,0 +1,209 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T2A]{fontenc}
+\usepackage{amsmath,amssymb}
+\usepackage{geometry}
+\geometry{margin=2.5cm}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{listings}
+\lstset{basicstyle=\ttfamily\small, breaklines=true, frame=single}
+
+\title{BEM-CUDA Manual\\[0.3em]
+\large GPU-Accelerated Boundary Element Method for Light Scattering}
+\author{BEM-CUDA Project}
+\date{March 2026}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+\section{Overview}
+
+BEM-CUDA solves the electromagnetic scattering problem for dielectric particles
+using the Boundary Element Method with PMCHWT formulation.
+The $2N\times 2N$ system has the structure:
+\begin{equation}
+\begin{bmatrix}
+\eta_e L_{\mathrm{ext}} + \eta_i L_{\mathrm{int}} & -(K_{\mathrm{ext}} + K_{\mathrm{int}}) \\
+K_{\mathrm{ext}} + K_{\mathrm{int}} & L_{\mathrm{ext}}/\eta_e + L_{\mathrm{int}}/\eta_i
+\end{bmatrix}
+\begin{bmatrix} \mathbf{J} \\ \mathbf{M} \end{bmatrix}
+=
+\begin{bmatrix} \mathbf{b}_J \\ \mathbf{b}_M \end{bmatrix}
+\end{equation}
+where $L$ and $K$ are the single-layer and double-layer BEM operators,
+$\eta_e = 1$, $\eta_i = 1/|m|$, and $m$ is the complex refractive index.
+
+\section{Solvers}
+
+\subsection{Dense LU (default)}
+Direct LU factorization via cuSOLVER.  $O(N^3)$ time, $O(N^2)$ memory.
+Practical for $N \leq 8000$ (ref $\leq 4$).
+
+\subsection{FMM+GMRES (\texttt{--fmm})}
+Plane-wave MLFMA with GMRES iterative solver.
+Matrix-free $O(N\log N)$ matvec.
+GPU-accelerated P2P, P2M, M2L, L2P kernels.
+
+\subsection{pFFT+GMRES (\texttt{--pfft})}
+Precorrected FFT: 3D Cartesian grid with FFT-based far-field.
+Faster than FMM for smooth geometries due to FFT efficiency.
+
+\subsection{Surface pFFT (\texttt{--spfft})}
+Specialized for particles with flat faces (hex prisms).
+Uses 2D FFT per face instead of 3D FFT.
+Features:
+\begin{itemize}
+\item FP32 C2C FFT ($2\times$ less memory than Z2Z)
+\item CUDA streams: per-face async kernel execution
+\item Mixed-radix grids (7-smooth: factors of 2,3,5,7)
+\item Automatic density-based grid spacing ($\sim$4 points/cell)
+\item Inter-face P2P kernel for cross-face Green's function
+\end{itemize}
+
+\section{Preconditioners}
+
+Right preconditioning in GMRES: solve $Z M^{-1} (M\mathbf{x}) = \mathbf{b}$.
+
+\subsection{Diagonal (\texttt{--prec diag})}
+$z_i = r_i / Z_{ii}$.
+\textbf{Not recommended} for PMCHWT at high $ka$: diagonal elements are
+nearly pure imaginary, dividing rotates the residual spectrum 90\textdegree,
+\emph{worsening} convergence.
+
+\subsection{ILU(0) (\texttt{--prec ilu0})}
+Incomplete LU factorization with zero fill-in on the near-field sparse matrix.
+Requires $\geq$30\% coverage for effectiveness.
+Coverage collapses at high refinement due to element-based cell sizing;
+a geometry-based minimum (\texttt{bb\_max\_dim/5}) prevents this.
+Build cost scales poorly with coverage ($O(\mathrm{nnz}^2)$).
+
+\subsection{Near-field LU (\texttt{--prec nearlu})}
+Full dense LU on the near-field sparse matrix.
+Best for ref $\leq 3$ with many orientations ($9\times$ speedup for 128 orientations).
+Limited to $N_2 \leq 8000$.
+
+\subsection{Block-Jacobi (\texttt{--prec blockj})}
+Spatial cell blocks with dense LU per block.
+\begin{itemize}
+\item Cell size: \texttt{bb\_max\_dim / (2.5 / radius\_mult)}, giving $\sim$8--20 blocks
+\item \textbf{Adaptive splitting}: blocks exceeding 1500 RWG are automatically
+      bisected along the longest axis (recursive, up to 20 rounds)
+\item \textbf{GPU-accelerated apply}: LU factors uploaded to GPU (row-major for
+      coalesced access), CUDA kernel with warp-parallel triangular solve
+      (32 threads/block, \texttt{\_\_shfl\_down\_sync} reduction)
+\item Auto-fallback to CPU (OpenMP) if GPU memory insufficient
+\item Build: $5\times$ faster than ILU(0) at ref=4
+\item Convergence: 21\% fewer iterations than ILU(0) at ref=4
+\end{itemize}
+
+\textbf{Benchmark} (hex D/L=0.7, $m=1.3116$, RTX 3080 Ti):
+
+\begin{center}
+\begin{tabular}{llrrrr}
+\toprule
+ref & $ka$ & Precond & Build (s) & Iters & Total (s) \\
+\midrule
+3 & 10 & none    & --   & 451 & 85 \\
+3 & 10 & blockj  & 1.4  & 392 & 115 \\
+3 & 10 & ilu0    & 16.4 & 451 & 103 \\
+4 & 5  & none    & --   & --  & 1145 \\
+4 & 5  & blockj  & 88   & 333 & 1019 \\
+4 & 5  & ilu0    & 477  & --  & 1556 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{GMRES Variants}
+
+\subsection{Standard GMRES(m)}
+Restarted GMRES with cuBLAS vector operations and batched Gram--Schmidt
+orthogonalization (\texttt{cublasZgemv}).
+
+\subsection{Paired GMRES}
+Two independent GMRES iterations in lockstep for two polarizations,
+sharing the batched matvec.  Halves the number of GPU kernel launches.
+
+\subsection{GCRO-DR (\texttt{--gmres-dr})}
+Deflated restarting: recycles a subspace of $k$ Ritz vectors across restarts
+and across orientations.  Benefit: 12--18\% at small restart ($m \leq 30$),
+negligible at $m = 50+$.
+
+\section{Particle Shapes}
+
+\subsection{Sphere (\texttt{--shape sphere})}
+Icosphere with configurable refinement level.
+Refinement $r$: $20 \times 4^r$ triangles, $30 \times 4^r - 60$ RWG basis functions.
+
+\subsection{Hex Prism (\texttt{--shape hex --ar F})}
+Hexagonal prism with aspect ratio $H/D = F$.
+For D/L comparison with ADDA: if $D/L = 0.7$ then $\texttt{--ar} = L/D = 1/0.7 \approx 1.4286$.
+Best used with \texttt{--spfft} (surface pFFT exploits flat faces).
+
+\subsection{OBJ Import (\texttt{--obj FILE})}
+Load triangulated mesh from Wavefront OBJ file.
+
+\section{Orientation Averaging}
+
+\texttt{--orient NA NB NG} specifies a $N_\alpha \times N_\beta \times N_\gamma$
+Gauss--Legendre quadrature grid over Euler angles.
+Typical: \texttt{--orient 8 8 1} (64 orientations).
+
+Previous-orientation solution is reused as initial guess for the next,
+reducing iteration count for neighboring angles.
+
+Far-field is computed in a single GPU-batched call for all orientations
+and polarizations.
+
+\section{Output}
+
+JSON file with fields:
+\begin{itemize}
+\item \texttt{mueller}: $16 \times N_\theta$ array (row-major Mueller matrix elements $M_{11}\ldots M_{44}$)
+\item \texttt{theta}: scattering angles in degrees
+\item \texttt{ka}, \texttt{ri\_re}, \texttt{ri\_im}: input parameters
+\item \texttt{time\_assembly}, \texttt{time\_solve}, \texttt{time\_farfield}, \texttt{time\_total}: timing (seconds)
+\end{itemize}
+
+\section{Build}
+
+\begin{lstlisting}
+make -j$(nproc)
+\end{lstlisting}
+
+For CUDA 12.8+ with gcc 15 (too new), use an older compiler:
+\begin{lstlisting}
+make -j$(nproc) NVFLAGS="-arch=sm_86 -O3 --use_fast_math \
+  -ccbin g++-13 -Xcompiler '-O2 -Wall -std=c++11 -fopenmp' \
+  -std=c++11"
+\end{lstlisting}
+
+Set \texttt{ARCH = -arch=sm\_XX} in \texttt{Makefile} for your GPU.
+
+\section{Examples}
+
+\begin{lstlisting}
+# Dense LU, sphere, ka=5, single orientation
+bin/bem_cuda --ka 5 --ref 3 --ri 1.3116 0 --single
+
+# Surface pFFT, hex D/L=0.7, Block-Jacobi, ka=10
+bin/bem_cuda --ka 10 --ref 3 --shape hex --ar 1.4286 \
+  --spfft --prec blockj --single
+
+# Orientation-averaged Mueller matrix, 64 orientations
+bin/bem_cuda --ka 5 --ref 3 --shape hex --ar 1.4286 \
+  --spfft --prec blockj --orient 8 8 1 --out mueller.json
+\end{lstlisting}
+
+\section{References}
+
+\begin{enumerate}
+\item Rao, Wilton, Glisson, ``Electromagnetic scattering by surfaces of arbitrary shape,'' IEEE TAP, 1982.
+\item Chew, Jin, Michielssen, Song, \textit{Fast and Efficient Algorithms in CEM}, 2001.
+\item Graglia, ``On the numerical integration of the linear shape functions times the 3-D Green's function,'' IEEE TAP, 1993.
+\item Phillips, White, ``A precorrected-FFT method for electrostatic analysis,'' IEEE TCAD, 1997.
+\end{enumerate}
+
+\end{document}

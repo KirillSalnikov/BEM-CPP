@@ -33,13 +33,18 @@ static void print_usage(const char* prog) {
     printf("  --out FILE      Output JSON file (default: result.json)\n");
     printf("  --single        Single orientation (no averaging)\n");
     printf("  --fmm           Use FMM+GMRES instead of dense LU\n");
-    printf("  --fmm-digits N  FMM accuracy digits (default: 3)\n");
+    printf("  --pfft          Use pFFT+GMRES instead of dense LU (faster than FMM)\n");
+    printf("  --spfft         Use surface pFFT (2D per face, hex only)\n");
+    printf("  --fmm-digits N  FMM/pFFT accuracy digits (default: 3)\n");
     printf("  --gmres-tol F   GMRES relative tolerance (default: 1e-4)\n");
     printf("  --gmres-restart N  GMRES restart (default: 100)\n");
     printf("  --max-leaf N    FMM max particles per leaf (default: 64)\n");
-    printf("  --prec TYPE     Preconditioner: diag, ilu0, nearlu (default: none)\n");
+    printf("  --prec TYPE     Preconditioner: diag, ilu0, nearlu, blockj (default: none)\n");
     printf("  --gmres-dr      Use GMRES-DR (deflated restarting)\n");
     printf("  --gmres-k N     Deflation subspace size (default: 20)\n");
+    printf("  --shape TYPE    Particle shape: sphere (default), hex\n");
+    printf("  --ar F          Hex aspect ratio H/D (default: 1.0)\n");
+    printf("  --obj FILE      Load mesh from OBJ file\n");
 }
 
 int main(int argc, char** argv) {
@@ -54,6 +59,8 @@ int main(int argc, char** argv) {
     const char* outfile = "result.json";
     bool single_orient = false;
     bool use_fmm = false;
+    bool use_pfft = false;
+    bool use_spfft = false;
     PrecondMode prec_mode = PREC_NONE;
     double prec_radius = 2.0;
     bool fmm_test = false;
@@ -63,6 +70,9 @@ int main(int argc, char** argv) {
     int max_leaf = 64;
     bool use_gmres_dr = false;
     int gmres_k = 20;
+    std::string shape = "sphere";
+    double hex_ar = 1.0;
+    const char* obj_file = nullptr;
 
     // Parse CLI
     for (int i = 1; i < argc; i++) {
@@ -87,11 +97,19 @@ int main(int argc, char** argv) {
             single_orient = true;
         } else if (strcmp(argv[i], "--fmm") == 0) {
             use_fmm = true;
+        } else if (strcmp(argv[i], "--pfft") == 0) {
+            use_fmm = true;
+            use_pfft = true;
+        } else if (strcmp(argv[i], "--spfft") == 0) {
+            use_fmm = true;
+            use_pfft = true;
+            use_spfft = true;
         } else if (strcmp(argv[i], "--prec") == 0 && i+1 < argc) {
             const char* pt = argv[++i];
             if (strcmp(pt, "diag") == 0) prec_mode = PREC_DIAG;
             else if (strcmp(pt, "ilu0") == 0) prec_mode = PREC_ILU0;
             else if (strcmp(pt, "nearlu") == 0) prec_mode = PREC_NEARLU;
+            else if (strcmp(pt, "blockj") == 0) prec_mode = PREC_BLOCKJ;
             else { fprintf(stderr, "Unknown prec type: %s\n", pt); return 1; }
         } else if (strcmp(argv[i], "--prec-r") == 0 && i+1 < argc) {
             prec_radius = atof(argv[++i]);
@@ -107,6 +125,12 @@ int main(int argc, char** argv) {
             use_gmres_dr = true;
         } else if (strcmp(argv[i], "--gmres-k") == 0 && i+1 < argc) {
             gmres_k = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--shape") == 0 && i+1 < argc) {
+            shape = argv[++i];
+        } else if (strcmp(argv[i], "--ar") == 0 && i+1 < argc) {
+            hex_ar = atof(argv[++i]);
+        } else if (strcmp(argv[i], "--obj") == 0 && i+1 < argc) {
+            obj_file = argv[++i];
         } else if (strcmp(argv[i], "--fmm-test") == 0) {
             fmm_test = true;
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
@@ -230,12 +254,14 @@ int main(int argc, char** argv) {
     printf("  eta_ext = %.4f, eta_int = %.4f\n", eta_ext, eta_int);
     printf("  Refinements: %d, Quad order: %d\n", refinements, quad_order);
     if (use_fmm)
-        printf("  Mode: FMM+%s (digits=%d, tol=%.0e, restart=%d, max_leaf=%d%s%s)\n",
+        printf("  Mode: %s+%s (digits=%d, tol=%.0e, restart=%d, max_leaf=%d%s%s)\n",
+               use_spfft ? "SurfPFFT" : use_pfft ? "pFFT" : "FMM",
                use_gmres_dr ? "GMRES-DR" : "GMRES",
                fmm_digits, gmres_tol, gmres_restart, max_leaf,
                prec_mode == PREC_DIAG ? ", DIAG prec" :
                prec_mode == PREC_ILU0 ? ", ILU(0) prec" :
-               prec_mode == PREC_NEARLU ? ", NEARLU prec" : "",
+               prec_mode == PREC_NEARLU ? ", NEARLU prec" :
+               prec_mode == PREC_BLOCKJ ? ", BlockJ prec" : "",
                use_gmres_dr ? (", k=" + std::to_string(gmres_k)).c_str() : "");
     else
         printf("  Mode: Dense LU\n");
@@ -247,8 +273,15 @@ int main(int argc, char** argv) {
 
     // 1. Generate mesh
     Timer mesh_timer;
-    double radius = 1.0;
-    Mesh mesh = icosphere(radius, refinements);
+    Mesh mesh;
+    if (obj_file) {
+        mesh = load_obj(obj_file);
+    } else if (shape == "hex") {
+        mesh = hex_prism(hex_ar, refinements);
+    } else {
+        double radius = 1.0;
+        mesh = icosphere(radius, refinements);
+    }
     printf("  Mesh: %d vertices, %d triangles (%.1fms)\n",
            mesh.nv(), mesh.nt(), mesh_timer.elapsed_ms());
 
@@ -281,7 +314,7 @@ int main(int argc, char** argv) {
         Timer asm_timer;
         BemFmmOperator fmm_op;
         fmm_op.init(rwg, mesh, k_ext, k_int, eta_ext, eta_int,
-                     quad_order, fmm_digits, max_leaf);
+                     quad_order, fmm_digits, max_leaf, use_pfft, use_spfft);
 
         // Build preconditioner if requested
         NearFieldPrecond* precond_ptr = nullptr;
@@ -494,6 +527,8 @@ int main(int argc, char** argv) {
             printf("  Averaged over %d orientations.\n", n_total);
         }
 
+        if (prec_mode != PREC_NONE)
+            precond.cleanup_gpu();
         fmm_op.cleanup();
 
     } else {

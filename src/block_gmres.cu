@@ -145,26 +145,49 @@ int gmres_solve_paired(BemFmmOperator& op,
         m2 = 0;
         int j;
         for (j = 0; j < restart; j++) {
-            // Download current basis vectors from GPU
-            if (!converged1)
-                CUDA_CHECK(cudaMemcpy(h_v1.data(), (cuDoubleComplex*)d_V1 + (size_t)j * n,
-                                      n * sizeof(cuDoubleComplex), cudaMemcpyDeviceToHost));
-            if (!converged2)
-                CUDA_CHECK(cudaMemcpy(h_v2.data(), (cuDoubleComplex*)d_V2 + (size_t)j * n,
-                                      n * sizeof(cuDoubleComplex), cudaMemcpyDeviceToHost));
-
             // Apply preconditioner and matvec
-            if (precond) {
+            if (precond && precond->gpu_ready) {
+                // GPU preconditioner: apply directly on GPU, no D→H for v_j
                 if (!converged1) {
+                    precond->apply_gpu((const cuDoubleComplex*)d_V1 + (size_t)j * n,
+                                       precond->d_buf_z);
+                    CUDA_CHECK(cudaMemcpy(h_z1.data(), precond->d_buf_z,
+                                          n * sizeof(cuDoubleComplex), cudaMemcpyDeviceToHost));
+                    memcpy(&h_Z1[(size_t)j * n], h_z1.data(), n * sizeof(cdouble));
+                }
+                if (!converged2) {
+                    precond->apply_gpu((const cuDoubleComplex*)d_V2 + (size_t)j * n,
+                                       precond->d_buf_z);
+                    CUDA_CHECK(cudaMemcpy(h_z2.data(), precond->d_buf_z,
+                                          n * sizeof(cuDoubleComplex), cudaMemcpyDeviceToHost));
+                    memcpy(&h_Z2[(size_t)j * n], h_z2.data(), n * sizeof(cdouble));
+                }
+
+                if (!converged1 && !converged2) {
+                    op.matvec_batch2(h_z1.data(), h_z2.data(), h_w1.data(), h_w2.data());
+                    total_matvecs++;
+                } else if (!converged1) {
+                    op.matvec(h_z1.data(), h_w1.data());
+                    total_matvecs++;
+                } else {
+                    op.matvec(h_z2.data(), h_w2.data());
+                    total_matvecs++;
+                }
+            } else if (precond) {
+                // CPU preconditioner: need v_j on host
+                if (!converged1) {
+                    CUDA_CHECK(cudaMemcpy(h_v1.data(), (cuDoubleComplex*)d_V1 + (size_t)j * n,
+                                          n * sizeof(cuDoubleComplex), cudaMemcpyDeviceToHost));
                     precond->apply(h_v1.data(), h_z1.data());
                     memcpy(&h_Z1[(size_t)j * n], h_z1.data(), n * sizeof(cdouble));
                 }
                 if (!converged2) {
+                    CUDA_CHECK(cudaMemcpy(h_v2.data(), (cuDoubleComplex*)d_V2 + (size_t)j * n,
+                                          n * sizeof(cuDoubleComplex), cudaMemcpyDeviceToHost));
                     precond->apply(h_v2.data(), h_z2.data());
                     memcpy(&h_Z2[(size_t)j * n], h_z2.data(), n * sizeof(cdouble));
                 }
 
-                // Matvec: batched or single depending on convergence state
                 if (!converged1 && !converged2) {
                     op.matvec_batch2(h_z1.data(), h_z2.data(), h_w1.data(), h_w2.data());
                     total_matvecs++;
@@ -176,7 +199,14 @@ int gmres_solve_paired(BemFmmOperator& op,
                     total_matvecs++;
                 }
             } else {
-                // No preconditioner
+                // No preconditioner: download v_j, matvec directly
+                if (!converged1)
+                    CUDA_CHECK(cudaMemcpy(h_v1.data(), (cuDoubleComplex*)d_V1 + (size_t)j * n,
+                                          n * sizeof(cuDoubleComplex), cudaMemcpyDeviceToHost));
+                if (!converged2)
+                    CUDA_CHECK(cudaMemcpy(h_v2.data(), (cuDoubleComplex*)d_V2 + (size_t)j * n,
+                                          n * sizeof(cuDoubleComplex), cudaMemcpyDeviceToHost));
+
                 if (!converged1 && !converged2) {
                     op.matvec_batch2(h_v1.data(), h_v2.data(), h_w1.data(), h_w2.data());
                     total_matvecs++;

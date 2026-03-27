@@ -949,10 +949,16 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
     tree.build(targets, n_tgt, sources, n_src, max_leaf);
     n_nodes = (int)tree.nodes.size();
 
-    // Sphere quadrature
+    // Sphere quadrature — L based on COARSEST M2L level for angular resolution.
+    // Transfer function truncation is per-level (see M2L precompute below).
     double leaf_hs = tree.nodes[tree.leaves[0]].half_size;
     double leaf_box_size = 2.0 * leaf_hs;
-    p = fmm_truncation_order(std::abs(k), leaf_box_size, digits);
+    // Quadrature p must resolve multipoles at the coarsest M2L level (level 2).
+    // p_quad = truncation_order(k, coarsest_box) ensures angular resolution.
+    double coarsest_m2l_box = leaf_box_size;
+    if (tree.max_level > 2)
+        coarsest_m2l_box = leaf_box_size * (1 << (tree.max_level - 2));
+    p = fmm_truncation_order(std::abs(k), coarsest_m2l_box, digits);
     squad.init(p);
     L = squad.L;
 
@@ -1053,6 +1059,14 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
         M2LBatch& batch = m2l_batches[level];
         batch.n_pairs = 0;
 
+        // Per-level transfer truncation order:
+        // At coarser levels, boxes are bigger → need more Legendre terms.
+        // This is safe because kd_min = 2*ka_box grows proportionally,
+        // so the Hankel series converges and |T| stays bounded.
+        double level_box_size = leaf_box_size * (1 << (tree.max_level - level));
+        int p_transfer = fmm_truncation_order(std::abs(k), level_box_size, digits);
+        // p_transfer is naturally correct for each level (including leaf)
+
         for (int ni : tree.level_nodes[level]) {
             const OctreeNode& node = tree.nodes[ni];
             for (int fi = node.far_start; fi < node.far_start + node.far_count; fi++) {
@@ -1081,10 +1095,10 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
                         cdouble sum(0, 0);
                         double P_prev = 1.0, P_curr = cos_angle;
                         sum += 1.0 * spherical_hankel1(0, kd) * P_prev;
-                        if (p >= 1)
+                        if (p_transfer >= 1)
                             sum += 3.0 * cdouble(0, 1) * spherical_hankel1(1, kd) * P_curr;
                         cdouble i_pow(0, 1);
-                        for (int l = 2; l <= p; l++) {
+                        for (int l = 2; l <= p_transfer; l++) {
                             double P_next = ((2*l - 1) * cos_angle * P_curr - (l - 1) * P_prev) / l;
                             i_pow *= cdouble(0, 1);
                             sum += (2.0*l + 1.0) * i_pow * spherical_hankel1(l, kd) * P_next;
@@ -1107,6 +1121,14 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
         }
     }
     printf("  [FMM] %d unique transfers, %d total M2L pairs\n", n_unique_transfers, total_m2l);
+    // Print per-level transfer info
+    for (int level = 2; level <= tree.max_level; level++) {
+        double lvl_box = leaf_box_size * (1 << (tree.max_level - level));
+        int pt = fmm_truncation_order(std::abs(k), lvl_box, digits);
+        if (m2l_batches[level].n_pairs > 0)
+            printf("  [FMM] Level %d: box=%.4f, ka_box=%.2f, p_transfer=%d, %d pairs\n",
+                   level, lvl_box, std::abs(k)*lvl_box, pt, m2l_batches[level].n_pairs);
+    }
 
     // Precompute M2M shifts
     m2m_data.resize(tree.max_level + 1);

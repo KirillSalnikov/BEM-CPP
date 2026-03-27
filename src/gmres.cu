@@ -107,19 +107,25 @@ int gmres_solve(BemFmmOperator& op, const cdouble* b, cdouble* x,
         for (j = 0; j < restart; j++) {
             total_iters++;
 
-            // Download v_j from GPU
-            CUDA_CHECK(cudaMemcpy(h_v.data(), (cuDoubleComplex*)d_V + (size_t)j * n,
-                                  n * sizeof(cuDoubleComplex), cudaMemcpyDeviceToHost));
-
-            if (precond) {
-                // Right preconditioning: z = M^{-1} * v_j, then w = A * z
-                precond->apply(h_v.data(), h_z.data());
-                // Store Z_j for later solution update
+            if (precond && precond->gpu_ready) {
+                // GPU preconditioner: apply directly on GPU, no D→H for v_j
+                precond->apply_gpu((const cuDoubleComplex*)(d_V) + (size_t)j * n,
+                                   precond->d_buf_z);
+                CUDA_CHECK(cudaMemcpy(h_z.data(), precond->d_buf_z,
+                                      n * sizeof(cuDoubleComplex), cudaMemcpyDeviceToHost));
                 memcpy(&h_Z[(size_t)j * n], h_z.data(), n * sizeof(cdouble));
                 op.matvec(h_z.data(), h_w.data());
             } else {
-                // No preconditioner: w = A * v_j
-                op.matvec(h_v.data(), h_w.data());
+                // Download v_j from GPU (needed for CPU precond or no-precond matvec)
+                CUDA_CHECK(cudaMemcpy(h_v.data(), (cuDoubleComplex*)d_V + (size_t)j * n,
+                                      n * sizeof(cuDoubleComplex), cudaMemcpyDeviceToHost));
+                if (precond) {
+                    precond->apply(h_v.data(), h_z.data());
+                    memcpy(&h_Z[(size_t)j * n], h_z.data(), n * sizeof(cdouble));
+                    op.matvec(h_z.data(), h_w.data());
+                } else {
+                    op.matvec(h_v.data(), h_w.data());
+                }
             }
 
             // Upload w to GPU

@@ -9,13 +9,16 @@
 void BemFmmOperator::init(const RWG& rwg, const Mesh& mesh,
                             cdouble k_ext_, cdouble k_int_,
                             double eta_ext_, double eta_int_,
-                            int quad_order, int fmm_digits, int max_leaf)
+                            int quad_order, int fmm_digits, int max_leaf,
+                            bool use_pfft_, bool use_spfft_)
 {
     Timer timer;
     k_ext = k_ext_;
     k_int = k_int_;
     eta_ext = cdouble(eta_ext_);
     eta_int = cdouble(eta_int_);
+    use_pfft = use_pfft_;
+    use_spfft = use_spfft_;
     N = rwg.N;
     system_size = 2 * N;
 
@@ -104,19 +107,110 @@ void BemFmmOperator::init(const RWG& rwg, const Mesh& mesh,
     memcpy(all_pts.data(), qpts_p.data(), N * Nq * 3 * sizeof(double));
     memcpy(all_pts.data() + N * Nq * 3, qpts_m.data(), N * Nq * 3 * sizeof(double));
 
-    // Build FMM trees
+    // Build accelerator (FMM or pFFT)
     // Targets = sources = all quad points (self-interaction)
-    printf("  [BEM-FMM] Building FMM for k_ext...\n");
-    fmm_ext.init(all_pts.data(), total_pts,
-                  all_pts.data(), total_pts,
-                  k_ext, fmm_digits, max_leaf);
-
     shared_fmm = (std::abs(k_int - k_ext) < 1e-10);
-    if (!shared_fmm) {
-        printf("  [BEM-FMM] Building FMM for k_int...\n");
-        fmm_int.init(all_pts.data(), total_pts,
+
+    if (use_spfft) {
+        // Surface pFFT: classify quad points by face
+        // Hex prism: 24 base triangles, base_tri = t >> (2*ref), base_type = base_tri % 4
+        // 0=top, 1=bottom, 2,3=side (6 sides, pair index = base_tri/4)
+        int n_tri = mesh.nt();
+        int ref = 0;
+        { int nt = n_tri; while (nt > 24) { nt /= 4; ref++; } }
+
+        // Determine face normals from mesh
+        int n_face = 8;  // top, bottom, 6 sides
+        std::vector<double> face_normals(n_face * 3, 0.0);
+        // Top face (face 0): average normal of top triangles
+        // Bottom face (face 1): average normal of bottom triangles
+        // Side faces 2..7: average normal of each side pair
+        for (int t = 0; t < n_tri; t++) {
+            int base_tri = t >> (2 * ref);
+            int base_type = base_tri % 4;
+            int face_idx;
+            if (base_type == 0) face_idx = 0;       // top
+            else if (base_type == 1) face_idx = 1;   // bottom
+            else face_idx = 2 + base_tri / 4;        // side
+
+            Vec3 v0, v1, v2;
+            mesh.tri_verts(t, v0, v1, v2);
+            Vec3 n = (v1 - v0).cross(v2 - v0);
+            double nm = n.norm();
+            if (nm > 1e-15) {
+                face_normals[face_idx*3+0] += n.x;
+                face_normals[face_idx*3+1] += n.y;
+                face_normals[face_idx*3+2] += n.z;
+            }
+        }
+        // Normalize
+        for (int f = 0; f < n_face; f++) {
+            double nn = sqrt(face_normals[f*3+0]*face_normals[f*3+0] +
+                             face_normals[f*3+1]*face_normals[f*3+1] +
+                             face_normals[f*3+2]*face_normals[f*3+2]);
+            if (nn > 1e-15) {
+                face_normals[f*3+0] /= nn;
+                face_normals[f*3+1] /= nn;
+                face_normals[f*3+2] /= nn;
+            }
+        }
+
+        // Classify each quad point by face
+        // all_pts layout: [qpts_p (N*Nq); qpts_m (N*Nq)]
+        // Point (n,q) in plus half -> triangle rwg.tri_p[n]
+        // Point (n,q) in minus half -> triangle rwg.tri_m[n]
+        std::vector<int> face_ids(total_pts);
+        for (int n = 0; n < N; n++) {
+            int tri_p = rwg.tri_p[n];
+            int base_tri_p = tri_p >> (2 * ref);
+            int base_type_p = base_tri_p % 4;
+            int face_p = (base_type_p == 0) ? 0 : (base_type_p == 1) ? 1 : 2 + base_tri_p / 4;
+
+            int tri_m = rwg.tri_m[n];
+            int base_tri_m = tri_m >> (2 * ref);
+            int base_type_m = base_tri_m % 4;
+            int face_m = (base_type_m == 0) ? 0 : (base_type_m == 1) ? 1 : 2 + base_tri_m / 4;
+
+            for (int q = 0; q < Nq; q++) {
+                face_ids[n * Nq + q] = face_p;
+                face_ids[N * Nq + n * Nq + q] = face_m;
+            }
+        }
+
+        printf("  [BEM-SurfPFFT] Building surface pFFT for k_ext...\n");
+        spfft_ext.init(all_pts.data(), total_pts,
+                       face_ids.data(), n_face,
+                       face_normals.data(),
+                       k_ext, fmm_digits);
+        if (!shared_fmm) {
+            printf("  [BEM-SurfPFFT] Building surface pFFT for k_int...\n");
+            spfft_int.init(all_pts.data(), total_pts,
+                           face_ids.data(), n_face,
+                           face_normals.data(),
+                           k_int, fmm_digits);
+        }
+    } else if (use_pfft) {
+        printf("  [BEM-pFFT] Building pFFT for k_ext...\n");
+        pfft_ext.init(all_pts.data(), total_pts,
                       all_pts.data(), total_pts,
-                      k_int, fmm_digits, max_leaf);
+                      k_ext, fmm_digits, max_leaf);
+        if (!shared_fmm) {
+            printf("  [BEM-pFFT] Building pFFT for k_int...\n");
+            pfft_int.init(all_pts.data(), total_pts,
+                          all_pts.data(), total_pts,
+                          k_int, fmm_digits, max_leaf);
+        }
+    } else {
+        printf("  [BEM-FMM] Building FMM for k_ext...\n");
+        fmm_ext.init(all_pts.data(), total_pts,
+                      all_pts.data(), total_pts,
+                      k_ext, fmm_digits, max_leaf);
+        if (!shared_fmm) {
+            printf("  [BEM-FMM] Building FMM for k_int...\n");
+            fmm_int.init(all_pts.data(), total_pts,
+                          all_pts.data(), total_pts,
+                          k_int, fmm_digits, max_leaf);
+        }
     }
 
     // Pre-allocate temporary buffers used in matvec (avoid malloc/free per iteration)
@@ -556,6 +650,190 @@ void BemFmmOperator::LK_combined(const cdouble* x, cdouble kv, HelmholtzFMM& fmm
     }
 }
 
+// pFFT variant of LK_combined: identical algorithm, but calls pfft instead of fmm
+void BemFmmOperator::LK_combined(const cdouble* x, cdouble kv, HelmholtzPFFT& pf,
+                                  cdouble* L_result, cdouble* K_result)
+{
+    cdouble ik = cdouble(0, 1) * kv;
+    cdouble iok = cdouble(0, 1) / kv;
+
+    int total_pts = 2 * N * Nq;
+
+    memset(L_result, 0, N * sizeof(cdouble));
+    memset(K_result, 0, N * sizeof(cdouble));
+
+    // --- Vector part: combined potential (for L) + gradient (for K) ---
+    for (int d = 0; d < 3; d++) {
+        memset(tmp_src_charges.data(), 0, total_pts * sizeof(cdouble));
+
+        for (int n = 0; n < N; n++) {
+            cdouble xn = x[n];
+            for (int q = 0; q < Nq; q++) {
+                int idx = n * Nq + q;
+                tmp_src_charges[idx] = f_p[idx*3 + d] * jw_p[idx] * xn;
+                tmp_src_charges[N*Nq + idx] = f_m[idx*3 + d] * jw_m[idx] * xn;
+            }
+        }
+
+        pf.evaluate_pot_grad(tmp_src_charges.data(), tmp_phi.data(), tmp_grad[d].data());
+
+        for (int m = 0; m < N; m++) {
+            cdouble acc(0);
+            for (int q = 0; q < Nq; q++) {
+                int idx = m * Nq + q;
+                acc += f_p[idx*3 + d] * jw_p[idx] * tmp_phi[idx];
+                acc += f_m[idx*3 + d] * jw_m[idx] * tmp_phi[N*Nq + idx];
+            }
+            L_result[m] += ik * acc;
+        }
+    }
+
+    // --- L scalar part ---
+    {
+        memset(tmp_src_charges.data(), 0, total_pts * sizeof(cdouble));
+
+        for (int n = 0; n < N; n++) {
+            cdouble xn = x[n];
+            for (int q = 0; q < Nq; q++) {
+                int idx = n * Nq + q;
+                tmp_src_charges[idx] = div_p[n] * jw_p[idx] * xn;
+                tmp_src_charges[N*Nq + idx] = div_m[n] * jw_m[idx] * xn;
+            }
+        }
+
+        pf.evaluate(tmp_src_charges.data(), tmp_phi.data());
+
+        for (int m = 0; m < N; m++) {
+            cdouble acc_p(0), acc_m(0);
+            for (int q = 0; q < Nq; q++) {
+                int idx = m * Nq + q;
+                acc_p += jw_p[idx] * tmp_phi[idx];
+                acc_m += jw_m[idx] * tmp_phi[N*Nq + idx];
+            }
+            L_result[m] -= iok * (div_p[m] * acc_p + div_m[m] * acc_m);
+        }
+    }
+
+    // --- K: assemble curl from gradients ---
+    for (int m = 0; m < N; m++) {
+        cdouble acc(0);
+
+        for (int q = 0; q < Nq; q++) {
+            int idx = m * Nq + q;
+            int i = idx;
+            cdouble curl_x = tmp_grad[2][i*3+1] - tmp_grad[1][i*3+2];
+            cdouble curl_y = tmp_grad[0][i*3+2] - tmp_grad[2][i*3+0];
+            cdouble curl_z = tmp_grad[1][i*3+0] - tmp_grad[0][i*3+1];
+            double fx = f_p[idx*3], fy = f_p[idx*3+1], fz = f_p[idx*3+2];
+            acc += jw_p[idx] * (fx * curl_x + fy * curl_y + fz * curl_z);
+        }
+
+        for (int q = 0; q < Nq; q++) {
+            int idx = m * Nq + q;
+            int i = N*Nq + idx;
+            cdouble curl_x = tmp_grad[2][i*3+1] - tmp_grad[1][i*3+2];
+            cdouble curl_y = tmp_grad[0][i*3+2] - tmp_grad[2][i*3+0];
+            cdouble curl_z = tmp_grad[1][i*3+0] - tmp_grad[0][i*3+1];
+            double fx = f_m[idx*3], fy = f_m[idx*3+1], fz = f_m[idx*3+2];
+            acc += jw_m[idx] * (fx * curl_x + fy * curl_y + fz * curl_z);
+        }
+
+        K_result[m] = acc;
+    }
+}
+
+// Surface pFFT variant of LK_combined: identical algorithm, calls spfft
+void BemFmmOperator::LK_combined(const cdouble* x, cdouble kv, HelmholtzSurfacePFFT& spf,
+                                  cdouble* L_result, cdouble* K_result)
+{
+    cdouble ik = cdouble(0, 1) * kv;
+    cdouble iok = cdouble(0, 1) / kv;
+
+    int total_pts = 2 * N * Nq;
+
+    memset(L_result, 0, N * sizeof(cdouble));
+    memset(K_result, 0, N * sizeof(cdouble));
+
+    // --- Vector part: combined potential (for L) + gradient (for K) ---
+    for (int d = 0; d < 3; d++) {
+        memset(tmp_src_charges.data(), 0, total_pts * sizeof(cdouble));
+
+        for (int n = 0; n < N; n++) {
+            cdouble xn = x[n];
+            for (int q = 0; q < Nq; q++) {
+                int idx = n * Nq + q;
+                tmp_src_charges[idx] = f_p[idx*3 + d] * jw_p[idx] * xn;
+                tmp_src_charges[N*Nq + idx] = f_m[idx*3 + d] * jw_m[idx] * xn;
+            }
+        }
+
+        spf.evaluate_pot_grad(tmp_src_charges.data(), tmp_phi.data(), tmp_grad[d].data());
+
+        for (int m = 0; m < N; m++) {
+            cdouble acc(0);
+            for (int q = 0; q < Nq; q++) {
+                int idx = m * Nq + q;
+                acc += f_p[idx*3 + d] * jw_p[idx] * tmp_phi[idx];
+                acc += f_m[idx*3 + d] * jw_m[idx] * tmp_phi[N*Nq + idx];
+            }
+            L_result[m] += ik * acc;
+        }
+    }
+
+    // --- L scalar part ---
+    {
+        memset(tmp_src_charges.data(), 0, total_pts * sizeof(cdouble));
+
+        for (int n = 0; n < N; n++) {
+            cdouble xn = x[n];
+            for (int q = 0; q < Nq; q++) {
+                int idx = n * Nq + q;
+                tmp_src_charges[idx] = div_p[n] * jw_p[idx] * xn;
+                tmp_src_charges[N*Nq + idx] = div_m[n] * jw_m[idx] * xn;
+            }
+        }
+
+        spf.evaluate(tmp_src_charges.data(), tmp_phi.data());
+
+        for (int m = 0; m < N; m++) {
+            cdouble acc_p(0), acc_m(0);
+            for (int q = 0; q < Nq; q++) {
+                int idx = m * Nq + q;
+                acc_p += jw_p[idx] * tmp_phi[idx];
+                acc_m += jw_m[idx] * tmp_phi[N*Nq + idx];
+            }
+            L_result[m] -= iok * (div_p[m] * acc_p + div_m[m] * acc_m);
+        }
+    }
+
+    // --- K: assemble curl from gradients ---
+    for (int m = 0; m < N; m++) {
+        cdouble acc(0);
+
+        for (int q = 0; q < Nq; q++) {
+            int idx = m * Nq + q;
+            int i = idx;
+            cdouble curl_x = tmp_grad[2][i*3+1] - tmp_grad[1][i*3+2];
+            cdouble curl_y = tmp_grad[0][i*3+2] - tmp_grad[2][i*3+0];
+            cdouble curl_z = tmp_grad[1][i*3+0] - tmp_grad[0][i*3+1];
+            double fx = f_p[idx*3], fy = f_p[idx*3+1], fz = f_p[idx*3+2];
+            acc += jw_p[idx] * (fx * curl_x + fy * curl_y + fz * curl_z);
+        }
+
+        for (int q = 0; q < Nq; q++) {
+            int idx = m * Nq + q;
+            int i = N*Nq + idx;
+            cdouble curl_x = tmp_grad[2][i*3+1] - tmp_grad[1][i*3+2];
+            cdouble curl_y = tmp_grad[0][i*3+2] - tmp_grad[2][i*3+0];
+            cdouble curl_z = tmp_grad[1][i*3+0] - tmp_grad[0][i*3+1];
+            double fx = f_m[idx*3], fy = f_m[idx*3+1], fz = f_m[idx*3+2];
+            acc += jw_m[idx] * (fx * curl_x + fy * curl_y + fz * curl_z);
+        }
+
+        K_result[m] = acc;
+    }
+}
+
 void BemFmmOperator::LK_combined_batch2(
     const cdouble* x1, const cdouble* x2,
     cdouble kv, HelmholtzFMM& fmm,
@@ -722,8 +1000,6 @@ void BemFmmOperator::matvec_batch2(const cdouble* x1_full, const cdouble* x2_ful
     const cdouble* J2 = x2_full;
     const cdouble* M2 = x2_full + N;
 
-    HelmholtzFMM& fmm_i = shared_fmm ? fmm_ext : fmm_int;
-
     // Clear all output buffers
     std::fill(mv_L_ext_J.begin(), mv_L_ext_J.end(), cdouble(0));
     std::fill(mv_L_ext_M.begin(), mv_L_ext_M.end(), cdouble(0));
@@ -744,18 +1020,41 @@ void BemFmmOperator::matvec_batch2(const cdouble* x1_full, const cdouble* x2_ful
     std::fill(mv2_K_int_M.begin(), mv2_K_int_M.end(), cdouble(0));
 
     // 4 batched calls instead of 8 single calls
-    LK_combined_batch2(J1, J2, k_ext, fmm_ext,
-                        mv_L_ext_J.data(), mv_K_ext_J.data(),
-                        mv2_L_ext_J.data(), mv2_K_ext_J.data());
-    LK_combined_batch2(M1, M2, k_ext, fmm_ext,
-                        mv_L_ext_M.data(), mv_K_ext_M.data(),
-                        mv2_L_ext_M.data(), mv2_K_ext_M.data());
-    LK_combined_batch2(J1, J2, k_int, fmm_i,
-                        mv_L_int_J.data(), mv_K_int_J.data(),
-                        mv2_L_int_J.data(), mv2_K_int_J.data());
-    LK_combined_batch2(M1, M2, k_int, fmm_i,
-                        mv_L_int_M.data(), mv_K_int_M.data(),
-                        mv2_L_int_M.data(), mv2_K_int_M.data());
+    if (use_spfft) {
+        HelmholtzSurfacePFFT& sp_i = shared_fmm ? spfft_ext : spfft_int;
+        LK_combined(J1, k_ext, spfft_ext, mv_L_ext_J.data(), mv_K_ext_J.data());
+        LK_combined(J2, k_ext, spfft_ext, mv2_L_ext_J.data(), mv2_K_ext_J.data());
+        LK_combined(M1, k_ext, spfft_ext, mv_L_ext_M.data(), mv_K_ext_M.data());
+        LK_combined(M2, k_ext, spfft_ext, mv2_L_ext_M.data(), mv2_K_ext_M.data());
+        LK_combined(J1, k_int, sp_i,      mv_L_int_J.data(), mv_K_int_J.data());
+        LK_combined(J2, k_int, sp_i,      mv2_L_int_J.data(), mv2_K_int_J.data());
+        LK_combined(M1, k_int, sp_i,      mv_L_int_M.data(), mv_K_int_M.data());
+        LK_combined(M2, k_int, sp_i,      mv2_L_int_M.data(), mv2_K_int_M.data());
+    } else if (use_pfft) {
+        HelmholtzPFFT& pf_i = shared_fmm ? pfft_ext : pfft_int;
+        LK_combined(J1, k_ext, pfft_ext, mv_L_ext_J.data(), mv_K_ext_J.data());
+        LK_combined(J2, k_ext, pfft_ext, mv2_L_ext_J.data(), mv2_K_ext_J.data());
+        LK_combined(M1, k_ext, pfft_ext, mv_L_ext_M.data(), mv_K_ext_M.data());
+        LK_combined(M2, k_ext, pfft_ext, mv2_L_ext_M.data(), mv2_K_ext_M.data());
+        LK_combined(J1, k_int, pf_i,     mv_L_int_J.data(), mv_K_int_J.data());
+        LK_combined(J2, k_int, pf_i,     mv2_L_int_J.data(), mv2_K_int_J.data());
+        LK_combined(M1, k_int, pf_i,     mv_L_int_M.data(), mv_K_int_M.data());
+        LK_combined(M2, k_int, pf_i,     mv2_L_int_M.data(), mv2_K_int_M.data());
+    } else {
+        HelmholtzFMM& fmm_i = shared_fmm ? fmm_ext : fmm_int;
+        LK_combined_batch2(J1, J2, k_ext, fmm_ext,
+                            mv_L_ext_J.data(), mv_K_ext_J.data(),
+                            mv2_L_ext_J.data(), mv2_K_ext_J.data());
+        LK_combined_batch2(M1, M2, k_ext, fmm_ext,
+                            mv_L_ext_M.data(), mv_K_ext_M.data(),
+                            mv2_L_ext_M.data(), mv2_K_ext_M.data());
+        LK_combined_batch2(J1, J2, k_int, fmm_i,
+                            mv_L_int_J.data(), mv_K_int_J.data(),
+                            mv2_L_int_J.data(), mv2_K_int_J.data());
+        LK_combined_batch2(M1, M2, k_int, fmm_i,
+                            mv_L_int_M.data(), mv_K_int_M.data(),
+                            mv2_L_int_M.data(), mv2_K_int_M.data());
+    }
 
     // Apply singular corrections (sparse CSR) — for both RHS vectors
     for (int m = 0; m < N; m++) {
@@ -814,13 +1113,26 @@ void BemFmmOperator::matvec(const cdouble* x_full, cdouble* y)
     const cdouble* J = x_full;
     const cdouble* M = x_full + N;
 
-    HelmholtzFMM& fmm_i = shared_fmm ? fmm_ext : fmm_int;
-
-    // Combined L+K: 4 FMM passes each (3 pot+grad + 1 pot) instead of 7 (4L + 3K)
-    LK_combined(J, k_ext, fmm_ext, mv_L_ext_J.data(), mv_K_ext_J.data());
-    LK_combined(M, k_ext, fmm_ext, mv_L_ext_M.data(), mv_K_ext_M.data());
-    LK_combined(J, k_int, fmm_i,   mv_L_int_J.data(), mv_K_int_J.data());
-    LK_combined(M, k_int, fmm_i,   mv_L_int_M.data(), mv_K_int_M.data());
+    // Combined L+K: 4 passes each (3 pot+grad + 1 pot) instead of 7 (4L + 3K)
+    if (use_spfft) {
+        HelmholtzSurfacePFFT& sp_i = shared_fmm ? spfft_ext : spfft_int;
+        LK_combined(J, k_ext, spfft_ext, mv_L_ext_J.data(), mv_K_ext_J.data());
+        LK_combined(M, k_ext, spfft_ext, mv_L_ext_M.data(), mv_K_ext_M.data());
+        LK_combined(J, k_int, sp_i,      mv_L_int_J.data(), mv_K_int_J.data());
+        LK_combined(M, k_int, sp_i,      mv_L_int_M.data(), mv_K_int_M.data());
+    } else if (use_pfft) {
+        HelmholtzPFFT& pf_i = shared_fmm ? pfft_ext : pfft_int;
+        LK_combined(J, k_ext, pfft_ext, mv_L_ext_J.data(), mv_K_ext_J.data());
+        LK_combined(M, k_ext, pfft_ext, mv_L_ext_M.data(), mv_K_ext_M.data());
+        LK_combined(J, k_int, pf_i,     mv_L_int_J.data(), mv_K_int_J.data());
+        LK_combined(M, k_int, pf_i,     mv_L_int_M.data(), mv_K_int_M.data());
+    } else {
+        HelmholtzFMM& fmm_i = shared_fmm ? fmm_ext : fmm_int;
+        LK_combined(J, k_ext, fmm_ext, mv_L_ext_J.data(), mv_K_ext_J.data());
+        LK_combined(M, k_ext, fmm_ext, mv_L_ext_M.data(), mv_K_ext_M.data());
+        LK_combined(J, k_int, fmm_i,   mv_L_int_J.data(), mv_K_int_J.data());
+        LK_combined(M, k_int, fmm_i,   mv_L_int_M.data(), mv_K_int_M.data());
+    }
 
     // Apply singular corrections (sparse CSR)
     for (int m = 0; m < N; m++) {
@@ -853,6 +1165,14 @@ void BemFmmOperator::matvec(const cdouble* x_full, cdouble* y)
 
 void BemFmmOperator::cleanup()
 {
-    fmm_ext.cleanup();
-    if (!shared_fmm) fmm_int.cleanup();
+    if (use_spfft) {
+        spfft_ext.cleanup();
+        if (!shared_fmm) spfft_int.cleanup();
+    } else if (use_pfft) {
+        pfft_ext.cleanup();
+        if (!shared_fmm) pfft_int.cleanup();
+    } else {
+        fmm_ext.cleanup();
+        if (!shared_fmm) fmm_int.cleanup();
+    }
 }

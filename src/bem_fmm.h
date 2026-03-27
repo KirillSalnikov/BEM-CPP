@@ -3,6 +3,8 @@
 
 #include "types.h"
 #include "fmm.h"
+#include "pfft.h"
+#include "surface_pfft.h"
 #include "rwg.h"
 #include "mesh.h"
 #include "quadrature.h"
@@ -17,9 +19,18 @@ struct BemFmmOperator {
     cdouble k_ext, k_int;
     cdouble eta_ext, eta_int;
 
-    // FMM engines (one per wavenumber)
+    bool use_pfft;     // true = pFFT, false = FMM
+    bool use_spfft;    // true = surface pFFT (2D per face)
+
+    // FMM engines (one per wavenumber) -- used when !use_pfft
     HelmholtzFMM fmm_ext;
     HelmholtzFMM fmm_int;
+    // pFFT engines -- used when use_pfft
+    HelmholtzPFFT pfft_ext;
+    HelmholtzPFFT pfft_int;
+    // Surface pFFT engines -- used when use_spfft
+    HelmholtzSurfacePFFT spfft_ext;
+    HelmholtzSurfacePFFT spfft_int;
     bool shared_fmm;  // true if k_ext ≈ k_int
 
     // Precomputed quadrature data
@@ -69,11 +80,12 @@ struct BemFmmOperator {
     std::vector<cdouble> mv2_L_ext_J, mv2_L_ext_M, mv2_K_ext_J, mv2_K_ext_M;
     std::vector<cdouble> mv2_L_int_J, mv2_L_int_M, mv2_K_int_J, mv2_K_int_M;
 
-    // Initialize operator
+    // Initialize operator (use_pfft_=true for pFFT acceleration)
     void init(const RWG& rwg, const Mesh& mesh,
               cdouble k_ext, cdouble k_int,
               double eta_ext, double eta_int,
-              int quad_order = 7, int fmm_digits = 3, int max_leaf = 64);
+              int quad_order = 7, int fmm_digits = 3, int max_leaf = 64,
+              bool use_pfft_ = false, bool use_spfft_ = false);
 
     // Apply PMCHWT system: y = Z * x, where x and y are (2*N) vectors
     void matvec(const cdouble* x, cdouble* y);
@@ -94,6 +106,14 @@ private:
     // Combined L+K operator: single FMM tree pass per vector component
     // Computes both L(k)*x and K(k)*x using evaluate_pot_grad
     void LK_combined(const cdouble* x, cdouble k, HelmholtzFMM& fmm,
+                     cdouble* L_result, cdouble* K_result);
+
+    // pFFT variant of LK_combined
+    void LK_combined(const cdouble* x, cdouble k, HelmholtzPFFT& pf,
+                     cdouble* L_result, cdouble* K_result);
+
+    // Surface pFFT variant of LK_combined
+    void LK_combined(const cdouble* x, cdouble k, HelmholtzSurfacePFFT& spf,
                      cdouble* L_result, cdouble* K_result);
 
     // Batched combined L+K for two RHS vectors

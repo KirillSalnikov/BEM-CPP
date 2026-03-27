@@ -23,4 +23,15 @@ struct Mesh {
 // Generate icosphere with given radius and refinement level
 Mesh icosphere(double radius, int refinements);
 
+// Generate hexagonal prism with unit equivalent-sphere radius.
+// aspect_ratio = H/Dx (height over inscribed diameter, same convention as ADDA).
+// refinements controls mesh density (~24*4^ref triangles).
+Mesh hex_prism(double aspect_ratio, int refinements);
+
+// Load mesh from Wavefront OBJ file
+Mesh load_obj(const char* filename);
+
+// Subdivide all triangles (midpoint subdivision, no projection)
+Mesh subdivide_flat(const Mesh& m);
+
 #endif // BEM_MESH_H
