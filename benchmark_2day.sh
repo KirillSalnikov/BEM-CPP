@@ -3,18 +3,22 @@
 # Hex prism D/L=0.7, m=1.3116, RTX 3080 Ti (12 GB)
 # Total estimated time: ~46 hours
 #
-# Measured base timings (single orientation, restart=200):
-#   ka=5  ref=3  N=2304:  218s, 748 iters  (0.29 s/iter)
-#   ka=10 ref=3  N=2304:  115s, 392 iters  (0.29 s/iter)
-#   ka=10 ref=4  N=9216:  ~16000s, ~400 iters (~40 s/iter)
+# Measured base timings (single orientation, blockj):
+#   ka=5  ref=3  N=2304:  218s, 748 iters, r=200  (0.29 s/iter)
+#   ka=10 ref=3  N=2304:  115s, 392 iters, r=200  (0.29 s/iter)
+#   ka=10 ref=4  N=9216:  2532s, 466 iters, r=500  (5.4 s/iter)
+#
+# CRITICAL: ref=4 needs restart>=500. restart=200 diverges (oscillates
+# after restart, >5600 iters without convergence). GCRO-DR(200,k=20)
+# converges stably but is 30% slower than plain GMRES(500).
 #
 # Structure:
 #   Part A: Preconditioner comparison (ka=10, ref=3)         ~0.5h
 #   Part B: GMRES restart sensitivity                        ~2h
 #   Part C: High ka stress tests (ref=3)                     ~2h
 #   Part D: Orientation averaging 256-orient (ref=3)         ~18h
-#   Part E: Large-scale ref=4 single-orient                  ~14h
-#   Part F: ref=4 + 4 orientations                           ~9h
+#   Part E: Large-scale ref=4 single-orient                  ~4h
+#   Part F: ref=4 orientation averaging                      ~10h
 #   Part G: Dense vs iterative cross-validation              ~0.5h
 
 set -e
@@ -70,6 +74,18 @@ $BIN --ka 10 --ref 3 --shape hex --ar $AR \
      --orient 2 2 1 --out $OUTDIR/B_r100_noprec_o4.json 2>&1 | tee $OUTDIR/B_r100_noprec.log
 log "B baseline done"
 
+# ref=4 restart comparison (single orient, blockj)
+log ">>> B: ref=4 restart=200 blockj (expect divergence/oscillation)"
+$BIN --ka 10 --ref 4 --shape hex --ar $AR \
+     --spfft --prec blockj --gmres-restart 200 \
+     --single --out $OUTDIR/B_r4_r200_blockj.json 2>&1 | tee $OUTDIR/B_r4_r200.log || log "B r4 r200 FAILED (expected)"
+
+log ">>> B: ref=4 restart=500 blockj"
+$BIN --ka 10 --ref 4 --shape hex --ar $AR \
+     --spfft --prec blockj --gmres-restart 500 \
+     --single --out $OUTDIR/B_r4_r500_blockj.json 2>&1 | tee $OUTDIR/B_r4_r500.log
+log "B ref=4 restart comparison done"
+
 # ============================================================
 # Part C: High ka stress tests (ref=3, single)
 # Convergence at high size parameter, blockj vs no prec
@@ -119,41 +135,59 @@ log "D3 done"
 
 # ============================================================
 # Part E: Large-scale ref=4 single orientation
-# Heaviest single-orientation tests (~4.5h each)
-# Expected: ~14h total (3 tests)
+# CRITICAL: restart=500 required (restart=200 diverges at ref=4)
+# Expected: ~4h total (3 × ~45 min, + GCRO-DR comparison)
 # ============================================================
 log "=== PART E: Large-scale ref=4 single orientation ==="
 
-log ">>> E1: ka=5 ref=4 blockj (~4h)"
+log ">>> E1: ka=5 ref=4 blockj restart=500 (~45min)"
 $BIN --ka 5 --ref 4 --shape hex --ar $AR \
-     --spfft --prec blockj --gmres-restart 200 \
+     --spfft --prec blockj --gmres-restart 500 \
      --single --out $OUTDIR/E1_ka5_r4_blockj.json 2>&1 | tee $OUTDIR/E1.log
 log "E1 done"
 
-log ">>> E2: ka=10 ref=4 blockj (~4.5h)"
+log ">>> E2: ka=10 ref=4 blockj restart=500 (~45min)"
 $BIN --ka 10 --ref 4 --shape hex --ar $AR \
-     --spfft --prec blockj --gmres-restart 200 \
+     --spfft --prec blockj --gmres-restart 500 \
      --single --out $OUTDIR/E2_ka10_r4_blockj.json 2>&1 | tee $OUTDIR/E2.log
 log "E2 done"
 
-log ">>> E3: ka=10 ref=4 no prec (~5h)"
+log ">>> E3: ka=10 ref=4 GCRO-DR restart=200 k=20 (~1h)"
 $BIN --ka 10 --ref 4 --shape hex --ar $AR \
-     --spfft --gmres-restart 200 \
-     --single --out $OUTDIR/E3_ka10_r4_noprec.json 2>&1 | tee $OUTDIR/E3.log
+     --spfft --prec blockj --gmres-restart 200 --gmres-dr \
+     --single --out $OUTDIR/E3_ka10_r4_dr.json 2>&1 | tee $OUTDIR/E3.log
 log "E3 done"
 
-# ============================================================
-# Part F: ref=4 orientation averaging (2 orientations only)
-# Verifies orient-reuse initial guess benefit at ref=4
-# Expected: ~9h
-# ============================================================
-log "=== PART F: ref=4 with 2 orientations ==="
-
-log ">>> F1: ka=10 ref=4 blockj orient=2x1x1 (2 orientations, ~9h)"
+log ">>> E4: ka=10 ref=4 no prec restart=500 (~1h)"
 $BIN --ka 10 --ref 4 --shape hex --ar $AR \
-     --spfft --prec blockj --gmres-restart 200 \
-     --orient 2 1 1 --out $OUTDIR/F1_ka10_r4_blockj_o2.json 2>&1 | tee $OUTDIR/F1.log
+     --spfft --gmres-restart 500 \
+     --single --out $OUTDIR/E4_ka10_r4_noprec.json 2>&1 | tee $OUTDIR/E4.log
+log "E4 done"
+
+log ">>> E5: ka=15 ref=4 blockj restart=500 (~1.5h)"
+$BIN --ka 15 --ref 4 --shape hex --ar $AR \
+     --spfft --prec blockj --gmres-restart 500 \
+     --single --out $OUTDIR/E5_ka15_r4_blockj.json 2>&1 | tee $OUTDIR/E5.log
+log "E5 done"
+
+# ============================================================
+# Part F: ref=4 orientation averaging
+# Tests orient-reuse initial guess benefit at large N
+# Expected: ~10h (4 orient × ~45min + 8 orient × ~45min)
+# ============================================================
+log "=== PART F: ref=4 orientation averaging ==="
+
+log ">>> F1: ka=10 ref=4 blockj orient=2x2x1 (4 orientations, ~3h)"
+$BIN --ka 10 --ref 4 --shape hex --ar $AR \
+     --spfft --prec blockj --gmres-restart 500 \
+     --orient 2 2 1 --out $OUTDIR/F1_ka10_r4_blockj_o4.json 2>&1 | tee $OUTDIR/F1.log
 log "F1 done"
+
+log ">>> F2: ka=10 ref=4 blockj orient=4x4x1 (16 orientations, ~12h)"
+$BIN --ka 10 --ref 4 --shape hex --ar $AR \
+     --spfft --prec blockj --gmres-restart 500 \
+     --orient 4 4 1 --out $OUTDIR/F2_ka10_r4_blockj_o16.json 2>&1 | tee $OUTDIR/F2.log
+log "F2 done"
 
 # ============================================================
 # Part G: Dense vs iterative cross-validation (ref=3, single)
