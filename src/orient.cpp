@@ -98,3 +98,41 @@ std::vector<Orientation> generate_orientations(int n_alpha, int n_beta, int n_ga
     }
     return orients;
 }
+
+void sort_orientations_nearest(std::vector<Orientation>& orients) {
+    int n = (int)orients.size();
+    if (n <= 2) return;
+
+    std::vector<bool> used(n, false);
+    std::vector<Orientation> sorted;
+    sorted.reserve(n);
+
+    // Start from first orientation
+    sorted.push_back(orients[0]);
+    used[0] = true;
+
+    for (int step = 1; step < n; step++) {
+        const Mat3& Rprev = sorted.back().RT;
+        int best = -1;
+        double best_d = 1e30;
+
+        for (int j = 0; j < n; j++) {
+            if (used[j]) continue;
+            // Frobenius distance between rotation matrices
+            double d = 0;
+            for (int r = 0; r < 3; r++)
+                for (int c = 0; c < 3; c++) {
+                    double diff = Rprev.m[r][c] - orients[j].RT.m[r][c];
+                    d += diff * diff;
+                }
+            if (d < best_d) {
+                best_d = d;
+                best = j;
+            }
+        }
+        sorted.push_back(orients[best]);
+        used[best] = true;
+    }
+
+    orients = sorted;
+}

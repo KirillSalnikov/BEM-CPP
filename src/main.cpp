@@ -40,6 +40,8 @@ static void print_usage(const char* prog) {
     printf("  --gmres-restart N  GMRES restart (default: 100)\n");
     printf("  --max-leaf N    FMM max particles per leaf (default: 64)\n");
     printf("  --prec TYPE     Preconditioner: diag, ilu0, nearlu, blockj (default: none)\n");
+    printf("  --prec-r F      Block-Jacobi radius multiplier (default: 2.0)\n");
+    printf("  --prec-bs N     Block-Jacobi max RWG per block (default: 1500)\n");
     printf("  --gmres-dr      Use GMRES-DR (deflated restarting)\n");
     printf("  --gmres-k N     Deflation subspace size (default: 20)\n");
     printf("  --shape TYPE    Particle shape: sphere (default), hex\n");
@@ -63,6 +65,7 @@ int main(int argc, char** argv) {
     bool use_spfft = false;
     PrecondMode prec_mode = PREC_NONE;
     double prec_radius = 2.0;
+    int prec_block_size = 1500;
     bool fmm_test = false;
     int fmm_digits = 3;
     double gmres_tol = 1e-4;
@@ -113,6 +116,8 @@ int main(int argc, char** argv) {
             else { fprintf(stderr, "Unknown prec type: %s\n", pt); return 1; }
         } else if (strcmp(argv[i], "--prec-r") == 0 && i+1 < argc) {
             prec_radius = atof(argv[++i]);
+        } else if (strcmp(argv[i], "--prec-bs") == 0 && i+1 < argc) {
+            prec_block_size = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--fmm-digits") == 0 && i+1 < argc) {
             fmm_digits = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--gmres-tol") == 0 && i+1 < argc) {
@@ -320,7 +325,7 @@ int main(int argc, char** argv) {
         NearFieldPrecond* precond_ptr = nullptr;
         NearFieldPrecond precond;
         if (prec_mode != PREC_NONE) {
-            precond.build(fmm_op, prec_mode, prec_radius);
+            precond.build(fmm_op, prec_mode, prec_radius, prec_block_size);
             precond_ptr = &precond;
         }
 
@@ -393,6 +398,7 @@ int main(int argc, char** argv) {
         } else {
             // Orientation averaging with GMRES
             std::vector<Orientation> orients = generate_orientations(n_alpha, n_beta, n_gamma);
+            sort_orientations_nearest(orients);
             int n_total = (int)orients.size();
 
             // Far-field GPU cache
@@ -596,6 +602,7 @@ int main(int argc, char** argv) {
         } else {
             // Orientation averaging (batched)
             std::vector<Orientation> orients = generate_orientations(n_alpha, n_beta, n_gamma);
+            sort_orientations_nearest(orients);
             int n_total = (int)orients.size();
 
             printf("\n  Building %d RHS vectors...\n", n_total * 2);

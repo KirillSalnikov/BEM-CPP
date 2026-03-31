@@ -66,7 +66,9 @@ struct NearFieldPrecond {
 
     // Build preconditioner from near-field BEM entries
     // radius_mult: cell_size = radius_mult * avg_extent (default 2.0)
-    void build(BemFmmOperator& op, PrecondMode mode, double radius_mult = 2.0);
+    // max_block_rwg: max RWG per block-Jacobi block (default 1500)
+    void build(BemFmmOperator& op, PrecondMode mode, double radius_mult = 2.0,
+               int max_block_rwg = 1500);
 
     // Apply: z = M^{-1} * r  (host pointers; uses GPU internally if available)
     void apply(const cdouble* r, cdouble* z) const;

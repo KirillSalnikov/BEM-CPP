@@ -474,15 +474,16 @@ static void do_near_lu(NearFieldPrecond& P)
     P.csr_val.shrink_to_fit();
 }
 
-// Max RWG per block for Block-Jacobi.  Blocks larger than this are split
-// by longest-axis bisection so that dense LU stays tractable.
+// Default max RWG per block for Block-Jacobi.
+// Blocks larger than this are split by longest-axis bisection so that dense LU stays tractable.
 // 2B×2B dense LU: B=1500 → 3000×3000 → 144 MB per block, O(27G) flops.
-static const int MAX_BLOCK_RWG = 1500;
+static const int DEFAULT_MAX_BLOCK_RWG = 1500;
 
 // ============================================================
 // Block-Jacobi: spatial cell blocking with dense LU per block
 // ============================================================
-static void do_block_jacobi(NearFieldPrecond& P, BemFmmOperator& op, double radius_mult)
+static void do_block_jacobi(NearFieldPrecond& P, BemFmmOperator& op, double radius_mult,
+                            int max_block_rwg)
 {
     Timer timer;
     int N = P.N;
@@ -542,13 +543,15 @@ static void do_block_jacobi(NearFieldPrecond& P, BemFmmOperator& op, double radi
     double inv_cell = 1.0 / cell_size;
 
     // Step 2: Hash RWG into spatial cells -> blocks
+    // Offset by bb_min so cell boundaries align with bounding box edge
+    // (avoids splitting across origin for centered geometries)
     std::unordered_map<CellKey, std::vector<int>, CellKeyHash> cell_map;
     cell_map.reserve(N);
     for (int m = 0; m < N; m++) {
         CellKey key;
-        key.ix = (int)std::floor(centers[m*3]   * inv_cell);
-        key.iy = (int)std::floor(centers[m*3+1] * inv_cell);
-        key.iz = (int)std::floor(centers[m*3+2] * inv_cell);
+        key.ix = (int)std::floor((centers[m*3]   - bb_min[0]) * inv_cell);
+        key.iy = (int)std::floor((centers[m*3+1] - bb_min[1]) * inv_cell);
+        key.iz = (int)std::floor((centers[m*3+2] - bb_min[2]) * inv_cell);
         cell_map[key].push_back(m);
     }
 
@@ -561,7 +564,7 @@ static void do_block_jacobi(NearFieldPrecond& P, BemFmmOperator& op, double radi
         block_list.push_back(std::move(members));
     }
 
-    // Step 2b: Adaptive splitting — bisect blocks exceeding MAX_BLOCK_RWG
+    // Step 2b: Adaptive splitting — bisect blocks exceeding max_block_rwg
     {
         bool did_split = true;
         int split_rounds = 0;
@@ -570,7 +573,7 @@ static void do_block_jacobi(NearFieldPrecond& P, BemFmmOperator& op, double radi
             std::vector<std::vector<int>> new_list;
             new_list.reserve(block_list.size());
             for (auto& blk : block_list) {
-                if ((int)blk.size() <= MAX_BLOCK_RWG) {
+                if ((int)blk.size() <= max_block_rwg) {
                     new_list.push_back(std::move(blk));
                     continue;
                 }
@@ -794,7 +797,8 @@ static void do_block_jacobi(NearFieldPrecond& P, BemFmmOperator& op, double radi
 // ============================================================
 // Build preconditioner
 // ============================================================
-void NearFieldPrecond::build(BemFmmOperator& op, PrecondMode pm, double radius_mult)
+void NearFieldPrecond::build(BemFmmOperator& op, PrecondMode pm, double radius_mult,
+                            int max_block_rwg)
 {
     Timer timer;
     N = op.N;
@@ -809,7 +813,7 @@ void NearFieldPrecond::build(BemFmmOperator& op, PrecondMode pm, double radius_m
     if (mode == PREC_NONE) return;
 
     if (mode == PREC_BLOCKJ) {
-        do_block_jacobi(*this, op, radius_mult);
+        do_block_jacobi(*this, op, radius_mult, max_block_rwg);
         upload_to_gpu();
         printf("  [Precond] %s preconditioner built: %.2fs total\n",
                mode_name[mode], timer.elapsed_s());

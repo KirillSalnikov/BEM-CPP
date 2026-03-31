@@ -37,4 +37,8 @@ struct Orientation {
 // Generate orientation quadrature points
 std::vector<Orientation> generate_orientations(int n_alpha, int n_beta, int n_gamma);
 
+// Reorder orientations by nearest-neighbor (greedy TSP) in rotation space.
+// Improves initial guess quality when reusing previous solution.
+void sort_orientations_nearest(std::vector<Orientation>& orients);
+
 #endif

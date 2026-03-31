@@ -80,6 +80,14 @@ struct BemFmmOperator {
     std::vector<cdouble> mv2_L_ext_J, mv2_L_ext_M, mv2_K_ext_J, mv2_K_ext_M;
     std::vector<cdouble> mv2_L_int_J, mv2_L_int_M, mv2_K_int_J, mv2_K_int_M;
 
+    // Batch workspace (extra charge/pot/grad buffers for batched P2P)
+    std::vector<cdouble> b4_src2, b4_src3;  // charges for batch 2,3
+    std::vector<cdouble> b4_pot2, b4_pot3;  // potentials for batch 2,3
+    // Batch8 additional workspace (charges 4-7, pots 4-7, grads 3-5)
+    std::vector<cdouble> b8_src[8];    // all 8 charge vectors
+    std::vector<cdouble> b8_pot[8];    // all 8 potential results
+    std::vector<cdouble> b8_grad[6];   // 6 gradient results
+
     // Initialize operator (use_pfft_=true for pFFT acceleration)
     void init(const RWG& rwg, const Mesh& mesh,
               cdouble k_ext, cdouble k_int,
@@ -116,9 +124,15 @@ private:
     void LK_combined(const cdouble* x, cdouble k, HelmholtzSurfacePFFT& spf,
                      cdouble* L_result, cdouble* K_result);
 
-    // Batched combined L+K for two RHS vectors
+    // Batched combined L+K for two RHS vectors (FMM variant)
     void LK_combined_batch2(const cdouble* x1, const cdouble* x2,
                              cdouble kv, HelmholtzFMM& fmm,
+                             cdouble* L_result1, cdouble* K_result1,
+                             cdouble* L_result2, cdouble* K_result2);
+
+    // Batched combined L+K for two RHS vectors (Surface pFFT variant — uses batch8 P2P)
+    void LK_combined_batch2(const cdouble* x1, const cdouble* x2,
+                             cdouble kv, HelmholtzSurfacePFFT& spf,
                              cdouble* L_result1, cdouble* K_result1,
                              cdouble* L_result2, cdouble* K_result2);
 

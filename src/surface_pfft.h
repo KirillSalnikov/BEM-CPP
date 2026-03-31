@@ -130,6 +130,20 @@ struct HelmholtzSurfacePFFT {
     std::vector<double> h_out_re, h_out_im;       // (Nt) result download
     std::vector<double> h_grad_re, h_grad_im;     // (Nt*3) gradient download
 
+    // Batched inter-face P2P buffers (FP32, sized for batch8)
+    float*  d_bp_q_re;        // [8*Nt] sorted charges (up to 8 vectors packed)
+    float*  d_bp_q_im;
+    float*  d_bp_pot_re;      // [8*Nt] sorted potential results
+    float*  d_bp_pot_im;
+    float*  d_bp_grad_re;     // [6*Nt*3] sorted gradient results
+    float*  d_bp_grad_im;
+
+    // Batched global result buffers (FP64)
+    double* d_bp_res_re[8];   // [Nt] each — potential per batch
+    double* d_bp_res_im[8];
+    double* d_bp_grd_re[6];   // [Nt*3] each — gradient per batch
+    double* d_bp_grd_im[6];
+
     bool initialized;
 
     HelmholtzSurfacePFFT() : initialized(false),
@@ -140,7 +154,14 @@ struct HelmholtzSurfacePFFT {
         d_charges_re(0), d_charges_im(0),
         d_result_re(0), d_result_im(0),
         d_grad_re(0), d_grad_im(0),
-        d_pts(0), d_sort_order(0) {}
+        d_pts(0), d_sort_order(0),
+        d_bp_q_re(0), d_bp_q_im(0),
+        d_bp_pot_re(0), d_bp_pot_im(0),
+        d_bp_grad_re(0), d_bp_grad_im(0)
+    {
+        for (int i = 0; i < 8; i++) { d_bp_res_re[i]=0; d_bp_res_im[i]=0; }
+        for (int i = 0; i < 6; i++) { d_bp_grd_re[i]=0; d_bp_grd_im[i]=0; }
+    }
 
     // Initialize with face classification
     // face_ids[i] = face index (0..n_faces-1) for point i
@@ -153,6 +174,23 @@ struct HelmholtzSurfacePFFT {
     // Same evaluate interface as HelmholtzPFFT
     void evaluate(const cdouble* charges, cdouble* result);
     void evaluate_pot_grad(const cdouble* charges, cdouble* pot_result, cdouble* grad_result);
+
+    // Batched evaluate: 3× evaluate_pot_grad + 1× evaluate in single P2P pass.
+    // charges[0..2] get both potential and gradient, charges[3] gets potential only.
+    // Computes Green's function geometry once per source-target pair instead of 4×.
+    void evaluate_batch4(
+        const cdouble* charges0, const cdouble* charges1,
+        const cdouble* charges2, const cdouble* charges3,
+        cdouble* pot0, cdouble* pot1, cdouble* pot2, cdouble* pot3,
+        cdouble* grad0, cdouble* grad1, cdouble* grad2);
+
+    // Double-batched: 2 × (3 pot+grad + 1 pot) = 8 charge vectors in ONE P2P pass.
+    // charges 0-2,4-6 get pot+grad; charges 3,7 get pot only.
+    // For LK_combined_batch2: 2 coefficient vectors × 4 charges each.
+    void evaluate_batch8(
+        const cdouble* charges[8],
+        cdouble* pots[8],
+        cdouble* grads[6]);  // grads[0-2] for charges 0-2, grads[3-5] for charges 4-6
 
     void cleanup();
     ~HelmholtzSurfacePFFT() { if (initialized) cleanup(); }

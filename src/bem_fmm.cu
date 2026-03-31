@@ -230,10 +230,21 @@ void BemFmmOperator::init(const RWG& rwg, const Mesh& mesh,
     tmp2_phi.resize(total_pts);
     for (int d = 0; d < 3; d++)
         tmp2_grad[d].resize(total_pts * 3);
+
+    // Batch-4 workspace (extra buffers for batched P2P — reuse tmp_src_charges, tmp2_src_charges, tmp_phi, tmp2_phi for batches 0,1)
+    b4_src2.resize(total_pts);
+    b4_src3.resize(total_pts);
+    b4_pot2.resize(total_pts);
+    b4_pot3.resize(total_pts);
     mv2_L_ext_J.resize(N, 0); mv2_L_ext_M.resize(N, 0);
     mv2_K_ext_J.resize(N, 0); mv2_K_ext_M.resize(N, 0);
     mv2_L_int_J.resize(N, 0); mv2_L_int_M.resize(N, 0);
     mv2_K_int_J.resize(N, 0); mv2_K_int_M.resize(N, 0);
+
+    // Batch-8 workspace for LK_combined_batch2(spfft)
+    for (int b = 0; b < 8; b++) b8_src[b].resize(total_pts);
+    for (int b = 0; b < 8; b++) b8_pot[b].resize(total_pts);
+    for (int b = 0; b < 6; b++) b8_grad[b].resize(total_pts * 3);
 
     // Precompute singular corrections
     printf("  [BEM-FMM] Computing singular corrections...\n");
@@ -742,7 +753,7 @@ void BemFmmOperator::LK_combined(const cdouble* x, cdouble kv, HelmholtzPFFT& pf
     }
 }
 
-// Surface pFFT variant of LK_combined: identical algorithm, calls spfft
+// Surface pFFT variant of LK_combined: uses batched P2P (4 charge vectors in 1 pass)
 void BemFmmOperator::LK_combined(const cdouble* x, cdouble kv, HelmholtzSurfacePFFT& spf,
                                   cdouble* L_result, cdouble* K_result)
 {
@@ -754,56 +765,60 @@ void BemFmmOperator::LK_combined(const cdouble* x, cdouble kv, HelmholtzSurfaceP
     memset(L_result, 0, N * sizeof(cdouble));
     memset(K_result, 0, N * sizeof(cdouble));
 
-    // --- Vector part: combined potential (for L) + gradient (for K) ---
-    for (int d = 0; d < 3; d++) {
-        memset(tmp_src_charges.data(), 0, total_pts * sizeof(cdouble));
+    // Use 4 buffers: tmp_src_charges (b0), tmp2_src_charges (b1), b4_src2 (b2), b4_src3 (b3)
+    cdouble* src[4] = { tmp_src_charges.data(), tmp2_src_charges.data(), b4_src2.data(), b4_src3.data() };
+    cdouble* pot[4] = { tmp_phi.data(), tmp2_phi.data(), b4_pot2.data(), b4_pot3.data() };
 
+    // --- Pack all 4 charge vectors ---
+    for (int d = 0; d < 3; d++) {
+        memset(src[d], 0, total_pts * sizeof(cdouble));
         for (int n = 0; n < N; n++) {
             cdouble xn = x[n];
             for (int q = 0; q < Nq; q++) {
                 int idx = n * Nq + q;
-                tmp_src_charges[idx] = f_p[idx*3 + d] * jw_p[idx] * xn;
-                tmp_src_charges[N*Nq + idx] = f_m[idx*3 + d] * jw_m[idx] * xn;
+                src[d][idx] = f_p[idx*3 + d] * jw_p[idx] * xn;
+                src[d][N*Nq + idx] = f_m[idx*3 + d] * jw_m[idx] * xn;
             }
         }
+    }
+    // Scalar (div) charges
+    memset(src[3], 0, total_pts * sizeof(cdouble));
+    for (int n = 0; n < N; n++) {
+        cdouble xn = x[n];
+        for (int q = 0; q < Nq; q++) {
+            int idx = n * Nq + q;
+            src[3][idx] = div_p[n] * jw_p[idx] * xn;
+            src[3][N*Nq + idx] = div_m[n] * jw_m[idx] * xn;
+        }
+    }
 
-        spf.evaluate_pot_grad(tmp_src_charges.data(), tmp_phi.data(), tmp_grad[d].data());
+    // --- Batched evaluate: 3× pot+grad + 1× pot in single P2P pass ---
+    spf.evaluate_batch4(src[0], src[1], src[2], src[3],
+                        pot[0], pot[1], pot[2], pot[3],
+                        tmp_grad[0].data(), tmp_grad[1].data(), tmp_grad[2].data());
 
+    // --- Accumulate L: vector part from pot[0..2] ---
+    for (int d = 0; d < 3; d++) {
         for (int m = 0; m < N; m++) {
             cdouble acc(0);
             for (int q = 0; q < Nq; q++) {
                 int idx = m * Nq + q;
-                acc += f_p[idx*3 + d] * jw_p[idx] * tmp_phi[idx];
-                acc += f_m[idx*3 + d] * jw_m[idx] * tmp_phi[N*Nq + idx];
+                acc += f_p[idx*3 + d] * jw_p[idx] * pot[d][idx];
+                acc += f_m[idx*3 + d] * jw_m[idx] * pot[d][N*Nq + idx];
             }
             L_result[m] += ik * acc;
         }
     }
 
-    // --- L scalar part ---
-    {
-        memset(tmp_src_charges.data(), 0, total_pts * sizeof(cdouble));
-
-        for (int n = 0; n < N; n++) {
-            cdouble xn = x[n];
-            for (int q = 0; q < Nq; q++) {
-                int idx = n * Nq + q;
-                tmp_src_charges[idx] = div_p[n] * jw_p[idx] * xn;
-                tmp_src_charges[N*Nq + idx] = div_m[n] * jw_m[idx] * xn;
-            }
+    // --- L scalar part from pot[3] ---
+    for (int m = 0; m < N; m++) {
+        cdouble acc_p(0), acc_m(0);
+        for (int q = 0; q < Nq; q++) {
+            int idx = m * Nq + q;
+            acc_p += jw_p[idx] * pot[3][idx];
+            acc_m += jw_m[idx] * pot[3][N*Nq + idx];
         }
-
-        spf.evaluate(tmp_src_charges.data(), tmp_phi.data());
-
-        for (int m = 0; m < N; m++) {
-            cdouble acc_p(0), acc_m(0);
-            for (int q = 0; q < Nq; q++) {
-                int idx = m * Nq + q;
-                acc_p += jw_p[idx] * tmp_phi[idx];
-                acc_m += jw_m[idx] * tmp_phi[N*Nq + idx];
-            }
-            L_result[m] -= iok * (div_p[m] * acc_p + div_m[m] * acc_m);
-        }
+        L_result[m] -= iok * (div_p[m] * acc_p + div_m[m] * acc_m);
     }
 
     // --- K: assemble curl from gradients ---
@@ -832,6 +847,156 @@ void BemFmmOperator::LK_combined(const cdouble* x, cdouble kv, HelmholtzSurfaceP
 
         K_result[m] = acc;
     }
+}
+
+// Surface pFFT batch2: two RHS × 4 evals = 8 charge vectors in ONE P2P pass
+void BemFmmOperator::LK_combined_batch2(
+    const cdouble* x1, const cdouble* x2,
+    cdouble kv, HelmholtzSurfacePFFT& spf,
+    cdouble* L_result1, cdouble* K_result1,
+    cdouble* L_result2, cdouble* K_result2)
+{
+    static int lk_call_count = 0;
+    bool do_timing = (lk_call_count == 0);
+    lk_call_count++;
+    Timer t_pack, t_eval, t_accum;
+
+    cdouble ik = cdouble(0, 1) * kv;
+    cdouble iok = cdouble(0, 1) / kv;
+    int total_pts = 2 * N * Nq;
+
+    memset(L_result1, 0, N * sizeof(cdouble));
+    memset(K_result1, 0, N * sizeof(cdouble));
+    memset(L_result2, 0, N * sizeof(cdouble));
+    memset(K_result2, 0, N * sizeof(cdouble));
+
+    // Pack 8 charge vectors:
+    // b8_src[0..2] = x1 vector components (d=0,1,2)
+    // b8_src[3]    = x1 scalar (div)
+    // b8_src[4..6] = x2 vector components (d=0,1,2)
+    // b8_src[7]    = x2 scalar (div)
+    if (do_timing) t_pack.reset();
+
+    #pragma omp parallel for schedule(static)
+    for (int n = 0; n < N; n++) {
+        cdouble xn1 = x1[n], xn2 = x2[n];
+        for (int q = 0; q < Nq; q++) {
+            int idx = n * Nq + q;
+            double jwp = jw_p[idx];
+            double jwm = jw_m[idx];
+            for (int d = 0; d < 3; d++) {
+                double fp_d = f_p[idx*3 + d];
+                double fm_d = f_m[idx*3 + d];
+                b8_src[d][idx]          = fp_d * jwp * xn1;
+                b8_src[d][N*Nq + idx]   = fm_d * jwm * xn1;
+                b8_src[4+d][idx]        = fp_d * jwp * xn2;
+                b8_src[4+d][N*Nq + idx] = fm_d * jwm * xn2;
+            }
+            b8_src[3][idx]          = div_p[n] * jwp * xn1;
+            b8_src[3][N*Nq + idx]   = div_m[n] * jwm * xn1;
+            b8_src[7][idx]          = div_p[n] * jwp * xn2;
+            b8_src[7][N*Nq + idx]   = div_m[n] * jwm * xn2;
+        }
+    }
+
+    if (do_timing) printf("    [LK_B2] pack: %.1fms\n", t_pack.elapsed_ms());
+
+    // Single batch8 evaluate: 8 charges → 8 pots + 6 grads
+    const cdouble* src_ptrs[8];
+    cdouble* pot_ptrs[8];
+    cdouble* grad_ptrs[6];
+    for (int b = 0; b < 8; b++) { src_ptrs[b] = b8_src[b].data(); pot_ptrs[b] = b8_pot[b].data(); }
+    for (int b = 0; b < 6; b++) grad_ptrs[b] = b8_grad[b].data();
+
+    if (do_timing) t_eval.reset();
+    spf.evaluate_batch8(src_ptrs, pot_ptrs, grad_ptrs);
+    if (do_timing) printf("    [LK_B2] eval: %.1fms\n", t_eval.elapsed_ms());
+
+    // Accumulate L+K for RHS 1 (pots[0..3], grads[0..2])
+    if (do_timing) t_accum.reset();
+
+    #pragma omp parallel for schedule(static)
+    for (int m = 0; m < N; m++) {
+        cdouble L_acc(0);
+        for (int d = 0; d < 3; d++) {
+            cdouble acc(0);
+            for (int q = 0; q < Nq; q++) {
+                int idx = m * Nq + q;
+                acc += f_p[idx*3+d] * jw_p[idx] * b8_pot[d][idx];
+                acc += f_m[idx*3+d] * jw_m[idx] * b8_pot[d][N*Nq + idx];
+            }
+            L_acc += ik * acc;
+        }
+        cdouble acc_p(0), acc_m(0);
+        for (int q = 0; q < Nq; q++) {
+            int idx = m * Nq + q;
+            acc_p += jw_p[idx] * b8_pot[3][idx];
+            acc_m += jw_m[idx] * b8_pot[3][N*Nq + idx];
+        }
+        L_result1[m] = L_acc - iok * (div_p[m] * acc_p + div_m[m] * acc_m);
+
+        cdouble K_acc(0);
+        for (int q = 0; q < Nq; q++) {
+            int idx = m * Nq + q;
+            int i = idx;
+            cdouble cx = b8_grad[2][i*3+1] - b8_grad[1][i*3+2];
+            cdouble cy = b8_grad[0][i*3+2] - b8_grad[2][i*3+0];
+            cdouble cz = b8_grad[1][i*3+0] - b8_grad[0][i*3+1];
+            K_acc += jw_p[idx] * (f_p[idx*3]*cx + f_p[idx*3+1]*cy + f_p[idx*3+2]*cz);
+        }
+        for (int q = 0; q < Nq; q++) {
+            int idx = m * Nq + q;
+            int i = N*Nq + idx;
+            cdouble cx = b8_grad[2][i*3+1] - b8_grad[1][i*3+2];
+            cdouble cy = b8_grad[0][i*3+2] - b8_grad[2][i*3+0];
+            cdouble cz = b8_grad[1][i*3+0] - b8_grad[0][i*3+1];
+            K_acc += jw_m[idx] * (f_m[idx*3]*cx + f_m[idx*3+1]*cy + f_m[idx*3+2]*cz);
+        }
+        K_result1[m] = K_acc;
+    }
+
+    // Accumulate L+K for RHS 2 (pots[4..7], grads[3..5])
+    #pragma omp parallel for schedule(static)
+    for (int m = 0; m < N; m++) {
+        cdouble L_acc(0);
+        for (int d = 0; d < 3; d++) {
+            cdouble acc(0);
+            for (int q = 0; q < Nq; q++) {
+                int idx = m * Nq + q;
+                acc += f_p[idx*3+d] * jw_p[idx] * b8_pot[4+d][idx];
+                acc += f_m[idx*3+d] * jw_m[idx] * b8_pot[4+d][N*Nq + idx];
+            }
+            L_acc += ik * acc;
+        }
+        cdouble acc_p(0), acc_m(0);
+        for (int q = 0; q < Nq; q++) {
+            int idx = m * Nq + q;
+            acc_p += jw_p[idx] * b8_pot[7][idx];
+            acc_m += jw_m[idx] * b8_pot[7][N*Nq + idx];
+        }
+        L_result2[m] = L_acc - iok * (div_p[m] * acc_p + div_m[m] * acc_m);
+
+        cdouble K_acc(0);
+        for (int q = 0; q < Nq; q++) {
+            int idx = m * Nq + q;
+            int i = idx;
+            cdouble cx = b8_grad[5][i*3+1] - b8_grad[4][i*3+2];
+            cdouble cy = b8_grad[3][i*3+2] - b8_grad[5][i*3+0];
+            cdouble cz = b8_grad[4][i*3+0] - b8_grad[3][i*3+1];
+            K_acc += jw_p[idx] * (f_p[idx*3]*cx + f_p[idx*3+1]*cy + f_p[idx*3+2]*cz);
+        }
+        for (int q = 0; q < Nq; q++) {
+            int idx = m * Nq + q;
+            int i = N*Nq + idx;
+            cdouble cx = b8_grad[5][i*3+1] - b8_grad[4][i*3+2];
+            cdouble cy = b8_grad[3][i*3+2] - b8_grad[5][i*3+0];
+            cdouble cz = b8_grad[4][i*3+0] - b8_grad[3][i*3+1];
+            K_acc += jw_m[idx] * (f_m[idx*3]*cx + f_m[idx*3+1]*cy + f_m[idx*3+2]*cz);
+        }
+        K_result2[m] = K_acc;
+    }
+
+    if (do_timing) printf("    [LK_B2] accum: %.1fms\n", t_accum.elapsed_ms());
 }
 
 void BemFmmOperator::LK_combined_batch2(
@@ -1019,17 +1184,21 @@ void BemFmmOperator::matvec_batch2(const cdouble* x1_full, const cdouble* x2_ful
     std::fill(mv2_K_int_J.begin(), mv2_K_int_J.end(), cdouble(0));
     std::fill(mv2_K_int_M.begin(), mv2_K_int_M.end(), cdouble(0));
 
-    // 4 batched calls instead of 8 single calls
+    // Batched calls: batch8 for spfft (4 calls instead of 8), batch2 for FMM
     if (use_spfft) {
         HelmholtzSurfacePFFT& sp_i = shared_fmm ? spfft_ext : spfft_int;
-        LK_combined(J1, k_ext, spfft_ext, mv_L_ext_J.data(), mv_K_ext_J.data());
-        LK_combined(J2, k_ext, spfft_ext, mv2_L_ext_J.data(), mv2_K_ext_J.data());
-        LK_combined(M1, k_ext, spfft_ext, mv_L_ext_M.data(), mv_K_ext_M.data());
-        LK_combined(M2, k_ext, spfft_ext, mv2_L_ext_M.data(), mv2_K_ext_M.data());
-        LK_combined(J1, k_int, sp_i,      mv_L_int_J.data(), mv_K_int_J.data());
-        LK_combined(J2, k_int, sp_i,      mv2_L_int_J.data(), mv2_K_int_J.data());
-        LK_combined(M1, k_int, sp_i,      mv_L_int_M.data(), mv_K_int_M.data());
-        LK_combined(M2, k_int, sp_i,      mv2_L_int_M.data(), mv2_K_int_M.data());
+        LK_combined_batch2(J1, J2, k_ext, spfft_ext,
+                            mv_L_ext_J.data(), mv_K_ext_J.data(),
+                            mv2_L_ext_J.data(), mv2_K_ext_J.data());
+        LK_combined_batch2(M1, M2, k_ext, spfft_ext,
+                            mv_L_ext_M.data(), mv_K_ext_M.data(),
+                            mv2_L_ext_M.data(), mv2_K_ext_M.data());
+        LK_combined_batch2(J1, J2, k_int, sp_i,
+                            mv_L_int_J.data(), mv_K_int_J.data(),
+                            mv2_L_int_J.data(), mv2_K_int_J.data());
+        LK_combined_batch2(M1, M2, k_int, sp_i,
+                            mv_L_int_M.data(), mv_K_int_M.data(),
+                            mv2_L_int_M.data(), mv2_K_int_M.data());
     } else if (use_pfft) {
         HelmholtzPFFT& pf_i = shared_fmm ? pfft_ext : pfft_int;
         LK_combined(J1, k_ext, pfft_ext, mv_L_ext_J.data(), mv_K_ext_J.data());
@@ -1057,6 +1226,7 @@ void BemFmmOperator::matvec_batch2(const cdouble* x1_full, const cdouble* x2_ful
     }
 
     // Apply singular corrections (sparse CSR) — for both RHS vectors
+    #pragma omp parallel for schedule(static)
     for (int m = 0; m < N; m++) {
         for (int j = corr_row_ptr[m]; j < corr_row_ptr[m + 1]; j++) {
             int n = corr_col_idx[j];
