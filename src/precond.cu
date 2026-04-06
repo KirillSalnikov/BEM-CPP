@@ -28,7 +28,7 @@ struct CellKeyHash {
 };
 
 // ============================================================
-// Assemble near-field sparse matrix (shared by ILU0, NEARLU, DIAG)
+// Assemble near-field sparse matrix (used by ILU0)
 // ============================================================
 static void assemble_near_field(NearFieldPrecond& P, BemFmmOperator& op, double radius_mult)
 {
@@ -322,11 +322,9 @@ static void assemble_near_field(NearFieldPrecond& P, BemFmmOperator& op, double 
     printf("  [Precond] Assembly done: %.2fs\n", t_assemble.elapsed_s());
 
     // Diagnostic: print diagonal statistics
-    P.diag_val.resize(N2);
     double dmin = 1e30, dmax = 0, dmean = 0;
     for (int i = 0; i < N2; i++) {
-        P.diag_val[i] = P.csr_val[P.diag_ptr[i]];
-        double d = std::abs(P.diag_val[i]);
+        double d = std::abs(P.csr_val[P.diag_ptr[i]]);
         dmin = std::min(dmin, d);
         dmax = std::max(dmax, d);
         dmean += d;
@@ -334,16 +332,6 @@ static void assemble_near_field(NearFieldPrecond& P, BemFmmOperator& op, double 
     dmean /= N2;
     printf("  [Precond] Diagonal |Z_ii|: min=%.4e, max=%.4e, mean=%.4e, ratio=%.1f\n",
            dmin, dmax, dmean, dmax/dmin);
-
-    // Print first few diagonal entries
-    printf("  [Precond] First 5 JJ diag: ");
-    for (int i = 0; i < std::min(5, N); i++)
-        printf("(%.3e,%.3e) ", P.diag_val[i].real(), P.diag_val[i].imag());
-    printf("\n");
-    printf("  [Precond] First 5 MM diag: ");
-    for (int i = N; i < std::min(N+5, N2); i++)
-        printf("(%.3e,%.3e) ", P.diag_val[i].real(), P.diag_val[i].imag());
-    printf("\n");
 }
 
 // ============================================================
@@ -405,74 +393,6 @@ static void do_ilu0(NearFieldPrecond& P)
         printf("  [Precond] WARNING: %d near-zero diagonal entries\n", zero_diag_count);
 
     printf("  [Precond] ILU(0) factorization done: %.2fs\n", t_ilu.elapsed_s());
-}
-
-// ============================================================
-// Full dense LU factorization of near-field matrix (small N)
-// ============================================================
-static void do_near_lu(NearFieldPrecond& P)
-{
-    Timer t_lu;
-    int N2 = P.N2;
-
-    if (N2 > 8000) {
-        printf("  [Precond] ERROR: NEARLU requires N2 <= 8000 (got %d)\n", N2);
-        P.mode = PREC_DIAG;  // fallback
-        return;
-    }
-
-    printf("  [Precond] Building dense LU from sparse near-field (%d×%d, %.1f MB)...\n",
-           N2, N2, (double)N2 * N2 * 16 / 1e6);
-
-    // Convert CSR to dense column-major
-    P.lu_dense.assign((size_t)N2 * N2, cdouble(0));
-    for (int i = 0; i < N2; i++) {
-        for (int p = P.csr_row_ptr[i]; p < P.csr_row_ptr[i + 1]; p++) {
-            int j = P.csr_col_idx[p];
-            P.lu_dense[(size_t)j * N2 + i] = P.csr_val[p];  // column-major
-        }
-    }
-
-    // LU factorization with partial pivoting (LAPACK-style, manual)
-    P.lu_piv.resize(N2);
-    for (int k = 0; k < N2; k++) {
-        // Find pivot
-        int max_idx = k;
-        double max_val = std::abs(P.lu_dense[(size_t)k * N2 + k]);
-        for (int i = k + 1; i < N2; i++) {
-            double v = std::abs(P.lu_dense[(size_t)k * N2 + i]);
-            if (v > max_val) { max_val = v; max_idx = i; }
-        }
-        P.lu_piv[k] = max_idx;
-
-        // Swap rows k and max_idx
-        if (max_idx != k) {
-            for (int j = 0; j < N2; j++) {
-                std::swap(P.lu_dense[(size_t)j * N2 + k],
-                          P.lu_dense[(size_t)j * N2 + max_idx]);
-            }
-        }
-
-        cdouble akk = P.lu_dense[(size_t)k * N2 + k];
-        if (std::abs(akk) < 1e-30) akk = cdouble(1e-15);
-
-        // Eliminate below
-        for (int i = k + 1; i < N2; i++) {
-            cdouble factor = P.lu_dense[(size_t)k * N2 + i] / akk;
-            P.lu_dense[(size_t)k * N2 + i] = factor;  // store L
-            for (int j = k + 1; j < N2; j++)
-                P.lu_dense[(size_t)j * N2 + i] -= factor * P.lu_dense[(size_t)j * N2 + k];
-        }
-
-        if (k > 0 && k % (N2 / 5 + 1) == 0)
-            printf("  [Precond] LU: %d/%d (%.0f%%)\n", k, N2, 100.0 * k / N2);
-    }
-
-    printf("  [Precond] Dense LU done: %.2fs\n", t_lu.elapsed_s());
-
-    // Free sparse data not needed for NEARLU
-    P.csr_val.clear();
-    P.csr_val.shrink_to_fit();
 }
 
 // Default max RWG per block for Block-Jacobi.
@@ -883,7 +803,7 @@ void NearFieldPrecond::build(BemFmmOperator& op, PrecondMode pm, double radius_m
     d_workspace = nullptr;
     d_blk_B_ext = nullptr;
 
-    const char* mode_name[] = {"NONE", "DIAG", "ILU0", "NEARLU", "BLOCKJ"};
+    const char* mode_name[] = {"NONE", "ILU0", "BLOCKJ"};
     printf("  [Precond] Building %s preconditioner (N=%d, system_size=%d, radius=%.1f%s)...\n",
            mode_name[mode], N, N2, radius_mult,
            overlap > 0 ? (", overlap=" + std::to_string(overlap)).c_str() : "");
@@ -898,29 +818,12 @@ void NearFieldPrecond::build(BemFmmOperator& op, PrecondMode pm, double radius_m
         return;
     }
 
-    // Assemble near-field sparse matrix (needed for DIAG, ILU0, NEARLU)
+    // Assemble near-field sparse matrix (needed for ILU0)
     assemble_near_field(*this, op, radius_mult);
 
-    // Mode-specific factorization
-    switch (mode) {
-        case PREC_DIAG:
-            // diag_val already filled in assemble_near_field
-            // Free sparse data not needed
-            csr_val.clear();
-            csr_val.shrink_to_fit();
-            break;
-
-        case PREC_ILU0:
-            do_ilu0(*this);
-            break;
-
-        case PREC_NEARLU:
-            do_near_lu(*this);
-            break;
-
-        default:
-            break;
-    }
+    // ILU(0) factorization
+    if (mode == PREC_ILU0)
+        do_ilu0(*this);
 
     printf("  [Precond] %s preconditioner built: %.2fs total\n",
            mode_name[mode], timer.elapsed_s());
@@ -936,17 +839,6 @@ void NearFieldPrecond::apply(const cdouble* r, cdouble* z) const
             // Identity: z = r
             for (int i = 0; i < N2; i++)
                 z[i] = r[i];
-            break;
-
-        case PREC_DIAG:
-            // Diagonal scaling: z[i] = r[i] / diag[i]
-            for (int i = 0; i < N2; i++) {
-                cdouble d = diag_val[i];
-                if (std::abs(d) > 1e-30)
-                    z[i] = r[i] / d;
-                else
-                    z[i] = r[i];
-            }
             break;
 
         case PREC_ILU0:
@@ -971,38 +863,6 @@ void NearFieldPrecond::apply(const cdouble* r, cdouble* z) const
                 z[i] /= csr_val[dp];
             }
             break;
-
-        case PREC_NEARLU:
-        {
-            // Dense LU forward/backward solve
-            // Copy r with pivot permutation (forward)
-            std::vector<cdouble> tmp(N2);
-            for (int i = 0; i < N2; i++)
-                tmp[i] = r[i];
-
-            // Apply permutation
-            for (int i = 0; i < N2; i++) {
-                if (lu_piv[i] != i)
-                    std::swap(tmp[i], tmp[lu_piv[i]]);
-            }
-
-            // Forward: L * y = Pr
-            for (int i = 1; i < N2; i++) {
-                for (int j = 0; j < i; j++)
-                    tmp[i] -= lu_dense[(size_t)j * N2 + i] * tmp[j];
-            }
-
-            // Backward: U * z = y
-            for (int i = N2 - 1; i >= 0; i--) {
-                for (int j = i + 1; j < N2; j++)
-                    tmp[i] -= lu_dense[(size_t)j * N2 + i] * tmp[j];
-                tmp[i] /= lu_dense[(size_t)i * N2 + i];
-            }
-
-            for (int i = 0; i < N2; i++)
-                z[i] = tmp[i];
-            break;
-        }
 
         case PREC_BLOCKJ:
         {

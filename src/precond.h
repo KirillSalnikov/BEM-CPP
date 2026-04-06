@@ -9,10 +9,8 @@ struct BemFmmOperator;
 
 enum PrecondMode {
     PREC_NONE = 0,
-    PREC_DIAG = 1,      // Diagonal scaling (Z_diag^{-1})
-    PREC_ILU0 = 2,      // ILU(0) on near-field sparse matrix
-    PREC_NEARLU = 3,     // Full LU on near-field sparse matrix (small N only)
-    PREC_BLOCKJ = 4      // Block-Jacobi: spatial cell blocks with dense LU
+    PREC_ILU0 = 1,      // ILU(0) on near-field sparse matrix
+    PREC_BLOCKJ = 2      // Block-Jacobi: spatial cell blocks with dense LU
 };
 
 // Preconditioner for PMCHWT BEM system.
@@ -27,9 +25,6 @@ struct NearFieldPrecond {
     int N2;     // 2*N (system size)
     PrecondMode mode;
 
-    // Diagonal preconditioner (PREC_DIAG)
-    std::vector<cdouble> diag_val;         // (2N) diagonal entries of near-field Z
-
     // Sparse 2N×2N matrix in CSR format
     std::vector<int> csr_row_ptr;       // (2N+1)
     std::vector<int> csr_col_idx;       // (nnz_total)
@@ -37,10 +32,6 @@ struct NearFieldPrecond {
 
     // For each row i, index into csr_col_idx where the diagonal element is
     std::vector<int> diag_ptr;          // (2N)
-
-    // Full LU factorization (PREC_NEARLU, small N only)
-    std::vector<cdouble> lu_dense;      // (2N × 2N) column-major
-    std::vector<int> lu_piv;            // (2N) pivot indices
 
     // Block-Jacobi (PREC_BLOCKJ): spatial cell blocks
     int n_blocks;

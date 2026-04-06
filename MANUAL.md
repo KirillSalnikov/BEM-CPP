@@ -21,15 +21,15 @@ eta_e = 1, eta_i = 1/|m|, and m is the complex refractive index.
 Direct LU factorization via cuSOLVER. O(N^3) time, O(N^2) memory.
 Practical for N <= 8000 (ref <= 4).
 
-### FMM+GMRES (`--fmm`)
+### FMM+GMRES (`--solver fmm`)
 Plane-wave MLFMA with GMRES iterative solver.
 Matrix-free O(N log N) matvec. GPU-accelerated P2P, P2M, M2L, L2P kernels.
 
-### pFFT+GMRES (`--pfft`)
+### pFFT+GMRES (`--solver pfft`)
 Precorrected FFT: 3D Cartesian grid with FFT-based far-field.
 Faster than FMM for smooth geometries.
 
-### Surface pFFT (`--spfft`)
+### Surface pFFT (`--solver spfft`)
 Specialized for particles with flat faces (hex prisms).
 Uses 2D FFT per face instead of 3D FFT.
 
@@ -44,19 +44,9 @@ Features:
 
 Right preconditioning in GMRES: solve Z*M^{-1} * (M*x) = b.
 
-### Diagonal (`--prec diag`)
-z_i = r_i / Z_ii.
-**Not recommended** for PMCHWT at high ka: diagonal elements are nearly
-pure imaginary, dividing rotates the residual spectrum 90 deg, *worsening*
-convergence.
-
 ### ILU(0) (`--prec ilu0`)
 Incomplete LU with zero fill-in on near-field sparse matrix.
 Requires >=30% coverage. Build cost scales poorly with coverage.
-
-### Near-field LU (`--prec nearlu`)
-Full dense LU on near-field sparse matrix. Best for ref <= 3 with many
-orientations (9x speedup for 128 orientations). Limited to N2 <= 8000.
 
 ### Block-Jacobi (`--prec blockj`)
 Spatial cell blocks with dense LU per block.
@@ -122,11 +112,6 @@ orthogonalization (cublasZgemv).
 Two independent GMRES iterations in lockstep for two polarizations,
 sharing the batched matvec. Halves GPU kernel launches.
 
-### GCRO-DR (`--gmres-dr`)
-Deflated restarting: recycles a subspace of k Ritz vectors across restarts
-and orientations. Benefit: 12-18% at small restart (m <= 30), negligible
-at m = 50+.
-
 ## Particle Shapes
 
 ### Sphere (`--shape sphere`)
@@ -136,7 +121,7 @@ Refinement r: 20 * 4^r triangles, 30 * 4^r - 60 RWG basis functions.
 ### Hex Prism (`--shape hex --ar F`)
 Hexagonal prism with aspect ratio H/D = F.
 For D/L comparison: if D/L = 0.7 then `--ar 1.4286` (= 1/0.7).
-Best with `--spfft` (surface pFFT exploits flat faces).
+Best with `--solver spfft` (surface pFFT exploits flat faces).
 
 ### OBJ Import (`--obj FILE`)
 Load triangulated mesh from Wavefront OBJ file.
@@ -177,14 +162,14 @@ make -j$(nproc) NVFLAGS="-arch=sm_86 -O3 --use_fast_math -ccbin g++-13 -Xcompile
 bin/bem_cuda --ka 5 --ref 3 --ri 1.3116 0 --single
 
 # Surface pFFT, hex D/L=0.7, Block-Jacobi, ka=10
-bin/bem_cuda --ka 10 --ref 3 --shape hex --ar 1.4286 --spfft --prec blockj --single
+bin/bem_cuda --solver spfft --ka 10 --ref 3 --shape hex --ar 1.4286 --prec blockj --single
 
 # Orientation-averaged Mueller, 64 orientations
-bin/bem_cuda --ka 5 --ref 3 --shape hex --ar 1.4286 --spfft --prec blockj --orient 8 8 1 --out mueller.json
+bin/bem_cuda --solver spfft --ka 5 --ref 3 --shape hex --ar 1.4286 --prec blockj --orient 8 8 1 --out mueller.json
 
 # High-ka sweep with RAS preconditioner (ref=4, hex D/L=0.7)
 # 12 blocks, RAS overlap=1, ~14 matvecs/orient, ~30s/orient
-bin/bem_cuda --spfft --shape hex --ar 0.7 --ka 20 --ref 4 --ri 1.3116 0 \
+bin/bem_cuda --solver spfft --shape hex --ar 0.7 --ka 20 --ref 4 --ri 1.3116 0 \
   --prec blockj --prec-r 2.0 --prec-bs 1000 --prec-overlap 1 \
   --gmres-restart 200 --gmres-tol 1e-4 --ntheta 181 \
   --orient 45 31 1 --out hex_ka20_r4.json

@@ -13,7 +13,7 @@ TARGET = $(BINDIR)/bem_cuda
 # Source files
 CU_SRCS = $(SRCDIR)/assembly.cu $(SRCDIR)/pmchwt.cu $(SRCDIR)/solver.cu $(SRCDIR)/farfield.cu \
           $(SRCDIR)/p2p.cu $(SRCDIR)/fmm.cu $(SRCDIR)/bem_fmm.cu $(SRCDIR)/gmres.cu \
-          $(SRCDIR)/block_gmres.cu $(SRCDIR)/gmres_dr.cu $(SRCDIR)/precond.cu \
+          $(SRCDIR)/block_gmres.cu $(SRCDIR)/precond.cu \
           $(SRCDIR)/pfft.cu $(SRCDIR)/surface_pfft.cu
 CPP_SRCS = $(SRCDIR)/mesh.cpp $(SRCDIR)/rwg.cpp $(SRCDIR)/rhs.cpp \
            $(SRCDIR)/orient.cpp $(SRCDIR)/output.cpp \

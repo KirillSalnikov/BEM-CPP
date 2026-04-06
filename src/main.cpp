@@ -11,7 +11,6 @@
 #include "bem_fmm.h"
 #include "gmres.h"
 #include "block_gmres.h"
-#include "gmres_dr.h"
 #include "precond.h"
 
 #include <cstdio>
@@ -32,19 +31,15 @@ static void print_usage(const char* prog) {
     printf("  --quad N        Quadrature order: 4, 7, 13 (default: 7)\n");
     printf("  --out FILE      Output JSON file (default: result.json)\n");
     printf("  --single        Single orientation (no averaging)\n");
-    printf("  --fmm           Use FMM+GMRES instead of dense LU\n");
-    printf("  --pfft          Use pFFT+GMRES instead of dense LU (faster than FMM)\n");
-    printf("  --spfft         Use surface pFFT (2D per face, hex only)\n");
-    printf("  --fmm-digits N  FMM/pFFT accuracy digits (default: 3)\n");
+    printf("  --solver TYPE   Solver: dense, fmm, pfft, spfft (default: dense)\n");
+    printf("  --digits N      Solver accuracy digits (default: 3)\n");
     printf("  --gmres-tol F   GMRES relative tolerance (default: 1e-4)\n");
     printf("  --gmres-restart N  GMRES restart (default: 100)\n");
     printf("  --max-leaf N    FMM max particles per leaf (default: 64)\n");
-    printf("  --prec TYPE     Preconditioner: diag, ilu0, nearlu, blockj (default: none)\n");
+    printf("  --prec TYPE     Preconditioner: ilu0, blockj (default: none)\n");
     printf("  --prec-r F      Block-Jacobi radius multiplier (default: 2.0)\n");
     printf("  --prec-bs N     Block-Jacobi max RWG per block (default: 1500)\n");
     printf("  --prec-overlap N  RAS overlap layers (default: 0 = standard BlockJ)\n");
-    printf("  --gmres-dr      Use GMRES-DR (deflated restarting)\n");
-    printf("  --gmres-k N     Deflation subspace size (default: 20)\n");
     printf("  --shape TYPE    Particle shape: sphere (default), hex\n");
     printf("  --ar F          Hex aspect ratio H/D (default: 1.0)\n");
     printf("  --obj FILE      Load mesh from OBJ file\n");
@@ -68,13 +63,10 @@ int main(int argc, char** argv) {
     double prec_radius = 2.0;
     int prec_block_size = 1500;
     int prec_overlap = 0;
-    bool fmm_test = false;
     int fmm_digits = 3;
     double gmres_tol = 1e-4;
     int gmres_restart = 100;
     int max_leaf = 64;
-    bool use_gmres_dr = false;
-    int gmres_k = 20;
     std::string shape = "sphere";
     double hex_ar = 1.0;
     const char* obj_file = nullptr;
@@ -100,20 +92,22 @@ int main(int argc, char** argv) {
             outfile = argv[++i];
         } else if (strcmp(argv[i], "--single") == 0) {
             single_orient = true;
-        } else if (strcmp(argv[i], "--fmm") == 0) {
-            use_fmm = true;
-        } else if (strcmp(argv[i], "--pfft") == 0) {
-            use_fmm = true;
-            use_pfft = true;
-        } else if (strcmp(argv[i], "--spfft") == 0) {
-            use_fmm = true;
-            use_pfft = true;
-            use_spfft = true;
+        } else if (strcmp(argv[i], "--solver") == 0 && i+1 < argc) {
+            const char* st = argv[++i];
+            if (strcmp(st, "dense") == 0) {
+                use_fmm = false;
+            } else if (strcmp(st, "fmm") == 0) {
+                use_fmm = true;
+            } else if (strcmp(st, "pfft") == 0) {
+                use_fmm = true; use_pfft = true;
+            } else if (strcmp(st, "spfft") == 0) {
+                use_fmm = true; use_pfft = true; use_spfft = true;
+            } else {
+                fprintf(stderr, "Unknown solver type: %s\n", st); return 1;
+            }
         } else if (strcmp(argv[i], "--prec") == 0 && i+1 < argc) {
             const char* pt = argv[++i];
-            if (strcmp(pt, "diag") == 0) prec_mode = PREC_DIAG;
-            else if (strcmp(pt, "ilu0") == 0) prec_mode = PREC_ILU0;
-            else if (strcmp(pt, "nearlu") == 0) prec_mode = PREC_NEARLU;
+            if (strcmp(pt, "ilu0") == 0) prec_mode = PREC_ILU0;
             else if (strcmp(pt, "blockj") == 0) prec_mode = PREC_BLOCKJ;
             else { fprintf(stderr, "Unknown prec type: %s\n", pt); return 1; }
         } else if (strcmp(argv[i], "--prec-r") == 0 && i+1 < argc) {
@@ -122,7 +116,7 @@ int main(int argc, char** argv) {
             prec_block_size = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--prec-overlap") == 0 && i+1 < argc) {
             prec_overlap = atoi(argv[++i]);
-        } else if (strcmp(argv[i], "--fmm-digits") == 0 && i+1 < argc) {
+        } else if (strcmp(argv[i], "--digits") == 0 && i+1 < argc) {
             fmm_digits = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--gmres-tol") == 0 && i+1 < argc) {
             gmres_tol = atof(argv[++i]);
@@ -130,18 +124,12 @@ int main(int argc, char** argv) {
             gmres_restart = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--max-leaf") == 0 && i+1 < argc) {
             max_leaf = atoi(argv[++i]);
-        } else if (strcmp(argv[i], "--gmres-dr") == 0) {
-            use_gmres_dr = true;
-        } else if (strcmp(argv[i], "--gmres-k") == 0 && i+1 < argc) {
-            gmres_k = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--shape") == 0 && i+1 < argc) {
             shape = argv[++i];
         } else if (strcmp(argv[i], "--ar") == 0 && i+1 < argc) {
             hex_ar = atof(argv[++i]);
         } else if (strcmp(argv[i], "--obj") == 0 && i+1 < argc) {
             obj_file = argv[++i];
-        } else if (strcmp(argv[i], "--fmm-test") == 0) {
-            fmm_test = true;
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             print_usage(argv[0]);
             return 0;
@@ -156,95 +144,6 @@ int main(int argc, char** argv) {
         fprintf(stderr, "Error: --ka must be positive\n");
         print_usage(argv[0]);
         return 1;
-    }
-
-    if (fmm_test) {
-        // Standalone FMM accuracy test: random charges, FMM vs brute-force
-        printf("=== FMM Accuracy Test ===\n");
-        cdouble k_test(ka, 0.0);
-        int Npts = 500;
-        std::vector<double> pts(Npts * 3);
-        srand(42);
-        for (int i = 0; i < Npts * 3; i++)
-            pts[i] = 2.0 * ((double)rand() / RAND_MAX - 0.5);
-
-        std::vector<cdouble> charges(Npts);
-        for (int i = 0; i < Npts; i++)
-            charges[i] = cdouble((double)rand()/RAND_MAX - 0.5,
-                                 (double)rand()/RAND_MAX - 0.5);
-
-        printf("  k = %.4f, N = %d, digits = %d, max_leaf = %d\n",
-               ka, Npts, fmm_digits, max_leaf);
-
-        HelmholtzFMM fmm;
-        fmm.init(pts.data(), Npts, pts.data(), Npts, k_test, fmm_digits, max_leaf);
-
-        std::vector<cdouble> result_fmm(Npts);
-        fmm.evaluate(charges.data(), result_fmm.data());
-
-        // Brute-force for first 20 targets
-        int n_check = std::min(20, Npts);
-        double max_rel_err = 0, avg_rel_err = 0;
-        double inv4pi = 1.0 / (4.0 * M_PI);
-        for (int i = 0; i < n_check; i++) {
-            cdouble exact(0);
-            for (int j = 0; j < Npts; j++) {
-                double dx = pts[i*3] - pts[j*3];
-                double dy = pts[i*3+1] - pts[j*3+1];
-                double dz = pts[i*3+2] - pts[j*3+2];
-                double R = sqrt(dx*dx + dy*dy + dz*dz);
-                if (R < 1e-12) continue;
-                cdouble G = std::exp(cdouble(0,1) * k_test * R) * inv4pi / R;
-                exact += G * charges[j];
-            }
-            double err = std::abs(result_fmm[i] - exact);
-            double rel = err / std::abs(exact);
-            if (rel > max_rel_err) max_rel_err = rel;
-            avg_rel_err += rel;
-            printf("  [%3d] FMM=(%.6e,%.6e) exact=(%.6e,%.6e) rel_err=%.3e\n",
-                   i, result_fmm[i].real(), result_fmm[i].imag(),
-                   exact.real(), exact.imag(), rel);
-        }
-        avg_rel_err /= n_check;
-        printf("  Max relative error: %.3e\n", max_rel_err);
-        printf("  Avg relative error: %.3e\n", avg_rel_err);
-
-        // Also test gradient
-        printf("\n  Testing gradient...\n");
-        std::vector<cdouble> grad_fmm(Npts * 3);
-        fmm.evaluate_gradient(charges.data(), grad_fmm.data());
-
-        max_rel_err = 0; avg_rel_err = 0;
-        for (int i = 0; i < n_check; i++) {
-            cdouble exact_gx(0), exact_gy(0), exact_gz(0);
-            for (int j = 0; j < Npts; j++) {
-                double dx = pts[i*3] - pts[j*3];
-                double dy = pts[i*3+1] - pts[j*3+1];
-                double dz = pts[i*3+2] - pts[j*3+2];
-                double R = sqrt(dx*dx + dy*dy + dz*dz);
-                if (R < 1e-12) continue;
-                cdouble G = std::exp(cdouble(0,1) * k_test * R) * inv4pi / R;
-                cdouble factor = G * (cdouble(0,1) * k_test - 1.0/R) / R;
-                exact_gx += factor * dx * charges[j];
-                exact_gy += factor * dy * charges[j];
-                exact_gz += factor * dz * charges[j];
-            }
-            double norm_exact = std::sqrt(std::norm(exact_gx) + std::norm(exact_gy) + std::norm(exact_gz));
-            double norm_err = std::sqrt(
-                std::norm(grad_fmm[i*3] - exact_gx) +
-                std::norm(grad_fmm[i*3+1] - exact_gy) +
-                std::norm(grad_fmm[i*3+2] - exact_gz));
-            double rel = norm_err / norm_exact;
-            if (rel > max_rel_err) max_rel_err = rel;
-            avg_rel_err += rel;
-            if (i < 5) printf("  [%3d] grad rel_err=%.3e\n", i, rel);
-        }
-        avg_rel_err /= n_check;
-        printf("  Grad max relative error: %.3e\n", max_rel_err);
-        printf("  Grad avg relative error: %.3e\n", avg_rel_err);
-
-        fmm.cleanup();
-        return 0;
     }
 
     Timer total_timer;
@@ -263,15 +162,11 @@ int main(int argc, char** argv) {
     printf("  eta_ext = %.4f, eta_int = %.4f\n", eta_ext, eta_int);
     printf("  Refinements: %d, Quad order: %d\n", refinements, quad_order);
     if (use_fmm)
-        printf("  Mode: %s+%s (digits=%d, tol=%.0e, restart=%d, max_leaf=%d%s%s)\n",
+        printf("  Mode: %s+GMRES (digits=%d, tol=%.0e, restart=%d, max_leaf=%d%s)\n",
                use_spfft ? "SurfPFFT" : use_pfft ? "pFFT" : "FMM",
-               use_gmres_dr ? "GMRES-DR" : "GMRES",
                fmm_digits, gmres_tol, gmres_restart, max_leaf,
-               prec_mode == PREC_DIAG ? ", DIAG prec" :
                prec_mode == PREC_ILU0 ? ", ILU(0) prec" :
-               prec_mode == PREC_NEARLU ? ", NEARLU prec" :
-               prec_mode == PREC_BLOCKJ ? ", BlockJ prec" : "",
-               use_gmres_dr ? (", k=" + std::to_string(gmres_k)).c_str() : "");
+               prec_mode == PREC_BLOCKJ ? ", BlockJ prec" : "");
     else
         printf("  Mode: Dense LU\n");
     if (single_orient)
@@ -318,7 +213,7 @@ int main(int argc, char** argv) {
 
     if (use_fmm) {
         // ============================================================
-        // FMM + GMRES path
+        // Iterative solver path (FMM / pFFT / SurfPFFT + GMRES)
         // ============================================================
         Timer asm_timer;
         BemFmmOperator fmm_op;
@@ -348,19 +243,11 @@ int main(int argc, char** argv) {
             compute_rhs_planewave(rwg, mesh, k_ext, eta_ext, E_perp, k_hat, quad_order, b_perp.data());
 
             std::vector<cdouble> x_par(N2, cdouble(0)), x_perp(N2, cdouble(0));
-            if (use_gmres_dr) {
-                printf("\n  Solving both polarizations (GMRES-DR, k=%d)...\n", gmres_k);
-                gmres_dr_paired(fmm_op,
-                    b_par.data(), b_perp.data(),
-                    x_par.data(), x_perp.data(),
-                    gmres_restart, gmres_k, gmres_tol, 300, true, precond_ptr);
-            } else {
-                printf("\n  Solving both polarizations (paired GMRES)...\n");
-                gmres_solve_paired(fmm_op,
-                    b_par.data(), b_perp.data(),
-                    x_par.data(), x_perp.data(),
-                    gmres_restart, gmres_tol, 300, true, precond_ptr);
-            }
+            printf("\n  Solving both polarizations (paired GMRES)...\n");
+            gmres_solve_paired(fmm_op,
+                b_par.data(), b_perp.data(),
+                x_par.data(), x_perp.data(),
+                gmres_restart, gmres_tol, 300, true, precond_ptr);
 
             time_solve = solve_timer.elapsed_s();
 
@@ -428,11 +315,6 @@ int main(int argc, char** argv) {
             // Solution vectors — reused across orientations as initial guess
             std::vector<cdouble> x_par(N2, cdouble(0)), x_perp(N2, cdouble(0));
 
-            // Persistent GCRO-DR context: recycles deflation vectors across orientations
-            GcroDrContext* gcro_ctx = nullptr;
-            if (use_gmres_dr && gmres_k > 0)
-                gcro_ctx = gcro_dr_create(N2, gmres_k);
-
             for (int oi = 0; oi < n_total; oi++) {
                 Mat3& RT = orients[oi].RT;
                 Vec3 k_hat = RT * Vec3(0, 0, 1);
@@ -445,19 +327,10 @@ int main(int argc, char** argv) {
                 compute_rhs_planewave(rwg, mesh, k_ext, eta_ext, e_perp, k_hat, quad_order, b_perp.data());
 
                 Timer oi_timer;
-                int mv;
-                if (use_gmres_dr) {
-                    mv = gmres_dr_paired(fmm_op,
-                        b_par.data(), b_perp.data(),
-                        x_par.data(), x_perp.data(),
-                        gmres_restart, gmres_k, gmres_tol, 300, false, precond_ptr,
-                        gcro_ctx);
-                } else {
-                    mv = gmres_solve_paired(fmm_op,
-                        b_par.data(), b_perp.data(),
-                        x_par.data(), x_perp.data(),
-                        gmres_restart, gmres_tol, 300, false, precond_ptr);
-                }
+                int mv = gmres_solve_paired(fmm_op,
+                    b_par.data(), b_perp.data(),
+                    x_par.data(), x_perp.data(),
+                    gmres_restart, gmres_tol, 300, false, precond_ptr);
                 printf("    Orient %d/%d: %d matvecs, %.1fs\n",
                        oi + 1, n_total, mv, oi_timer.elapsed_s());
 
@@ -465,12 +338,7 @@ int main(int argc, char** argv) {
                 memcpy(&all_coeffs_M[(2*oi) * N], x_par.data() + N, N * sizeof(cdouble));
                 memcpy(&all_coeffs_J[(2*oi+1) * N], x_perp.data(), N * sizeof(cdouble));
                 memcpy(&all_coeffs_M[(2*oi+1) * N], x_perp.data() + N, N * sizeof(cdouble));
-
-                if (false && (oi + 1) % 10 == 0 || oi == n_total - 1)
-                    printf("    Orient %d/%d done\n", oi + 1, n_total);
             }
-
-            if (gcro_ctx) gcro_dr_destroy(gcro_ctx);
 
             time_solve = solve_timer.elapsed_s();
 

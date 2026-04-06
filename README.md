@@ -11,18 +11,16 @@ CUDA/C++ implementation of the Boundary Element Method (BEM) with PMCHWT formula
   - CSR-optimized M2L translations with shared memory transfer reuse
   - Batched evaluation: two charge vectors in a single tree traversal
 - **pFFT+GMRES** (precorrected FFT) -- faster than FMM for smooth geometries
-- **Surface pFFT** (`--spfft`) -- 2D FFT per flat face for hex prisms
+- **Surface pFFT** (`--solver spfft`) -- 2D FFT per flat face for hex prisms
   - FP32 C2C FFT (2x less memory than Z2Z)
   - CUDA streams: per-face async execution
   - Mixed-radix grid (7-smooth: 2,3,5,7)
   - Density-based grid spacing (~4 pts/cell)
   - Inter-face P2P for cross-face interactions
 - **Preconditioners**:
-  - `diag` -- diagonal scaling (not recommended for high ka)
   - `ilu0` -- ILU(0) on near-field sparse matrix
-  - `nearlu` -- full LU on near-field sparse matrix (small N only)
-  - `blockj` -- Block-Jacobi with spatial cell blocking and dense LU per block (GPU-accelerated apply)
-- **GMRES variants**: standard, paired (two RHS), GCRO-DR (deflated restarting)
+  - `blockj` -- Block-Jacobi with spatial cell blocking, dense LU per block, RAS overlap (GPU-accelerated)
+- **GMRES variants**: standard, paired (two RHS in lockstep)
 - **Particle shapes**: icosphere, hexagonal prism (with aspect ratio), OBJ file import
 - **Orientation averaging** with Gauss-Legendre quadrature
 - **Mueller matrix** computation from far-field amplitudes (GPU-batched)
@@ -58,22 +56,22 @@ bin/bem_cuda --ka 5 --ref 3 --ri 1.3116 0 --single --out result.json
 
 ### FMM+GMRES (large N, iterative)
 ```bash
-bin/bem_cuda --ka 10 --ref 4 --ri 1.3116 0 --fmm --prec blockj --single
+bin/bem_cuda --solver fmm --ka 10 --ref 4 --ri 1.3116 0 --prec blockj --single
 ```
 
 ### Surface pFFT for hex prisms
 ```bash
-bin/bem_cuda --ka 10 --ref 3 --shape hex --ar 1.4286 --spfft --prec blockj --single
+bin/bem_cuda --solver spfft --ka 10 --ref 3 --shape hex --ar 1.4286 --prec blockj --single
 ```
 
 ### Full orientation averaging
 ```bash
-bin/bem_cuda --ka 5 --ref 3 --ri 1.3116 0 --spfft --shape hex --prec blockj --orient 8 8 1 --out result.json
+bin/bem_cuda --solver spfft --ka 5 --ref 3 --ri 1.3116 0 --shape hex --prec blockj --orient 8 8 1 --out result.json
 ```
 
 ### High-ka sweep with RAS preconditioner (ref=4)
 ```bash
-bin/bem_cuda --spfft --shape hex --ar 0.7 --ka 20 --ref 4 --ri 1.3116 0 \
+bin/bem_cuda --solver spfft --shape hex --ar 0.7 --ka 20 --ref 4 --ri 1.3116 0 \
   --prec blockj --prec-r 2.0 --prec-bs 1000 --prec-overlap 1 \
   --gmres-restart 200 --gmres-tol 1e-4 --ntheta 181 \
   --orient 45 31 1 --out hex_ka20_r4.json
@@ -92,33 +90,26 @@ bin/bem_cuda --spfft --shape hex --ar 0.7 --ka 20 --ref 4 --ri 1.3116 0 \
 | `--obj FILE` | Load mesh from OBJ file | -- |
 | `--single` | Single orientation (no averaging) | off |
 | `--orient NA NB NG` | Orientation quadrature grid | 8 8 1 |
-| `--fmm` | FMM+GMRES mode | off |
-| `--pfft` | pFFT+GMRES mode | off |
-| `--spfft` | Surface pFFT+GMRES (hex only) | off |
-| `--fmm-digits N` | FMM/pFFT accuracy digits | 3 |
+| `--solver TYPE` | Solver: `dense`, `fmm`, `pfft`, `spfft` | dense |
+| `--digits N` | Solver accuracy digits | 3 |
 | `--max-leaf N` | Max particles per octree leaf | 64 |
-| `--prec TYPE` | Preconditioner: `diag`, `ilu0`, `nearlu`, `blockj` | none |
+| `--prec TYPE` | Preconditioner: `ilu0`, `blockj` | none |
 | `--prec-r F` | Preconditioner radius multiplier | 2.0 |
 | `--prec-bs N` | Max block size for Block-Jacobi (triggers adaptive bisection) | 1500 |
 | `--prec-overlap N` | RAS overlap layers (0 = standard Block-Jacobi) | 0 |
 | `--gmres-restart N` | GMRES restart parameter | 100 |
 | `--gmres-tol F` | GMRES relative tolerance | 1e-4 |
-| `--gmres-dr` | Use GCRO-DR (deflated restarting) | off |
-| `--gmres-k N` | Deflation subspace size | 20 |
 | `--ntheta N` | Number of scattering angles | 181 |
 | `--quad N` | Triangle quadrature order: 4, 7, 13 | 7 |
 | `--out FILE` | Output JSON file | result.json |
-| `--fmm-test` | Standalone FMM accuracy test | off |
 
 ## Preconditioner Guide
 
 | Mode | Best for | Notes |
 |------|----------|-------|
 | none | ref <= 3, low ka | Baseline, no setup cost |
-| `nearlu` | ref <= 3, many orientations | 9x speedup for 128 orientations |
-| `blockj` | ref >= 4, any ka | GPU-accelerated, adaptive block splitting |
-| `ilu0` | ref = 3 | Slower than blockj at ref >= 4 |
-| `diag` | -- | **Harmful** for PMCHWT at high ka, avoid |
+| `ilu0` | ref = 3 | Near-field sparse ILU(0) factorization |
+| `blockj` | ref >= 4, any ka | GPU-accelerated, adaptive block splitting, RAS overlap |
 
 Block-Jacobi details:
 - Spatial cell blocks with dense LU per block
@@ -178,8 +169,7 @@ src/
   bem_fmm.cu/h        BEM-FMM/pFFT coupling (L/K operators, matvec)
   gmres.cu/h          GMRES(m) solver
   block_gmres.cu/h    Paired GMRES (two RHS in lockstep)
-  gmres_dr.cu/h       GCRO-DR (deflated restarting GMRES)
-  precond.cu/h        Preconditioners (DIAG, ILU0, NEARLU, Block-Jacobi + GPU)
+  precond.cu/h        Preconditioners (ILU0, Block-Jacobi + RAS, GPU)
   farfield.cu/h       Far-field + Mueller matrix (GPU-batched)
   orient.cpp/h        Orientation averaging (Gauss-Legendre)
   output.cpp/h        JSON output
