@@ -42,6 +42,7 @@ static void print_usage(const char* prog) {
     printf("  --prec TYPE     Preconditioner: diag, ilu0, nearlu, blockj (default: none)\n");
     printf("  --prec-r F      Block-Jacobi radius multiplier (default: 2.0)\n");
     printf("  --prec-bs N     Block-Jacobi max RWG per block (default: 1500)\n");
+    printf("  --prec-overlap N  RAS overlap layers (default: 0 = standard BlockJ)\n");
     printf("  --gmres-dr      Use GMRES-DR (deflated restarting)\n");
     printf("  --gmres-k N     Deflation subspace size (default: 20)\n");
     printf("  --shape TYPE    Particle shape: sphere (default), hex\n");
@@ -66,6 +67,7 @@ int main(int argc, char** argv) {
     PrecondMode prec_mode = PREC_NONE;
     double prec_radius = 2.0;
     int prec_block_size = 1500;
+    int prec_overlap = 0;
     bool fmm_test = false;
     int fmm_digits = 3;
     double gmres_tol = 1e-4;
@@ -118,6 +120,8 @@ int main(int argc, char** argv) {
             prec_radius = atof(argv[++i]);
         } else if (strcmp(argv[i], "--prec-bs") == 0 && i+1 < argc) {
             prec_block_size = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--prec-overlap") == 0 && i+1 < argc) {
+            prec_overlap = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--fmm-digits") == 0 && i+1 < argc) {
             fmm_digits = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--gmres-tol") == 0 && i+1 < argc) {
@@ -325,7 +329,7 @@ int main(int argc, char** argv) {
         NearFieldPrecond* precond_ptr = nullptr;
         NearFieldPrecond precond;
         if (prec_mode != PREC_NONE) {
-            precond.build(fmm_op, prec_mode, prec_radius, prec_block_size);
+            precond.build(fmm_op, prec_mode, prec_radius, prec_block_size, prec_overlap);
             precond_ptr = &precond;
         }
 

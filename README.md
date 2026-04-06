@@ -71,6 +71,15 @@ bin/bem_cuda --ka 10 --ref 3 --shape hex --ar 1.4286 --spfft --prec blockj --sin
 bin/bem_cuda --ka 5 --ref 3 --ri 1.3116 0 --spfft --shape hex --prec blockj --orient 8 8 1 --out result.json
 ```
 
+### High-ka sweep with RAS preconditioner (ref=4)
+```bash
+bin/bem_cuda --spfft --shape hex --ar 0.7 --ka 20 --ref 4 --ri 1.3116 0 \
+  --prec blockj --prec-r 2.0 --prec-bs 1000 --prec-overlap 1 \
+  --gmres-restart 200 --gmres-tol 1e-4 --ntheta 181 \
+  --orient 45 31 1 --out hex_ka20_r4.json
+```
+12 blocks with RAS overlap, 14 matvecs/orientation, ~30s/orientation.
+
 ## Command-Line Options
 
 | Flag | Description | Default |
@@ -90,6 +99,8 @@ bin/bem_cuda --ka 5 --ref 3 --ri 1.3116 0 --spfft --shape hex --prec blockj --or
 | `--max-leaf N` | Max particles per octree leaf | 64 |
 | `--prec TYPE` | Preconditioner: `diag`, `ilu0`, `nearlu`, `blockj` | none |
 | `--prec-r F` | Preconditioner radius multiplier | 2.0 |
+| `--prec-bs N` | Max block size for Block-Jacobi (triggers adaptive bisection) | 1500 |
+| `--prec-overlap N` | RAS overlap layers (0 = standard Block-Jacobi) | 0 |
 | `--gmres-restart N` | GMRES restart parameter | 100 |
 | `--gmres-tol F` | GMRES relative tolerance | 1e-4 |
 | `--gmres-dr` | Use GCRO-DR (deflated restarting) | off |
@@ -111,9 +122,18 @@ bin/bem_cuda --ka 5 --ref 3 --ri 1.3116 0 --spfft --shape hex --prec blockj --or
 
 Block-Jacobi details:
 - Spatial cell blocks with dense LU per block
-- Adaptive splitting: blocks > 1500 RWG automatically bisected
+- Adaptive splitting: blocks > `--prec-bs` RWG automatically bisected
 - GPU apply via CUDA kernel (warp-parallel triangular solve)
 - Auto-fallback to CPU if GPU memory insufficient
+- **RAS overlap** (`--prec-overlap 1`): extends each block with neighboring RWGs,
+  solves on extended system, scatters only own RWGs (Restricted Additive Schwarz).
+  Dramatically reduces iteration count at high ka.
+
+Recommended config for ref=4, high ka:
+```bash
+--prec blockj --prec-r 2.0 --prec-bs 1000 --prec-overlap 1 --gmres-restart 200
+```
+This creates ~12 blocks with RAS overlap, giving 14 matvecs instead of 700+ without RAS.
 
 ## Output
 
@@ -165,24 +185,28 @@ src/
   output.cpp/h        JSON output
 ```
 
-## Performance (RTX 3080 Ti, m=1.3116)
+## Performance (RTX 3080 Ti, m=1.3116, hex D/L=0.7)
 
 ### Single orientation
 
-| ka | N | Mode | Precond | Iters | Solve |
-|----|------|------|---------|-------|-------|
-| 5 | 1920 | Dense LU | -- | -- | 0.5s |
-| 5 | 7680 | SurfPFFT | blockj | 333 | 1019s |
-| 10 | 2304 | SurfPFFT | none | 451 | 85s |
-| 10 | 2304 | SurfPFFT | blockj | 392 | 115s |
-| 10 | 9216 | SurfPFFT | blockj | 333 | 1019s |
+| ka | ref | N | Mode | Precond | Matvecs | Assembly | Solve | Total |
+|----|-----|------|------|---------|---------|----------|-------|-------|
+| 5 | 3 | 1920 | Dense LU | -- | -- | -- | 0.5s | 0.5s |
+| 10 | 3 | 2304 | SurfPFFT | none | 451 | -- | 85s | 85s |
+| 10 | 3 | 2304 | SurfPFFT | blockj | 392 | 1.4s | 115s | 115s |
+| 16 | 4 | 9216 | SurfPFFT | blockj (4 blk) | 717+ | 634s | 1806s+ | 2440s+ |
+| **16** | **4** | **9216** | **SurfPFFT** | **blockj+RAS (12 blk)** | **14** | **154s** | **29s** | **184s** |
+| 20 | 4 | 9216 | SurfPFFT | blockj (4 blk) | 183 | 600s | 453s | 1054s |
+| 20 | 4 | 9216 | SurfPFFT | blockj+RAS (4 blk) | 13 | 2432s | 43s | 2476s |
 
-### Orientation-averaged (64 orientations, hex D/L=0.7)
+RAS overlap at ref=4: **51x fewer iterations, 13x faster** vs baseline (ka=16).
 
-| ka | N | Mode | Precond | Total |
-|----|------|------|---------|-------|
-| 10 | 2304 | SurfPFFT | ilu0 | 4778s |
-| 10 | 2304 | SurfPFFT | blockj | ~4000s (est) |
+### Orientation-averaged (hex D/L=0.7)
+
+| ka | ref | N | Mode | Precond | Total |
+|----|-----|------|------|---------|-------|
+| 10 | 3 | 2304 | SurfPFFT | ilu0 | 4778s |
+| 10 | 3 | 2304 | SurfPFFT | blockj | ~4000s (est) |
 
 ## References
 

@@ -44,31 +44,39 @@ struct NearFieldPrecond {
 
     // Block-Jacobi (PREC_BLOCKJ): spatial cell blocks
     int n_blocks;
-    std::vector<int> block_sizes;           // (n_blocks) RWG count per block
-    std::vector<std::vector<int>> block_rwg;// (n_blocks) global RWG indices per block
-    std::vector<std::vector<cdouble>> block_lu; // (n_blocks) LU-factored 2B×2B dense (col-major)
-    std::vector<std::vector<int>> block_piv;    // (n_blocks) pivot arrays (2B)
+    std::vector<int> block_sizes;           // (n_blocks) RWG count per block (own only)
+    std::vector<std::vector<int>> block_rwg;// (n_blocks) global RWG indices per block (own only)
+    std::vector<std::vector<cdouble>> block_lu; // (n_blocks) LU-factored dense (col-major)
+    std::vector<std::vector<int>> block_piv;    // (n_blocks) pivot arrays
     std::vector<int> rwg_block;             // (N) which block each RWG belongs to
     std::vector<int> rwg_local;             // (N) local index within block
+
+    // Overlap (RAS): extended blocks include neighboring RWGs
+    int overlap_layers;                     // 0 = standard BlockJ, >0 = RAS overlap
+    std::vector<int> block_sizes_ext;       // (n_blocks) extended RWG count (own + overlap)
+    std::vector<std::vector<int>> block_rwg_ext; // (n_blocks) extended RWG indices (own first, then overlap)
 
     // GPU Block-Jacobi data (uploaded by upload_to_gpu)
     cuDoubleComplex* d_lu_flat;    // row-major LU factors, all blocks concatenated
     int* d_piv_flat;               // pivots, all blocks concatenated
-    int* d_rwg_flat;               // RWG indices, all blocks concatenated
-    int* d_blk_B;                  // block sizes (B per block)
+    int* d_rwg_flat;               // RWG indices (extended), all blocks concatenated
+    int* d_blk_B;                  // own block sizes (B_own per block)
+    int* d_blk_B_ext;             // extended block sizes (B_ext per block, = B_own when no overlap)
     int* d_lu_off;                 // element offset into d_lu_flat per block
     int* d_piv_off;                // element offset into d_piv_flat per block
     int* d_rwg_off;                // element offset into d_rwg_flat per block
     cuDoubleComplex* d_buf_r;      // (N2) GPU buffer for apply
     cuDoubleComplex* d_buf_z;      // (N2) GPU buffer for apply
+    cuDoubleComplex* d_workspace;  // (n_blocks * max_B2) workspace for LU solve
     bool gpu_ready;
-    int max_B2;                    // largest 2*B across all blocks
+    int max_B2;                    // largest 2*B_ext across all blocks
 
     // Build preconditioner from near-field BEM entries
     // radius_mult: cell_size = radius_mult * avg_extent (default 2.0)
     // max_block_rwg: max RWG per block-Jacobi block (default 1500)
+    // overlap: number of neighbor layers for RAS overlap (default 0 = standard BlockJ)
     void build(BemFmmOperator& op, PrecondMode mode, double radius_mult = 2.0,
-               int max_block_rwg = 1500);
+               int max_block_rwg = 1500, int overlap = 0);
 
     // Apply: z = M^{-1} * r  (host pointers; uses GPU internally if available)
     void apply(const cdouble* r, cdouble* z) const;

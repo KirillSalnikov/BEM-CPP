@@ -62,7 +62,7 @@ orientations (9x speedup for 128 orientations). Limited to N2 <= 8000.
 Spatial cell blocks with dense LU per block.
 
 - Cell size: `bb_max_dim / (2.5 / radius_mult)`, giving ~8-20 blocks
-- **Adaptive splitting**: blocks > 1500 RWG are automatically bisected
+- **Adaptive splitting**: blocks > `--prec-bs` RWG are automatically bisected
   along the longest axis (recursive, up to 20 rounds)
 - **GPU-accelerated apply**: LU factors uploaded to GPU (row-major for
   coalesced access), CUDA kernel with warp-parallel triangular solve
@@ -71,16 +71,46 @@ Spatial cell blocks with dense LU per block.
 - Build: 5x faster than ILU(0) at ref=4
 - Convergence: 21% fewer iterations than ILU(0) at ref=4
 
+Parameters:
+- `--prec-r F` — radius multiplier for cell size (default 2.0)
+- `--prec-bs N` — max block size in RWG; larger blocks are bisected (default 1500)
+- `--prec-overlap N` — RAS overlap layers (default 0 = standard Block-Jacobi)
+
+### RAS Overlap (`--prec-overlap N`)
+
+Restricted Additive Schwarz (RAS) extends each Block-Jacobi block with
+neighboring RWGs from other blocks. The extended system is factorized,
+but only own RWGs are scattered back (restricted).
+
+- `overlap_dist = overlap_layers * avg_extent * 2.0`
+- Extended blocks: own RWGs first, then overlap RWGs
+- LU factorization on extended 2*B_ext system
+- GPU kernel gathers B_ext, solves extended system, writes only B_own
+
+**Optimal config for ref=4, high ka:**
+```bash
+--prec blockj --prec-r 2.0 --prec-bs 1000 --prec-overlap 1 --gmres-restart 200
+```
+Creates 12 blocks (avg 768 RWG, extended to ~1400 with 83.6% overlap).
+
 **Benchmark** (hex D/L=0.7, m=1.3116, RTX 3080 Ti):
 
-| ref | ka | Precond | Build (s) | Iters | Total (s) |
-|-----|----|---------|-----------|-------|-----------|
-| 3   | 10 | none    | --        | 451   | 85        |
-| 3   | 10 | blockj  | 1.4       | 392   | 115       |
-| 3   | 10 | ilu0    | 16.4      | 451   | 103       |
-| 4   | 5  | none    | --        | --    | 1145      |
-| 4   | 5  | blockj  | 88        | 333   | 1019      |
-| 4   | 5  | ilu0    | 477       | --    | 1556      |
+| ref | ka | Precond | Blocks | Build (s) | Matvecs | Total (s) |
+|-----|----|---------|---------|-----------|---------| ----------|
+| 3   | 10 | none    | --      | --        | 451     | 85        |
+| 3   | 10 | blockj  | 4       | 1.4       | 392     | 115       |
+| 3   | 10 | ilu0    | --      | 16.4      | 451     | 103       |
+| 3   | 20 | blockj  | 4       | 144       | 33      | --        |
+| 3   | 20 | blockj+RAS(1) | 4 | 520       | 8       | --        |
+| 4   | 5  | none    | --      | --        | --      | 1145      |
+| 4   | 5  | blockj  | 4       | 88        | 333     | 1019      |
+| 4   | 16 | blockj  | 4       | 634       | 717+    | 2440+     |
+| **4** | **16** | **blockj+RAS(1)** | **12** | **154** | **14** | **184** |
+| 4   | 20 | blockj  | 4       | 600       | 183     | 1054      |
+| 4   | 20 | blockj+RAS(1) | 4  | 2432      | 13      | 2476      |
+
+Key: more smaller blocks with RAS >> fewer large blocks with RAS.
+12-block RAS at ka=16: **51x fewer iterations, 13x faster** vs 4-block baseline.
 
 ## GMRES Variants
 
@@ -151,6 +181,13 @@ bin/bem_cuda --ka 10 --ref 3 --shape hex --ar 1.4286 --spfft --prec blockj --sin
 
 # Orientation-averaged Mueller, 64 orientations
 bin/bem_cuda --ka 5 --ref 3 --shape hex --ar 1.4286 --spfft --prec blockj --orient 8 8 1 --out mueller.json
+
+# High-ka sweep with RAS preconditioner (ref=4, hex D/L=0.7)
+# 12 blocks, RAS overlap=1, ~14 matvecs/orient, ~30s/orient
+bin/bem_cuda --spfft --shape hex --ar 0.7 --ka 20 --ref 4 --ri 1.3116 0 \
+  --prec blockj --prec-r 2.0 --prec-bs 1000 --prec-overlap 1 \
+  --gmres-restart 200 --gmres-tol 1e-4 --ntheta 181 \
+  --orient 45 31 1 --out hex_ka20_r4.json
 ```
 
 ## References

@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <numeric>
+#include <string>
 
 // ============================================================
 // Spatial hash key for 3D integer cell coordinates
@@ -483,7 +484,7 @@ static const int DEFAULT_MAX_BLOCK_RWG = 1500;
 // Block-Jacobi: spatial cell blocking with dense LU per block
 // ============================================================
 static void do_block_jacobi(NearFieldPrecond& P, BemFmmOperator& op, double radius_mult,
-                            int max_block_rwg)
+                            int max_block_rwg, int overlap_layers)
 {
     Timer timer;
     int N = P.N;
@@ -631,13 +632,87 @@ static void do_block_jacobi(NearFieldPrecond& P, BemFmmOperator& op, double radi
         }
     }
 
+    // Step 2c: Compute overlap (RAS) — extend each block with neighboring RWGs
+    P.overlap_layers = overlap_layers;
+    P.block_sizes_ext.resize(P.n_blocks);
+    P.block_rwg_ext.resize(P.n_blocks);
+
+    if (overlap_layers > 0) {
+        // Use distance-based overlap: overlap_dist scales with element size (avg_extent)
+        // Each layer adds ~2 element widths of overlap around each block
+        double overlap_dist = overlap_layers * avg_extent * 2.0;
+
+        for (int bi = 0; bi < P.n_blocks; bi++) {
+            const auto& own = P.block_rwg[bi];
+            int B_own = P.block_sizes[bi];
+
+            // Compute bounding box of this block
+            double bmin[3] = {1e30,1e30,1e30}, bmax[3] = {-1e30,-1e30,-1e30};
+            for (int m : own) {
+                for (int d = 0; d < 3; d++) {
+                    bmin[d] = std::min(bmin[d], centers[m*3+d]);
+                    bmax[d] = std::max(bmax[d], centers[m*3+d]);
+                }
+            }
+            // Expand bbox by overlap_dist
+            for (int d = 0; d < 3; d++) {
+                bmin[d] -= overlap_dist;
+                bmax[d] += overlap_dist;
+            }
+
+            // Find all RWGs from other blocks within expanded bbox
+            std::vector<int> overlap_rwg;
+            for (int m = 0; m < N; m++) {
+                if (P.rwg_block[m] == bi) continue; // skip own
+                double cx_v = centers[m*3], cy_v = centers[m*3+1], cz_v = centers[m*3+2];
+                if (cx_v >= bmin[0] && cx_v <= bmax[0] &&
+                    cy_v >= bmin[1] && cy_v <= bmax[1] &&
+                    cz_v >= bmin[2] && cz_v <= bmax[2]) {
+                    overlap_rwg.push_back(m);
+                }
+            }
+            std::sort(overlap_rwg.begin(), overlap_rwg.end());
+
+            // Extended block: own first, then overlap
+            P.block_rwg_ext[bi].resize(B_own + (int)overlap_rwg.size());
+            for (int j = 0; j < B_own; j++)
+                P.block_rwg_ext[bi][j] = own[j];
+            for (int j = 0; j < (int)overlap_rwg.size(); j++)
+                P.block_rwg_ext[bi][B_own + j] = overlap_rwg[j];
+            P.block_sizes_ext[bi] = (int)P.block_rwg_ext[bi].size();
+        }
+
+        // Print overlap stats
+        int min_ext = N, max_ext = 0, total_ovl = 0;
+        for (int bi = 0; bi < P.n_blocks; bi++) {
+            int ext = P.block_sizes_ext[bi];
+            min_ext = std::min(min_ext, ext);
+            max_ext = std::max(max_ext, ext);
+            total_ovl += ext - P.block_sizes[bi];
+        }
+        printf("  [BlockJ-RAS] overlap_layers=%d, overlap_dist=%.4e\n",
+               overlap_layers, overlap_dist);
+        printf("  [BlockJ-RAS] Extended sizes: min=%d, max=%d (own: min=%d, max=%d)\n",
+               min_ext, max_ext,
+               *std::min_element(P.block_sizes.begin(), P.block_sizes.end()),
+               *std::max_element(P.block_sizes.begin(), P.block_sizes.end()));
+        printf("  [BlockJ-RAS] Total overlap RWGs: %d (%.1f%% extra)\n",
+               total_ovl, 100.0 * total_ovl / N);
+    } else {
+        // No overlap: extended = own
+        for (int bi = 0; bi < P.n_blocks; bi++) {
+            P.block_rwg_ext[bi] = P.block_rwg[bi];
+            P.block_sizes_ext[bi] = P.block_sizes[bi];
+        }
+    }
+
     // Stats
     int min_bs = N, max_bs = 0;
     long long total_dense = 0;
     for (int i = 0; i < P.n_blocks; i++) {
         min_bs = std::min(min_bs, P.block_sizes[i]);
         max_bs = std::max(max_bs, P.block_sizes[i]);
-        int bs2 = 2 * P.block_sizes[i];
+        int bs2 = 2 * P.block_sizes_ext[i]; // LU size uses extended
         total_dense += (long long)bs2 * bs2;
     }
 
@@ -661,16 +736,16 @@ static void do_block_jacobi(NearFieldPrecond& P, BemFmmOperator& op, double radi
 
     #pragma omp parallel for schedule(dynamic)
     for (int bi = 0; bi < P.n_blocks; bi++) {
-        int B = P.block_sizes[bi];
-        int B2 = 2 * B;
-        const auto& rwg = P.block_rwg[bi];
+        int B_ext = P.block_sizes_ext[bi]; // extended size (own + overlap)
+        int B2 = 2 * B_ext;
+        const auto& rwg = P.block_rwg_ext[bi]; // extended RWG list
 
-        // Assemble 2B×2B dense block (column-major)
+        // Assemble 2B_ext×2B_ext dense block (column-major)
         std::vector<cdouble> blk(B2 * B2, cdouble(0));
 
-        for (int im = 0; im < B; im++) {
+        for (int im = 0; im < B_ext; im++) {
             int m = rwg[im];
-            for (int jn = 0; jn < B; jn++) {
+            for (int jn = 0; jn < B_ext; jn++) {
                 int n_idx = rwg[jn];
 
                 cdouble L_vals_k[2] = {0, 0};
@@ -743,10 +818,10 @@ static void do_block_jacobi(NearFieldPrecond& P, BemFmmOperator& op, double radi
                 cdouble C_mn = K_vals_k[0] + K_vals_k[1];                    // MJ
                 cdouble D_mn = L_vals_k[0] / eta_e + L_vals_k[1] / eta_i;   // MM
 
-                blk[im     + jn     * B2] = A_mn;  // JJ block
-                blk[im     + (jn+B) * B2] = B_mn;  // JM block
-                blk[(im+B) + jn     * B2] = C_mn;  // MJ block
-                blk[(im+B) + (jn+B) * B2] = D_mn;  // MM block
+                blk[im         + jn         * B2] = A_mn;  // JJ block
+                blk[im         + (jn+B_ext) * B2] = B_mn;  // JM block
+                blk[(im+B_ext) + jn         * B2] = C_mn;  // MJ block
+                blk[(im+B_ext) + (jn+B_ext) * B2] = D_mn;  // MM block
             }
         }
 
@@ -798,22 +873,25 @@ static void do_block_jacobi(NearFieldPrecond& P, BemFmmOperator& op, double radi
 // Build preconditioner
 // ============================================================
 void NearFieldPrecond::build(BemFmmOperator& op, PrecondMode pm, double radius_mult,
-                            int max_block_rwg)
+                            int max_block_rwg, int overlap)
 {
     Timer timer;
     N = op.N;
     N2 = 2 * N;
     mode = pm;
     gpu_ready = false;
+    d_workspace = nullptr;
+    d_blk_B_ext = nullptr;
 
     const char* mode_name[] = {"NONE", "DIAG", "ILU0", "NEARLU", "BLOCKJ"};
-    printf("  [Precond] Building %s preconditioner (N=%d, system_size=%d, radius=%.1f)...\n",
-           mode_name[mode], N, N2, radius_mult);
+    printf("  [Precond] Building %s preconditioner (N=%d, system_size=%d, radius=%.1f%s)...\n",
+           mode_name[mode], N, N2, radius_mult,
+           overlap > 0 ? (", overlap=" + std::to_string(overlap)).c_str() : "");
 
     if (mode == PREC_NONE) return;
 
     if (mode == PREC_BLOCKJ) {
-        do_block_jacobi(*this, op, radius_mult, max_block_rwg);
+        do_block_jacobi(*this, op, radius_mult, max_block_rwg, overlap);
         upload_to_gpu();
         printf("  [Precond] %s preconditioner built: %.2fs total\n",
                mode_name[mode], timer.elapsed_s());
@@ -942,33 +1020,39 @@ void NearFieldPrecond::apply(const cdouble* r, cdouble* z) const
 
                 #pragma omp parallel for schedule(dynamic)
                 for (int bi = 0; bi < n_blocks; bi++) {
-                    int B = block_sizes[bi];
-                    int B2 = 2 * B;
-                    const auto& rwg_b = block_rwg[bi];
+                    int B_own = block_sizes[bi];
+                    int B_ext = block_sizes_ext[bi];
+                    int B2 = 2 * B_ext;
+                    const auto& rwg_ext = block_rwg_ext[bi];
                     const auto& lu = block_lu[bi];
                     const auto& piv = block_piv[bi];
 
+                    // Gather extended block from r
                     std::vector<cdouble> tmp(B2);
-                    for (int j = 0; j < B; j++) {
-                        tmp[j]   = r[rwg_b[j]];
-                        tmp[j+B] = r[rwg_b[j] + N];
+                    for (int j = 0; j < B_ext; j++) {
+                        tmp[j]       = r[rwg_ext[j]];
+                        tmp[j+B_ext] = r[rwg_ext[j] + N];
                     }
+                    // Permute
                     for (int k = 0; k < B2; k++) {
                         if (piv[k] != k)
                             std::swap(tmp[k], tmp[piv[k]]);
                     }
+                    // Forward solve
                     for (int i = 1; i < B2; i++) {
                         for (int j = 0; j < i; j++)
                             tmp[i] -= lu[i + j * B2] * tmp[j];
                     }
+                    // Backward solve
                     for (int i = B2 - 1; i >= 0; i--) {
                         for (int j = i + 1; j < B2; j++)
                             tmp[i] -= lu[i + j * B2] * tmp[j];
                         tmp[i] /= lu[i + i * B2];
                     }
-                    for (int j = 0; j < B; j++) {
-                        z[rwg_b[j]]     = tmp[j];
-                        z[rwg_b[j] + N] = tmp[j+B];
+                    // Scatter only own RWGs (RAS: restricted)
+                    for (int j = 0; j < B_own; j++) {
+                        z[block_rwg[bi][j]]     = tmp[j];
+                        z[block_rwg[bi][j] + N] = tmp[j+B_ext];
                     }
                 }
             }
@@ -985,6 +1069,10 @@ void NearFieldPrecond::apply(const cdouble* r, cdouble* z) const
 // LU data is stored row-major on GPU for coalesced memory access.
 // ============================================================
 
+// RAS Block-Jacobi kernel:
+// - Gathers B_ext values (own + overlap)
+// - Solves 2*B_ext system via LU
+// - Scatters only B_own values (restricted Additive Schwarz)
 __global__ void blockj_apply_kernel(
     const cuDoubleComplex* __restrict__ r,
     cuDoubleComplex* __restrict__ z,
@@ -992,30 +1080,33 @@ __global__ void blockj_apply_kernel(
     const int* __restrict__ piv_flat,
     const int* __restrict__ rwg_flat,
     const int* __restrict__ blk_B,
+    const int* __restrict__ blk_B_ext,
     const int* __restrict__ lu_off,
     const int* __restrict__ piv_off,
     const int* __restrict__ rwg_off,
+    cuDoubleComplex* __restrict__ workspace,
+    int max_B2,
     int n_blocks, int N)
 {
     int bi = blockIdx.x;
     if (bi >= n_blocks) return;
 
-    int B  = blk_B[bi];
-    int B2 = 2 * B;
+    int B_own = blk_B[bi];
+    int B_ext = blk_B_ext[bi];
+    int B2 = 2 * B_ext;
     int tid = threadIdx.x;       // 0..31
 
     const cuDoubleComplex* lu  = lu_flat  + lu_off[bi];
     const int*             piv = piv_flat + piv_off[bi];
     const int*             rwg = rwg_flat + rwg_off[bi];
 
-    // Working vector in shared memory (warp-coherent, no explicit sync)
-    extern __shared__ cuDoubleComplex smem[];
-    cuDoubleComplex* tmp = smem;
+    // Working vector in global memory (no shared memory limit)
+    cuDoubleComplex* tmp = workspace + bi * max_B2;
 
-    // Gather: load from global r
-    for (int j = tid; j < B; j += 32) {
-        tmp[j]   = r[rwg[j]];
-        tmp[j+B] = r[rwg[j] + N];
+    // Gather: load from global r (extended block)
+    for (int j = tid; j < B_ext; j += 32) {
+        tmp[j]       = r[rwg[j]];
+        tmp[j+B_ext] = r[rwg[j] + N];
     }
     __syncwarp();
 
@@ -1033,7 +1124,6 @@ __global__ void blockj_apply_kernel(
     __syncwarp();
 
     // Forward solve: L * y = Pr
-    // Row i: tmp[i] -= sum_{j<i} L[i,j]*tmp[j]
     for (int i = 1; i < B2; i++) {
         double sr = 0.0, si = 0.0;
         for (int j = tid; j < i; j += 32) {
@@ -1055,7 +1145,6 @@ __global__ void blockj_apply_kernel(
     }
 
     // Backward solve: U * z = y
-    // Row i: tmp[i] -= sum_{j>i} U[i,j]*tmp[j]; tmp[i] /= U[i,i]
     for (int i = B2 - 1; i >= 0; i--) {
         double sr = 0.0, si = 0.0;
         for (int j = i + 1 + tid; j < B2; j += 32) {
@@ -1071,7 +1160,6 @@ __global__ void blockj_apply_kernel(
         if (tid == 0) {
             tmp[i].x -= sr;
             tmp[i].y -= si;
-            // Complex division: tmp[i] /= diag
             cuDoubleComplex d = lu[i * B2 + i];
             double denom = d.x * d.x + d.y * d.y;
             double tr = tmp[i].x, ti_v = tmp[i].y;
@@ -1081,10 +1169,10 @@ __global__ void blockj_apply_kernel(
         __syncwarp();
     }
 
-    // Scatter: write results to global z
-    for (int j = tid; j < B; j += 32) {
+    // RAS scatter: write only own RWGs (first B_own), discard overlap results
+    for (int j = tid; j < B_own; j += 32) {
         z[rwg[j]]     = tmp[j];
-        z[rwg[j] + N] = tmp[j+B];
+        z[rwg[j] + N] = tmp[j+B_ext];
     }
 }
 
@@ -1099,20 +1187,22 @@ void NearFieldPrecond::upload_to_gpu()
 
     // Compute flat offsets and total sizes
     std::vector<int> h_lu_off(n_blocks), h_piv_off(n_blocks), h_rwg_off(n_blocks);
-    std::vector<int> h_blk_B(n_blocks);
+    std::vector<int> h_blk_B(n_blocks), h_blk_B_ext(n_blocks);
     long long total_lu = 0, total_piv = 0, total_rwg = 0;
     max_B2 = 0;
 
     for (int bi = 0; bi < n_blocks; bi++) {
-        int B = block_sizes[bi];
-        int B2 = 2 * B;
-        h_blk_B[bi]   = B;
+        int B_own = block_sizes[bi];
+        int B_ext = block_sizes_ext[bi];
+        int B2 = 2 * B_ext;
+        h_blk_B[bi]     = B_own;
+        h_blk_B_ext[bi] = B_ext;
         h_lu_off[bi]  = (int)total_lu;
         h_piv_off[bi] = (int)total_piv;
         h_rwg_off[bi] = (int)total_rwg;
         total_lu  += (long long)B2 * B2;
         total_piv += B2;
-        total_rwg += B;
+        total_rwg += B_ext;  // store extended RWG indices
         if (B2 > max_B2) max_B2 = B2;
     }
 
@@ -1120,7 +1210,7 @@ void NearFieldPrecond::upload_to_gpu()
     size_t lu_bytes  = total_lu  * sizeof(cuDoubleComplex);
     size_t piv_bytes = total_piv * sizeof(int);
     size_t rwg_bytes = total_rwg * sizeof(int);
-    size_t meta_bytes = n_blocks * 3 * sizeof(int) + n_blocks * sizeof(int);
+    size_t meta_bytes = n_blocks * 4 * sizeof(int) + n_blocks * sizeof(int); // blk_B, blk_B_ext, lu_off, piv_off, rwg_off
     size_t buf_bytes  = 2 * N2 * sizeof(cuDoubleComplex);
     size_t total_bytes = lu_bytes + piv_bytes + rwg_bytes + meta_bytes + buf_bytes;
 
@@ -1140,8 +1230,8 @@ void NearFieldPrecond::upload_to_gpu()
     std::vector<int> h_rwg_flat(total_rwg);
 
     for (int bi = 0; bi < n_blocks; bi++) {
-        int B = block_sizes[bi];
-        int B2 = 2 * B;
+        int B_ext = block_sizes_ext[bi];
+        int B2 = 2 * B_ext;
         int off_lu  = h_lu_off[bi];
         int off_piv = h_piv_off[bi];
         int off_rwg = h_rwg_off[bi];
@@ -1159,9 +1249,10 @@ void NearFieldPrecond::upload_to_gpu()
         for (int k = 0; k < B2; k++)
             h_piv_flat[off_piv + k] = piv[k];
 
-        const auto& rwg_b = block_rwg[bi];
-        for (int j = 0; j < B; j++)
-            h_rwg_flat[off_rwg + j] = rwg_b[j];
+        // Store extended RWG indices (own first, then overlap)
+        const auto& rwg_ext = block_rwg_ext[bi];
+        for (int j = 0; j < B_ext; j++)
+            h_rwg_flat[off_rwg + j] = rwg_ext[j];
     }
 
     // Allocate and upload to GPU
@@ -1169,6 +1260,7 @@ void NearFieldPrecond::upload_to_gpu()
     CUDA_CHECK(cudaMalloc(&d_piv_flat, piv_bytes));
     CUDA_CHECK(cudaMalloc(&d_rwg_flat, rwg_bytes));
     CUDA_CHECK(cudaMalloc(&d_blk_B,    n_blocks * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_blk_B_ext, n_blocks * sizeof(int)));
     CUDA_CHECK(cudaMalloc(&d_lu_off,   n_blocks * sizeof(int)));
     CUDA_CHECK(cudaMalloc(&d_piv_off,  n_blocks * sizeof(int)));
     CUDA_CHECK(cudaMalloc(&d_rwg_off,  n_blocks * sizeof(int)));
@@ -1179,21 +1271,19 @@ void NearFieldPrecond::upload_to_gpu()
     CUDA_CHECK(cudaMemcpy(d_piv_flat, h_piv_flat.data(), piv_bytes, cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_rwg_flat, h_rwg_flat.data(), rwg_bytes, cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_blk_B,    h_blk_B.data(),   n_blocks * sizeof(int), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_blk_B_ext, h_blk_B_ext.data(), n_blocks * sizeof(int), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_lu_off,   h_lu_off.data(),  n_blocks * sizeof(int), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_piv_off,  h_piv_off.data(), n_blocks * sizeof(int), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_rwg_off,  h_rwg_off.data(), n_blocks * sizeof(int), cudaMemcpyHostToDevice));
 
-    // Request extended shared memory for the kernel if needed
-    size_t smem_bytes = max_B2 * sizeof(cuDoubleComplex);
-    if (smem_bytes > 48 * 1024) {
-        cudaFuncSetAttribute(blockj_apply_kernel,
-                             cudaFuncAttributeMaxDynamicSharedMemorySize,
-                             (int)smem_bytes);
-    }
+    // Allocate global memory workspace for LU solve (replaces shared memory)
+    size_t ws_bytes = (size_t)n_blocks * max_B2 * sizeof(cuDoubleComplex);
+    CUDA_CHECK(cudaMalloc(&d_workspace, ws_bytes));
+    total_bytes += ws_bytes;
 
     gpu_ready = true;
-    printf("  [BlockJ-GPU] Uploaded %d blocks to GPU: LU=%.1f MB, total=%.1f MB (%.2fs)\n",
-           n_blocks, lu_bytes / 1e6, total_bytes / 1e6, timer.elapsed_s());
+    printf("  [BlockJ-GPU] Uploaded %d blocks to GPU: LU=%.1f MB, workspace=%.1f MB, total=%.1f MB (%.2fs)\n",
+           n_blocks, lu_bytes / 1e6, ws_bytes / 1e6, total_bytes / 1e6, timer.elapsed_s());
 }
 
 // ============================================================
@@ -1206,11 +1296,11 @@ void NearFieldPrecond::apply_gpu(const cuDoubleComplex* d_r, cuDoubleComplex* d_
     // Zero output
     CUDA_CHECK(cudaMemset(d_z, 0, N2 * sizeof(cuDoubleComplex)));
 
-    size_t smem_bytes = max_B2 * sizeof(cuDoubleComplex);
-    blockj_apply_kernel<<<n_blocks, 32, smem_bytes>>>(
+    blockj_apply_kernel<<<n_blocks, 32>>>(
         d_r, d_z,
         d_lu_flat, d_piv_flat, d_rwg_flat,
-        d_blk_B, d_lu_off, d_piv_off, d_rwg_off,
+        d_blk_B, d_blk_B_ext, d_lu_off, d_piv_off, d_rwg_off,
+        d_workspace, max_B2,
         n_blocks, N);
 
     CUDA_CHECK(cudaGetLastError());
@@ -1222,10 +1312,12 @@ void NearFieldPrecond::apply_gpu(const cuDoubleComplex* d_r, cuDoubleComplex* d_
 void NearFieldPrecond::cleanup_gpu()
 {
     if (!gpu_ready) return;
+    cudaFree(d_workspace); d_workspace = nullptr;
     cudaFree(d_lu_flat);   d_lu_flat  = nullptr;
     cudaFree(d_piv_flat);  d_piv_flat = nullptr;
     cudaFree(d_rwg_flat);  d_rwg_flat = nullptr;
     cudaFree(d_blk_B);     d_blk_B    = nullptr;
+    cudaFree(d_blk_B_ext); d_blk_B_ext = nullptr;
     cudaFree(d_lu_off);    d_lu_off   = nullptr;
     cudaFree(d_piv_off);   d_piv_off  = nullptr;
     cudaFree(d_rwg_off);   d_rwg_off  = nullptr;
