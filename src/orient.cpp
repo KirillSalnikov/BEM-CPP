@@ -71,7 +71,8 @@ void gauss_legendre(int n, std::vector<double>& nodes, std::vector<double>& weig
 
 
 std::vector<Orientation> generate_orientations(int n_alpha, int n_beta, int n_gamma,
-                                               int beta_sym, int gamma_sym) {
+                                               int beta_sym, int gamma_sym,
+                                               bool gamma_mirror) {
     std::vector<double> mu_nodes, mu_weights;
 
     if (beta_sym == 2) {
@@ -96,8 +97,9 @@ std::vector<Orientation> generate_orientations(int n_alpha, int n_beta, int n_ga
     double d_alpha = 2.0 * M_PI / n_alpha;
     // Weight uses full 2pi/n_gamma (symmetry factor already accounted for)
     double d_gamma = 2.0 * M_PI / n_gamma;
-    // Actual gamma range is [0, 2pi/gamma_sym)
-    double gamma_step = 2.0 * M_PI / (gamma_sym * n_gamma);
+    // Actual gamma range: [0, 2pi/gamma_sym) or halved if gamma_mirror
+    int effective_gamma_sym = gamma_mirror ? gamma_sym * 2 : gamma_sym;
+    double gamma_step = 2.0 * M_PI / (effective_gamma_sym * n_gamma);
 
     std::vector<Orientation> orients;
     orients.reserve(n_alpha * n_beta * n_gamma);
@@ -108,7 +110,8 @@ std::vector<Orientation> generate_orientations(int n_alpha, int n_beta, int n_ga
             double beta = acos(mu_nodes[ib]);
             double w_beta = mu_weights[ib];
             for (int ig = 0; ig < n_gamma; ig++) {
-                double gamma = ig * gamma_step;
+                // Half-step offset for mirror to avoid self-mirror boundaries
+                double gamma = gamma_mirror ? (ig + 0.5) * gamma_step : ig * gamma_step;
 
                 Mat3 R = euler_rotation(alpha, beta, gamma);
                 Orientation o;

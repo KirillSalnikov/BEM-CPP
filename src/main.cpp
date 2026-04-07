@@ -46,6 +46,8 @@ static void print_usage(const char* prog) {
     printf("  --orient-tol F  Adaptive orient stop tolerance (default: 0 = disabled)\n");
     printf("  --orient-sym B G  Orientation symmetry factors (default: 1 1)\n");
     printf("                    B=2: beta [0,pi/2] (mirror sym), G=6: gamma [0,pi/3) (C6 hex)\n");
+    printf("  --gamma-mirror    Enable gamma mirror symmetry (sigma_v), halves gamma range\n");
+    printf("  --orient-range I0 I1  Only compute orientations [I0, I1) (for cluster parallelism)\n");
 }
 
 int main(int argc, char** argv) {
@@ -77,6 +79,8 @@ int main(int argc, char** argv) {
     double orient_tol = 0;  // adaptive orient stopping (0 = disabled)
     int beta_sym = 1;   // beta symmetry factor (1=full, 2=half)
     int gamma_sym = 1;  // gamma symmetry factor (1=full, 6=C6 hex)
+    bool gamma_mirror = false;  // gamma mirror symmetry (sigma_v)
+    int orient_i0 = -1, orient_i1 = -1;  // orient range for cluster (-1 = all)
 
     // Parse CLI
     for (int i = 1; i < argc; i++) {
@@ -146,6 +150,11 @@ int main(int argc, char** argv) {
         } else if (strcmp(argv[i], "--orient-sym") == 0 && i+2 < argc) {
             beta_sym = atoi(argv[++i]);
             gamma_sym = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--gamma-mirror") == 0) {
+            gamma_mirror = true;
+        } else if (strcmp(argv[i], "--orient-range") == 0 && i+2 < argc) {
+            orient_i0 = atoi(argv[++i]);
+            orient_i1 = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             print_usage(argv[0]);
             return 0;
@@ -194,9 +203,12 @@ int main(int argc, char** argv) {
     else {
         printf("  Orientations: %d x %d x %d = %d\n",
                n_alpha, n_beta, n_gamma, n_alpha * n_beta * n_gamma);
-        if (beta_sym > 1 || gamma_sym > 1)
-            printf("  Orient symmetry: beta x%d (0-%d deg), gamma x%d (0-%d deg)\n",
-                   beta_sym, 180 / beta_sym, gamma_sym, 360 / gamma_sym);
+        if (beta_sym > 1 || gamma_sym > 1 || gamma_mirror) {
+            int eff_gsym = gamma_mirror ? gamma_sym * 2 : gamma_sym;
+            printf("  Orient symmetry: beta x%d (0-%d deg), gamma x%d (0-%d deg)%s\n",
+                   beta_sym, 180 / beta_sym, eff_gsym, 360 / eff_gsym,
+                   gamma_mirror ? " [mirror]" : "");
+        }
     }
 
     // 1. Generate mesh
@@ -360,9 +372,17 @@ int main(int argc, char** argv) {
             time_farfield = ff_timer.elapsed_s();
         } else {
             // Orientation averaging with GMRES + inline far-field
-            std::vector<Orientation> orients = generate_orientations(n_alpha, n_beta, n_gamma, beta_sym, gamma_sym);
+            std::vector<Orientation> orients = generate_orientations(n_alpha, n_beta, n_gamma, beta_sym, gamma_sym, gamma_mirror);
             sort_orientations_nearest(orients);
             int n_total = (int)orients.size();
+
+            // Orient range for cluster parallelism
+            int oi_start = 0, oi_end = n_total;
+            if (orient_i0 >= 0 && orient_i1 > orient_i0) {
+                oi_start = std::min(orient_i0, n_total);
+                oi_end = std::min(orient_i1, n_total);
+                printf("  Orient range: [%d, %d) of %d\n", oi_start, oi_end, n_total);
+            }
 
             // Far-field GPU cache
             FFCacheGPU ff_gpu;
@@ -377,7 +397,7 @@ int main(int argc, char** argv) {
                 e_theta_lab[it] = Vec3(ct, 0, -st);
             }
 
-            printf("\n  Solving %d orientations x 2 polarizations with GMRES...\n", n_total);
+            printf("\n  Solving %d orientations x 2 polarizations with GMRES...\n", oi_end - oi_start);
             if (orient_tol > 0)
                 printf("  Adaptive orient stopping: tol=%.1e\n", orient_tol);
 
@@ -409,7 +429,7 @@ int main(int argc, char** argv) {
             std::vector<double> oi_r_hats(ntheta * 3);
             std::vector<cdouble> oi_Fv(2 * ntheta * 3);
 
-            for (int oi = 0; oi < n_total; oi++) {
+            for (int oi = oi_start; oi < oi_end; oi++) {
                 Mat3& RT = orients[oi].RT;
                 Vec3 k_hat = RT * Vec3(0, 0, 1);
                 Vec3 e_par = RT * Vec3(1, 0, 0);
@@ -469,13 +489,24 @@ int main(int argc, char** argv) {
                 amplitude_to_mueller(S1.data(), S2.data(), S3.data(), S4.data(),
                                     ntheta, M_oi);
 
+                // Gamma mirror: zero off-diagonal 2x2 blocks (odd under sigma_v)
+                // M'=D·M·D where D=diag(1,1,-1,-1), average (M+M')/2:
+                //   even blocks (i<2,j<2)|(i>=2,j>=2): unchanged
+                //   odd blocks: zero
+                if (gamma_mirror) {
+                    int odd_blocks[] = {2,3,6,7,8,9,12,13};
+                    for (int b = 0; b < 8; b++)
+                        for (int t = 0; t < ntheta; t++)
+                            M_oi[odd_blocks[b] * ntheta + t] = 0;
+                }
+
                 for (int i = 0; i < 16 * ntheta; i++)
                     M_avg[i] += weight * M_oi[i] / k2;
 
-                n_computed = oi + 1;
+                n_computed++;
 
                 printf("    Orient %d/%d: %d matvecs, %.1fs\n",
-                       n_computed, n_total, mv, oi_timer.elapsed_s());
+                       oi + 1, n_total, mv, oi_timer.elapsed_s());
 
                 // Adaptive convergence: Csca (integral of M11*sinθ) between checkpoints
                 // Requires 2 consecutive checks below tol for robustness
@@ -624,34 +655,43 @@ int main(int argc, char** argv) {
 
         } else {
             // Orientation averaging (batched)
-            std::vector<Orientation> orients = generate_orientations(n_alpha, n_beta, n_gamma, beta_sym, gamma_sym);
+            std::vector<Orientation> orients = generate_orientations(n_alpha, n_beta, n_gamma, beta_sym, gamma_sym, gamma_mirror);
             sort_orientations_nearest(orients);
             int n_total = (int)orients.size();
 
-            printf("\n  Building %d RHS vectors...\n", n_total * 2);
+            int oi_start = 0, oi_end = n_total;
+            if (orient_i0 >= 0 && orient_i1 > orient_i0) {
+                oi_start = std::min(orient_i0, n_total);
+                oi_end = std::min(orient_i1, n_total);
+                printf("  Orient range: [%d, %d) of %d\n", oi_start, oi_end, n_total);
+            }
+            int n_range = oi_end - oi_start;
 
-            // Phase 1: Build all RHS
-            std::vector<std::complex<double>> B(N2 * n_total * 2, 0);
-            for (int oi = 0; oi < n_total; oi++) {
+            printf("\n  Building %d RHS vectors...\n", n_range * 2);
+
+            // Phase 1: Build RHS for orient range
+            std::vector<std::complex<double>> B(N2 * n_range * 2, 0);
+            for (int ri = 0; ri < n_range; ri++) {
+                int oi = oi_start + ri;
                 Mat3& RT = orients[oi].RT;
                 Vec3 k_hat = RT * Vec3(0, 0, 1);
                 Vec3 e_par = RT * Vec3(1, 0, 0);
                 Vec3 e_perp = RT * Vec3(0, 1, 0);
 
                 compute_rhs_planewave(rwg, mesh, k_ext, eta_ext, e_par, k_hat,
-                                      quad_order, &B[oi * 2 * N2]);
+                                      quad_order, &B[ri * 2 * N2]);
                 compute_rhs_planewave(rwg, mesh, k_ext, eta_ext, e_perp, k_hat,
-                                      quad_order, &B[(oi * 2 + 1) * N2]);
+                                      quad_order, &B[(ri * 2 + 1) * N2]);
             }
 
             // Phase 2: LU solve all at once
-            printf("  Solving %d RHS with LU...\n", n_total * 2);
-            lu_solve_full(Z.data(), N2, B.data(), n_total * 2);
+            printf("  Solving %d RHS with LU...\n", n_range * 2);
+            lu_solve_full(Z.data(), N2, B.data(), n_range * 2);
             time_solve = solve_timer.elapsed_s();
 
             // Phase 3: Far-field + Mueller accumulation (GPU batched)
             Timer ff_timer;
-            int n_calls = n_total * 2;
+            int n_calls = n_range * 2;
             printf("  Computing GPU far-field: %d calls x %d dirs...\n", n_calls, ntheta);
 
             FFCacheGPU ff_gpu;
@@ -667,27 +707,28 @@ int main(int argc, char** argv) {
 
             std::vector<std::complex<double>> all_coeffs_J(n_calls * N);
             std::vector<std::complex<double>> all_coeffs_M(n_calls * N);
-            for (int oi = 0; oi < n_total; oi++) {
-                std::complex<double>* X_par  = &B[oi * 2 * N2];
-                std::complex<double>* X_perp = &B[(oi * 2 + 1) * N2];
-                memcpy(&all_coeffs_J[(2*oi) * N],     X_par,      N * sizeof(std::complex<double>));
-                memcpy(&all_coeffs_M[(2*oi) * N],     X_par + N,  N * sizeof(std::complex<double>));
-                memcpy(&all_coeffs_J[(2*oi+1) * N],   X_perp,     N * sizeof(std::complex<double>));
-                memcpy(&all_coeffs_M[(2*oi+1) * N],   X_perp + N, N * sizeof(std::complex<double>));
+            for (int ri = 0; ri < n_range; ri++) {
+                std::complex<double>* X_par  = &B[ri * 2 * N2];
+                std::complex<double>* X_perp = &B[(ri * 2 + 1) * N2];
+                memcpy(&all_coeffs_J[(2*ri) * N],     X_par,      N * sizeof(std::complex<double>));
+                memcpy(&all_coeffs_M[(2*ri) * N],     X_par + N,  N * sizeof(std::complex<double>));
+                memcpy(&all_coeffs_J[(2*ri+1) * N],   X_perp,     N * sizeof(std::complex<double>));
+                memcpy(&all_coeffs_M[(2*ri+1) * N],   X_perp + N, N * sizeof(std::complex<double>));
             }
 
-            std::vector<double> all_r_hats(n_total * ntheta * 3);
-            std::vector<Vec3> all_e_par(n_total * ntheta), all_e_perp(n_total * ntheta);
-            for (int oi = 0; oi < n_total; oi++) {
+            std::vector<double> all_r_hats(n_range * ntheta * 3);
+            std::vector<Vec3> all_e_par(n_range * ntheta), all_e_perp(n_range * ntheta);
+            for (int ri = 0; ri < n_range; ri++) {
+                int oi = oi_start + ri;
                 Mat3& RT = orients[oi].RT;
                 for (int it = 0; it < ntheta; it++) {
                     Vec3 rh = RT * r_hat_lab[it];
-                    int base = (oi * ntheta + it) * 3;
+                    int base = (ri * ntheta + it) * 3;
                     all_r_hats[base]   = rh.x;
                     all_r_hats[base+1] = rh.y;
                     all_r_hats[base+2] = rh.z;
-                    all_e_par[oi * ntheta + it]  = RT * e_theta_lab[it];
-                    all_e_perp[oi * ntheta + it] = RT * e_phi_lab;
+                    all_e_par[ri * ntheta + it]  = RT * e_theta_lab[it];
+                    all_e_perp[ri * ntheta + it] = RT * e_phi_lab;
                 }
             }
 
@@ -696,20 +737,21 @@ int main(int argc, char** argv) {
                                         all_coeffs_J.data(), all_coeffs_M.data(),
                                         all_r_hats.data(),
                                         k_ext, eta_ext,
-                                        n_calls, n_total, ntheta,
+                                        n_calls, n_range, ntheta,
                                         all_Fv.data());
 
             std::complex<double> ik_val = std::complex<double>(0, -1) * k_ext;
             double k2 = std::norm(k_ext);
-            for (int oi = 0; oi < n_total; oi++) {
+            for (int ri = 0; ri < n_range; ri++) {
+                int oi = oi_start + ri;
                 double weight = orients[oi].weight;
-                std::complex<double>* Fv_par  = &all_Fv[(2*oi) * ntheta * 3];
-                std::complex<double>* Fv_perp = &all_Fv[(2*oi+1) * ntheta * 3];
+                std::complex<double>* Fv_par  = &all_Fv[(2*ri) * ntheta * 3];
+                std::complex<double>* Fv_perp = &all_Fv[(2*ri+1) * ntheta * 3];
 
                 std::vector<std::complex<double>> S1(ntheta), S2(ntheta), S3(ntheta), S4(ntheta);
                 for (int it = 0; it < ntheta; it++) {
-                    Vec3& ep = all_e_par[oi * ntheta + it];
-                    Vec3& epp = all_e_perp[oi * ntheta + it];
+                    Vec3& ep = all_e_par[ri * ntheta + it];
+                    Vec3& epp = all_e_perp[ri * ntheta + it];
 
                     std::complex<double> F_par_p  = Fv_par[it*3]*ep.x  + Fv_par[it*3+1]*ep.y  + Fv_par[it*3+2]*ep.z;
                     std::complex<double> F_perp_p = Fv_par[it*3]*epp.x + Fv_par[it*3+1]*epp.y + Fv_par[it*3+2]*epp.z;
@@ -726,12 +768,22 @@ int main(int argc, char** argv) {
                 amplitude_to_mueller(S1.data(), S2.data(), S3.data(), S4.data(),
                                     ntheta, M_orient.data());
 
+                if (gamma_mirror) {
+                    int odd_blocks[] = {2,3,6,7,8,9,12,13};
+                    for (int b = 0; b < 8; b++)
+                        for (int t = 0; t < ntheta; t++)
+                            M_orient[odd_blocks[b] * ntheta + t] = 0;
+                }
+
                 for (int i = 0; i < 16 * ntheta; i++)
                     M_avg[i] += weight * M_orient[i] / k2;
             }
 
             time_farfield = ff_timer.elapsed_s();
-            printf("  Averaged over %d orientations.\n", n_total);
+            if (oi_start > 0 || oi_end < n_total)
+                printf("  Averaged over orient range [%d, %d) of %d.\n", oi_start, oi_end, n_total);
+            else
+                printf("  Averaged over %d orientations.\n", n_total);
         }
     }
 
