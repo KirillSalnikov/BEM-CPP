@@ -162,7 +162,8 @@ __global__ void kernel_zero_2d(cufftComplex* grid, long long N)
 
 // Unified inter-face P2P: potential only (FP32, tiled, single kernel for all faces)
 // Each thread processes one target point, loops over ALL non-same-face sources
-__global__ void kernel_p2p_unified_pot_f32(
+__global__ __launch_bounds__(256, 5)
+void kernel_p2p_unified_pot_f32(
     const float* __restrict__ pts,
     const float* __restrict__ q_re,
     const float* __restrict__ q_im,
@@ -233,7 +234,8 @@ __global__ void kernel_p2p_unified_pot_f32(
 }
 
 // Unified inter-face P2P: potential + gradient (FP32, tiled, single kernel)
-__global__ void kernel_p2p_unified_pot_grad_f32(
+__global__ __launch_bounds__(256, 4)
+void kernel_p2p_unified_pot_grad_f32(
     const float* __restrict__ pts,
     const float* __restrict__ q_re,
     const float* __restrict__ q_im,
@@ -345,7 +347,8 @@ __global__ void kernel_p2p_unified_pot_grad_f32(
 // Computes geometry (dx,dy,dz,R,G,∇G) once per pair, applies to all 4 charges.
 // Saves ~50% FLOPs vs 4 separate P2P kernel launches.
 // Layout: q_re/im[b*N + i] for batch b, point i. grad_re/im[b*N*3 + i*3+d].
-__global__ void kernel_p2p_batch4_f32(
+__global__ __launch_bounds__(256, 4)
+void kernel_p2p_batch4_f32(
     const float* __restrict__ pts,
     const float* __restrict__ q_re,      // [4*N] packed charges
     const float* __restrict__ q_im,
@@ -493,7 +496,8 @@ __global__ void kernel_p2p_batch4_f32(
 // Batched inter-face P2P: 8 charge vectors (2 × LK_combined), geometry once per pair.
 // Charges 0-2,4-6 get pot+grad; charges 3,7 get pot only.
 // ~30% fewer FLOPs than 2× batch4 (geometry computed once instead of twice).
-__global__ void kernel_p2p_batch8_f32(
+__global__ __launch_bounds__(256, 3)
+void kernel_p2p_batch8_f32(
     const float* __restrict__ pts,
     const float* __restrict__ q_re,      // [8*N] packed
     const float* __restrict__ q_im,
@@ -632,6 +636,144 @@ __global__ void kernel_p2p_batch8_f32(
         WG(4, 4*N*3, g4xr,g4xi,g4yr,g4yi,g4zr,g4zi)
         WG(5, 5*N*3, g5xr,g5xi,g5yr,g5yi,g5zr,g5zi)
         #undef WG
+    }
+}
+
+// Real-k variant: skip exp() for purely real wavenumber (k_im=0).
+// Saves ~6 SFU instructions (exp) + 4 FP32 ops per source pair.
+__global__ __launch_bounds__(256, 3)
+void kernel_p2p_batch8_f32_realk(
+    const float* __restrict__ pts,
+    const float* __restrict__ q_re,
+    const float* __restrict__ q_im,
+    float* __restrict__ pot_re,
+    float* __restrict__ pot_im,
+    float* __restrict__ grad_re,
+    float* __restrict__ grad_im,
+    int N,
+    const int* __restrict__ face_offsets,
+    int n_faces,
+    float k_re)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+
+    float tx, ty, tz;
+    int my_start = 0, my_end = 0;
+    if (i < N) {
+        tx = pts[i*3]; ty = pts[i*3+1]; tz = pts[i*3+2];
+        for (int f = 0; f < n_faces; f++) {
+            if (i < face_offsets[f+1]) {
+                my_start = face_offsets[f];
+                my_end = face_offsets[f+1];
+                break;
+            }
+        }
+    }
+
+    float a0r=0,a0i=0, a1r=0,a1i=0, a2r=0,a2i=0, a3r=0,a3i=0;
+    float a4r=0,a4i=0, a5r=0,a5i=0, a6r=0,a6i=0, a7r=0,a7i=0;
+    float g0xr=0,g0xi=0,g0yr=0,g0yi=0,g0zr=0,g0zi=0;
+    float g1xr=0,g1xi=0,g1yr=0,g1yi=0,g1zr=0,g1zi=0;
+    float g2xr=0,g2xi=0,g2yr=0,g2yi=0,g2zr=0,g2zi=0;
+    float g3xr=0,g3xi=0,g3yr=0,g3yi=0,g3zr=0,g3zi=0;
+    float g4xr=0,g4xi=0,g4yr=0,g4yi=0,g4zr=0,g4zi=0;
+    float g5xr=0,g5xi=0,g5yr=0,g5yi=0,g5zr=0,g5zi=0;
+    float inv4pi = 0.07957747154594767f;
+
+    __shared__ float s_px[P2P_TILE], s_py[P2P_TILE], s_pz[P2P_TILE];
+    __shared__ float s_qr[8*P2P_TILE], s_qi[8*P2P_TILE];
+
+    for (int tile = 0; tile < N; tile += P2P_TILE) {
+        int tile_size = min(P2P_TILE, N - tile);
+        if ((int)threadIdx.x < tile_size) {
+            int j = tile + threadIdx.x;
+            s_px[threadIdx.x] = pts[j*3+0];
+            s_py[threadIdx.x] = pts[j*3+1];
+            s_pz[threadIdx.x] = pts[j*3+2];
+            for (int b = 0; b < 8; b++) {
+                s_qr[b*P2P_TILE + threadIdx.x] = q_re[b*N + j];
+                s_qi[b*P2P_TILE + threadIdx.x] = q_im[b*N + j];
+            }
+        }
+        __syncthreads();
+
+        if (i < N) {
+            int tile_end = tile + tile_size;
+            bool overlaps = (tile_end > my_start && tile < my_end);
+
+            for (int j = 0; j < tile_size; j++) {
+                if (overlaps) {
+                    int gj = tile + j;
+                    if (gj >= my_start && gj < my_end) continue;
+                }
+
+                float dx = tx - s_px[j];
+                float dy = ty - s_py[j];
+                float dz = tz - s_pz[j];
+                float R2 = dx*dx + dy*dy + dz*dz;
+                if (R2 < 1e-30f) continue;
+                float invR = rsqrtf(R2);
+                float R = R2 * invR;
+                float cs, sn;
+                sincosf(k_re * R, &sn, &cs);
+                float G_re = cs * inv4pi * invR;
+                float G_im = sn * inv4pi * invR;
+                float neg_invR = -invR;
+                float fg_re = (neg_invR * G_re - k_re * G_im) * invR;
+                float fg_im = (neg_invR * G_im + k_re * G_re) * invR;
+                float dGx_re = fg_re*dx, dGx_im = fg_im*dx;
+                float dGy_re = fg_re*dy, dGy_im = fg_im*dy;
+                float dGz_re = fg_re*dz, dGz_im = fg_im*dz;
+
+                float jr, ji;
+
+                #define B8R_POT(B, AR, AI) \
+                    jr = s_qr[B*P2P_TILE+j]; ji = s_qi[B*P2P_TILE+j]; \
+                    AR += G_re*jr - G_im*ji; AI += G_re*ji + G_im*jr;
+
+                #define B8R_PG(B, AR, AI, GXR,GXI,GYR,GYI,GZR,GZI) \
+                    jr = s_qr[B*P2P_TILE+j]; ji = s_qi[B*P2P_TILE+j]; \
+                    AR += G_re*jr - G_im*ji; AI += G_re*ji + G_im*jr; \
+                    GXR += dGx_re*jr - dGx_im*ji; GXI += dGx_re*ji + dGx_im*jr; \
+                    GYR += dGy_re*jr - dGy_im*ji; GYI += dGy_re*ji + dGy_im*jr; \
+                    GZR += dGz_re*jr - dGz_im*ji; GZI += dGz_re*ji + dGz_im*jr;
+
+                B8R_PG(0, a0r,a0i, g0xr,g0xi,g0yr,g0yi,g0zr,g0zi)
+                B8R_PG(1, a1r,a1i, g1xr,g1xi,g1yr,g1yi,g1zr,g1zi)
+                B8R_PG(2, a2r,a2i, g2xr,g2xi,g2yr,g2yi,g2zr,g2zi)
+                B8R_POT(3, a3r,a3i)
+                B8R_PG(4, a4r,a4i, g3xr,g3xi,g3yr,g3yi,g3zr,g3zi)
+                B8R_PG(5, a5r,a5i, g4xr,g4xi,g4yr,g4yi,g4zr,g4zi)
+                B8R_PG(6, a6r,a6i, g5xr,g5xi,g5yr,g5yi,g5zr,g5zi)
+                B8R_POT(7, a7r,a7i)
+
+                #undef B8R_POT
+                #undef B8R_PG
+            }
+        }
+        __syncthreads();
+    }
+
+    if (i < N) {
+        pot_re[0*N+i]+=a0r; pot_im[0*N+i]+=a0i;
+        pot_re[1*N+i]+=a1r; pot_im[1*N+i]+=a1i;
+        pot_re[2*N+i]+=a2r; pot_im[2*N+i]+=a2i;
+        pot_re[3*N+i]+=a3r; pot_im[3*N+i]+=a3i;
+        pot_re[4*N+i]+=a4r; pot_im[4*N+i]+=a4i;
+        pot_re[5*N+i]+=a5r; pot_im[5*N+i]+=a5i;
+        pot_re[6*N+i]+=a6r; pot_im[6*N+i]+=a6i;
+        pot_re[7*N+i]+=a7r; pot_im[7*N+i]+=a7i;
+        #define WGR(G, OFF, XR,XI,YR,YI,ZR,ZI) \
+            grad_re[OFF+i*3+0]+=XR; grad_im[OFF+i*3+0]+=XI; \
+            grad_re[OFF+i*3+1]+=YR; grad_im[OFF+i*3+1]+=YI; \
+            grad_re[OFF+i*3+2]+=ZR; grad_im[OFF+i*3+2]+=ZI;
+        WGR(0, 0*N*3, g0xr,g0xi,g0yr,g0yi,g0zr,g0zi)
+        WGR(1, 1*N*3, g1xr,g1xi,g1yr,g1yi,g1zr,g1zi)
+        WGR(2, 2*N*3, g2xr,g2xi,g2yr,g2yi,g2zr,g2zi)
+        WGR(3, 3*N*3, g3xr,g3xi,g3yr,g3yi,g3zr,g3zi)
+        WGR(4, 4*N*3, g4xr,g4xi,g4yr,g4yi,g4zr,g4zi)
+        WGR(5, 5*N*3, g5xr,g5xi,g5yr,g5yi,g5zr,g5zi)
+        #undef WGR
     }
 }
 
@@ -996,7 +1138,51 @@ void HelmholtzSurfacePFFT::init(const double* points, int n_pts,
                               (long long)fg.n_pts * stencil_2d * sizeof(double), cudaMemcpyHostToDevice));
 
         // --- Intra-face near-field correction ---
+        // Adaptive correction radius: check GPU memory budget
+        // Each nnz entry uses 6 doubles (G_re/im, dGdu_re/im, dGdv_re/im) = 48 bytes
+        // Budget: at most ~2GB for corrections across all faces (both engines)
         double near_radius = (interp_p + 2) * fg.h;
+
+        // Estimate nnz for this face: ~π * (near_radius/h)² * pts_per_cell * n_pts
+        double cells_in_radius = M_PI * (near_radius / fg.h) * (near_radius / fg.h);
+        double ppc = (double)fg.n_pts / (fg.Mu * fg.Mv);
+        double est_nnz = cells_in_radius * ppc * fg.n_pts;
+        double est_corr_bytes = est_nnz * 48.0;
+        double est_total = est_corr_bytes * n_faces * 2;  // all faces × 2 engines
+
+        // Check free GPU memory
+        size_t free_mem = 0, total_mem = 0;
+        cudaMemGetInfo(&free_mem, &total_mem);
+        double max_corr_bytes = std::min((double)free_mem * 0.4, 2.5e9);
+
+        if (est_total > max_corr_bytes && est_total > 0) {
+            // Reduce near_radius to fit in memory
+            // corr_bytes ∝ near_radius², so scale = sqrt(budget / est)
+            double scale = sqrt(max_corr_bytes / est_total);
+            double min_radius = interp_p * fg.h;  // minimum: cover interpolation stencil
+            double new_radius = std::max(near_radius * scale, min_radius);
+
+            // If even minimum radius doesn't fit, reduce further to 2h or 1h
+            double min_est = est_total * (min_radius * min_radius) / (near_radius * near_radius);
+            if (min_est > max_corr_bytes) {
+                // Try progressively smaller radii: 2h, 1.5h, 1h
+                for (double trial_r : {2.0, 1.5, 1.0}) {
+                    double trial_est = est_total * (trial_r * fg.h) * (trial_r * fg.h) / (near_radius * near_radius);
+                    if (trial_est <= max_corr_bytes) {
+                        new_radius = trial_r * fg.h;
+                        break;
+                    }
+                    new_radius = trial_r * fg.h;  // use smallest even if over budget
+                }
+            }
+
+            if (new_radius < near_radius) {
+                if (f == 0)
+                    printf("  [SurfPFFT] Reducing correction radius: %.2f*h → %.2f*h (GPU mem: %.0f MB free)\n",
+                           near_radius / fg.h, new_radius / fg.h, free_mem / 1e6);
+                near_radius = new_radius;
+            }
+        }
 
         // Build near list in local face indices
         std::vector<int> h_row_ptr(fg.n_pts + 1, 0);
@@ -1203,6 +1389,12 @@ void HelmholtzSurfacePFFT::init(const double* points, int n_pts,
     h_out_im.resize(n_pts);
     h_grad_re.resize(n_pts * 3);
     h_grad_im.resize(n_pts * 3);
+
+    // Batch8 pre-split staging: pre-split all 8 charges on host, single H2D
+    h_batch8_re.resize(8 * n_pts);
+    h_batch8_im.resize(8 * n_pts);
+    CUDA_CHECK(cudaMalloc(&d_batch8_re, 8 * n_pts * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_batch8_im, 8 * n_pts * sizeof(double)));
 
     // Batched P2P buffers (FP32, packed — sized for batch8)
     CUDA_CHECK(cudaMalloc(&d_bp_q_re,    8 * n_pts * sizeof(float)));
@@ -1675,24 +1867,34 @@ void HelmholtzSurfacePFFT::evaluate_batch8(
         CUDA_CHECK(cudaMemset(d_bp_grd_im[b], 0, Nt*3*sizeof(double)));
     }
 
+    // Pre-split all 8 charge vectors on host (single parallel pass)
+    if (do_timing) t_fft.reset();
+    #pragma omp parallel for schedule(static) collapse(2)
+    for (int batch = 0; batch < 8; batch++) {
+        for (int i = 0; i < Nt; i++) {
+            h_batch8_re[batch*Nt + i] = charges[batch][i].real();
+            h_batch8_im[batch*Nt + i] = charges[batch][i].imag();
+        }
+    }
+
+    // Single large upload: 2 memcpy instead of 16
+    CUDA_CHECK(cudaMemcpy(d_batch8_re, h_batch8_re.data(), 8*Nt*sizeof(double), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_batch8_im, h_batch8_im.data(), 8*Nt*sizeof(double), cudaMemcpyHostToDevice));
+
+    // Sort all 8 charge vectors for P2P (fast D2D, no H2D per batch)
+    for (int batch = 0; batch < 8; batch++) {
+        kernel_sort_charges_f32<<<(Nt+block-1)/block, block>>>(
+            d_batch8_re + batch*Nt, d_batch8_im + batch*Nt, d_sort_order, Nt,
+            d_bp_q_re + batch*Nt, d_bp_q_im + batch*Nt);
+    }
+
     // Process each of 8 charge vectors through intra-face FFT
     // Gradient index: charges 0-2 → grads 0-2, charges 4-6 → grads 3-5
     // Charges 3,7 → pot only (no gradient)
-    if (do_timing) t_fft.reset();
     for (int batch = 0; batch < 8; batch++) {
-        // Upload charges (split complex → re/im)
-        #pragma omp parallel for schedule(static)
-        for (int i = 0; i < Nt; i++) {
-            h_stage_re[i] = charges[batch][i].real();
-            h_stage_im[i] = charges[batch][i].imag();
-        }
-        CUDA_CHECK(cudaMemcpy(d_charges_re, h_stage_re.data(), Nt*sizeof(double), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_charges_im, h_stage_im.data(), Nt*sizeof(double), cudaMemcpyHostToDevice));
-
-        // Sort charges for P2P into batch slot
-        kernel_sort_charges_f32<<<(Nt+block-1)/block, block>>>(
-            d_charges_re, d_charges_im, d_sort_order, Nt,
-            d_bp_q_re + batch*Nt, d_bp_q_im + batch*Nt);
+        // D2D copy from pre-uploaded batch buffer (much faster than H2D)
+        CUDA_CHECK(cudaMemcpy(d_charges_re, d_batch8_re + batch*Nt, Nt*sizeof(double), cudaMemcpyDeviceToDevice));
+        CUDA_CHECK(cudaMemcpy(d_charges_im, d_batch8_im + batch*Nt, Nt*sizeof(double), cudaMemcpyDeviceToDevice));
 
         // Determine if this batch needs gradient
         bool need_grad = (batch != 3 && batch != 7);
@@ -1783,12 +1985,21 @@ void HelmholtzSurfacePFFT::evaluate_batch8(
     CUDA_CHECK(cudaMemset(d_bp_grad_re, 0, 6*Nt*3*sizeof(float)));
     CUDA_CHECK(cudaMemset(d_bp_grad_im, 0, 6*Nt*3*sizeof(float)));
 
-    kernel_p2p_batch8_f32<<<(Nt+block-1)/block, block>>>(
-        d_pts_f, d_bp_q_re, d_bp_q_im,
-        d_bp_pot_re, d_bp_pot_im,
-        d_bp_grad_re, d_bp_grad_im,
-        Nt, d_face_offsets, n_faces,
-        (float)k.real(), (float)k.imag());
+    if (fabsf((float)k.imag()) < 1e-10f) {
+        kernel_p2p_batch8_f32_realk<<<(Nt+block-1)/block, block>>>(
+            d_pts_f, d_bp_q_re, d_bp_q_im,
+            d_bp_pot_re, d_bp_pot_im,
+            d_bp_grad_re, d_bp_grad_im,
+            Nt, d_face_offsets, n_faces,
+            (float)k.real());
+    } else {
+        kernel_p2p_batch8_f32<<<(Nt+block-1)/block, block>>>(
+            d_pts_f, d_bp_q_re, d_bp_q_im,
+            d_bp_pot_re, d_bp_pot_im,
+            d_bp_grad_re, d_bp_grad_im,
+            Nt, d_face_offsets, n_faces,
+            (float)k.real(), (float)k.imag());
+    }
 
     // Unsort P2P potential results for all 8 batches
     for (int b = 0; b < 8; b++) {
@@ -1824,6 +2035,165 @@ void HelmholtzSurfacePFFT::evaluate_batch8(
         }
     }
     if (do_timing) printf("      [B8] download: %.1fms\n", t_dl.elapsed_ms());
+}
+
+// GPU-native batch8: charges already in d_batch8_re/im, results stay on GPU
+void HelmholtzSurfacePFFT::evaluate_batch8_gpu()
+{
+    static int eval_call_count = 0;
+    bool do_timing = (eval_call_count == 0);
+    eval_call_count++;
+    Timer t_fft, t_p2p;
+
+    int block = 256;
+
+    // Zero all batch8 result buffers
+    for (int b = 0; b < 8; b++) {
+        CUDA_CHECK(cudaMemset(d_bp_res_re[b], 0, Nt*sizeof(double)));
+        CUDA_CHECK(cudaMemset(d_bp_res_im[b], 0, Nt*sizeof(double)));
+    }
+    for (int b = 0; b < 6; b++) {
+        CUDA_CHECK(cudaMemset(d_bp_grd_re[b], 0, Nt*3*sizeof(double)));
+        CUDA_CHECK(cudaMemset(d_bp_grd_im[b], 0, Nt*3*sizeof(double)));
+    }
+
+    // Charges are already in d_batch8_re/im (GPU) — skip host split + H2D upload
+
+    if (do_timing) t_fft.reset();
+
+    // Sort all 8 charge vectors for P2P (D2D, no H2D)
+    for (int batch = 0; batch < 8; batch++) {
+        kernel_sort_charges_f32<<<(Nt+block-1)/block, block>>>(
+            d_batch8_re + batch*Nt, d_batch8_im + batch*Nt, d_sort_order, Nt,
+            d_bp_q_re + batch*Nt, d_bp_q_im + batch*Nt);
+    }
+
+    // Process each of 8 charge vectors through intra-face FFT (batch-outer for better stream overlap)
+    for (int batch = 0; batch < 8; batch++) {
+        const double* batch_re = d_batch8_re + batch*Nt;
+        const double* batch_im = d_batch8_im + batch*Nt;
+
+        bool need_grad = (batch != 3 && batch != 7);
+        int grad_slot = -1;
+        if (batch < 3) grad_slot = batch;
+        else if (batch >= 4 && batch <= 6) grad_slot = batch - 1;
+
+        if (need_grad) {
+            for (int f = 0; f < n_faces; f++) {
+                FaceGrid& fg = faces[f];
+                if (fg.n_pts == 0) continue;
+
+                kernel_gather_face<<<(fg.n_pts+block-1)/block, block, 0, fg.stream>>>(
+                    batch_re, batch_im, fg.d_local_to_global,
+                    fg.n_pts, fg.d_charges_re, fg.d_charges_im);
+
+                anterpolate_and_fft(fg, stencil_2d, fg.d_charges_re, fg.d_charges_im);
+
+                // Potential
+                CUDA_CHECK(cudaMemsetAsync(fg.d_result_re, 0, fg.n_pts*sizeof(double), fg.stream));
+                CUDA_CHECK(cudaMemsetAsync(fg.d_result_im, 0, fg.n_pts*sizeof(double), fg.stream));
+                apply_kernel_and_correct(fg, stencil_2d, fg.d_G_hat,
+                    fg.d_corr_G_re, fg.d_corr_G_im,
+                    fg.d_charges_re, fg.d_charges_im,
+                    fg.d_result_re, fg.d_result_im);
+                kernel_scatter_add<<<(fg.n_pts+block-1)/block, block, 0, fg.stream>>>(
+                    fg.d_result_re, fg.d_result_im, fg.d_local_to_global,
+                    fg.n_pts, d_bp_res_re[batch], d_bp_res_im[batch]);
+
+                // Gradient u
+                CUDA_CHECK(cudaMemsetAsync(fg.d_result_re, 0, fg.n_pts*sizeof(double), fg.stream));
+                CUDA_CHECK(cudaMemsetAsync(fg.d_result_im, 0, fg.n_pts*sizeof(double), fg.stream));
+                apply_kernel_and_correct(fg, stencil_2d, fg.d_dGdu_hat,
+                    fg.d_corr_dGdu_re, fg.d_corr_dGdu_im,
+                    fg.d_charges_re, fg.d_charges_im,
+                    fg.d_result_re, fg.d_result_im);
+                kernel_scatter_grad_component<<<(fg.n_pts+block-1)/block, block, 0, fg.stream>>>(
+                    fg.d_result_re, fg.d_result_im, fg.d_local_to_global,
+                    fg.n_pts, fg.u_axis[0], fg.u_axis[1], fg.u_axis[2],
+                    d_bp_grd_re[grad_slot], d_bp_grd_im[grad_slot]);
+
+                // Gradient v
+                CUDA_CHECK(cudaMemsetAsync(fg.d_result_re, 0, fg.n_pts*sizeof(double), fg.stream));
+                CUDA_CHECK(cudaMemsetAsync(fg.d_result_im, 0, fg.n_pts*sizeof(double), fg.stream));
+                apply_kernel_and_correct(fg, stencil_2d, fg.d_dGdv_hat,
+                    fg.d_corr_dGdv_re, fg.d_corr_dGdv_im,
+                    fg.d_charges_re, fg.d_charges_im,
+                    fg.d_result_re, fg.d_result_im);
+                kernel_scatter_grad_component<<<(fg.n_pts+block-1)/block, block, 0, fg.stream>>>(
+                    fg.d_result_re, fg.d_result_im, fg.d_local_to_global,
+                    fg.n_pts, fg.v_axis[0], fg.v_axis[1], fg.v_axis[2],
+                    d_bp_grd_re[grad_slot], d_bp_grd_im[grad_slot]);
+            }
+        } else {
+            // Pot only (batches 3 and 7)
+            for (int f = 0; f < n_faces; f++) {
+                FaceGrid& fg = faces[f];
+                if (fg.n_pts == 0) continue;
+
+                kernel_gather_face<<<(fg.n_pts+block-1)/block, block, 0, fg.stream>>>(
+                    batch_re, batch_im, fg.d_local_to_global,
+                    fg.n_pts, fg.d_charges_re, fg.d_charges_im);
+
+                anterpolate_and_fft(fg, stencil_2d, fg.d_charges_re, fg.d_charges_im);
+
+                CUDA_CHECK(cudaMemsetAsync(fg.d_result_re, 0, fg.n_pts*sizeof(double), fg.stream));
+                CUDA_CHECK(cudaMemsetAsync(fg.d_result_im, 0, fg.n_pts*sizeof(double), fg.stream));
+                apply_kernel_and_correct(fg, stencil_2d, fg.d_G_hat,
+                    fg.d_corr_G_re, fg.d_corr_G_im,
+                    fg.d_charges_re, fg.d_charges_im,
+                    fg.d_result_re, fg.d_result_im);
+                kernel_scatter_add<<<(fg.n_pts+block-1)/block, block, 0, fg.stream>>>(
+                    fg.d_result_re, fg.d_result_im, fg.d_local_to_global,
+                    fg.n_pts, d_bp_res_re[batch], d_bp_res_im[batch]);
+            }
+        }
+
+        CUDA_CHECK(cudaDeviceSynchronize());
+    }
+
+    if (do_timing) printf("      [B8-GPU] FFT: %.1fms\n", t_fft.elapsed_ms());
+
+    // === Batched inter-face P2P: 8 charge vectors in ONE kernel ===
+    if (do_timing) t_p2p.reset();
+    CUDA_CHECK(cudaMemset(d_bp_pot_re,  0, 8*Nt*sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_bp_pot_im,  0, 8*Nt*sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_bp_grad_re, 0, 6*Nt*3*sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_bp_grad_im, 0, 6*Nt*3*sizeof(float)));
+
+    if (fabsf((float)k.imag()) < 1e-10f) {
+        kernel_p2p_batch8_f32_realk<<<(Nt+block-1)/block, block>>>(
+            d_pts_f, d_bp_q_re, d_bp_q_im,
+            d_bp_pot_re, d_bp_pot_im,
+            d_bp_grad_re, d_bp_grad_im,
+            Nt, d_face_offsets, n_faces,
+            (float)k.real());
+    } else {
+        kernel_p2p_batch8_f32<<<(Nt+block-1)/block, block>>>(
+            d_pts_f, d_bp_q_re, d_bp_q_im,
+            d_bp_pot_re, d_bp_pot_im,
+            d_bp_grad_re, d_bp_grad_im,
+            Nt, d_face_offsets, n_faces,
+            (float)k.real(), (float)k.imag());
+    }
+
+    // Unsort P2P potential results for all 8 batches
+    for (int b = 0; b < 8; b++) {
+        kernel_unsort_add_pot<<<(Nt+block-1)/block, block>>>(
+            d_bp_pot_re + b*Nt, d_bp_pot_im + b*Nt, d_sort_order, Nt,
+            d_bp_res_re[b], d_bp_res_im[b]);
+    }
+    // Unsort P2P gradient results for 6 grad batches
+    for (int b = 0; b < 6; b++) {
+        kernel_unsort_add_grad<<<(Nt+block-1)/block, block>>>(
+            d_bp_grad_re + b*Nt*3, d_bp_grad_im + b*Nt*3, d_sort_order, Nt,
+            d_bp_grd_re[b], d_bp_grd_im[b]);
+    }
+
+    CUDA_CHECK(cudaDeviceSynchronize());
+    if (do_timing) printf("      [B8-GPU] P2P+unsort: %.1fms\n", t_p2p.elapsed_ms());
+
+    // Results stay on GPU in d_bp_res_re/im[8] and d_bp_grd_re/im[6]
+    // No D2H download — caller reads GPU buffers directly
 }
 
 void HelmholtzSurfacePFFT::cleanup()
@@ -1878,6 +2248,10 @@ void HelmholtzSurfacePFFT::cleanup()
     safe_free((void*&)d_grad_im);
     safe_free((void*&)d_pts);
     safe_free((void*&)d_sort_order);
+
+    // Batch8 staging buffers
+    safe_free((void*&)d_batch8_re);
+    safe_free((void*&)d_batch8_im);
 
     // Batched P2P buffers
     safe_free((void*&)d_bp_q_re);

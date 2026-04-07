@@ -130,6 +130,11 @@ struct HelmholtzSurfacePFFT {
     std::vector<double> h_out_re, h_out_im;       // (Nt) result download
     std::vector<double> h_grad_re, h_grad_im;     // (Nt*3) gradient download
 
+    // Batched charge upload buffers: pre-split all 8 on host, single H2D
+    std::vector<double> h_batch8_re, h_batch8_im; // (8*Nt) all 8 charges pre-split
+    double* d_batch8_re;                           // (8*Nt) GPU staging
+    double* d_batch8_im;
+
     // Batched inter-face P2P buffers (FP32, sized for batch8)
     float*  d_bp_q_re;        // [8*Nt] sorted charges (up to 8 vectors packed)
     float*  d_bp_q_im;
@@ -155,6 +160,7 @@ struct HelmholtzSurfacePFFT {
         d_result_re(0), d_result_im(0),
         d_grad_re(0), d_grad_im(0),
         d_pts(0), d_sort_order(0),
+        d_batch8_re(0), d_batch8_im(0),
         d_bp_q_re(0), d_bp_q_im(0),
         d_bp_pot_re(0), d_bp_pot_im(0),
         d_bp_grad_re(0), d_bp_grad_im(0)
@@ -191,6 +197,11 @@ struct HelmholtzSurfacePFFT {
         const cdouble* charges[8],
         cdouble* pots[8],
         cdouble* grads[6]);  // grads[0-2] for charges 0-2, grads[3-5] for charges 4-6
+
+    // GPU-native batch8: charges already in d_batch8_re/im (8*Nt packed),
+    // results stay on GPU in d_bp_res_re/im[8] and d_bp_grd_re/im[6].
+    // No host<->device transfers for charge/result data.
+    void evaluate_batch8_gpu();
 
     void cleanup();
     ~HelmholtzSurfacePFFT() { if (initialized) cleanup(); }

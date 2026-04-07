@@ -35,7 +35,10 @@ struct Orientation {
 };
 
 // Generate orientation quadrature points
-std::vector<Orientation> generate_orientations(int n_alpha, int n_beta, int n_gamma);
+// beta_sym: symmetry factor for beta (1=full [0,pi], 2=half [0,pi/2])
+// gamma_sym: symmetry factor for gamma (1=full [0,2pi), 6=C6 hex [0,pi/3))
+std::vector<Orientation> generate_orientations(int n_alpha, int n_beta, int n_gamma,
+                                               int beta_sym = 1, int gamma_sym = 1);
 
 // Reorder orientations by nearest-neighbor (greedy TSP) in rotation space.
 // Improves initial guess quality when reusing previous solution.

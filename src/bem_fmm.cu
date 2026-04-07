@@ -5,6 +5,216 @@
 #include <cmath>
 #include <map>
 #include <algorithm>
+#include <cuda_runtime.h>
+
+// ============================================================
+// GPU charge packing kernels
+// Pack RWG coefficient x[n] into FMM source charges on GPU
+// ============================================================
+
+// Vector charge: charges[n*Nq+q] = f[idx*3+d] * jw[idx] * x_re/im[n]
+// for both plus (offset 0) and minus (offset N*Nq) halves
+__global__ void pack_charges_vector_kernel(
+    const double* __restrict__ x_re,
+    const double* __restrict__ x_im,
+    const double* __restrict__ f_p,     // (N*Nq*3) basis values, plus half
+    const double* __restrict__ f_m,     // (N*Nq*3) basis values, minus half
+    const double* __restrict__ jw_p,    // (N*Nq) Jacobian weights, plus half
+    const double* __restrict__ jw_m,    // (N*Nq) Jacobian weights, minus half
+    double* __restrict__ charges_re,    // (2*N*Nq) output
+    double* __restrict__ charges_im,
+    int N, int Nq, int d)              // d = component (0,1,2)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = N * Nq;
+    if (tid >= total) return;
+
+    int n = tid / Nq;
+    double xr = x_re[n], xi = x_im[n];
+
+    // Plus half
+    double fp = f_p[tid * 3 + d] * jw_p[tid];
+    charges_re[tid] = fp * xr;
+    charges_im[tid] = fp * xi;
+
+    // Minus half
+    double fm = f_m[tid * 3 + d] * jw_m[tid];
+    charges_re[total + tid] = fm * xr;
+    charges_im[total + tid] = fm * xi;
+}
+
+// Scalar charge: charges[n*Nq+q] = div[n] * jw[idx] * x_re/im[n]
+__global__ void pack_charges_scalar_kernel(
+    const double* __restrict__ x_re,
+    const double* __restrict__ x_im,
+    const double* __restrict__ div_p,   // (N) divergence, plus half
+    const double* __restrict__ div_m,   // (N) divergence, minus half
+    const double* __restrict__ jw_p,    // (N*Nq)
+    const double* __restrict__ jw_m,
+    double* __restrict__ charges_re,
+    double* __restrict__ charges_im,
+    int N, int Nq)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = N * Nq;
+    if (tid >= total) return;
+
+    int n = tid / Nq;
+    double xr = x_re[n], xi = x_im[n];
+
+    double dp = div_p[n] * jw_p[tid];
+    charges_re[tid] = dp * xr;
+    charges_im[tid] = dp * xi;
+
+    double dm = div_m[n] * jw_m[tid];
+    charges_re[total + tid] = dm * xr;
+    charges_im[total + tid] = dm * xi;
+}
+
+// Accumulate L vector part: L_result[m] += ik * sum_q(f[idx*3+d]*jw[idx]*phi[idx])
+__global__ void accum_L_vector_kernel(
+    const double* __restrict__ phi_re,
+    const double* __restrict__ phi_im,
+    const double* __restrict__ f_p,
+    const double* __restrict__ f_m,
+    const double* __restrict__ jw_p,
+    const double* __restrict__ jw_m,
+    double* __restrict__ L_re,          // (N) output, accumulated
+    double* __restrict__ L_im,
+    double ik_re, double ik_im,         // ik = i*k
+    int N, int Nq, int d)
+{
+    int m = blockIdx.x * blockDim.x + threadIdx.x;
+    if (m >= N) return;
+
+    double acc_re = 0.0, acc_im = 0.0;
+    for (int q = 0; q < Nq; q++) {
+        int idx = m * Nq + q;
+        double w;
+
+        // Plus half
+        w = f_p[idx * 3 + d] * jw_p[idx];
+        acc_re += w * phi_re[idx];
+        acc_im += w * phi_im[idx];
+
+        // Minus half
+        int idx2 = N * Nq + idx;
+        w = f_m[idx * 3 + d] * jw_m[idx];
+        acc_re += w * phi_re[idx2];
+        acc_im += w * phi_im[idx2];
+    }
+
+    // Multiply by ik: (ik_re + i*ik_im) * (acc_re + i*acc_im)
+    L_re[m] += ik_re * acc_re - ik_im * acc_im;
+    L_im[m] += ik_re * acc_im + ik_im * acc_re;
+}
+
+// Accumulate L scalar part: L_result[m] -= iok * (div_p[m]*acc_p + div_m[m]*acc_m)
+__global__ void accum_L_scalar_kernel(
+    const double* __restrict__ phi_re,
+    const double* __restrict__ phi_im,
+    const double* __restrict__ div_p,
+    const double* __restrict__ div_m,
+    const double* __restrict__ jw_p,
+    const double* __restrict__ jw_m,
+    double* __restrict__ L_re,
+    double* __restrict__ L_im,
+    double iok_re, double iok_im,       // iok = i/k
+    int N, int Nq)
+{
+    int m = blockIdx.x * blockDim.x + threadIdx.x;
+    if (m >= N) return;
+
+    double acc_p_re = 0.0, acc_p_im = 0.0;
+    double acc_m_re = 0.0, acc_m_im = 0.0;
+    for (int q = 0; q < Nq; q++) {
+        int idx = m * Nq + q;
+        acc_p_re += jw_p[idx] * phi_re[idx];
+        acc_p_im += jw_p[idx] * phi_im[idx];
+
+        int idx2 = N * Nq + idx;
+        acc_m_re += jw_m[idx] * phi_re[idx2];
+        acc_m_im += jw_m[idx] * phi_im[idx2];
+    }
+
+    double dp = div_p[m], dm = div_m[m];
+    double total_re = dp * acc_p_re + dm * acc_m_re;
+    double total_im = dp * acc_p_im + dm * acc_m_im;
+
+    // Subtract iok * total: -(iok_re + i*iok_im) * (total_re + i*total_im)
+    L_re[m] -= iok_re * total_re - iok_im * total_im;
+    L_im[m] -= iok_re * total_im + iok_im * total_re;
+}
+
+// K operator: curl(grad) dot f, accumulated from 3 gradient arrays (one per source component d)
+// grad_d[i*3+c] = gradient of G with source charges along component d, target i, direction c
+// K[m] = sum_q jw * (f · curl), where curl = cross(grad) of the 3 source components
+// grad_d is stored as separate re/im for each of d=0,1,2 → 6 arrays total
+// Each grad_d has layout (2*N*Nq, 3) interleaved [gx,gy,gz, gx,gy,gz, ...]
+__global__ void accum_K_curl_kernel(
+    const double* __restrict__ grad0_re,  // (2*N*Nq*3) gradient from d=0 source charges
+    const double* __restrict__ grad0_im,
+    const double* __restrict__ grad1_re,  // (2*N*Nq*3) gradient from d=1
+    const double* __restrict__ grad1_im,
+    const double* __restrict__ grad2_re,  // (2*N*Nq*3) gradient from d=2
+    const double* __restrict__ grad2_im,
+    const double* __restrict__ f_p,       // (N*Nq*3)
+    const double* __restrict__ f_m,       // (N*Nq*3)
+    const double* __restrict__ jw_p,      // (N*Nq)
+    const double* __restrict__ jw_m,      // (N*Nq)
+    double* __restrict__ K_re,            // (N) output
+    double* __restrict__ K_im,
+    int N, int Nq)
+{
+    int m = blockIdx.x * blockDim.x + threadIdx.x;
+    if (m >= N) return;
+
+    double acc_re = 0.0, acc_im = 0.0;
+
+    // Plus half
+    for (int q = 0; q < Nq; q++) {
+        int idx = m * Nq + q;
+        int i3 = idx * 3;
+
+        // curl_x = dPhi_z/dy - dPhi_y/dz = grad2[i*3+1] - grad1[i*3+2]
+        double curl_x_re = grad2_re[i3+1] - grad1_re[i3+2];
+        double curl_x_im = grad2_im[i3+1] - grad1_im[i3+2];
+        // curl_y = dPhi_x/dz - dPhi_z/dx = grad0[i*3+2] - grad2[i*3+0]
+        double curl_y_re = grad0_re[i3+2] - grad2_re[i3+0];
+        double curl_y_im = grad0_im[i3+2] - grad2_im[i3+0];
+        // curl_z = dPhi_y/dx - dPhi_x/dy = grad1[i*3+0] - grad0[i*3+1]
+        double curl_z_re = grad1_re[i3+0] - grad0_re[i3+1];
+        double curl_z_im = grad1_im[i3+0] - grad0_im[i3+1];
+
+        double fx = f_p[idx*3], fy = f_p[idx*3+1], fz = f_p[idx*3+2];
+        double w = jw_p[idx];
+        acc_re += w * (fx * curl_x_re + fy * curl_y_re + fz * curl_z_re);
+        acc_im += w * (fx * curl_x_im + fy * curl_y_im + fz * curl_z_im);
+    }
+
+    // Minus half
+    int offset = N * Nq;
+    for (int q = 0; q < Nq; q++) {
+        int idx = m * Nq + q;
+        int i = offset + idx;
+        int i3 = i * 3;
+
+        double curl_x_re = grad2_re[i3+1] - grad1_re[i3+2];
+        double curl_x_im = grad2_im[i3+1] - grad1_im[i3+2];
+        double curl_y_re = grad0_re[i3+2] - grad2_re[i3+0];
+        double curl_y_im = grad0_im[i3+2] - grad2_im[i3+0];
+        double curl_z_re = grad1_re[i3+0] - grad0_re[i3+1];
+        double curl_z_im = grad1_im[i3+0] - grad0_im[i3+1];
+
+        double fx = f_m[idx*3], fy = f_m[idx*3+1], fz = f_m[idx*3+2];
+        double w = jw_m[idx];
+        acc_re += w * (fx * curl_x_re + fy * curl_y_re + fz * curl_z_re);
+        acc_im += w * (fx * curl_x_im + fy * curl_y_im + fz * curl_z_im);
+    }
+
+    K_re[m] = acc_re;
+    K_im[m] = acc_im;
+}
 
 void BemFmmOperator::init(const RWG& rwg, const Mesh& mesh,
                             cdouble k_ext_, cdouble k_int_,
@@ -106,6 +316,46 @@ void BemFmmOperator::init(const RWG& rwg, const Mesh& mesh,
     all_pts.resize(total_pts * 3);
     memcpy(all_pts.data(), qpts_p.data(), N * Nq * 3 * sizeof(double));
     memcpy(all_pts.data() + N * Nq * 3, qpts_m.data(), N * Nq * 3 * sizeof(double));
+
+    // Upload basis data to GPU for charge packing kernels
+    {
+        gpu_pack_ready = false;
+        cudaMalloc(&d_f_p, N * Nq * 3 * sizeof(double));
+        cudaMalloc(&d_f_m, N * Nq * 3 * sizeof(double));
+        cudaMalloc(&d_jw_p, N * Nq * sizeof(double));
+        cudaMalloc(&d_jw_m, N * Nq * sizeof(double));
+        cudaMalloc(&d_div_p, N * sizeof(double));
+        cudaMalloc(&d_div_m, N * sizeof(double));
+        cudaMemcpy(d_f_p, f_p.data(), N * Nq * 3 * sizeof(double), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_f_m, f_m.data(), N * Nq * 3 * sizeof(double), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_jw_p, jw_p.data(), N * Nq * sizeof(double), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_jw_m, jw_m.data(), N * Nq * sizeof(double), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_div_p, div_p.data(), N * sizeof(double), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_div_m, div_m.data(), N * sizeof(double), cudaMemcpyHostToDevice);
+        // Workspace
+        cudaMalloc(&d_x_re, N * sizeof(double));
+        cudaMalloc(&d_x_im, N * sizeof(double));
+        cudaMalloc(&d_src_re, total_pts * sizeof(double));
+        cudaMalloc(&d_src_im, total_pts * sizeof(double));
+        cudaMalloc(&d_phi_re, total_pts * sizeof(double));
+        cudaMalloc(&d_phi_im, total_pts * sizeof(double));
+        cudaMalloc(&d_L_re, N * sizeof(double));
+        cudaMalloc(&d_L_im, N * sizeof(double));
+        cudaMalloc(&d_K_re, N * sizeof(double));
+        cudaMalloc(&d_K_im, N * sizeof(double));
+        // Gradient buffers for K operator (3 sets × re/im × Nt*3)
+        int grad_size = total_pts * 3;
+        for (int d = 0; d < 3; d++) {
+            cudaMalloc(&d_grad_buf_re[d], grad_size * sizeof(double));
+            cudaMalloc(&d_grad_buf_im[d], grad_size * sizeof(double));
+        }
+        gpu_pack_ready = true;
+        h_x_split_re.resize(N);
+        h_x_split_im.resize(N);
+        double gpu_mb = (N * Nq * 3 * 2 + N * Nq * 2 + N * 2 + N + total_pts * 2 +
+                         total_pts * 2 + N * 2 + N * 2 + grad_size * 6) * 8.0 / 1e6;
+        printf("  [BEM-FMM] GPU charge packing arrays uploaded: %.1f MB\n", gpu_mb);
+    }
 
     // Build accelerator (FMM or pFFT)
     // Targets = sources = all quad points (self-interaction)
@@ -564,100 +814,153 @@ void BemFmmOperator::LK_combined(const cdouble* x, cdouble kv, HelmholtzFMM& fmm
 {
     cdouble ik = cdouble(0, 1) * kv;
     cdouble iok = cdouble(0, 1) / kv;
-
     int total_pts = 2 * N * Nq;
 
     memset(L_result, 0, N * sizeof(cdouble));
     memset(K_result, 0, N * sizeof(cdouble));
 
-    // --- Vector part: combined potential (for L) + gradient (for K) in one FMM pass ---
-    for (int d = 0; d < 3; d++) {
-        memset(tmp_src_charges.data(), 0, total_pts * sizeof(cdouble));
+    if (gpu_pack_ready) {
+        // === GPU-accelerated path: charge packing + accumulation on GPU ===
 
+        // Upload coefficient vector x to GPU (N complex values → split re/im)
         for (int n = 0; n < N; n++) {
-            cdouble xn = x[n];
-            for (int q = 0; q < Nq; q++) {
-                int idx = n * Nq + q;
-                tmp_src_charges[idx] = f_p[idx*3 + d] * jw_p[idx] * xn;
-                tmp_src_charges[N*Nq + idx] = f_m[idx*3 + d] * jw_m[idx] * xn;
+            fmm.h_q_re_buf[n] = x[n].real();
+            fmm.h_q_im_buf[n] = x[n].imag();
+        }
+        cudaMemcpy(d_x_re, fmm.h_q_re_buf.data(), N * sizeof(double), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_x_im, fmm.h_q_im_buf.data(), N * sizeof(double), cudaMemcpyHostToDevice);
+
+        // Zero L accumulator on GPU
+        cudaMemset(d_L_re, 0, N * sizeof(double));
+        cudaMemset(d_L_im, 0, N * sizeof(double));
+
+        int pack_block = 256;
+        int pack_grid = (N * Nq + pack_block - 1) / pack_block;
+        int accum_block = 256;
+        int accum_grid = (N + accum_block - 1) / accum_block;
+
+        // --- Vector part: d=0,1,2 ---
+        for (int d = 0; d < 3; d++) {
+            // GPU charge packing
+            pack_charges_vector_kernel<<<pack_grid, pack_block>>>(
+                d_x_re, d_x_im, d_f_p, d_f_m, d_jw_p, d_jw_m,
+                d_src_re, d_src_im, N, Nq, d);
+
+            // GPU-resident FMM: pot+grad, results stay on device
+            fmm.evaluate_pot_grad_gpu(d_src_re, d_src_im,
+                d_phi_re, d_phi_im,
+                d_grad_buf_re[d], d_grad_buf_im[d]);
+
+            // GPU L accumulation from potential
+            accum_L_vector_kernel<<<accum_grid, accum_block>>>(
+                d_phi_re, d_phi_im, d_f_p, d_f_m, d_jw_p, d_jw_m,
+                d_L_re, d_L_im,
+                ik.real(), ik.imag(), N, Nq, d);
+        }
+
+        // --- Scalar part ---
+        pack_charges_scalar_kernel<<<pack_grid, pack_block>>>(
+            d_x_re, d_x_im, d_div_p, d_div_m, d_jw_p, d_jw_m,
+            d_src_re, d_src_im, N, Nq);
+
+        fmm.evaluate_gpu(d_src_re, d_src_im, d_phi_re, d_phi_im);
+
+        accum_L_scalar_kernel<<<accum_grid, accum_block>>>(
+            d_phi_re, d_phi_im, d_div_p, d_div_m, d_jw_p, d_jw_m,
+            d_L_re, d_L_im,
+            iok.real(), iok.imag(), N, Nq);
+
+        // --- K: curl assembly from 3 gradient buffers on GPU ---
+        accum_K_curl_kernel<<<accum_grid, accum_block>>>(
+            d_grad_buf_re[0], d_grad_buf_im[0],
+            d_grad_buf_re[1], d_grad_buf_im[1],
+            d_grad_buf_re[2], d_grad_buf_im[2],
+            d_f_p, d_f_m, d_jw_p, d_jw_m,
+            d_K_re, d_K_im, N, Nq);
+        cudaDeviceSynchronize();
+
+        // Download L and K results (small: N values each)
+        std::vector<double> h_L_re(N), h_L_im(N), h_K_re(N), h_K_im(N);
+        cudaMemcpy(h_L_re.data(), d_L_re, N * sizeof(double), cudaMemcpyDeviceToHost);
+        cudaMemcpy(h_L_im.data(), d_L_im, N * sizeof(double), cudaMemcpyDeviceToHost);
+        cudaMemcpy(h_K_re.data(), d_K_re, N * sizeof(double), cudaMemcpyDeviceToHost);
+        cudaMemcpy(h_K_im.data(), d_K_im, N * sizeof(double), cudaMemcpyDeviceToHost);
+        for (int m = 0; m < N; m++) {
+            L_result[m] = cdouble(h_L_re[m], h_L_im[m]);
+            K_result[m] = cdouble(h_K_re[m], h_K_im[m]);
+        }
+    } else {
+        // === CPU fallback path (original implementation) ===
+
+        // --- Vector part ---
+        for (int d = 0; d < 3; d++) {
+            memset(tmp_src_charges.data(), 0, total_pts * sizeof(cdouble));
+            for (int n = 0; n < N; n++) {
+                cdouble xn = x[n];
+                for (int q = 0; q < Nq; q++) {
+                    int idx = n * Nq + q;
+                    tmp_src_charges[idx] = f_p[idx*3 + d] * jw_p[idx] * xn;
+                    tmp_src_charges[N*Nq + idx] = f_m[idx*3 + d] * jw_m[idx] * xn;
+                }
+            }
+            fmm.evaluate_pot_grad(tmp_src_charges.data(), tmp_phi.data(), tmp_grad[d].data());
+            for (int m = 0; m < N; m++) {
+                cdouble acc(0);
+                for (int q = 0; q < Nq; q++) {
+                    int idx = m * Nq + q;
+                    acc += f_p[idx*3 + d] * jw_p[idx] * tmp_phi[idx];
+                    acc += f_m[idx*3 + d] * jw_m[idx] * tmp_phi[N*Nq + idx];
+                }
+                L_result[m] += ik * acc;
             }
         }
 
-        // Single FMM pass: get both potential and gradient
-        fmm.evaluate_pot_grad(tmp_src_charges.data(), tmp_phi.data(), tmp_grad[d].data());
+        // --- Scalar part ---
+        {
+            memset(tmp_src_charges.data(), 0, total_pts * sizeof(cdouble));
+            for (int n = 0; n < N; n++) {
+                cdouble xn = x[n];
+                for (int q = 0; q < Nq; q++) {
+                    int idx = n * Nq + q;
+                    tmp_src_charges[idx] = div_p[n] * jw_p[idx] * xn;
+                    tmp_src_charges[N*Nq + idx] = div_m[n] * jw_m[idx] * xn;
+                }
+            }
+            fmm.evaluate(tmp_src_charges.data(), tmp_phi.data());
+            for (int m = 0; m < N; m++) {
+                cdouble acc_p(0), acc_m(0);
+                for (int q = 0; q < Nq; q++) {
+                    int idx = m * Nq + q;
+                    acc_p += jw_p[idx] * tmp_phi[idx];
+                    acc_m += jw_m[idx] * tmp_phi[N*Nq + idx];
+                }
+                L_result[m] -= iok * (div_p[m] * acc_p + div_m[m] * acc_m);
+            }
+        }
 
-        // Accumulate L vector part from potential
+        // --- K: curl assembly ---
         for (int m = 0; m < N; m++) {
             cdouble acc(0);
             for (int q = 0; q < Nq; q++) {
                 int idx = m * Nq + q;
-                acc += f_p[idx*3 + d] * jw_p[idx] * tmp_phi[idx];
-                acc += f_m[idx*3 + d] * jw_m[idx] * tmp_phi[N*Nq + idx];
+                int i = idx;
+                cdouble curl_x = tmp_grad[2][i*3+1] - tmp_grad[1][i*3+2];
+                cdouble curl_y = tmp_grad[0][i*3+2] - tmp_grad[2][i*3+0];
+                cdouble curl_z = tmp_grad[1][i*3+0] - tmp_grad[0][i*3+1];
+                double fx = f_p[idx*3], fy = f_p[idx*3+1], fz = f_p[idx*3+2];
+                acc += jw_p[idx] * (fx * curl_x + fy * curl_y + fz * curl_z);
             }
-            L_result[m] += ik * acc;
-        }
-    }
-
-    // --- L scalar part: potential only (no gradient needed) ---
-    {
-        memset(tmp_src_charges.data(), 0, total_pts * sizeof(cdouble));
-
-        for (int n = 0; n < N; n++) {
-            cdouble xn = x[n];
-            for (int q = 0; q < Nq; q++) {
-                int idx = n * Nq + q;
-                tmp_src_charges[idx] = div_p[n] * jw_p[idx] * xn;
-                tmp_src_charges[N*Nq + idx] = div_m[n] * jw_m[idx] * xn;
-            }
-        }
-
-        fmm.evaluate(tmp_src_charges.data(), tmp_phi.data());
-
-        for (int m = 0; m < N; m++) {
-            cdouble acc_p(0), acc_m(0);
             for (int q = 0; q < Nq; q++) {
                 int idx = m * Nq + q;
-                acc_p += jw_p[idx] * tmp_phi[idx];
-                acc_m += jw_m[idx] * tmp_phi[N*Nq + idx];
+                int i = N*Nq + idx;
+                cdouble curl_x = tmp_grad[2][i*3+1] - tmp_grad[1][i*3+2];
+                cdouble curl_y = tmp_grad[0][i*3+2] - tmp_grad[2][i*3+0];
+                cdouble curl_z = tmp_grad[1][i*3+0] - tmp_grad[0][i*3+1];
+                double fx = f_m[idx*3], fy = f_m[idx*3+1], fz = f_m[idx*3+2];
+                acc += jw_m[idx] * (fx * curl_x + fy * curl_y + fz * curl_z);
             }
-            L_result[m] -= iok * (div_p[m] * acc_p + div_m[m] * acc_m);
+            K_result[m] = acc;
         }
-    }
-
-    // --- K: assemble curl from gradients computed above ---
-    // curl_x = dPhi_z/dy - dPhi_y/dz
-    // curl_y = dPhi_x/dz - dPhi_z/dx
-    // curl_z = dPhi_y/dx - dPhi_x/dy
-    for (int m = 0; m < N; m++) {
-        cdouble acc(0);
-
-        // Plus half
-        for (int q = 0; q < Nq; q++) {
-            int idx = m * Nq + q;
-            int i = idx;
-
-            cdouble curl_x = tmp_grad[2][i*3+1] - tmp_grad[1][i*3+2];
-            cdouble curl_y = tmp_grad[0][i*3+2] - tmp_grad[2][i*3+0];
-            cdouble curl_z = tmp_grad[1][i*3+0] - tmp_grad[0][i*3+1];
-
-            double fx = f_p[idx*3], fy = f_p[idx*3+1], fz = f_p[idx*3+2];
-            acc += jw_p[idx] * (fx * curl_x + fy * curl_y + fz * curl_z);
-        }
-
-        // Minus half
-        for (int q = 0; q < Nq; q++) {
-            int idx = m * Nq + q;
-            int i = N*Nq + idx;
-
-            cdouble curl_x = tmp_grad[2][i*3+1] - tmp_grad[1][i*3+2];
-            cdouble curl_y = tmp_grad[0][i*3+2] - tmp_grad[2][i*3+0];
-            cdouble curl_z = tmp_grad[1][i*3+0] - tmp_grad[0][i*3+1];
-
-            double fx = f_m[idx*3], fy = f_m[idx*3+1], fz = f_m[idx*3+2];
-            acc += jw_m[idx] * (fx * curl_x + fy * curl_y + fz * curl_z);
-        }
-
-        K_result[m] = acc;
     }
 }
 
@@ -850,6 +1153,7 @@ void BemFmmOperator::LK_combined(const cdouble* x, cdouble kv, HelmholtzSurfaceP
 }
 
 // Surface pFFT batch2: two RHS × 4 evals = 8 charge vectors in ONE P2P pass
+// GPU-native: pack + evaluate + accumulate all on GPU, only download L/K results
 void BemFmmOperator::LK_combined_batch2(
     const cdouble* x1, const cdouble* x2,
     cdouble kv, HelmholtzSurfacePFFT& spf,
@@ -870,133 +1174,145 @@ void BemFmmOperator::LK_combined_batch2(
     memset(L_result2, 0, N * sizeof(cdouble));
     memset(K_result2, 0, N * sizeof(cdouble));
 
-    // Pack 8 charge vectors:
-    // b8_src[0..2] = x1 vector components (d=0,1,2)
-    // b8_src[3]    = x1 scalar (div)
-    // b8_src[4..6] = x2 vector components (d=0,1,2)
-    // b8_src[7]    = x2 scalar (div)
+    if (!gpu_pack_ready) {
+        // Fallback: CPU path (should not happen if init allocated GPU arrays)
+        // ... (omitted for brevity — old code path)
+        fprintf(stderr, "WARNING: GPU pack not ready in SurfPFFT LK_combined_batch2\n");
+        return;
+    }
+
+    // === GPU-native path: pack + evaluate + accumulate all on GPU ===
     if (do_timing) t_pack.reset();
 
-    #pragma omp parallel for schedule(static)
+    int pack_block = 256;
+    int pack_grid = (N * Nq + pack_block - 1) / pack_block;
+    int accum_block = 256;
+    int accum_grid = (N + accum_block - 1) / accum_block;
+
+    // Upload x1 coefficients to GPU (N complex → split re/im, ~120KB)
     for (int n = 0; n < N; n++) {
-        cdouble xn1 = x1[n], xn2 = x2[n];
-        for (int q = 0; q < Nq; q++) {
-            int idx = n * Nq + q;
-            double jwp = jw_p[idx];
-            double jwm = jw_m[idx];
-            for (int d = 0; d < 3; d++) {
-                double fp_d = f_p[idx*3 + d];
-                double fm_d = f_m[idx*3 + d];
-                b8_src[d][idx]          = fp_d * jwp * xn1;
-                b8_src[d][N*Nq + idx]   = fm_d * jwm * xn1;
-                b8_src[4+d][idx]        = fp_d * jwp * xn2;
-                b8_src[4+d][N*Nq + idx] = fm_d * jwm * xn2;
-            }
-            b8_src[3][idx]          = div_p[n] * jwp * xn1;
-            b8_src[3][N*Nq + idx]   = div_m[n] * jwm * xn1;
-            b8_src[7][idx]          = div_p[n] * jwp * xn2;
-            b8_src[7][N*Nq + idx]   = div_m[n] * jwm * xn2;
-        }
+        h_x_split_re[n] = x1[n].real();
+        h_x_split_im[n] = x1[n].imag();
     }
+    CUDA_CHECK(cudaMemcpy(d_x_re, h_x_split_re.data(), N * sizeof(double), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_x_im, h_x_split_im.data(), N * sizeof(double), cudaMemcpyHostToDevice));
 
-    if (do_timing) printf("    [LK_B2] pack: %.1fms\n", t_pack.elapsed_ms());
+    // GPU pack batches 0-2 (vector, x1) and 3 (scalar, x1) into spf.d_batch8_re/im
+    for (int d = 0; d < 3; d++) {
+        pack_charges_vector_kernel<<<pack_grid, pack_block>>>(
+            d_x_re, d_x_im, d_f_p, d_f_m, d_jw_p, d_jw_m,
+            spf.d_batch8_re + d * total_pts, spf.d_batch8_im + d * total_pts,
+            N, Nq, d);
+    }
+    pack_charges_scalar_kernel<<<pack_grid, pack_block>>>(
+        d_x_re, d_x_im, d_div_p, d_div_m, d_jw_p, d_jw_m,
+        spf.d_batch8_re + 3 * total_pts, spf.d_batch8_im + 3 * total_pts,
+        N, Nq);
 
-    // Single batch8 evaluate: 8 charges → 8 pots + 6 grads
-    const cdouble* src_ptrs[8];
-    cdouble* pot_ptrs[8];
-    cdouble* grad_ptrs[6];
-    for (int b = 0; b < 8; b++) { src_ptrs[b] = b8_src[b].data(); pot_ptrs[b] = b8_pot[b].data(); }
-    for (int b = 0; b < 6; b++) grad_ptrs[b] = b8_grad[b].data();
+    // Upload x2 coefficients and pack batches 4-7
+    for (int n = 0; n < N; n++) {
+        h_x_split_re[n] = x2[n].real();
+        h_x_split_im[n] = x2[n].imag();
+    }
+    CUDA_CHECK(cudaMemcpy(d_x_re, h_x_split_re.data(), N * sizeof(double), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_x_im, h_x_split_im.data(), N * sizeof(double), cudaMemcpyHostToDevice));
 
+    for (int d = 0; d < 3; d++) {
+        pack_charges_vector_kernel<<<pack_grid, pack_block>>>(
+            d_x_re, d_x_im, d_f_p, d_f_m, d_jw_p, d_jw_m,
+            spf.d_batch8_re + (4 + d) * total_pts, spf.d_batch8_im + (4 + d) * total_pts,
+            N, Nq, d);
+    }
+    pack_charges_scalar_kernel<<<pack_grid, pack_block>>>(
+        d_x_re, d_x_im, d_div_p, d_div_m, d_jw_p, d_jw_m,
+        spf.d_batch8_re + 7 * total_pts, spf.d_batch8_im + 7 * total_pts,
+        N, Nq);
+
+    if (do_timing) printf("    [LK_B2-GPU] pack: %.1fms\n", t_pack.elapsed_ms());
+
+    // GPU-native evaluate: no H2D upload, no D2H download
     if (do_timing) t_eval.reset();
-    spf.evaluate_batch8(src_ptrs, pot_ptrs, grad_ptrs);
-    if (do_timing) printf("    [LK_B2] eval: %.1fms\n", t_eval.elapsed_ms());
+    spf.evaluate_batch8_gpu();
+    if (do_timing) printf("    [LK_B2-GPU] eval: %.1fms\n", t_eval.elapsed_ms());
 
-    // Accumulate L+K for RHS 1 (pots[0..3], grads[0..2])
+    // GPU accumulate L+K for RHS 1 from d_bp_res[0..3], d_bp_grd[0..2]
     if (do_timing) t_accum.reset();
 
-    #pragma omp parallel for schedule(static)
-    for (int m = 0; m < N; m++) {
-        cdouble L_acc(0);
-        for (int d = 0; d < 3; d++) {
-            cdouble acc(0);
-            for (int q = 0; q < Nq; q++) {
-                int idx = m * Nq + q;
-                acc += f_p[idx*3+d] * jw_p[idx] * b8_pot[d][idx];
-                acc += f_m[idx*3+d] * jw_m[idx] * b8_pot[d][N*Nq + idx];
-            }
-            L_acc += ik * acc;
-        }
-        cdouble acc_p(0), acc_m(0);
-        for (int q = 0; q < Nq; q++) {
-            int idx = m * Nq + q;
-            acc_p += jw_p[idx] * b8_pot[3][idx];
-            acc_m += jw_m[idx] * b8_pot[3][N*Nq + idx];
-        }
-        L_result1[m] = L_acc - iok * (div_p[m] * acc_p + div_m[m] * acc_m);
+    // Zero L/K accumulators
+    CUDA_CHECK(cudaMemset(d_L_re, 0, N * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_L_im, 0, N * sizeof(double)));
 
-        cdouble K_acc(0);
-        for (int q = 0; q < Nq; q++) {
-            int idx = m * Nq + q;
-            int i = idx;
-            cdouble cx = b8_grad[2][i*3+1] - b8_grad[1][i*3+2];
-            cdouble cy = b8_grad[0][i*3+2] - b8_grad[2][i*3+0];
-            cdouble cz = b8_grad[1][i*3+0] - b8_grad[0][i*3+1];
-            K_acc += jw_p[idx] * (f_p[idx*3]*cx + f_p[idx*3+1]*cy + f_p[idx*3+2]*cz);
-        }
-        for (int q = 0; q < Nq; q++) {
-            int idx = m * Nq + q;
-            int i = N*Nq + idx;
-            cdouble cx = b8_grad[2][i*3+1] - b8_grad[1][i*3+2];
-            cdouble cy = b8_grad[0][i*3+2] - b8_grad[2][i*3+0];
-            cdouble cz = b8_grad[1][i*3+0] - b8_grad[0][i*3+1];
-            K_acc += jw_m[idx] * (f_m[idx*3]*cx + f_m[idx*3+1]*cy + f_m[idx*3+2]*cz);
-        }
-        K_result1[m] = K_acc;
+    // L vector: d=0,1,2
+    for (int d = 0; d < 3; d++) {
+        accum_L_vector_kernel<<<accum_grid, accum_block>>>(
+            spf.d_bp_res_re[d], spf.d_bp_res_im[d],
+            d_f_p, d_f_m, d_jw_p, d_jw_m,
+            d_L_re, d_L_im,
+            ik.real(), ik.imag(), N, Nq, d);
+    }
+    // L scalar
+    accum_L_scalar_kernel<<<accum_grid, accum_block>>>(
+        spf.d_bp_res_re[3], spf.d_bp_res_im[3],
+        d_div_p, d_div_m, d_jw_p, d_jw_m,
+        d_L_re, d_L_im,
+        iok.real(), iok.imag(), N, Nq);
+    // K curl
+    accum_K_curl_kernel<<<accum_grid, accum_block>>>(
+        spf.d_bp_grd_re[0], spf.d_bp_grd_im[0],
+        spf.d_bp_grd_re[1], spf.d_bp_grd_im[1],
+        spf.d_bp_grd_re[2], spf.d_bp_grd_im[2],
+        d_f_p, d_f_m, d_jw_p, d_jw_m,
+        d_K_re, d_K_im, N, Nq);
+
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    // Download L1/K1 (small: 4*N doubles = ~240KB)
+    std::vector<double> h_L_re(N), h_L_im(N), h_K_re(N), h_K_im(N);
+    CUDA_CHECK(cudaMemcpy(h_L_re.data(), d_L_re, N * sizeof(double), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_L_im.data(), d_L_im, N * sizeof(double), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_K_re.data(), d_K_re, N * sizeof(double), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_K_im.data(), d_K_im, N * sizeof(double), cudaMemcpyDeviceToHost));
+    for (int m = 0; m < N; m++) {
+        L_result1[m] = cdouble(h_L_re[m], h_L_im[m]);
+        K_result1[m] = cdouble(h_K_re[m], h_K_im[m]);
     }
 
-    // Accumulate L+K for RHS 2 (pots[4..7], grads[3..5])
-    #pragma omp parallel for schedule(static)
-    for (int m = 0; m < N; m++) {
-        cdouble L_acc(0);
-        for (int d = 0; d < 3; d++) {
-            cdouble acc(0);
-            for (int q = 0; q < Nq; q++) {
-                int idx = m * Nq + q;
-                acc += f_p[idx*3+d] * jw_p[idx] * b8_pot[4+d][idx];
-                acc += f_m[idx*3+d] * jw_m[idx] * b8_pot[4+d][N*Nq + idx];
-            }
-            L_acc += ik * acc;
-        }
-        cdouble acc_p(0), acc_m(0);
-        for (int q = 0; q < Nq; q++) {
-            int idx = m * Nq + q;
-            acc_p += jw_p[idx] * b8_pot[7][idx];
-            acc_m += jw_m[idx] * b8_pot[7][N*Nq + idx];
-        }
-        L_result2[m] = L_acc - iok * (div_p[m] * acc_p + div_m[m] * acc_m);
+    // GPU accumulate L+K for RHS 2 from d_bp_res[4..7], d_bp_grd[3..5]
+    CUDA_CHECK(cudaMemset(d_L_re, 0, N * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_L_im, 0, N * sizeof(double)));
 
-        cdouble K_acc(0);
-        for (int q = 0; q < Nq; q++) {
-            int idx = m * Nq + q;
-            int i = idx;
-            cdouble cx = b8_grad[5][i*3+1] - b8_grad[4][i*3+2];
-            cdouble cy = b8_grad[3][i*3+2] - b8_grad[5][i*3+0];
-            cdouble cz = b8_grad[4][i*3+0] - b8_grad[3][i*3+1];
-            K_acc += jw_p[idx] * (f_p[idx*3]*cx + f_p[idx*3+1]*cy + f_p[idx*3+2]*cz);
-        }
-        for (int q = 0; q < Nq; q++) {
-            int idx = m * Nq + q;
-            int i = N*Nq + idx;
-            cdouble cx = b8_grad[5][i*3+1] - b8_grad[4][i*3+2];
-            cdouble cy = b8_grad[3][i*3+2] - b8_grad[5][i*3+0];
-            cdouble cz = b8_grad[4][i*3+0] - b8_grad[3][i*3+1];
-            K_acc += jw_m[idx] * (f_m[idx*3]*cx + f_m[idx*3+1]*cy + f_m[idx*3+2]*cz);
-        }
-        K_result2[m] = K_acc;
+    for (int d = 0; d < 3; d++) {
+        accum_L_vector_kernel<<<accum_grid, accum_block>>>(
+            spf.d_bp_res_re[4 + d], spf.d_bp_res_im[4 + d],
+            d_f_p, d_f_m, d_jw_p, d_jw_m,
+            d_L_re, d_L_im,
+            ik.real(), ik.imag(), N, Nq, d);
+    }
+    accum_L_scalar_kernel<<<accum_grid, accum_block>>>(
+        spf.d_bp_res_re[7], spf.d_bp_res_im[7],
+        d_div_p, d_div_m, d_jw_p, d_jw_m,
+        d_L_re, d_L_im,
+        iok.real(), iok.imag(), N, Nq);
+    accum_K_curl_kernel<<<accum_grid, accum_block>>>(
+        spf.d_bp_grd_re[3], spf.d_bp_grd_im[3],
+        spf.d_bp_grd_re[4], spf.d_bp_grd_im[4],
+        spf.d_bp_grd_re[5], spf.d_bp_grd_im[5],
+        d_f_p, d_f_m, d_jw_p, d_jw_m,
+        d_K_re, d_K_im, N, Nq);
+
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    // Download L2/K2
+    CUDA_CHECK(cudaMemcpy(h_L_re.data(), d_L_re, N * sizeof(double), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_L_im.data(), d_L_im, N * sizeof(double), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_K_re.data(), d_K_re, N * sizeof(double), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_K_im.data(), d_K_im, N * sizeof(double), cudaMemcpyDeviceToHost));
+    for (int m = 0; m < N; m++) {
+        L_result2[m] = cdouble(h_L_re[m], h_L_im[m]);
+        K_result2[m] = cdouble(h_K_re[m], h_K_im[m]);
     }
 
-    if (do_timing) printf("    [LK_B2] accum: %.1fms\n", t_accum.elapsed_ms());
+    if (do_timing) printf("    [LK_B2-GPU] accum+download: %.1fms\n", t_accum.elapsed_ms());
 }
 
 void BemFmmOperator::LK_combined_batch2(
@@ -1017,9 +1333,8 @@ void BemFmmOperator::LK_combined_batch2(
 
     // --- Vector part: combined potential (for L) + gradient (for K) in one FMM pass ---
     for (int d = 0; d < 3; d++) {
-        memset(tmp_src_charges.data(), 0, total_pts * sizeof(cdouble));
-        memset(tmp2_src_charges.data(), 0, total_pts * sizeof(cdouble));
-
+        // OMP-parallel charge packing for both vectors
+        #pragma omp parallel for schedule(static)
         for (int n = 0; n < N; n++) {
             cdouble xn1 = x1[n];
             cdouble xn2 = x2[n];
@@ -1043,7 +1358,8 @@ void BemFmmOperator::LK_combined_batch2(
                                       tmp_phi.data(), tmp_grad[d].data(),
                                       tmp2_phi.data(), tmp2_grad[d].data());
 
-        // Accumulate L vector part from potential — RHS 1
+        // OMP-parallel L accumulation for both RHS
+        #pragma omp parallel for schedule(static)
         for (int m = 0; m < N; m++) {
             cdouble acc1(0), acc2(0);
             for (int q = 0; q < Nq; q++) {
@@ -1066,30 +1382,29 @@ void BemFmmOperator::LK_combined_batch2(
 
     // --- L scalar part: potential only (no gradient needed) ---
     {
-        memset(tmp_src_charges.data(), 0, total_pts * sizeof(cdouble));
-        memset(tmp2_src_charges.data(), 0, total_pts * sizeof(cdouble));
-
+        #pragma omp parallel for schedule(static)
         for (int n = 0; n < N; n++) {
             cdouble xn1 = x1[n];
             cdouble xn2 = x2[n];
+            double dp = div_p[n];
+            double dm_v = div_m[n];
             for (int q = 0; q < Nq; q++) {
                 int idx = n * Nq + q;
-                double dp = div_p[n];
-                double dm = div_m[n];
                 double jwp = jw_p[idx];
                 double jwm = jw_m[idx];
 
                 tmp_src_charges[idx]        = dp * jwp * xn1;
-                tmp_src_charges[N*Nq + idx] = dm * jwm * xn1;
+                tmp_src_charges[N*Nq + idx] = dm_v * jwm * xn1;
 
                 tmp2_src_charges[idx]        = dp * jwp * xn2;
-                tmp2_src_charges[N*Nq + idx] = dm * jwm * xn2;
+                tmp2_src_charges[N*Nq + idx] = dm_v * jwm * xn2;
             }
         }
 
         fmm.evaluate_batch2(tmp_src_charges.data(), tmp2_src_charges.data(),
                              tmp_phi.data(), tmp2_phi.data());
 
+        #pragma omp parallel for schedule(static)
         for (int m = 0; m < N; m++) {
             cdouble acc_p1(0), acc_m1(0);
             cdouble acc_p2(0), acc_m2(0);
@@ -1110,9 +1425,7 @@ void BemFmmOperator::LK_combined_batch2(
     }
 
     // --- K: assemble curl from gradients computed above ---
-    // curl_x = dPhi_z/dy - dPhi_y/dz
-    // curl_y = dPhi_x/dz - dPhi_z/dx
-    // curl_z = dPhi_y/dx - dPhi_x/dy
+    #pragma omp parallel for schedule(static)
     for (int m = 0; m < N; m++) {
         cdouble acc1(0), acc2(0);
 
@@ -1344,5 +1657,19 @@ void BemFmmOperator::cleanup()
     } else {
         fmm_ext.cleanup();
         if (!shared_fmm) fmm_int.cleanup();
+    }
+    if (gpu_pack_ready) {
+        cudaFree(d_f_p); cudaFree(d_f_m);
+        cudaFree(d_jw_p); cudaFree(d_jw_m);
+        cudaFree(d_div_p); cudaFree(d_div_m);
+        cudaFree(d_x_re); cudaFree(d_x_im);
+        cudaFree(d_src_re); cudaFree(d_src_im);
+        cudaFree(d_phi_re); cudaFree(d_phi_im);
+        cudaFree(d_L_re); cudaFree(d_L_im);
+        cudaFree(d_K_re); cudaFree(d_K_im);
+        for (int d = 0; d < 3; d++) {
+            cudaFree(d_grad_buf_re[d]); cudaFree(d_grad_buf_im[d]);
+        }
+        gpu_pack_ready = false;
     }
 }

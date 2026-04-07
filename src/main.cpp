@@ -31,18 +31,21 @@ static void print_usage(const char* prog) {
     printf("  --quad N        Quadrature order: 4, 7, 13 (default: 7)\n");
     printf("  --out FILE      Output JSON file (default: result.json)\n");
     printf("  --single        Single orientation (no averaging)\n");
-    printf("  --solver TYPE   Solver: dense, fmm, pfft, spfft (default: dense)\n");
+    printf("  --solver TYPE   Solver: dense, fmm, pfft, spfft, auto (default: dense)\n");
     printf("  --digits N      Solver accuracy digits (default: 3)\n");
     printf("  --gmres-tol F   GMRES relative tolerance (default: 1e-4)\n");
     printf("  --gmres-restart N  GMRES restart (default: 100)\n");
     printf("  --max-leaf N    FMM max particles per leaf (default: 64)\n");
-    printf("  --prec TYPE     Preconditioner: ilu0, blockj (default: none)\n");
+    printf("  --prec TYPE     Preconditioner: ilu0, blockj, diag, auto (default: none)\n");
     printf("  --prec-r F      Block-Jacobi radius multiplier (default: 2.0)\n");
     printf("  --prec-bs N     Block-Jacobi max RWG per block (default: 1500)\n");
     printf("  --prec-overlap N  RAS overlap layers (default: 0 = standard BlockJ)\n");
     printf("  --shape TYPE    Particle shape: sphere (default), hex\n");
     printf("  --ar F          Hex aspect ratio H/D (default: 1.0)\n");
     printf("  --obj FILE      Load mesh from OBJ file\n");
+    printf("  --orient-tol F  Adaptive orient stop tolerance (default: 0 = disabled)\n");
+    printf("  --orient-sym B G  Orientation symmetry factors (default: 1 1)\n");
+    printf("                    B=2: beta [0,pi/2] (mirror sym), G=6: gamma [0,pi/3) (C6 hex)\n");
 }
 
 int main(int argc, char** argv) {
@@ -59,6 +62,7 @@ int main(int argc, char** argv) {
     bool use_fmm = false;
     bool use_pfft = false;
     bool use_spfft = false;
+    bool auto_solver = false;
     PrecondMode prec_mode = PREC_NONE;
     double prec_radius = 2.0;
     int prec_block_size = 1500;
@@ -70,6 +74,9 @@ int main(int argc, char** argv) {
     std::string shape = "sphere";
     double hex_ar = 1.0;
     const char* obj_file = nullptr;
+    double orient_tol = 0;  // adaptive orient stopping (0 = disabled)
+    int beta_sym = 1;   // beta symmetry factor (1=full, 2=half)
+    int gamma_sym = 1;  // gamma symmetry factor (1=full, 6=C6 hex)
 
     // Parse CLI
     for (int i = 1; i < argc; i++) {
@@ -102,6 +109,8 @@ int main(int argc, char** argv) {
                 use_fmm = true; use_pfft = true;
             } else if (strcmp(st, "spfft") == 0) {
                 use_fmm = true; use_pfft = true; use_spfft = true;
+            } else if (strcmp(st, "auto") == 0) {
+                auto_solver = true;
             } else {
                 fprintf(stderr, "Unknown solver type: %s\n", st); return 1;
             }
@@ -109,6 +118,8 @@ int main(int argc, char** argv) {
             const char* pt = argv[++i];
             if (strcmp(pt, "ilu0") == 0) prec_mode = PREC_ILU0;
             else if (strcmp(pt, "blockj") == 0) prec_mode = PREC_BLOCKJ;
+            else if (strcmp(pt, "diag") == 0) prec_mode = PREC_DIAG;
+            else if (strcmp(pt, "auto") == 0) prec_mode = PREC_NEARLU; // sentinel for auto
             else { fprintf(stderr, "Unknown prec type: %s\n", pt); return 1; }
         } else if (strcmp(argv[i], "--prec-r") == 0 && i+1 < argc) {
             prec_radius = atof(argv[++i]);
@@ -130,6 +141,11 @@ int main(int argc, char** argv) {
             hex_ar = atof(argv[++i]);
         } else if (strcmp(argv[i], "--obj") == 0 && i+1 < argc) {
             obj_file = argv[++i];
+        } else if (strcmp(argv[i], "--orient-tol") == 0 && i+1 < argc) {
+            orient_tol = atof(argv[++i]);
+        } else if (strcmp(argv[i], "--orient-sym") == 0 && i+2 < argc) {
+            beta_sym = atoi(argv[++i]);
+            gamma_sym = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             print_usage(argv[0]);
             return 0;
@@ -161,19 +177,27 @@ int main(int argc, char** argv) {
            k_ext.real(), k_int.real(), k_int.imag());
     printf("  eta_ext = %.4f, eta_int = %.4f\n", eta_ext, eta_int);
     printf("  Refinements: %d, Quad order: %d\n", refinements, quad_order);
-    if (use_fmm)
-        printf("  Mode: %s+GMRES (digits=%d, tol=%.0e, restart=%d, max_leaf=%d%s)\n",
-               use_spfft ? "SurfPFFT" : use_pfft ? "pFFT" : "FMM",
-               fmm_digits, gmres_tol, gmres_restart, max_leaf,
-               prec_mode == PREC_ILU0 ? ", ILU(0) prec" :
-               prec_mode == PREC_BLOCKJ ? ", BlockJ prec" : "");
-    else
-        printf("  Mode: Dense LU\n");
+    if (!auto_solver) {
+        if (use_fmm)
+            printf("  Mode: %s+GMRES (digits=%d, tol=%.0e, restart=%d, max_leaf=%d%s)\n",
+                   use_spfft ? "SurfPFFT" : use_pfft ? "pFFT" : "FMM",
+                   fmm_digits, gmres_tol, gmres_restart, max_leaf,
+                   prec_mode == PREC_ILU0 ? ", ILU(0) prec" :
+                   prec_mode == PREC_BLOCKJ ? ", BlockJ prec" :
+                   prec_mode == PREC_DIAG ? ", Diag prec" :
+                   prec_mode == PREC_NEARLU ? ", Auto prec" : "");
+        else
+            printf("  Mode: Dense LU\n");
+    }
     if (single_orient)
         printf("  Single orientation\n");
-    else
+    else {
         printf("  Orientations: %d x %d x %d = %d\n",
                n_alpha, n_beta, n_gamma, n_alpha * n_beta * n_gamma);
+        if (beta_sym > 1 || gamma_sym > 1)
+            printf("  Orient symmetry: beta x%d (0-%d deg), gamma x%d (0-%d deg)\n",
+                   beta_sym, 180 / beta_sym, gamma_sym, 360 / gamma_sym);
+    }
 
     // 1. Generate mesh
     Timer mesh_timer;
@@ -196,6 +220,49 @@ int main(int argc, char** argv) {
 
     int N = rwg.N;
     int N2 = 2 * N;
+
+    // Auto-solver: choose best solver based on shape, N, and ka
+    if (auto_solver) {
+        bool is_hex = (shape == "hex");
+        int Nq = (quad_order <= 4) ? 6 : (quad_order <= 7) ? 7 : 13;
+        int Nt = 2 * N * Nq;  // total quad points for P2P scaling estimate
+
+        if (N <= 300) {
+            // Tiny problem: dense LU is fastest
+            use_fmm = false;
+            printf("  Auto-solver: dense (N=%d small)\n", N);
+        } else if (is_hex && Nt <= 65000) {
+            // Hex prism, small: surface pFFT (2D FFT per face + P2P inter-face)
+            use_fmm = true; use_pfft = true; use_spfft = true;
+            printf("  Auto-solver: spfft (hex, Nt=%d)\n", Nt);
+        } else if (!is_hex && Nt <= 50000) {
+            // Sphere, small: 3D pFFT
+            use_fmm = true; use_pfft = true;
+            printf("  Auto-solver: pfft (sphere, Nt=%d)\n", Nt);
+        } else {
+            // Large problem: FMM scales as O(N log N), better than pFFT/spfft P2P O(N²)
+            use_fmm = true;
+            printf("  Auto-solver: fmm (Nt=%d)\n", Nt);
+        }
+
+        // Auto-solver implies auto-preconditioner for iterative solvers
+        if (use_fmm && prec_mode == PREC_NONE) {
+            prec_mode = PREC_NEARLU;
+            printf("  Auto-solver: enabling auto preconditioner\n");
+        }
+
+        // Print resolved mode
+        if (use_fmm)
+            printf("  Mode: %s+GMRES (digits=%d, tol=%.0e, restart=%d, max_leaf=%d%s)\n",
+                   use_spfft ? "SurfPFFT" : use_pfft ? "pFFT" : "FMM",
+                   fmm_digits, gmres_tol, gmres_restart, max_leaf,
+                   prec_mode == PREC_ILU0 ? ", ILU(0) prec" :
+                   prec_mode == PREC_BLOCKJ ? ", BlockJ prec" :
+                   prec_mode == PREC_DIAG ? ", Diag prec" :
+                   prec_mode == PREC_NEARLU ? ", Auto prec" : "");
+        else
+            printf("  Mode: Dense LU\n");
+    }
 
     // 4. Scattering angles
     std::vector<double> theta_arr(ntheta);
@@ -223,7 +290,12 @@ int main(int argc, char** argv) {
         // Build preconditioner if requested
         NearFieldPrecond* precond_ptr = nullptr;
         NearFieldPrecond precond;
-        if (prec_mode != PREC_NONE) {
+        if (prec_mode == PREC_NEARLU) {
+            // Auto mode: compute optimal parameters
+            AutoPrecondParams ap = AutoPrecondParams::compute(rwg.N, ka);
+            precond.build(fmm_op, ap.mode, ap.radius, ap.block_size, ap.overlap);
+            precond_ptr = &precond;
+        } else if (prec_mode != PREC_NONE) {
             precond.build(fmm_op, prec_mode, prec_radius, prec_block_size, prec_overlap);
             precond_ptr = &precond;
         }
@@ -287,8 +359,8 @@ int main(int argc, char** argv) {
 
             time_farfield = ff_timer.elapsed_s();
         } else {
-            // Orientation averaging with GMRES
-            std::vector<Orientation> orients = generate_orientations(n_alpha, n_beta, n_gamma);
+            // Orientation averaging with GMRES + inline far-field
+            std::vector<Orientation> orients = generate_orientations(n_alpha, n_beta, n_gamma, beta_sym, gamma_sym);
             sort_orientations_nearest(orients);
             int n_total = (int)orients.size();
 
@@ -305,15 +377,37 @@ int main(int argc, char** argv) {
                 e_theta_lab[it] = Vec3(ct, 0, -st);
             }
 
-            // Storage for all solutions (for batched far-field)
-            int n_calls = n_total * 2;
-            std::vector<cdouble> all_coeffs_J(n_calls * N);
-            std::vector<cdouble> all_coeffs_M(n_calls * N);
-
             printf("\n  Solving %d orientations x 2 polarizations with GMRES...\n", n_total);
+            if (orient_tol > 0)
+                printf("  Adaptive orient stopping: tol=%.1e\n", orient_tol);
 
             // Solution vectors — reused across orientations as initial guess
             std::vector<cdouble> x_par(N2, cdouble(0)), x_perp(N2, cdouble(0));
+
+            // Persistent GMRES workspace
+            GmresPairedWorkspace gmres_ws;
+            gmres_ws.init(N2, gmres_restart, precond_ptr != nullptr);
+
+            // Per-orient Mueller storage
+            std::vector<double> per_orient_weights(n_total);
+            std::vector<double> per_orient_mueller(n_total * 16 * ntheta, 0.0);
+
+            cdouble ik_val = cdouble(0, -1) * k_ext;
+            double k2 = std::norm(k_ext);
+
+            // Convergence check state: Csca-based (integral of M11*sinθ)
+            // Requires 2 consecutive checks below tol for robustness
+            int check_interval = std::max(20, n_total / 20);  // every 5% or 20
+            int n_computed = 0;
+            bool orient_converged = false;
+            double prev_csca = 0;
+            bool has_prev_checkpoint = false;
+            int consecutive_ok = 0;
+
+            // Per-orient far-field buffers
+            std::vector<cdouble> oi_coeffs_J(2 * N), oi_coeffs_M(2 * N);
+            std::vector<double> oi_r_hats(ntheta * 3);
+            std::vector<cdouble> oi_Fv(2 * ntheta * 3);
 
             for (int oi = 0; oi < n_total; oi++) {
                 Mat3& RT = orients[oi].RT;
@@ -322,7 +416,6 @@ int main(int argc, char** argv) {
                 Vec3 e_perp = RT * Vec3(0, 1, 0);
 
                 std::vector<cdouble> b_par(N2), b_perp(N2);
-
                 compute_rhs_planewave(rwg, mesh, k_ext, eta_ext, e_par, k_hat, quad_order, b_par.data());
                 compute_rhs_planewave(rwg, mesh, k_ext, eta_ext, e_perp, k_hat, quad_order, b_perp.data());
 
@@ -330,57 +423,36 @@ int main(int argc, char** argv) {
                 int mv = gmres_solve_paired(fmm_op,
                     b_par.data(), b_perp.data(),
                     x_par.data(), x_perp.data(),
-                    gmres_restart, gmres_tol, 300, false, precond_ptr);
-                printf("    Orient %d/%d: %d matvecs, %.1fs\n",
-                       oi + 1, n_total, mv, oi_timer.elapsed_s());
+                    gmres_restart, gmres_tol, 300, false, precond_ptr, &gmres_ws);
 
-                memcpy(&all_coeffs_J[(2*oi) * N], x_par.data(), N * sizeof(cdouble));
-                memcpy(&all_coeffs_M[(2*oi) * N], x_par.data() + N, N * sizeof(cdouble));
-                memcpy(&all_coeffs_J[(2*oi+1) * N], x_perp.data(), N * sizeof(cdouble));
-                memcpy(&all_coeffs_M[(2*oi+1) * N], x_perp.data() + N, N * sizeof(cdouble));
-            }
+                // Inline far-field for this orient
+                memcpy(&oi_coeffs_J[0], x_par.data(), N * sizeof(cdouble));
+                memcpy(&oi_coeffs_M[0], x_par.data() + N, N * sizeof(cdouble));
+                memcpy(&oi_coeffs_J[N], x_perp.data(), N * sizeof(cdouble));
+                memcpy(&oi_coeffs_M[N], x_perp.data() + N, N * sizeof(cdouble));
 
-            time_solve = solve_timer.elapsed_s();
-
-            // Far-field (batched GPU)
-            Timer ff_timer;
-            printf("  Computing GPU far-field: %d calls x %d dirs...\n", n_calls, ntheta);
-
-            std::vector<double> all_r_hats(n_total * ntheta * 3);
-            std::vector<Vec3> all_e_par(n_total * ntheta), all_e_perp(n_total * ntheta);
-            for (int oi = 0; oi < n_total; oi++) {
-                Mat3& RT = orients[oi].RT;
                 for (int it = 0; it < ntheta; it++) {
                     Vec3 rh = RT * r_hat_lab[it];
-                    int base = (oi * ntheta + it) * 3;
-                    all_r_hats[base]   = rh.x;
-                    all_r_hats[base+1] = rh.y;
-                    all_r_hats[base+2] = rh.z;
-                    all_e_par[oi * ntheta + it]  = RT * e_theta_lab[it];
-                    all_e_perp[oi * ntheta + it] = RT * e_phi_lab;
+                    oi_r_hats[it * 3]     = rh.x;
+                    oi_r_hats[it * 3 + 1] = rh.y;
+                    oi_r_hats[it * 3 + 2] = rh.z;
                 }
-            }
 
-            std::vector<cdouble> all_Fv(n_calls * ntheta * 3);
-            compute_farfield_batch_cuda(ff_gpu,
-                                        all_coeffs_J.data(), all_coeffs_M.data(),
-                                        all_r_hats.data(),
-                                        k_ext, eta_ext,
-                                        n_calls, n_total, ntheta,
-                                        all_Fv.data());
+                compute_farfield_batch_cuda(ff_gpu,
+                    oi_coeffs_J.data(), oi_coeffs_M.data(),
+                    oi_r_hats.data(), k_ext, eta_ext,
+                    2, 1, ntheta, oi_Fv.data());
 
-            // Post-process: Fv -> S-matrix -> Mueller
-            cdouble ik_val = cdouble(0, -1) * k_ext;
-            double k2 = std::norm(k_ext);
-            for (int oi = 0; oi < n_total; oi++) {
+                // S-matrix -> Mueller for this orient
                 double weight = orients[oi].weight;
-                cdouble* Fv_par  = &all_Fv[(2*oi) * ntheta * 3];
-                cdouble* Fv_perp = &all_Fv[(2*oi+1) * ntheta * 3];
+                per_orient_weights[oi] = weight;
+                cdouble* Fv_par  = &oi_Fv[0];
+                cdouble* Fv_perp = &oi_Fv[ntheta * 3];
 
                 std::vector<cdouble> S1(ntheta), S2(ntheta), S3(ntheta), S4(ntheta);
                 for (int it = 0; it < ntheta; it++) {
-                    Vec3& ep = all_e_par[oi * ntheta + it];
-                    Vec3& epp = all_e_perp[oi * ntheta + it];
+                    Vec3 ep  = RT * e_theta_lab[it];
+                    Vec3 epp = RT * e_phi_lab;
 
                     cdouble F_par_p  = Fv_par[it*3]*ep.x  + Fv_par[it*3+1]*ep.y  + Fv_par[it*3+2]*ep.z;
                     cdouble F_perp_p = Fv_par[it*3]*epp.x + Fv_par[it*3+1]*epp.y + Fv_par[it*3+2]*epp.z;
@@ -393,16 +465,95 @@ int main(int argc, char** argv) {
                     S1[it] = ik_val * F_perp_pp;
                 }
 
-                std::vector<double> M_orient(16 * ntheta);
+                double* M_oi = &per_orient_mueller[oi * 16 * ntheta];
                 amplitude_to_mueller(S1.data(), S2.data(), S3.data(), S4.data(),
-                                    ntheta, M_orient.data());
+                                    ntheta, M_oi);
 
                 for (int i = 0; i < 16 * ntheta; i++)
-                    M_avg[i] += weight * M_orient[i] / k2;
+                    M_avg[i] += weight * M_oi[i] / k2;
+
+                n_computed = oi + 1;
+
+                printf("    Orient %d/%d: %d matvecs, %.1fs\n",
+                       n_computed, n_total, mv, oi_timer.elapsed_s());
+
+                // Adaptive convergence: Csca (integral of M11*sinθ) between checkpoints
+                // Requires 2 consecutive checks below tol for robustness
+                if (orient_tol > 0 && n_computed >= 40 && n_computed % check_interval == 0) {
+                    // Compute normalized Csca = ∫ M11(θ) sinθ dθ / w_sum
+                    double w_sum = 0;
+                    for (int oi2 = 0; oi2 < n_computed; oi2++)
+                        w_sum += per_orient_weights[oi2];
+
+                    double csca_now = 0;
+                    for (int it = 3; it < ntheta - 3; it++) {
+                        double sth = sin(M_PI * it / (ntheta - 1));
+                        csca_now += (M_avg[it] / w_sum) * sth;
+                    }
+
+                    if (!has_prev_checkpoint) {
+                        prev_csca = csca_now;
+                        has_prev_checkpoint = true;
+                        printf("  [Orient-conv] %d/%d: first checkpoint (Csca=%.4e, w_sum=%.4f)\n",
+                               n_computed, n_total, csca_now, w_sum);
+                    } else {
+                        double csca_rel = (std::abs(prev_csca) > 1e-30)
+                                          ? std::abs(csca_now - prev_csca) / std::abs(prev_csca) : 0;
+
+                        if (csca_rel < orient_tol) {
+                            consecutive_ok++;
+                            printf("  [Orient-conv] %d/%d: Csca_RE=%.2e < tol=%.1e (%d/%d consecutive)\n",
+                                   n_computed, n_total, csca_rel, orient_tol, consecutive_ok, 2);
+                            if (consecutive_ok >= 2) {
+                                printf("  [Orient-conv] Converged! Stopping early at %d/%d orientations.\n",
+                                       n_computed, n_total);
+                                orient_converged = true;
+                                prev_csca = csca_now;
+                                break;
+                            }
+                        } else {
+                            consecutive_ok = 0;
+                            printf("  [Orient-conv] %d/%d: Csca_RE=%.2e (tol=%.1e)\n",
+                                   n_computed, n_total, csca_rel, orient_tol);
+                        }
+                        prev_csca = csca_now;
+                    }
+                }
             }
 
-            time_farfield = ff_timer.elapsed_s();
-            printf("  Averaged over %d orientations.\n", n_total);
+            time_solve = solve_timer.elapsed_s();
+            time_farfield = 0;  // included in solve loop
+
+            // Rescale M_avg if stopped early (partial weight sum -> full)
+            if (orient_converged && n_computed < n_total) {
+                double w_computed = 0, w_total = 0;
+                for (int oi2 = 0; oi2 < n_computed; oi2++)
+                    w_computed += per_orient_weights[oi2];
+                for (int oi2 = 0; oi2 < n_total; oi2++)
+                    w_total += orients[oi2].weight;
+                double scale = w_total / w_computed;
+                for (int i = 0; i < 16 * ntheta; i++)
+                    M_avg[i] *= scale;
+                printf("  Weight rescale: %.4f (computed %.4f of %.4f)\n",
+                       scale, w_computed, w_total);
+            }
+
+            printf("  Averaged over %d/%d orientations.\n", n_computed, n_total);
+
+            // Save per-orient Mueller
+            {
+                std::string po_path = std::string(outfile) + ".per_orient";
+                FILE* pf = fopen(po_path.c_str(), "wb");
+                if (pf) {
+                    int header[4] = {n_computed, ntheta, n_alpha, n_beta};
+                    fwrite(header, sizeof(int), 4, pf);
+                    fwrite(per_orient_weights.data(), sizeof(double), n_computed, pf);
+                    fwrite(per_orient_mueller.data(), sizeof(double), n_computed * 16 * ntheta, pf);
+                    fclose(pf);
+                    printf("  Per-orient Mueller saved: %s (%d orient x 16 x %d)\n",
+                           po_path.c_str(), n_computed, ntheta);
+                }
+            }
         }
 
         if (prec_mode != PREC_NONE)
@@ -473,7 +624,7 @@ int main(int argc, char** argv) {
 
         } else {
             // Orientation averaging (batched)
-            std::vector<Orientation> orients = generate_orientations(n_alpha, n_beta, n_gamma);
+            std::vector<Orientation> orients = generate_orientations(n_alpha, n_beta, n_gamma, beta_sym, gamma_sym);
             sort_orientations_nearest(orients);
             int n_total = (int)orients.size();
 

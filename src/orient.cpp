@@ -70,12 +70,34 @@ void gauss_legendre(int n, std::vector<double>& nodes, std::vector<double>& weig
 }
 
 
-std::vector<Orientation> generate_orientations(int n_alpha, int n_beta, int n_gamma) {
+std::vector<Orientation> generate_orientations(int n_alpha, int n_beta, int n_gamma,
+                                               int beta_sym, int gamma_sym) {
     std::vector<double> mu_nodes, mu_weights;
-    gauss_legendre(n_beta, mu_nodes, mu_weights);
+
+    if (beta_sym == 2) {
+        // Beta symmetry: generate GL(2*n_beta) on [-1,1], keep only positive nodes (cos>0 => beta<90)
+        // This gives EXACT equivalence to full GL(2*n_beta) when f(beta) = f(pi-beta)
+        std::vector<double> full_nodes, full_weights;
+        gauss_legendre(2 * n_beta, full_nodes, full_weights);
+        mu_nodes.resize(n_beta);
+        mu_weights.resize(n_beta);
+        int j = 0;
+        for (int i = 0; i < 2 * n_beta; i++) {
+            if (full_nodes[i] > 0) {  // cos(beta) > 0 => beta < 90
+                mu_nodes[j] = full_nodes[i];
+                mu_weights[j] = full_weights[i] * 2.0;  // double weight for symmetry
+                j++;
+            }
+        }
+    } else {
+        gauss_legendre(n_beta, mu_nodes, mu_weights);
+    }
 
     double d_alpha = 2.0 * M_PI / n_alpha;
+    // Weight uses full 2pi/n_gamma (symmetry factor already accounted for)
     double d_gamma = 2.0 * M_PI / n_gamma;
+    // Actual gamma range is [0, 2pi/gamma_sym)
+    double gamma_step = 2.0 * M_PI / (gamma_sym * n_gamma);
 
     std::vector<Orientation> orients;
     orients.reserve(n_alpha * n_beta * n_gamma);
@@ -86,7 +108,7 @@ std::vector<Orientation> generate_orientations(int n_alpha, int n_beta, int n_ga
             double beta = acos(mu_nodes[ib]);
             double w_beta = mu_weights[ib];
             for (int ig = 0; ig < n_gamma; ig++) {
-                double gamma = ig * d_gamma;
+                double gamma = ig * gamma_step;
 
                 Mat3 R = euler_rotation(alpha, beta, gamma);
                 Orientation o;

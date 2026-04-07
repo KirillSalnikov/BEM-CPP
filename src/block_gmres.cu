@@ -9,26 +9,14 @@
 #include <complex>
 #include <vector>
 
-// Paired GMRES(m) with restart for two complex systems sharing the same operator.
-// Runs two independent GMRES iterations in lockstep, sharing the batched matvec.
-// Right-preconditioned: solves A * M^{-1} * u = b, then x = M^{-1} * u.
+// ---- Persistent workspace init/cleanup ----
 
-int gmres_solve_paired(BemFmmOperator& op,
-                       const cdouble* b1, const cdouble* b2,
-                       cdouble* x1, cdouble* x2,
-                       int restart, double tol, int maxiter,
-                       bool verbose, NearFieldPrecond* precond)
-{
-    int n = op.system_size;
+void GmresPairedWorkspace::init(int n_, int restart_, bool use_precond) {
+    if (allocated && n == n_ && restart == restart_) return;
+    if (allocated) cleanup();
 
-    // cuBLAS handle (shared for both systems)
-    cublasHandle_t handle;
-    CUBLAS_CHECK(cublasCreate(&handle));
-
-    // ---- GPU memory: two sets of Krylov bases and workspace ----
-    cuDoubleComplex *d_V1, *d_V2;      // Krylov bases: (n, restart+1) each
-    cuDoubleComplex *d_w1, *d_w2;      // matvec output workspace
-    cuDoubleComplex *d_h1, *d_h2;      // Gram-Schmidt coefficient vectors
+    n = n_;
+    restart = restart_;
 
     CUDA_CHECK(cudaMalloc(&d_V1, (size_t)n * (restart + 1) * sizeof(cuDoubleComplex)));
     CUDA_CHECK(cudaMalloc(&d_V2, (size_t)n * (restart + 1) * sizeof(cuDoubleComplex)));
@@ -37,28 +25,93 @@ int gmres_solve_paired(BemFmmOperator& op,
     CUDA_CHECK(cudaMalloc(&d_h1, (restart + 1) * sizeof(cuDoubleComplex)));
     CUDA_CHECK(cudaMalloc(&d_h2, (restart + 1) * sizeof(cuDoubleComplex)));
 
-    // ---- Host memory: two sets of everything ----
-    std::vector<cdouble> h_r1(n), h_r2(n);
-    std::vector<cdouble> h_w1(n), h_w2(n);
-    std::vector<cdouble> h_v1(n), h_v2(n);
-    std::vector<cdouble> h_z1(n), h_z2(n);
-    std::vector<cdouble> h_x1(n), h_x2(n);
-    std::vector<cdouble> h_hvec1(restart + 1), h_hvec2(restart + 1);
+    CUBLAS_CHECK(cublasCreate(&handle));
 
-    // Right preconditioning: store Z_j = M^{-1} * v_j for each system
-    std::vector<cdouble> h_Z1, h_Z2;
-    if (precond) {
+    h_r1.resize(n); h_r2.resize(n);
+    h_w1.resize(n); h_w2.resize(n);
+    h_v1.resize(n); h_v2.resize(n);
+    h_z1.resize(n); h_z2.resize(n);
+    h_x1.resize(n); h_x2.resize(n);
+    h_hvec1.resize(restart + 1); h_hvec2.resize(restart + 1);
+
+    if (use_precond) {
         h_Z1.resize((size_t)n * restart);
         h_Z2.resize((size_t)n * restart);
     }
 
-    // Hessenberg matrices: (restart+1, restart) stored column-major
-    std::vector<cdouble> H1((restart + 1) * restart, cdouble(0));
-    std::vector<cdouble> H2((restart + 1) * restart, cdouble(0));
+    H1.resize((restart + 1) * restart);
+    H2.resize((restart + 1) * restart);
+    cs1.resize(restart); sn1.resize(restart); s1.resize(restart + 1); y1.resize(restart);
+    cs2.resize(restart); sn2.resize(restart); s2.resize(restart + 1); y2.resize(restart);
 
-    // Givens rotation data
-    std::vector<cdouble> cs1(restart), sn1(restart), s1(restart + 1), y1(restart);
-    std::vector<cdouble> cs2(restart), sn2(restart), s2(restart + 1), y2(restart);
+    allocated = true;
+    printf("  [GMRES-workspace] Allocated: n=%d, restart=%d, %.1f MB GPU\n",
+           n, restart,
+           (2.0 * n * (restart + 1) + 2 * n + 2 * (restart + 1)) * 16.0 / 1e6);
+}
+
+void GmresPairedWorkspace::cleanup() {
+    if (!allocated) return;
+    cudaFree(d_V1); cudaFree(d_V2);
+    cudaFree(d_w1); cudaFree(d_w2);
+    cudaFree(d_h1); cudaFree(d_h2);
+    cublasDestroy(handle);
+    allocated = false;
+}
+
+// Paired GMRES(m) with restart for two complex systems sharing the same operator.
+// Runs two independent GMRES iterations in lockstep, sharing the batched matvec.
+// Right-preconditioned: solves A * M^{-1} * u = b, then x = M^{-1} * u.
+
+int gmres_solve_paired(BemFmmOperator& op,
+                       const cdouble* b1, const cdouble* b2,
+                       cdouble* x1, cdouble* x2,
+                       int restart, double tol, int maxiter,
+                       bool verbose, NearFieldPrecond* precond,
+                       GmresPairedWorkspace* ws)
+{
+    int n = op.system_size;
+
+    // Use persistent workspace if provided, otherwise allocate locally
+    GmresPairedWorkspace local_ws;
+    if (!ws) {
+        local_ws.init(n, restart, precond != nullptr);
+        ws = &local_ws;
+    }
+
+    // Aliases for readability
+    cublasHandle_t& handle = ws->handle;
+    cuDoubleComplex*& d_V1 = ws->d_V1;
+    cuDoubleComplex*& d_V2 = ws->d_V2;
+    cuDoubleComplex*& d_w1 = ws->d_w1;
+    cuDoubleComplex*& d_w2 = ws->d_w2;
+    cuDoubleComplex*& d_h1 = ws->d_h1;
+    cuDoubleComplex*& d_h2 = ws->d_h2;
+
+    std::vector<cdouble>& h_r1 = ws->h_r1;
+    std::vector<cdouble>& h_r2 = ws->h_r2;
+    std::vector<cdouble>& h_w1 = ws->h_w1;
+    std::vector<cdouble>& h_w2 = ws->h_w2;
+    std::vector<cdouble>& h_v1 = ws->h_v1;
+    std::vector<cdouble>& h_v2 = ws->h_v2;
+    std::vector<cdouble>& h_z1 = ws->h_z1;
+    std::vector<cdouble>& h_z2 = ws->h_z2;
+    std::vector<cdouble>& h_x1 = ws->h_x1;
+    std::vector<cdouble>& h_x2 = ws->h_x2;
+    std::vector<cdouble>& h_hvec1 = ws->h_hvec1;
+    std::vector<cdouble>& h_hvec2 = ws->h_hvec2;
+    std::vector<cdouble>& h_Z1 = ws->h_Z1;
+    std::vector<cdouble>& h_Z2 = ws->h_Z2;
+    std::vector<cdouble>& H1 = ws->H1;
+    std::vector<cdouble>& H2 = ws->H2;
+    std::vector<cdouble>& cs1 = ws->cs1;
+    std::vector<cdouble>& sn1 = ws->sn1;
+    std::vector<cdouble>& s1 = ws->s1;
+    std::vector<cdouble>& y1 = ws->y1;
+    std::vector<cdouble>& cs2 = ws->cs2;
+    std::vector<cdouble>& sn2 = ws->sn2;
+    std::vector<cdouble>& s2 = ws->s2;
+    std::vector<cdouble>& y2 = ws->y2;
 
     // Use x1/x2 as initial guess (they may be non-zero from previous solve)
     memcpy(h_x1.data(), x1, n * sizeof(cdouble));
@@ -143,19 +196,31 @@ int gmres_solve_paired(BemFmmOperator& op,
 
         m1 = 0;
         m2 = 0;
+        double t_prec = 0, t_mv = 0, t_arnoldi = 0;
         int j;
         for (j = 0; j < restart; j++) {
+            Timer t_iter;
             // Apply preconditioner and matvec
             if (precond && precond->gpu_ready) {
-                // GPU preconditioner: apply directly on GPU, no D→H for v_j
-                if (!converged1) {
+                // GPU preconditioner: apply directly on GPU
+                if (!converged1 && !converged2) {
+                    // Paired apply: both systems concurrently (two CUDA streams)
+                    precond->apply_gpu_paired(
+                        (const cuDoubleComplex*)d_V1 + (size_t)j * n, precond->d_buf_z,
+                        (const cuDoubleComplex*)d_V2 + (size_t)j * n, precond->d_buf_z2);
+                    CUDA_CHECK(cudaMemcpy(h_z1.data(), precond->d_buf_z,
+                                          n * sizeof(cuDoubleComplex), cudaMemcpyDeviceToHost));
+                    CUDA_CHECK(cudaMemcpy(h_z2.data(), precond->d_buf_z2,
+                                          n * sizeof(cuDoubleComplex), cudaMemcpyDeviceToHost));
+                    memcpy(&h_Z1[(size_t)j * n], h_z1.data(), n * sizeof(cdouble));
+                    memcpy(&h_Z2[(size_t)j * n], h_z2.data(), n * sizeof(cdouble));
+                } else if (!converged1) {
                     precond->apply_gpu((const cuDoubleComplex*)d_V1 + (size_t)j * n,
                                        precond->d_buf_z);
                     CUDA_CHECK(cudaMemcpy(h_z1.data(), precond->d_buf_z,
                                           n * sizeof(cuDoubleComplex), cudaMemcpyDeviceToHost));
                     memcpy(&h_Z1[(size_t)j * n], h_z1.data(), n * sizeof(cdouble));
-                }
-                if (!converged2) {
+                } else {
                     precond->apply_gpu((const cuDoubleComplex*)d_V2 + (size_t)j * n,
                                        precond->d_buf_z);
                     CUDA_CHECK(cudaMemcpy(h_z2.data(), precond->d_buf_z,
@@ -163,6 +228,8 @@ int gmres_solve_paired(BemFmmOperator& op,
                     memcpy(&h_Z2[(size_t)j * n], h_z2.data(), n * sizeof(cdouble));
                 }
 
+                t_prec += t_iter.elapsed_ms();
+                Timer t_mv_timer;
                 if (!converged1 && !converged2) {
                     op.matvec_batch2(h_z1.data(), h_z2.data(), h_w1.data(), h_w2.data());
                     total_matvecs++;
@@ -173,6 +240,7 @@ int gmres_solve_paired(BemFmmOperator& op,
                     op.matvec(h_z2.data(), h_w2.data());
                     total_matvecs++;
                 }
+                t_mv += t_mv_timer.elapsed_ms();
             } else if (precond) {
                 // CPU preconditioner: need v_j on host
                 if (!converged1) {
@@ -188,6 +256,8 @@ int gmres_solve_paired(BemFmmOperator& op,
                     memcpy(&h_Z2[(size_t)j * n], h_z2.data(), n * sizeof(cdouble));
                 }
 
+                t_prec += t_iter.elapsed_ms();
+                Timer t_mv_timer2;
                 if (!converged1 && !converged2) {
                     op.matvec_batch2(h_z1.data(), h_z2.data(), h_w1.data(), h_w2.data());
                     total_matvecs++;
@@ -198,6 +268,7 @@ int gmres_solve_paired(BemFmmOperator& op,
                     op.matvec(h_z2.data(), h_w2.data());
                     total_matvecs++;
                 }
+                t_mv += t_mv_timer2.elapsed_ms();
             } else {
                 // No preconditioner: download v_j, matvec directly
                 if (!converged1)
@@ -207,6 +278,8 @@ int gmres_solve_paired(BemFmmOperator& op,
                     CUDA_CHECK(cudaMemcpy(h_v2.data(), (cuDoubleComplex*)d_V2 + (size_t)j * n,
                                           n * sizeof(cuDoubleComplex), cudaMemcpyDeviceToHost));
 
+                t_prec += t_iter.elapsed_ms();
+                Timer t_mv_timer3;
                 if (!converged1 && !converged2) {
                     op.matvec_batch2(h_v1.data(), h_v2.data(), h_w1.data(), h_w2.data());
                     total_matvecs++;
@@ -217,9 +290,11 @@ int gmres_solve_paired(BemFmmOperator& op,
                     op.matvec(h_v2.data(), h_w2.data());
                     total_matvecs++;
                 }
+                t_mv += t_mv_timer3.elapsed_ms();
             }
 
             // ---- Independent Arnoldi for system 1 ----
+            Timer t_arnoldi_timer;
             if (!converged1) {
                 CUDA_CHECK(cudaMemcpy(d_w1, h_w1.data(), n * sizeof(cuDoubleComplex),
                                       cudaMemcpyHostToDevice));
@@ -398,8 +473,18 @@ int gmres_solve_paired(BemFmmOperator& op,
                        converged2 ? " [2:done]" : "");
             }
 
+            t_arnoldi += t_arnoldi_timer.elapsed_ms();
+
             if (converged1 && converged2)
                 break;
+        }
+
+        if (verbose) {
+            printf("  [GMRES-timing] prec: %.0fms, matvec: %.0fms, arnoldi: %.0fms (per iter: prec=%.0f, mv=%.0f, arn=%.0fms)\n",
+                   t_prec, t_mv, t_arnoldi,
+                   (j > 0) ? t_prec / j : 0.0,
+                   (j > 0) ? t_mv / j : 0.0,
+                   (j > 0) ? t_arnoldi / j : 0.0);
         }
 
         // ---- Update solution for system 1 ----
@@ -519,14 +604,8 @@ int gmres_solve_paired(BemFmmOperator& op,
                    converged2 ? 0.0 : rnorm2 / bnorm2);
     }
 
-    // Cleanup
-    cudaFree(d_V1);
-    cudaFree(d_V2);
-    cudaFree(d_w1);
-    cudaFree(d_w2);
-    cudaFree(d_h1);
-    cudaFree(d_h2);
-    cublasDestroy(handle);
+    // Cleanup only if using local workspace (persistent ws stays alive)
+    // local_ws destructor handles cleanup automatically if it was used
 
     return total_matvecs;
 }

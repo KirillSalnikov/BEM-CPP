@@ -88,6 +88,32 @@ struct BemFmmOperator {
     std::vector<cdouble> b8_pot[8];    // all 8 potential results
     std::vector<cdouble> b8_grad[6];   // 6 gradient results
 
+    // GPU arrays for charge packing (uploaded once in init, reused every matvec)
+    double* d_f_p;       // (N*Nq*3) basis values, plus half
+    double* d_f_m;       // (N*Nq*3) basis values, minus half
+    double* d_jw_p;      // (N*Nq) Jacobian weights, plus half
+    double* d_jw_m;      // (N*Nq)
+    double* d_div_p;     // (N) divergence, plus half
+    double* d_div_m;     // (N) divergence, minus half
+    // GPU workspace for charge packing / result accumulation
+    double* d_x_re;      // (N) input coefficient re
+    double* d_x_im;      // (N) input coefficient im
+    double* d_src_re;    // (2*N*Nq) packed charges re
+    double* d_src_im;    // (2*N*Nq)
+    double* d_phi_re;    // (2*N*Nq) FMM potential result re
+    double* d_phi_im;    // (2*N*Nq)
+    double* d_L_re;      // (N) L operator result re
+    double* d_L_im;      // (N)
+    double* d_K_re;      // (N) K operator result re
+    double* d_K_im;      // (N)
+    // Gradient storage for K operator (3 sets, one per source component d=0,1,2)
+    double* d_grad_buf_re[3];  // each (2*N*Nq*3) = (Nt*3)
+    double* d_grad_buf_im[3];
+    bool gpu_pack_ready; // true after GPU arrays initialized
+
+    // Host staging for x coefficient split (GPU-native SurfPFFT path)
+    std::vector<double> h_x_split_re, h_x_split_im;  // (N)
+
     // Initialize operator (use_pfft_=true for pFFT acceleration)
     void init(const RWG& rwg, const Mesh& mesh,
               cdouble k_ext, cdouble k_int,

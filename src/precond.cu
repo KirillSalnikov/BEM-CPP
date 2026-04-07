@@ -9,6 +9,7 @@
 #include <unordered_set>
 #include <numeric>
 #include <string>
+#include <omp.h>
 
 // ============================================================
 // Spatial hash key for 3D integer cell coordinates
@@ -649,13 +650,23 @@ static void do_block_jacobi(NearFieldPrecond& P, BemFmmOperator& op, double radi
     cdouble k_vals[2] = {op.k_ext, op.k_int};
     cdouble eta_e = op.eta_ext, eta_i = op.eta_int;
 
+    // Precompute ik and iok for both wavenumbers (constant for all blocks)
+    cdouble ik_pre[2], iok_pre[2];
+    for (int ki = 0; ki < 2; ki++) {
+        ik_pre[ki] = cdouble(0, 1) * k_vals[ki];
+        iok_pre[ki] = cdouble(0, 1) / k_vals[ki];
+    }
+    bool k_real_only = (std::abs(k_vals[0].imag()) < 1e-15 && std::abs(k_vals[1].imag()) < 1e-15);
+
     P.block_lu.resize(P.n_blocks);
     P.block_piv.resize(P.n_blocks);
 
     int blocks_done = 0;
+    double total_assemble_ms = 0, total_lu_ms = 0;
 
-    #pragma omp parallel for schedule(dynamic)
+    #pragma omp parallel for schedule(dynamic) reduction(+:total_assemble_ms, total_lu_ms)
     for (int bi = 0; bi < P.n_blocks; bi++) {
+        Timer t_blk_asm;
         int B_ext = P.block_sizes_ext[bi]; // extended size (own + overlap)
         int B2 = 2 * B_ext;
         const auto& rwg = P.block_rwg_ext[bi]; // extended RWG list
@@ -683,38 +694,118 @@ static void do_block_jacobi(NearFieldPrecond& P, BemFmmOperator& op, double radi
                         double dn = (hn == 0) ? op.div_p[n_idx] : op.div_m[n_idx];
                         const double* jwn = (hn == 0) ? &op.jw_p[n_idx*Nq] : &op.jw_m[n_idx*Nq];
 
-                        for (int qi = 0; qi < Nq; qi++) {
-                            double rx = qm[qi*3], ry = qm[qi*3+1], rz = qm[qi*3+2];
-                            double fxm = fm[qi*3], fym = fm[qi*3+1], fzm = fm[qi*3+2];
-                            double wm_val = jwm[qi];
+                        double dm_dn = dm * dn;
 
-                            for (int qj = 0; qj < Nq; qj++) {
-                                double dx = rx - qn[qj*3];
-                                double dy = ry - qn[qj*3+1];
-                                double dz = rz - qn[qj*3+2];
-                                double R = std::sqrt(dx*dx + dy*dy + dz*dz);
-                                double wn_val = jwn[qj];
-                                double ww = wm_val * wn_val;
+                        // Real-k fast path: avoid complex arithmetic in inner loop
+                        if (k_real_only) {
+                            double k_re0 = k_vals[0].real();
+                            double k_re1 = k_vals[1].real();
+                            // Pre-compute L coefficients: L = i*(k*f_dot - dm_dn/k) * G * ww
+                            // For real k: i*G = i*(c+is)*Gb = (-s+ic)*Gb
 
-                                double fxn = fn[qj*3], fyn = fn[qj*3+1], fzn = fn[qj*3+2];
-                                double f_dot = fxm*fxn + fym*fyn + fzm*fzn;
+                            for (int qi = 0; qi < Nq; qi++) {
+                                double rx = qm[qi*3], ry = qm[qi*3+1], rz = qm[qi*3+2];
+                                double fxm = fm[qi*3], fym = fm[qi*3+1], fzm = fm[qi*3+2];
+                                double wm_val = jwm[qi];
 
-                                for (int ki = 0; ki < 2; ki++) {
-                                    cdouble kv = k_vals[ki];
-                                    cdouble ik = cdouble(0, 1) * kv;
-                                    cdouble iok = cdouble(0, 1) / kv;
+                                for (int qj = 0; qj < Nq; qj++) {
+                                    double dx = rx - qn[qj*3];
+                                    double dy = ry - qn[qj*3+1];
+                                    double dz = rz - qn[qj*3+2];
+                                    double R2 = dx*dx + dy*dy + dz*dz;
+                                    double R = std::sqrt(R2);
+                                    double ww = wm_val * jwn[qj];
+
+                                    double fxn = fn[qj*3], fyn = fn[qj*3+1], fzn = fn[qj*3+2];
+                                    double f_dot = fxm*fxn + fym*fyn + fzm*fzn;
 
                                     if (R > 1e-12) {
-                                        cdouble G = std::exp(ik * R) * inv4pi / R;
-                                        L_vals_k[ki] += (ik * f_dot - iok * dm * dn) * G * ww;
-                                        cdouble gG = G * (ik - 1.0/R) / R;
+                                        double invR = 1.0 / R;
+                                        double G_base = inv4pi * invR;
+
                                         double cross_x = dy*fzn - dz*fyn;
                                         double cross_y = dz*fxn - dx*fzn;
                                         double cross_z = dx*fyn - dy*fxn;
-                                        K_vals_k[ki] += gG * (fxm*cross_x + fym*cross_y + fzm*cross_z) * ww;
+                                        double f_cross = fxm*cross_x + fym*cross_y + fzm*cross_z;
+
+                                        // Both k values in one pass, no branches
+                                        double c0, s0, c1, s1;
+                                        sincos(k_re0 * R, &s0, &c0);
+                                        sincos(k_re1 * R, &s1, &c1);
+
+                                        // L operator: (ik*f_dot - i/k*dm_dn) * G * ww
+                                        // = i*(k*f_dot - dm_dn/k) * (c+is)*Gb*ww
+                                        // = (k*f_dot - dm_dn/k)*Gb*ww * (-s + ic)
+                                        double Lc0 = (k_re0 * f_dot - dm_dn / k_re0) * G_base * ww;
+                                        double Lc1 = (k_re1 * f_dot - dm_dn / k_re1) * G_base * ww;
+                                        L_vals_k[0] += cdouble(-s0 * Lc0, c0 * Lc0);
+                                        L_vals_k[1] += cdouble(-s1 * Lc1, c1 * Lc1);
+
+                                        // K operator: gG * f_cross * ww
+                                        // gG = G * (ik - 1/R) / R = (c+is)*Gb * (ik_re - invR) * invR
+                                        // = Gb*invR * [(c*(-invR) - s*k_re) + i*(s*(-invR) + c*k_re)]
+                                        double gfact0 = G_base * invR;
+                                        double gfact1 = gfact0;
+                                        double gG0_re = gfact0 * (-c0*invR - s0*k_re0);
+                                        double gG0_im = gfact0 * (-s0*invR + c0*k_re0);
+                                        double gG1_re = gfact1 * (-c1*invR - s1*k_re1);
+                                        double gG1_im = gfact1 * (-s1*invR + c1*k_re1);
+                                        double Kw = f_cross * ww;
+                                        K_vals_k[0] += cdouble(gG0_re * Kw, gG0_im * Kw);
+                                        K_vals_k[1] += cdouble(gG1_re * Kw, gG1_im * Kw);
                                     } else {
-                                        cdouble G0 = ik * inv4pi;
-                                        L_vals_k[ki] += (ik * f_dot - iok * dm * dn) * G0 * ww;
+                                        // R=0: G0 = ik/(4π), L += (ik*f_dot-i/k*dm_dn)*ik/(4π)*ww
+                                        // = -k*(k*f_dot - dm_dn/k)*inv4pi*ww  (pure real)
+                                        double Lc0 = -k_re0 * (k_re0 * f_dot - dm_dn / k_re0) * inv4pi * ww;
+                                        double Lc1 = -k_re1 * (k_re1 * f_dot - dm_dn / k_re1) * inv4pi * ww;
+                                        L_vals_k[0] += cdouble(Lc0, 0);
+                                        L_vals_k[1] += cdouble(Lc1, 0);
+                                    }
+                                }
+                            }
+                        } else {
+                            // Complex k: general case
+                            for (int qi = 0; qi < Nq; qi++) {
+                                double rx = qm[qi*3], ry = qm[qi*3+1], rz = qm[qi*3+2];
+                                double fxm = fm[qi*3], fym = fm[qi*3+1], fzm = fm[qi*3+2];
+                                double wm_val = jwm[qi];
+
+                                for (int qj = 0; qj < Nq; qj++) {
+                                    double dx = rx - qn[qj*3];
+                                    double dy = ry - qn[qj*3+1];
+                                    double dz = rz - qn[qj*3+2];
+                                    double R2 = dx*dx + dy*dy + dz*dz;
+                                    double R = std::sqrt(R2);
+                                    double ww = wm_val * jwn[qj];
+
+                                    double fxn = fn[qj*3], fyn = fn[qj*3+1], fzn = fn[qj*3+2];
+                                    double f_dot = fxm*fxn + fym*fyn + fzm*fzn;
+
+                                    if (R > 1e-12) {
+                                        double invR = 1.0 / R;
+                                        double G_base = inv4pi * invR;
+
+                                        double cross_x = dy*fzn - dz*fyn;
+                                        double cross_y = dz*fxn - dx*fzn;
+                                        double cross_z = dx*fyn - dy*fxn;
+                                        double f_cross = fxm*cross_x + fym*cross_y + fzm*cross_z;
+
+                                        for (int ki = 0; ki < 2; ki++) {
+                                            double k_re = k_vals[ki].real();
+                                            double k_im_v = k_vals[ki].imag();
+                                            double c, s;
+                                            sincos(k_re * R, &s, &c);
+                                            double decay = std::exp(-k_im_v * R);
+                                            cdouble G = cdouble(c * decay, s * decay) * G_base;
+                                            L_vals_k[ki] += (ik_pre[ki] * f_dot - iok_pre[ki] * dm_dn) * G * ww;
+                                            cdouble gG = G * (ik_pre[ki] - invR) * invR;
+                                            K_vals_k[ki] += gG * f_cross * ww;
+                                        }
+                                    } else {
+                                        for (int ki = 0; ki < 2; ki++) {
+                                            cdouble G0 = ik_pre[ki] * inv4pi;
+                                            L_vals_k[ki] += (ik_pre[ki] * f_dot - iok_pre[ki] * dm_dn) * G0 * ww;
+                                        }
                                     }
                                 }
                             }
@@ -745,6 +836,9 @@ static void do_block_jacobi(NearFieldPrecond& P, BemFmmOperator& op, double radi
             }
         }
 
+        total_assemble_ms += t_blk_asm.elapsed_ms();
+        Timer t_blk_lu;
+
         // LU factorize with partial pivoting
         std::vector<int> piv(B2);
         for (int k = 0; k < B2; k++) {
@@ -773,6 +867,8 @@ static void do_block_jacobi(NearFieldPrecond& P, BemFmmOperator& op, double radi
             }
         }
 
+        total_lu_ms += t_blk_lu.elapsed_ms();
+
         P.block_lu[bi] = std::move(blk);
         P.block_piv[bi] = std::move(piv);
 
@@ -786,7 +882,211 @@ static void do_block_jacobi(NearFieldPrecond& P, BemFmmOperator& op, double radi
         }
     }
 
-    printf("  [BlockJ] Assembly+factorize: %.2fs\n", t_assemble.elapsed_s());
+    int n_threads = omp_get_max_threads();
+    printf("  [BlockJ] Assembly+factorize: %.2fs (%d threads)\n", t_assemble.elapsed_s(), n_threads);
+    printf("  [BlockJ]   Assembly: %.2fs (sum %.1fms across threads)\n",
+           total_assemble_ms / 1000.0 / n_threads, total_assemble_ms);
+    printf("  [BlockJ]   LU factor: %.2fs (sum %.1fms across threads)\n",
+           total_lu_ms / 1000.0 / n_threads, total_lu_ms);
+}
+
+// ============================================================
+// Auto-select preconditioner parameters
+// ============================================================
+AutoPrecondParams AutoPrecondParams::compute(int N, double ka)
+{
+    AutoPrecondParams p;
+    p.mode = PREC_BLOCKJ;
+    p.radius = 2.0;
+
+    // LU cost ~ N * (B_ext)^2, where B_ext ≈ bs * overlap_factor.
+    // With RAS overlap=1, B_ext ≈ 2-3× bs for compact geometries.
+    // Without overlap, B_ext = bs exactly.
+    //
+    // Target: precond build ≤ ~30s wall on 24 threads.
+    // Reference: N=7680, bs=400, overlap=1 → 34s (good fit)
+    //            N=1920, bs=800, overlap=1 → 74s (slightly over budget)
+    //
+    // Strategy:
+    //   N ≤ 500:  DIAG (near-free, sufficient for low ka)
+    //   N ≤ 3000: BLOCKJ(no overlap) — overlap too expensive for few blocks
+    //   N > 3000: BLOCKJ(overlap=1) — RAS for faster convergence
+
+    // Very small N: use diagonal
+    if (N <= 500) {
+        p.mode = PREC_DIAG;
+        p.block_size = 0;
+        p.overlap = 0;
+        printf("  [Auto-Prec] N=%d small → DIAG preconditioner\n", N);
+        return p;
+    }
+
+    // Always use RAS overlap=1: inter-block coupling critical for convergence.
+    // Without overlap, hex convergence degrades from 11 to 1800+ iterations.
+    //
+    // Budget for LU: target build ≤ 60s on 24 threads.
+    // With overlap, extended block ≈ 2-3× own size.
+    // LU cost ∝ N × (extended_size)² = N × (overlap_factor × bs)²
+    //
+    // Empirical calibration:
+    //   N=1920 (sphere), bs=800, factor≈3.3 → build 74s (over budget)
+    //   N=7680 (sphere), bs=255, factor≈2.6 → build 23s (under budget)
+    //   N=7680 (sphere), bs=400, factor≈2.0 → build 34s (in budget)
+    //   N=2304 (hex),    bs=730, factor≈2.5 → build 214s (way over)
+    //   N=2304 (hex),    bs=300, factor≈2.5 → build ~25s (expected)
+    //
+    // Conservative: N * bs^2 ≤ 3e8 (accounts for overlap expansion)
+    p.overlap = 1;
+    double budget = 3e8;
+    int bs = (int)std::sqrt(budget / N);
+    bs = std::min(bs, 600);
+    bs = std::max(bs, 100);
+
+    // For very large ka, use smaller blocks (faster build, more iterations)
+    if (ka > 15 && N > 10000) {
+        bs = std::min(bs, 200);
+    }
+
+    // Check available GPU memory: if tight, reduce bs to fit LU on GPU
+    // Estimated GPU LU storage: n_blocks × (2×B_ext)² × 16B
+    // With overlap factor ~2.5: B_ext ≈ 2.5*bs, n_blocks ≈ N/bs
+    // GPU_LU ≈ N/bs × (5*bs)² × 16 = N × 25 × bs × 16 = 400*N*bs bytes
+    size_t free_mem = 0, total_mem = 0;
+    cudaMemGetInfo(&free_mem, &total_mem);
+    size_t est_lu_bytes = (size_t)400 * N * bs;
+    size_t available = (size_t)(free_mem * 0.6);  // keep 40% margin for solver
+    if (est_lu_bytes > available && available > 0) {
+        int bs_fit = (int)(available / (400.0 * N));
+        bs_fit = std::max(bs_fit, 80);
+        if (bs_fit < bs) {
+            printf("  [Auto-Prec] GPU memory limited (free=%.0fMB): reducing bs %d→%d\n",
+                   free_mem/1e6, bs, bs_fit);
+            bs = bs_fit;
+        }
+    }
+
+    p.block_size = bs;
+    printf("  [Auto-Prec] N=%d, ka=%.1f → BLOCKJ(bs=%d, overlap=1)\n", N, ka, bs);
+    return p;
+}
+
+// ============================================================
+// Build 2x2 block-diagonal preconditioner (self-interaction)
+// ============================================================
+static void do_diag_precond(NearFieldPrecond& P, BemFmmOperator& op)
+{
+    Timer timer;
+    int N = P.N;
+    int Nq = op.Nq;
+    double inv4pi = 1.0 / (4.0 * M_PI);
+    cdouble k_vals[2] = {op.k_ext, op.k_int};
+    cdouble eta_e = op.eta_ext, eta_i = op.eta_int;
+    cdouble ik_pre[2], iok_pre[2];
+    for (int ki = 0; ki < 2; ki++) {
+        ik_pre[ki] = cdouble(0, 1) * k_vals[ki];
+        iok_pre[ki] = cdouble(0, 1) / k_vals[ki];
+    }
+
+    P.diag_inv.resize(N * 4);
+
+    #pragma omp parallel for schedule(static)
+    for (int m = 0; m < N; m++) {
+        cdouble L_vals_k[2] = {0, 0};
+        cdouble K_vals_k[2] = {0, 0};
+
+        // Self-interaction: n == m
+        for (int hm = 0; hm < 2; hm++) {
+            const double* qm = (hm == 0) ? &op.qpts_p[m*Nq*3] : &op.qpts_m[m*Nq*3];
+            const double* fm = (hm == 0) ? &op.f_p[m*Nq*3] : &op.f_m[m*Nq*3];
+            double dm = (hm == 0) ? op.div_p[m] : op.div_m[m];
+            const double* jwm = (hm == 0) ? &op.jw_p[m*Nq] : &op.jw_m[m*Nq];
+
+            for (int hn = 0; hn < 2; hn++) {
+                const double* qn = (hn == 0) ? &op.qpts_p[m*Nq*3] : &op.qpts_m[m*Nq*3];
+                const double* fn = (hn == 0) ? &op.f_p[m*Nq*3] : &op.f_m[m*Nq*3];
+                double dn = (hn == 0) ? op.div_p[m] : op.div_m[m];
+                const double* jwn = (hn == 0) ? &op.jw_p[m*Nq] : &op.jw_m[m*Nq];
+
+                double dm_dn = dm * dn;
+
+                for (int qi = 0; qi < Nq; qi++) {
+                    double rx = qm[qi*3], ry = qm[qi*3+1], rz = qm[qi*3+2];
+                    double fxm = fm[qi*3], fym = fm[qi*3+1], fzm = fm[qi*3+2];
+                    double wm_val = jwm[qi];
+
+                    for (int qj = 0; qj < Nq; qj++) {
+                        double dx = rx - qn[qj*3];
+                        double dy = ry - qn[qj*3+1];
+                        double dz = rz - qn[qj*3+2];
+                        double R2 = dx*dx + dy*dy + dz*dz;
+                        double R = std::sqrt(R2);
+                        double ww = wm_val * jwn[qj];
+                        double fxn = fn[qj*3], fyn = fn[qj*3+1], fzn = fn[qj*3+2];
+                        double f_dot = fxm*fxn + fym*fyn + fzm*fzn;
+
+                        if (R > 1e-12) {
+                            double invR = 1.0 / R;
+                            double G_base = inv4pi * invR;
+                            double cross_x = dy*fzn - dz*fyn;
+                            double cross_y = dz*fxn - dx*fzn;
+                            double cross_z = dx*fyn - dy*fxn;
+                            double f_cross = fxm*cross_x + fym*cross_y + fzm*cross_z;
+
+                            for (int ki = 0; ki < 2; ki++) {
+                                double kR = k_vals[ki].real() * R;
+                                double c, s;
+                                sincos(kR, &s, &c);
+                                double k_im = k_vals[ki].imag();
+                                cdouble G;
+                                if (std::abs(k_im) < 1e-15) {
+                                    G = cdouble(c, s) * G_base;
+                                } else {
+                                    double decay = std::exp(-k_im * R);
+                                    G = cdouble(c * decay, s * decay) * G_base;
+                                }
+                                L_vals_k[ki] += (ik_pre[ki] * f_dot - iok_pre[ki] * dm_dn) * G * ww;
+                                cdouble gG = G * (ik_pre[ki] - invR) * invR;
+                                K_vals_k[ki] += gG * f_cross * ww;
+                            }
+                        } else {
+                            for (int ki = 0; ki < 2; ki++) {
+                                cdouble G0 = ik_pre[ki] * inv4pi;
+                                L_vals_k[ki] += (ik_pre[ki] * f_dot - iok_pre[ki] * dm_dn) * G0 * ww;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Add singular corrections for self-interaction
+        for (int jc = op.corr_row_ptr[m]; jc < op.corr_row_ptr[m+1]; jc++) {
+            if (op.corr_col_idx[jc] == m) {
+                L_vals_k[0] += op.corr_L_ext_val[jc];
+                K_vals_k[0] += op.corr_K_ext_val[jc];
+                L_vals_k[1] += op.corr_L_int_val[jc];
+                K_vals_k[1] += op.corr_K_int_val[jc];
+            }
+        }
+
+        // PMCHWT 2x2 block: [A, B; C, D]
+        cdouble A = eta_e * L_vals_k[0] + eta_i * L_vals_k[1];
+        cdouble B = -(K_vals_k[0] + K_vals_k[1]);
+        cdouble C = K_vals_k[0] + K_vals_k[1];
+        cdouble D = L_vals_k[0] / eta_e + L_vals_k[1] / eta_i;
+
+        // Invert 2x2: [A,B;C,D]^{-1} = (1/det) * [D,-B;-C,A]
+        cdouble det = A * D - B * C;
+        if (std::abs(det) < 1e-30) det = cdouble(1e-30, 0);
+        cdouble inv_det = cdouble(1.0) / det;
+
+        P.diag_inv[m*4 + 0] =  D * inv_det;
+        P.diag_inv[m*4 + 1] = -B * inv_det;
+        P.diag_inv[m*4 + 2] = -C * inv_det;
+        P.diag_inv[m*4 + 3] =  A * inv_det;
+    }
+
+    printf("  [Diag] Built 2x2 block-diagonal preconditioner: %.3fs\n", timer.elapsed_s());
 }
 
 // ============================================================
@@ -801,20 +1101,39 @@ void NearFieldPrecond::build(BemFmmOperator& op, PrecondMode pm, double radius_m
     mode = pm;
     gpu_ready = false;
     d_workspace = nullptr;
+    d_workspace2 = nullptr;
+    d_buf_z2 = nullptr;
+    precond_stream2 = 0;
     d_blk_B_ext = nullptr;
+    d_diag_inv = nullptr;
 
-    const char* mode_name[] = {"NONE", "ILU0", "BLOCKJ"};
+    const char* mode_name[] = {"NONE", "ILU0", "BLOCKJ", "DIAG", "NEARLU"};
     printf("  [Precond] Building %s preconditioner (N=%d, system_size=%d, radius=%.1f%s)...\n",
            mode_name[mode], N, N2, radius_mult,
            overlap > 0 ? (", overlap=" + std::to_string(overlap)).c_str() : "");
 
     if (mode == PREC_NONE) return;
 
+    if (mode == PREC_DIAG) {
+        do_diag_precond(*this, op);
+        // Upload diagonal to GPU
+        CUDA_CHECK(cudaMalloc(&d_diag_inv, N * 4 * sizeof(cuDoubleComplex)));
+        std::vector<cuDoubleComplex> h_diag(N * 4);
+        for (int i = 0; i < N * 4; i++)
+            h_diag[i] = make_cuDoubleComplex(diag_inv[i].real(), diag_inv[i].imag());
+        CUDA_CHECK(cudaMemcpy(d_diag_inv, h_diag.data(), N * 4 * sizeof(cuDoubleComplex),
+                              cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMalloc(&d_buf_r, N2 * sizeof(cuDoubleComplex)));
+        CUDA_CHECK(cudaMalloc(&d_buf_z, N2 * sizeof(cuDoubleComplex)));
+        gpu_ready = true;
+        printf("  [Precond] DIAG preconditioner built: %.2fs total\n", timer.elapsed_s());
+        return;
+    }
+
     if (mode == PREC_BLOCKJ) {
         do_block_jacobi(*this, op, radius_mult, max_block_rwg, overlap);
         upload_to_gpu();
-        printf("  [Precond] %s preconditioner built: %.2fs total\n",
-               mode_name[mode], timer.elapsed_s());
+        printf("  [Precond] BLOCKJ preconditioner built: %.2fs total\n", timer.elapsed_s());
         return;
     }
 
@@ -863,6 +1182,25 @@ void NearFieldPrecond::apply(const cdouble* r, cdouble* z) const
                 z[i] /= csr_val[dp];
             }
             break;
+
+        case PREC_DIAG:
+        {
+            if (gpu_ready) {
+                CUDA_CHECK(cudaMemcpy(d_buf_r, r, N2 * sizeof(cuDoubleComplex),
+                                      cudaMemcpyHostToDevice));
+                apply_gpu(d_buf_r, d_buf_z);
+                CUDA_CHECK(cudaMemcpy(z, d_buf_z, N2 * sizeof(cuDoubleComplex),
+                                      cudaMemcpyDeviceToHost));
+            } else {
+                // CPU fallback
+                for (int i = 0; i < N; i++) {
+                    cdouble rJ = r[i], rM = r[i + N];
+                    z[i]     = diag_inv[i*4+0]*rJ + diag_inv[i*4+1]*rM;
+                    z[i + N] = diag_inv[i*4+2]*rJ + diag_inv[i*4+3]*rM;
+                }
+            }
+            break;
+        }
 
         case PREC_BLOCKJ:
         {
@@ -918,6 +1256,12 @@ void NearFieldPrecond::apply(const cdouble* r, cdouble* z) const
             }
             break;
         }
+
+        default:
+            // PREC_NEARLU etc: identity fallback
+            for (int i = 0; i < N2; i++)
+                z[i] = r[i];
+            break;
     }
 }
 
@@ -928,6 +1272,33 @@ void NearFieldPrecond::apply(const cdouble* r, cdouble* z) const
 // (32 threads).  Warp-synchronous execution — no __syncthreads needed.
 // LU data is stored row-major on GPU for coalesced memory access.
 // ============================================================
+
+// 2x2 block-diagonal apply kernel: z[i] = D_inv[i] * r[i] for each RWG
+__global__ void diag_apply_kernel(
+    const cuDoubleComplex* __restrict__ r,
+    cuDoubleComplex* __restrict__ z,
+    const cuDoubleComplex* __restrict__ diag_inv,
+    int N)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= N) return;
+
+    cuDoubleComplex r_J = r[i];
+    cuDoubleComplex r_M = r[i + N];
+
+    // 2x2 block: [d0, d1; d2, d3] * [r_J; r_M]
+    cuDoubleComplex d0 = diag_inv[i*4 + 0];
+    cuDoubleComplex d1 = diag_inv[i*4 + 1];
+    cuDoubleComplex d2 = diag_inv[i*4 + 2];
+    cuDoubleComplex d3 = diag_inv[i*4 + 3];
+
+    z[i]     = make_cuDoubleComplex(
+        d0.x*r_J.x - d0.y*r_J.y + d1.x*r_M.x - d1.y*r_M.y,
+        d0.x*r_J.y + d0.y*r_J.x + d1.x*r_M.y + d1.y*r_M.x);
+    z[i + N] = make_cuDoubleComplex(
+        d2.x*r_J.x - d2.y*r_J.y + d3.x*r_M.x - d3.y*r_M.y,
+        d2.x*r_J.y + d2.y*r_J.x + d3.x*r_M.y + d3.y*r_M.x);
+}
 
 // RAS Block-Jacobi kernel:
 // - Gathers B_ext values (own + overlap)
@@ -1141,9 +1512,15 @@ void NearFieldPrecond::upload_to_gpu()
     CUDA_CHECK(cudaMalloc(&d_workspace, ws_bytes));
     total_bytes += ws_bytes;
 
+    // Allocate paired apply resources (second workspace + output + stream)
+    CUDA_CHECK(cudaMalloc(&d_workspace2, ws_bytes));
+    CUDA_CHECK(cudaMalloc(&d_buf_z2, N2 * sizeof(cuDoubleComplex)));
+    CUDA_CHECK(cudaStreamCreate(&precond_stream2));
+    total_bytes += ws_bytes + N2 * sizeof(cuDoubleComplex);
+
     gpu_ready = true;
     printf("  [BlockJ-GPU] Uploaded %d blocks to GPU: LU=%.1f MB, workspace=%.1f MB, total=%.1f MB (%.2fs)\n",
-           n_blocks, lu_bytes / 1e6, ws_bytes / 1e6, total_bytes / 1e6, timer.elapsed_s());
+           n_blocks, lu_bytes / 1e6, 2 * ws_bytes / 1e6, total_bytes / 1e6, timer.elapsed_s());
 }
 
 // ============================================================
@@ -1153,7 +1530,13 @@ void NearFieldPrecond::apply_gpu(const cuDoubleComplex* d_r, cuDoubleComplex* d_
 {
     if (!gpu_ready) return;
 
-    // Zero output
+    if (mode == PREC_DIAG) {
+        diag_apply_kernel<<<(N + 255)/256, 256>>>(d_r, d_z, d_diag_inv, N);
+        CUDA_CHECK(cudaGetLastError());
+        return;
+    }
+
+    // Block-Jacobi: zero output, then scatter
     CUDA_CHECK(cudaMemset(d_z, 0, N2 * sizeof(cuDoubleComplex)));
 
     blockj_apply_kernel<<<n_blocks, 32>>>(
@@ -1167,21 +1550,66 @@ void NearFieldPrecond::apply_gpu(const cuDoubleComplex* d_r, cuDoubleComplex* d_
 }
 
 // ============================================================
+// Paired GPU Block-Jacobi apply: solve two RHS concurrently
+// Uses two CUDA streams so both kernels can overlap on different SMs.
+// ============================================================
+void NearFieldPrecond::apply_gpu_paired(
+    const cuDoubleComplex* d_r1, cuDoubleComplex* d_z1,
+    const cuDoubleComplex* d_r2, cuDoubleComplex* d_z2) const
+{
+    if (!gpu_ready) return;
+
+    if (mode == PREC_DIAG) {
+        // Diag is cheap — just launch sequentially
+        diag_apply_kernel<<<(N + 255)/256, 256>>>(d_r1, d_z1, d_diag_inv, N);
+        diag_apply_kernel<<<(N + 255)/256, 256>>>(d_r2, d_z2, d_diag_inv, N);
+        CUDA_CHECK(cudaGetLastError());
+        return;
+    }
+
+    // Launch sys1 on default stream, sys2 on precond_stream2
+    CUDA_CHECK(cudaMemsetAsync(d_z1, 0, N2 * sizeof(cuDoubleComplex), 0));
+    CUDA_CHECK(cudaMemsetAsync(d_z2, 0, N2 * sizeof(cuDoubleComplex), precond_stream2));
+
+    blockj_apply_kernel<<<n_blocks, 32, 0, 0>>>(
+        d_r1, d_z1,
+        d_lu_flat, d_piv_flat, d_rwg_flat,
+        d_blk_B, d_blk_B_ext, d_lu_off, d_piv_off, d_rwg_off,
+        d_workspace, max_B2,
+        n_blocks, N);
+
+    blockj_apply_kernel<<<n_blocks, 32, 0, precond_stream2>>>(
+        d_r2, d_z2,
+        d_lu_flat, d_piv_flat, d_rwg_flat,
+        d_blk_B, d_blk_B_ext, d_lu_off, d_piv_off, d_rwg_off,
+        d_workspace2, max_B2,
+        n_blocks, N);
+
+    // Synchronize both streams
+    CUDA_CHECK(cudaStreamSynchronize(precond_stream2));
+    CUDA_CHECK(cudaGetLastError());
+}
+
+// ============================================================
 // Free GPU Block-Jacobi data
 // ============================================================
 void NearFieldPrecond::cleanup_gpu()
 {
     if (!gpu_ready) return;
-    cudaFree(d_workspace); d_workspace = nullptr;
-    cudaFree(d_lu_flat);   d_lu_flat  = nullptr;
-    cudaFree(d_piv_flat);  d_piv_flat = nullptr;
-    cudaFree(d_rwg_flat);  d_rwg_flat = nullptr;
-    cudaFree(d_blk_B);     d_blk_B    = nullptr;
-    cudaFree(d_blk_B_ext); d_blk_B_ext = nullptr;
-    cudaFree(d_lu_off);    d_lu_off   = nullptr;
-    cudaFree(d_piv_off);   d_piv_off  = nullptr;
-    cudaFree(d_rwg_off);   d_rwg_off  = nullptr;
-    cudaFree(d_buf_r);     d_buf_r    = nullptr;
-    cudaFree(d_buf_z);     d_buf_z    = nullptr;
+    if (d_workspace)  { cudaFree(d_workspace);  d_workspace  = nullptr; }
+    if (d_workspace2) { cudaFree(d_workspace2); d_workspace2 = nullptr; }
+    if (d_lu_flat)    { cudaFree(d_lu_flat);    d_lu_flat    = nullptr; }
+    if (d_piv_flat)   { cudaFree(d_piv_flat);   d_piv_flat   = nullptr; }
+    if (d_rwg_flat)   { cudaFree(d_rwg_flat);   d_rwg_flat   = nullptr; }
+    if (d_blk_B)      { cudaFree(d_blk_B);      d_blk_B      = nullptr; }
+    if (d_blk_B_ext)  { cudaFree(d_blk_B_ext);  d_blk_B_ext  = nullptr; }
+    if (d_lu_off)     { cudaFree(d_lu_off);     d_lu_off     = nullptr; }
+    if (d_piv_off)    { cudaFree(d_piv_off);    d_piv_off    = nullptr; }
+    if (d_rwg_off)    { cudaFree(d_rwg_off);    d_rwg_off    = nullptr; }
+    if (d_buf_r)      { cudaFree(d_buf_r);      d_buf_r      = nullptr; }
+    if (d_buf_z)      { cudaFree(d_buf_z);      d_buf_z      = nullptr; }
+    if (d_buf_z2)     { cudaFree(d_buf_z2);     d_buf_z2     = nullptr; }
+    if (d_diag_inv)   { cudaFree(d_diag_inv);   d_diag_inv   = nullptr; }
+    if (precond_stream2) { cudaStreamDestroy(precond_stream2); precond_stream2 = 0; }
     gpu_ready = false;
 }

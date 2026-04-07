@@ -154,6 +154,16 @@ struct HelmholtzFMM {
     double* d_gz_re_cached;          // (Nt) for gradient z component
     double* d_gz_im_cached;
 
+    // Pre-allocated temp buffers for gradient repack (avoid per-call cudaMalloc)
+    double* d_gx_re_tmp;             // (Nt) for repack_gradient_kernel
+    double* d_gx_im_tmp;
+
+    // Pre-allocated host-side re/im split buffers (avoid per-call std::vector alloc)
+    std::vector<double> h_q_re_buf, h_q_im_buf;       // (Ns) for charges
+    std::vector<double> h_q2_re_buf, h_q2_im_buf;     // (Ns) for batch-2 charges
+    std::vector<double> h_res_re_buf, h_res_im_buf;   // (max(Nt, Nt*3)) for results
+    std::vector<double> h_res2_re_buf, h_res2_im_buf; // (max(Nt, Nt*3)) for batch-2 results
+
     // CUDA streams for P2P/FMM pipeline overlap
     cudaStream_t stream_fmm;
     cudaStream_t stream_p2p;
@@ -197,6 +207,7 @@ struct HelmholtzFMM {
         d_leaf_idx_cached(0), d_src_id_offsets_cached(0), d_src_ids_cached(0),
         d_tgt_id_offsets_cached(0), d_tgt_ids_cached(0),
         d_gy_re_cached(0), d_gy_im_cached(0), d_gz_re_cached(0), d_gz_im_cached(0),
+        d_gx_re_tmp(0), d_gx_im_tmp(0),
         stream_fmm(0), stream_p2p(0),
         d_p2p_pot_re(0), d_p2p_pot_im(0), d_p2p_pot2_re(0), d_p2p_pot2_im(0),
         d_p2p_gx_re(0), d_p2p_gx_im(0), d_p2p_gy_re(0), d_p2p_gy_im(0),
@@ -212,6 +223,17 @@ struct HelmholtzFMM {
     // Evaluate: y[i] = sum_j G(r_i, r_j) * q[j]
     // charges: host array (Ns), result: host array (Nt)
     void evaluate(const cdouble* charges, cdouble* result);
+
+    // Zero-copy evaluate: charges already on GPU as split re/im, results stay on GPU
+    // d_q_re/im: device (Ns), d_res_re/im: device (Nt) — output added to existing values
+    void evaluate_gpu(const double* d_q_re, const double* d_q_im,
+                      double* d_res_re, double* d_res_im);
+
+    // Zero-copy pot+grad: charges on GPU, results on GPU
+    // d_q_re/im: device (Ns), d_pot_re/im: device (Nt), d_grad_re/im: device (Nt*3)
+    void evaluate_pot_grad_gpu(const double* d_q_re, const double* d_q_im,
+                                double* d_pot_re, double* d_pot_im,
+                                double* d_grad_re, double* d_grad_im);
 
     // Evaluate gradient: grad[i] = sum_j nabla_G(r_i, r_j) * q[j]
     // charges: host array (Ns), grad_result: host array (Nt*3) [x0,y0,z0,x1,y1,z1,...]
