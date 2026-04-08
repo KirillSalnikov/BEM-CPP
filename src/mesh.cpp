@@ -189,5 +189,106 @@ Mesh load_obj(const char* filename) {
 
     printf("  Loaded OBJ: %d vertices, %d triangles from %s\n",
            m.nv(), m.nt(), filename);
+
+    // --- Validate mesh: remove degenerate triangles ---
+    {
+        int ntri = m.nt();
+        std::vector<int> clean_tris;
+        clean_tris.reserve(m.tris.size());
+        int n_degenerate = 0;
+
+        for (int i = 0; i < ntri; i++) {
+            int v0 = m.tris[3*i], v1 = m.tris[3*i+1], v2 = m.tris[3*i+2];
+            // Check for repeated vertex indices
+            if (v0 == v1 || v1 == v2 || v0 == v2) {
+                n_degenerate++;
+                continue;
+            }
+            // Check for near-zero area via cross product
+            Vec3 e1 = m.verts[v1] - m.verts[v0];
+            Vec3 e2 = m.verts[v2] - m.verts[v0];
+            double area = 0.5 * e1.cross(e2).norm();
+            if (area < 1e-10) {
+                n_degenerate++;
+                continue;
+            }
+            clean_tris.push_back(v0);
+            clean_tris.push_back(v1);
+            clean_tris.push_back(v2);
+        }
+
+        if (n_degenerate > 0) {
+            m.tris = clean_tris;
+            fprintf(stderr, "Warning: removed %d degenerate triangles from OBJ\n",
+                    n_degenerate);
+        }
+    }
+
+    // --- Check for non-manifold edges (shared by >2 triangles) ---
+    {
+        std::map<std::pair<int,int>, int> edge_count;
+        int ntri = m.nt();
+        for (int i = 0; i < ntri; i++) {
+            int v[3] = { m.tris[3*i], m.tris[3*i+1], m.tris[3*i+2] };
+            for (int e = 0; e < 3; e++) {
+                int a = v[e], b = v[(e+1) % 3];
+                auto key = std::make_pair(std::min(a,b), std::max(a,b));
+                edge_count[key]++;
+            }
+        }
+        int n_nonmanifold = 0;
+        for (auto& kv : edge_count) {
+            if (kv.second > 2) n_nonmanifold++;
+        }
+        if (n_nonmanifold > 0) {
+            fprintf(stderr, "Warning: %d non-manifold edges (shared by >2 triangles) in OBJ\n",
+                    n_nonmanifold);
+        }
+    }
+
     return m;
+}
+
+double mesh_volume(const Mesh& m) {
+    double vol = 0;
+    for (int i = 0; i < m.nt(); i++) {
+        Vec3 v0, v1, v2;
+        m.tri_verts(i, v0, v1, v2);
+        // Signed volume of tetrahedron (origin, v0, v1, v2)
+        vol += v0.dot(v1.cross(v2));
+    }
+    return vol / 6.0;
+}
+
+double normalize_mesh(Mesh& m) {
+    double vol = fabs(mesh_volume(m));
+    double a_eq = cbrt(3.0 * vol / (4.0 * M_PI));
+    if (a_eq < 1e-30) {
+        fprintf(stderr, "Warning: mesh volume near zero, using bounding sphere\n");
+        // Fallback: use bounding sphere radius
+        double r2max = 0;
+        Vec3 center(0,0,0);
+        for (auto& v : m.verts) { center.x += v.x; center.y += v.y; center.z += v.z; }
+        center.x /= m.nv(); center.y /= m.nv(); center.z /= m.nv();
+        for (auto& v : m.verts) {
+            double dx = v.x-center.x, dy = v.y-center.y, dz = v.z-center.z;
+            double r2 = dx*dx + dy*dy + dz*dz;
+            if (r2 > r2max) r2max = r2;
+        }
+        a_eq = sqrt(r2max);
+    }
+    double scale = 1.0 / a_eq;
+    for (auto& v : m.verts) { v.x *= scale; v.y *= scale; v.z *= scale; }
+    return a_eq;
+}
+
+double mesh_dmax(const Mesh& m) {
+    double xmin=1e30, xmax=-1e30, ymin=1e30, ymax=-1e30, zmin=1e30, zmax=-1e30;
+    for (auto& v : m.verts) {
+        if (v.x < xmin) xmin = v.x; if (v.x > xmax) xmax = v.x;
+        if (v.y < ymin) ymin = v.y; if (v.y > ymax) ymax = v.y;
+        if (v.z < zmin) zmin = v.z; if (v.z > zmax) zmax = v.z;
+    }
+    double dx = xmax-xmin, dy = ymax-ymin, dz = zmax-zmin;
+    return sqrt(dx*dx + dy*dy + dz*dz);
 }

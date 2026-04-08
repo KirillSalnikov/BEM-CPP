@@ -456,10 +456,10 @@ void BemFmmOperator::init(const RWG& rwg, const Mesh& mesh,
                       all_pts.data(), total_pts,
                       k_ext, fmm_digits, max_leaf);
         if (!shared_fmm) {
-            printf("  [BEM-FMM] Building FMM for k_int...\n");
+            printf("  [BEM-FMM] Building FMM for k_int (shared tree)...\n");
             fmm_int.init(all_pts.data(), total_pts,
                           all_pts.data(), total_pts,
-                          k_int, fmm_digits, max_leaf);
+                          k_int, fmm_digits, max_leaf, &fmm_ext);
         }
     }
 
@@ -1655,8 +1655,8 @@ void BemFmmOperator::cleanup()
         pfft_ext.cleanup();
         if (!shared_fmm) pfft_int.cleanup();
     } else {
-        fmm_ext.cleanup();
-        if (!shared_fmm) fmm_int.cleanup();
+        if (!shared_fmm) fmm_int.cleanup();  // shared tree user first
+        fmm_ext.cleanup();                     // tree owner last
     }
     if (gpu_pack_ready) {
         cudaFree(d_f_p); cudaFree(d_f_m);

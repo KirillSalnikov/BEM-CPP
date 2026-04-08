@@ -938,16 +938,48 @@ static DisplacementKey make_key(const double d[3], double eps) {
 
 void HelmholtzFMM::init(const double* targets, int n_tgt,
                           const double* sources, int n_src,
-                          cdouble k_val, int digits, int max_leaf)
+                          cdouble k_val, int digits, int max_leaf,
+                          HelmholtzFMM* share_tree_from)
 {
     Timer timer;
     k = k_val;
     Nt = n_tgt;
     Ns = n_src;
 
-    // Build octree (uses combined point set internally)
-    tree.build(targets, n_tgt, sources, n_src, max_leaf);
-    n_nodes = (int)tree.nodes.size();
+    if (share_tree_from) {
+        // Reuse octree, P2P, and position arrays from another FMM instance.
+        // Saves ~2 GB VRAM by avoiding duplicate P2P CSR allocation.
+        owns_tree_data = false;
+        tree = share_tree_from->tree;
+        n_nodes = share_tree_from->n_nodes;
+        leaf_info = share_tree_from->leaf_info;
+        h_leaf_indices = share_tree_from->h_leaf_indices;
+        h_tgt_id_offsets = share_tree_from->h_tgt_id_offsets;
+        h_src_id_offsets = share_tree_from->h_src_id_offsets;
+        h_tgt_ids_flat = share_tree_from->h_tgt_ids_flat;
+        h_src_ids_flat = share_tree_from->h_src_ids_flat;
+        h_node_centers = share_tree_from->h_node_centers;
+        p2p_nnz = share_tree_from->p2p_nnz;
+        // Share GPU pointers (NOT owned — don't free in cleanup)
+        d_tgt_pts = share_tree_from->d_tgt_pts;
+        d_src_pts = share_tree_from->d_src_pts;
+        d_tgt_to_leaf = share_tree_from->d_tgt_to_leaf;
+        d_leaf_near_offsets = share_tree_from->d_leaf_near_offsets;
+        d_leaf_near_nbrs = share_tree_from->d_leaf_near_nbrs;
+        d_node_centers_cached = share_tree_from->d_node_centers_cached;
+        d_leaf_idx_cached = share_tree_from->d_leaf_idx_cached;
+        d_src_id_offsets_cached = share_tree_from->d_src_id_offsets_cached;
+        d_src_ids_cached = share_tree_from->d_src_ids_cached;
+        d_tgt_id_offsets_cached = share_tree_from->d_tgt_id_offsets_cached;
+        d_tgt_ids_cached = share_tree_from->d_tgt_ids_cached;
+        printf("  [FMM] Sharing tree from k=%.4f FMM: %d nodes, P2P nnz=%d\n",
+               share_tree_from->k.real(), n_nodes, p2p_nnz);
+    } else {
+        // Build own octree
+        owns_tree_data = true;
+        tree.build(targets, n_tgt, sources, n_src, max_leaf);
+        n_nodes = (int)tree.nodes.size();
+    }
 
     // Sphere quadrature — L based on COARSEST M2L level for angular resolution.
     // Transfer function truncation is per-level (see M2L precompute below).
@@ -962,7 +994,8 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
     squad.init(p);
     L = squad.L;
 
-    // Build leaf info with ORIGINAL IDs
+    // Build leaf info with ORIGINAL IDs (skip if shared from another FMM)
+    if (owns_tree_data) {
     leaf_info.clear();
     for (int li : tree.leaves) {
         LeafInfo info;
@@ -1007,44 +1040,74 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
     tgt_id_offsets_h[n_leaves] = (int)tgt_ids_flat.size();
     src_id_offsets_h[n_leaves] = (int)src_ids_flat.size();
 
-    // Build P2P CSR with ORIGINAL indices
-    std::vector<std::vector<int>> tgt_src_lists(Nt);
+    // Build leaf-to-leaf P2P neighbor list (replaces point-to-point CSR)
+    // Each leaf's neighbor list = [self] + octree near_list, mapped to leaf indices.
+    // This uses ~1 MB instead of ~6 GB for the point-to-point CSR.
+    {
+        // Build node_idx -> leaf_idx map
+        std::unordered_map<int, int> node_to_leaf;
+        node_to_leaf.reserve(n_leaves);
+        for (int li = 0; li < n_leaves; li++)
+            node_to_leaf[leaf_info[li].node_idx] = li;
 
-    for (int li_idx = 0; li_idx < n_leaves; li_idx++) {
-        int node_idx = leaf_info[li_idx].node_idx;
-        const OctreeNode& leaf = tree.nodes[node_idx];
+        leaf_near_offsets.resize(n_leaves + 1);
+        leaf_near_nbrs.clear();
+        leaf_near_nbrs.reserve(n_leaves * 27);
 
-        std::vector<int> all_src_orig;
-        for (int i = leaf.pt_start; i < leaf.pt_start + leaf.pt_count; i++) {
-            int orig = tree.sorted_idx[i];
-            if (orig >= Nt)
-                all_src_orig.push_back(orig - Nt);
-        }
-        for (int ni = leaf.near_start; ni < leaf.near_start + leaf.near_count; ni++) {
-            int nb_node = tree.near_list[ni];
-            const OctreeNode& nb = tree.nodes[nb_node];
-            for (int i = nb.pt_start; i < nb.pt_start + nb.pt_count; i++) {
-                int orig = tree.sorted_idx[i];
-                if (orig >= Nt)
-                    all_src_orig.push_back(orig - Nt);
+        for (int li = 0; li < n_leaves; li++) {
+            leaf_near_offsets[li] = (int)leaf_near_nbrs.size();
+            int node_idx = leaf_info[li].node_idx;
+            const OctreeNode& leaf = tree.nodes[node_idx];
+
+            // Self (always first)
+            leaf_near_nbrs.push_back(li);
+            // Octree near-neighbors
+            for (int ni = leaf.near_start; ni < leaf.near_start + leaf.near_count; ni++) {
+                auto it = node_to_leaf.find(tree.near_list[ni]);
+                if (it != node_to_leaf.end())
+                    leaf_near_nbrs.push_back(it->second);
             }
         }
+        leaf_near_offsets[n_leaves] = (int)leaf_near_nbrs.size();
 
-        for (int i = leaf.pt_start; i < leaf.pt_start + leaf.pt_count; i++) {
-            int orig = tree.sorted_idx[i];
-            if (orig < Nt)
-                tgt_src_lists[orig] = all_src_orig;
+        // Build target -> leaf mapping
+        tgt_to_leaf.resize(Nt, -1);
+        for (int li = 0; li < n_leaves; li++) {
+            int tgt_off = tgt_id_offsets_h[li];
+            int tgt_cnt = tgt_id_offsets_h[li + 1] - tgt_off;
+            for (int j = 0; j < tgt_cnt; j++)
+                tgt_to_leaf[tgt_ids_flat[tgt_off + j]] = li;
         }
+
+        // Compute p2p_nnz for diagnostics
+        size_t nnz = 0;
+        for (int li = 0; li < n_leaves; li++) {
+            int n_tgt_in_leaf = tgt_id_offsets_h[li + 1] - tgt_id_offsets_h[li];
+            int n_src_near = 0;
+            for (int ni = leaf_near_offsets[li]; ni < leaf_near_offsets[li + 1]; ni++)
+                n_src_near += src_id_offsets_h[leaf_near_nbrs[ni] + 1] - src_id_offsets_h[leaf_near_nbrs[ni]];
+            nnz += (size_t)n_tgt_in_leaf * n_src_near;
+        }
+        p2p_nnz = (int)std::min(nnz, (size_t)INT_MAX);
+        printf("  [FMM] P2P leaf-to-leaf: %d leaves, %d near pairs, %zu interactions\n",
+               n_leaves, (int)leaf_near_nbrs.size(), nnz);
     }
 
-    p2p_offsets.resize(Nt + 1, 0);
-    p2p_indices.clear();
-    for (int t = 0; t < Nt; t++) {
-        p2p_offsets[t + 1] = p2p_offsets[t] + (int)tgt_src_lists[t].size();
-        for (int si : tgt_src_lists[t])
-            p2p_indices.push_back(si);
+    // Store leaf ID arrays on host (before locals go out of scope)
+    h_leaf_indices.resize(n_leaves);
+    for (int i = 0; i < n_leaves; i++) h_leaf_indices[i] = leaf_info[i].node_idx;
+    h_tgt_id_offsets = tgt_id_offsets_h;
+    h_src_id_offsets = src_id_offsets_h;
+    h_tgt_ids_flat = tgt_ids_flat;
+    h_src_ids_flat = src_ids_flat;
+
+    h_node_centers.resize(n_nodes * 3);
+    for (int i = 0; i < n_nodes; i++) {
+        h_node_centers[i*3]   = tree.nodes[i].center[0];
+        h_node_centers[i*3+1] = tree.nodes[i].center[1];
+        h_node_centers[i*3+2] = tree.nodes[i].center[2];
     }
-    p2p_nnz = (int)p2p_indices.size();
+    } // end if (owns_tree_data)
 
     // Precompute M2L transfer functions
     printf("  [FMM] Precomputing M2L transfers...\n");
@@ -1174,18 +1237,22 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
     // ============================================================
     printf("  [FMM] Uploading to GPU...\n");
 
-    // Target and source positions in ORIGINAL order (double)
-    CUDA_CHECK(cudaMalloc(&d_tgt_pts, Nt * 3 * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_src_pts, Ns * 3 * sizeof(double)));
-    CUDA_CHECK(cudaMemcpy(d_tgt_pts, targets, Nt * 3 * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_src_pts, sources, Ns * 3 * sizeof(double), cudaMemcpyHostToDevice));
+    // Target and source positions + P2P CSR (skip if shared from another FMM)
+    if (owns_tree_data) {
+        CUDA_CHECK(cudaMalloc(&d_tgt_pts, Nt * 3 * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_src_pts, Ns * 3 * sizeof(double)));
+        CUDA_CHECK(cudaMemcpy(d_tgt_pts, targets, Nt * 3 * sizeof(double), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_src_pts, sources, Ns * 3 * sizeof(double), cudaMemcpyHostToDevice));
 
-    // P2P CSR
-    CUDA_CHECK(cudaMalloc(&d_p2p_offsets, (Nt + 1) * sizeof(int)));
-    CUDA_CHECK(cudaMemcpy(d_p2p_offsets, p2p_offsets.data(), (Nt + 1) * sizeof(int), cudaMemcpyHostToDevice));
-    if (p2p_nnz > 0) {
-        CUDA_CHECK(cudaMalloc(&d_p2p_indices, p2p_nnz * sizeof(int)));
-        CUDA_CHECK(cudaMemcpy(d_p2p_indices, p2p_indices.data(), p2p_nnz * sizeof(int), cudaMemcpyHostToDevice));
+        // Leaf-to-leaf P2P arrays (tiny: ~1 MB total instead of ~6 GB CSR)
+        int n_near_total = (int)leaf_near_nbrs.size();
+        int nl = (int)leaf_info.size();
+        CUDA_CHECK(cudaMalloc(&d_tgt_to_leaf, Nt * sizeof(int)));
+        CUDA_CHECK(cudaMemcpy(d_tgt_to_leaf, tgt_to_leaf.data(), Nt * sizeof(int), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMalloc(&d_leaf_near_offsets, (nl + 1) * sizeof(int)));
+        CUDA_CHECK(cudaMemcpy(d_leaf_near_offsets, leaf_near_offsets.data(), (nl + 1) * sizeof(int), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMalloc(&d_leaf_near_nbrs, n_near_total * sizeof(int)));
+        CUDA_CHECK(cudaMemcpy(d_leaf_near_nbrs, leaf_near_nbrs.data(), n_near_total * sizeof(int), cudaMemcpyHostToDevice));
     }
 
     // FMM arrays (float32)
@@ -1194,20 +1261,9 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
     CUDA_CHECK(cudaMalloc(&d_local_re, n_nodes * L * sizeof(fmm_real)));
     CUDA_CHECK(cudaMalloc(&d_local_im, n_nodes * L * sizeof(fmm_real)));
 
-    // Transfers (float32, separate re/im for legacy M2L + interleaved for CSR M2L)
+    // M2L transfer functions: interleaved [re,im] for CSR M2L kernel
     if (n_unique_transfers > 0) {
         int tc_size = n_unique_transfers * L;
-        std::vector<fmm_real> t_re(tc_size), t_im(tc_size);
-        for (int i = 0; i < tc_size; i++) {
-            t_re[i] = (fmm_real)transfer_cache[i].real();
-            t_im[i] = (fmm_real)transfer_cache[i].imag();
-        }
-        CUDA_CHECK(cudaMalloc(&d_transfer_re, tc_size * sizeof(fmm_real)));
-        CUDA_CHECK(cudaMalloc(&d_transfer_im, tc_size * sizeof(fmm_real)));
-        CUDA_CHECK(cudaMemcpy(d_transfer_re, t_re.data(), tc_size * sizeof(fmm_real), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_transfer_im, t_im.data(), tc_size * sizeof(fmm_real), cudaMemcpyHostToDevice));
-
-        // Interleaved [re,im] for CSR M2L kernel (float32, float2 vectorized loads)
         std::vector<fmm_real> t_ri(tc_size * 2);
         for (int i = 0; i < tc_size; i++) {
             t_ri[i * 2]     = (fmm_real)transfer_cache[i].real();
@@ -1279,30 +1335,6 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
                 total_targets += m2l_csr_level_info[level].n_targets;
             printf("  [FMM] M2L CSR: %d unique targets, %d total pairs\n",
                    total_targets, (int)all_csr_src.size());
-        }
-    }
-
-    // Legacy M2L batch arrays (kept for batch2 M2L fallback)
-    {
-        std::vector<int> all_tgt, all_src, all_tidx;
-        for (int level = 0; level <= tree.max_level; level++) {
-            m2l_level_info[level].offset = (int)all_tgt.size();
-            m2l_level_info[level].count = 0;
-            if (level < (int)m2l_batches.size() && m2l_batches[level].n_pairs > 0) {
-                const M2LBatch& b = m2l_batches[level];
-                all_tgt.insert(all_tgt.end(), b.tgt_idx.begin(), b.tgt_idx.end());
-                all_src.insert(all_src.end(), b.src_idx.begin(), b.src_idx.end());
-                all_tidx.insert(all_tidx.end(), b.transfer_idx.begin(), b.transfer_idx.end());
-                m2l_level_info[level].count = b.n_pairs;
-            }
-        }
-        if (!all_tgt.empty()) {
-            CUDA_CHECK(cudaMalloc(&d_m2l_tgt, all_tgt.size() * sizeof(int)));
-            CUDA_CHECK(cudaMalloc(&d_m2l_src, all_src.size() * sizeof(int)));
-            CUDA_CHECK(cudaMalloc(&d_m2l_tidx, all_tidx.size() * sizeof(int)));
-            CUDA_CHECK(cudaMemcpy(d_m2l_tgt, all_tgt.data(), all_tgt.size() * sizeof(int), cudaMemcpyHostToDevice));
-            CUDA_CHECK(cudaMemcpy(d_m2l_src, all_src.data(), all_src.size() * sizeof(int), cudaMemcpyHostToDevice));
-            CUDA_CHECK(cudaMemcpy(d_m2l_tidx, all_tidx.data(), all_tidx.size() * sizeof(int), cudaMemcpyHostToDevice));
         }
     }
 
@@ -1384,34 +1416,29 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
     CUDA_CHECK(cudaMalloc(&d_gz2_re_cached, Nt * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_gz2_im_cached, Nt * sizeof(double)));
 
-    // Store leaf ID arrays on host
-    h_leaf_indices.resize(n_leaves);
-    for (int i = 0; i < n_leaves; i++) h_leaf_indices[i] = leaf_info[i].node_idx;
-    h_tgt_id_offsets = tgt_id_offsets_h;
-    h_src_id_offsets = src_id_offsets_h;
-    h_tgt_ids_flat = tgt_ids_flat;
-    h_src_ids_flat = src_ids_flat;
+    // Tree-cached GPU arrays (skip if shared from another FMM)
+    if (owns_tree_data) {
+        int n_leaves = (int)leaf_info.size();
+        CUDA_CHECK(cudaMalloc(&d_node_centers_cached, n_nodes * 3 * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_leaf_idx_cached, n_leaves * sizeof(int)));
+        CUDA_CHECK(cudaMalloc(&d_src_id_offsets_cached, (n_leaves + 1) * sizeof(int)));
+        CUDA_CHECK(cudaMalloc(&d_src_ids_cached, std::max((int)h_src_ids_flat.size(), 1) * sizeof(int)));
+        CUDA_CHECK(cudaMalloc(&d_tgt_id_offsets_cached, (n_leaves + 1) * sizeof(int)));
+        CUDA_CHECK(cudaMalloc(&d_tgt_ids_cached, std::max((int)h_tgt_ids_flat.size(), 1) * sizeof(int)));
 
-    // Node centers
-    h_node_centers.resize(n_nodes * 3);
-    for (int i = 0; i < n_nodes; i++) {
-        h_node_centers[i*3]   = tree.nodes[i].center[0];
-        h_node_centers[i*3+1] = tree.nodes[i].center[1];
-        h_node_centers[i*3+2] = tree.nodes[i].center[2];
+        CUDA_CHECK(cudaMemcpy(d_node_centers_cached, h_node_centers.data(), n_nodes * 3 * sizeof(double), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_leaf_idx_cached, h_leaf_indices.data(), n_leaves * sizeof(int), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_src_id_offsets_cached, h_src_id_offsets.data(), (n_leaves + 1) * sizeof(int), cudaMemcpyHostToDevice));
+        if (!h_src_ids_flat.empty())
+            CUDA_CHECK(cudaMemcpy(d_src_ids_cached, h_src_ids_flat.data(), h_src_ids_flat.size() * sizeof(int), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_tgt_id_offsets_cached, h_tgt_id_offsets.data(), (n_leaves + 1) * sizeof(int), cudaMemcpyHostToDevice));
+        if (!h_tgt_ids_flat.empty())
+            CUDA_CHECK(cudaMemcpy(d_tgt_ids_cached, h_tgt_ids_flat.data(), h_tgt_ids_flat.size() * sizeof(int), cudaMemcpyHostToDevice));
     }
 
-    // Cached GPU arrays
-    CUDA_CHECK(cudaMalloc(&d_node_centers_cached, n_nodes * 3 * sizeof(double)));
+    // Sphere quadrature directions/weights (k-dependent, always allocated)
     CUDA_CHECK(cudaMalloc(&d_dirs_cached, L * 3 * sizeof(fmm_real)));
     CUDA_CHECK(cudaMalloc(&d_weights_cached, L * sizeof(fmm_real)));
-    CUDA_CHECK(cudaMalloc(&d_leaf_idx_cached, n_leaves * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&d_src_id_offsets_cached, (n_leaves + 1) * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&d_src_ids_cached, std::max((int)h_src_ids_flat.size(), 1) * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&d_tgt_id_offsets_cached, (n_leaves + 1) * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&d_tgt_ids_cached, std::max((int)h_tgt_ids_flat.size(), 1) * sizeof(int)));
-
-    CUDA_CHECK(cudaMemcpy(d_node_centers_cached, h_node_centers.data(), n_nodes * 3 * sizeof(double), cudaMemcpyHostToDevice));
-    // Convert dirs/weights from double to float for upload
     {
         std::vector<fmm_real> dirs_f(L * 3), weights_f(L);
         for (int i = 0; i < L * 3; i++) dirs_f[i] = (fmm_real)squad.dirs[i];
@@ -1419,13 +1446,6 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
         CUDA_CHECK(cudaMemcpy(d_dirs_cached, dirs_f.data(), L * 3 * sizeof(fmm_real), cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(d_weights_cached, weights_f.data(), L * sizeof(fmm_real), cudaMemcpyHostToDevice));
     }
-    CUDA_CHECK(cudaMemcpy(d_leaf_idx_cached, h_leaf_indices.data(), n_leaves * sizeof(int), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_src_id_offsets_cached, h_src_id_offsets.data(), (n_leaves + 1) * sizeof(int), cudaMemcpyHostToDevice));
-    if (!h_src_ids_flat.empty())
-        CUDA_CHECK(cudaMemcpy(d_src_ids_cached, h_src_ids_flat.data(), h_src_ids_flat.size() * sizeof(int), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_tgt_id_offsets_cached, h_tgt_id_offsets.data(), (n_leaves + 1) * sizeof(int), cudaMemcpyHostToDevice));
-    if (!h_tgt_ids_flat.empty())
-        CUDA_CHECK(cudaMemcpy(d_tgt_ids_cached, h_tgt_ids_flat.data(), h_tgt_ids_flat.size() * sizeof(int), cudaMemcpyHostToDevice));
 
     // Cached gradient workspace arrays
     CUDA_CHECK(cudaMalloc(&d_gy_re_cached, Nt * sizeof(double)));
@@ -1467,8 +1487,25 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
     CUDA_CHECK(cudaMalloc(&d_p2p_gz2_im, Nt * sizeof(double)));
 
     initialized = true;
-    printf("  [FMM] Init complete: p=%d L=%d, %d nodes, %.1fms\n",
-           p, L, n_nodes, timer.elapsed_ms());
+
+    // GPU memory summary
+    size_t gpu_bytes = 0;
+    if (owns_tree_data) {
+        gpu_bytes += (Nt + Ns) * 3 * sizeof(double);              // positions
+        int n_near_tot = (int)leaf_near_nbrs.size();
+        int nl2 = (int)leaf_info.size();
+        gpu_bytes += (Nt + nl2 + 1 + n_near_tot) * sizeof(int);  // P2P leaf-to-leaf
+        gpu_bytes += n_nodes * 3 * sizeof(double);                 // node centers
+        int nl = (int)leaf_info.size();
+        gpu_bytes += (nl + (nl+1)*2 + h_src_ids_flat.size() + h_tgt_ids_flat.size()) * sizeof(int);
+    }
+    gpu_bytes += 4ULL * n_nodes * L * sizeof(fmm_real);            // multi/local
+    gpu_bytes += 4ULL * n_nodes * L * sizeof(fmm_real);            // batch-2 multi/local
+    gpu_bytes += (2*Nt + 2*Ns + 6*Nt) * sizeof(double);           // charges/results/grad
+    gpu_bytes += (2*Nt + 2*Ns + 10*Nt) * sizeof(double);          // batch-2
+    gpu_bytes += 16ULL * Nt * sizeof(double);                      // P2P output
+    printf("  [FMM] Init complete: p=%d L=%d, %d nodes, ~%.0f MB GPU%s, %.1fms\n",
+           p, L, n_nodes, gpu_bytes / 1e6, owns_tree_data ? "" : " (shared tree)", timer.elapsed_ms());
 }
 
 // Helper to run the full FMM tree traversal (float32 FMM + CSR M2L)
@@ -1500,7 +1537,8 @@ void HelmholtzFMM::run_tree(const double* h_q_re, const double* h_q_im, bool nee
         cudaMemsetAsync(d_p2p_pot_im, 0, Nt * sizeof(double), stream_p2p);
         launch_p2p_potential(d_tgt_pts, d_src_pts,
             d_charges_re, d_charges_im,
-            d_p2p_offsets, d_p2p_indices,
+            d_tgt_to_leaf, d_leaf_near_offsets, d_leaf_near_nbrs,
+            d_src_id_offsets_cached, d_src_ids_cached,
             k.real(), k.imag(),
             d_p2p_pot_re, d_p2p_pot_im, Nt, stream_p2p);
     } else {
@@ -1512,7 +1550,8 @@ void HelmholtzFMM::run_tree(const double* h_q_re, const double* h_q_im, bool nee
         cudaMemsetAsync(d_p2p_gz_im, 0, Nt * sizeof(double), stream_p2p);
         launch_p2p_gradient(d_tgt_pts, d_src_pts,
             d_charges_re, d_charges_im,
-            d_p2p_offsets, d_p2p_indices,
+            d_tgt_to_leaf, d_leaf_near_offsets, d_leaf_near_nbrs,
+            d_src_id_offsets_cached, d_src_ids_cached,
             k.real(), k.imag(),
             d_p2p_gx_re, d_p2p_gx_im,
             d_p2p_gy_re, d_p2p_gy_im,
@@ -1718,7 +1757,8 @@ void HelmholtzFMM::run_tree_batch2(
             d_tgt_pts, d_src_pts,
             d_charges_re, d_charges_im,
             d_charges2_re, d_charges2_im,
-            d_p2p_offsets, d_p2p_indices,
+            d_tgt_to_leaf, d_leaf_near_offsets, d_leaf_near_nbrs,
+            d_src_id_offsets_cached, d_src_ids_cached,
             k.real(), k.imag(),
             d_p2p_pot_re, d_p2p_pot_im,
             d_p2p_pot2_re, d_p2p_pot2_im, Nt, stream_p2p);
@@ -1744,7 +1784,8 @@ void HelmholtzFMM::run_tree_batch2(
             d_tgt_pts, d_src_pts,
             d_charges_re, d_charges_im,
             d_charges2_re, d_charges2_im,
-            d_p2p_offsets, d_p2p_indices,
+            d_tgt_to_leaf, d_leaf_near_offsets, d_leaf_near_nbrs,
+            d_src_id_offsets_cached, d_src_ids_cached,
             k.real(), k.imag(),
             d_p2p_pot_re, d_p2p_pot_im,
             d_p2p_pot2_re, d_p2p_pot2_im,
@@ -2062,7 +2103,8 @@ void HelmholtzFMM::evaluate_gpu(const double* d_q_re, const double* d_q_im,
     cudaMemsetAsync(d_p2p_pot_im, 0, Nt * sizeof(double), stream_p2p);
     launch_p2p_potential(d_tgt_pts, d_src_pts,
         d_charges_re, d_charges_im,
-        d_p2p_offsets, d_p2p_indices,
+        d_tgt_to_leaf, d_leaf_near_offsets, d_leaf_near_nbrs,
+        d_src_id_offsets_cached, d_src_ids_cached,
         k.real(), k.imag(),
         d_p2p_pot_re, d_p2p_pot_im, Nt, stream_p2p);
 
@@ -2177,7 +2219,8 @@ void HelmholtzFMM::evaluate_pot_grad_gpu(const double* d_q_re, const double* d_q
     cudaMemsetAsync(d_p2p_gz_im, 0, Nt * sizeof(double), stream_p2p);
     launch_p2p_gradient(d_tgt_pts, d_src_pts,
         d_charges_re, d_charges_im,
-        d_p2p_offsets, d_p2p_indices,
+        d_tgt_to_leaf, d_leaf_near_offsets, d_leaf_near_nbrs,
+        d_src_id_offsets_cached, d_src_ids_cached,
         k.real(), k.imag(),
         d_p2p_gx_re, d_p2p_gx_im,
         d_p2p_gy_re, d_p2p_gy_im,
@@ -2444,7 +2487,8 @@ void HelmholtzFMM::evaluate_pot_grad(const cdouble* charges,
     launch_p2p_pot_grad(Nt,
         d_tgt_pts, d_src_pts,
         d_charges_re, d_charges_im,
-        d_p2p_offsets, d_p2p_indices,
+        d_tgt_to_leaf, d_leaf_near_offsets, d_leaf_near_nbrs,
+        d_src_id_offsets_cached, d_src_ids_cached,
         k.real(), k.imag(),
         d_result_re, d_result_im,
         d_gx_re, d_gx_im, d_gy_re, d_gy_im, d_gz_re, d_gz_im);
@@ -2541,12 +2585,21 @@ void HelmholtzFMM::evaluate_pot_grad_batch2(
 void HelmholtzFMM::cleanup()
 {
     if (!initialized) return;
-    cudaFree(d_tgt_pts); cudaFree(d_src_pts);
-    cudaFree(d_p2p_offsets); cudaFree(d_p2p_indices);
+
+    // Tree-shared arrays: only free if we own them
+    if (owns_tree_data) {
+        cudaFree(d_tgt_pts); cudaFree(d_src_pts);
+        cudaFree(d_tgt_to_leaf);
+        cudaFree(d_leaf_near_offsets); cudaFree(d_leaf_near_nbrs);
+        cudaFree(d_node_centers_cached);
+        cudaFree(d_leaf_idx_cached);
+        cudaFree(d_src_id_offsets_cached); cudaFree(d_src_ids_cached);
+        cudaFree(d_tgt_id_offsets_cached); cudaFree(d_tgt_ids_cached);
+    }
+
+    // k-dependent arrays (always owned)
     cudaFree(d_multi_re); cudaFree(d_multi_im);
     cudaFree(d_local_re); cudaFree(d_local_im);
-    cudaFree(d_transfer_re); cudaFree(d_transfer_im);
-    cudaFree(d_m2l_tgt); cudaFree(d_m2l_src); cudaFree(d_m2l_tidx);
     if (d_m2l_csr_offsets) cudaFree(d_m2l_csr_offsets);
     if (d_m2l_csr_tgt_nodes) cudaFree(d_m2l_csr_tgt_nodes);
     if (d_m2l_csr_src) cudaFree(d_m2l_csr_src);
@@ -2573,10 +2626,7 @@ void HelmholtzFMM::cleanup()
     if (d_gy2_im_cached) cudaFree(d_gy2_im_cached);
     if (d_gz2_re_cached) cudaFree(d_gz2_re_cached);
     if (d_gz2_im_cached) cudaFree(d_gz2_im_cached);
-    cudaFree(d_node_centers_cached); cudaFree(d_dirs_cached); cudaFree(d_weights_cached);
-    cudaFree(d_leaf_idx_cached);
-    cudaFree(d_src_id_offsets_cached); cudaFree(d_src_ids_cached);
-    cudaFree(d_tgt_id_offsets_cached); cudaFree(d_tgt_ids_cached);
+    cudaFree(d_dirs_cached); cudaFree(d_weights_cached);
     cudaFree(d_gy_re_cached); cudaFree(d_gy_im_cached);
     cudaFree(d_gz_re_cached); cudaFree(d_gz_im_cached);
     if (d_gx_re_tmp) cudaFree(d_gx_re_tmp);

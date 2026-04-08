@@ -34,4 +34,13 @@ Mesh load_obj(const char* filename);
 // Subdivide all triangles (midpoint subdivision, no projection)
 Mesh subdivide_flat(const Mesh& m);
 
+// Compute mesh volume (signed, assumes closed manifold)
+double mesh_volume(const Mesh& m);
+
+// Scale mesh to unit equivalent-sphere radius, return original a_eq
+double normalize_mesh(Mesh& m);
+
+// Compute maximum extent (diameter of bounding box)
+double mesh_dmax(const Mesh& m);
+
 #endif // BEM_MESH_H

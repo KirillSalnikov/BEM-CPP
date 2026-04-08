@@ -38,30 +38,26 @@ struct HelmholtzFMM {
     std::vector<LevelShifts> m2m_data;  // indexed by level
     std::vector<LevelShifts> l2l_data;  // indexed by level
 
-    // P2P CSR structure (for near-field)
-    std::vector<int> p2p_offsets;  // (Nt+1)
-    std::vector<int> p2p_indices;  // (nnz)
-    int p2p_nnz;
+    // P2P leaf-to-leaf structure (replaces point-to-point CSR)
+    // Saves ~6 GB for large meshes by storing neighbor lists per leaf instead of per point
+    std::vector<int> leaf_near_offsets;  // (n_leaves+1) CSR offsets into leaf_near_nbrs
+    std::vector<int> leaf_near_nbrs;    // (n_near_total) neighbor leaf indices (including self)
+    std::vector<int> tgt_to_leaf;       // (Nt) maps target point -> leaf index
+    int p2p_nnz;                        // total near-field interactions (for diagnostics)
 
     // GPU arrays (device pointers)
     // Allocated in init(), freed in cleanup()
     double* d_tgt_pts;        // (Nt*3)
     double* d_src_pts;        // (Ns*3)
-    int*    d_p2p_offsets;    // (Nt+1)
-    int*    d_p2p_indices;    // (nnz)
+    int*    d_tgt_to_leaf;    // (Nt) target -> leaf index
+    int*    d_leaf_near_offsets;  // (n_leaves+1)
+    int*    d_leaf_near_nbrs;    // (n_near_total)
 
     // FMM workspace on GPU (float32 -- sufficient for ~3-digit FMM accuracy)
     fmm_real* d_multi_re;       // (n_nodes * L)
     fmm_real* d_multi_im;
     fmm_real* d_local_re;       // (n_nodes * L)
     fmm_real* d_local_im;
-
-    // M2L transfers on GPU (float32)
-    fmm_real* d_transfer_re;    // (n_unique * L)
-    fmm_real* d_transfer_im;
-    int*    d_m2l_tgt;        // per-level batch arrays (concatenated) [legacy, kept for cleanup]
-    int*    d_m2l_src;
-    int*    d_m2l_tidx;
 
     // Optimized M2L: target-sorted CSR structure
     // For each unique target node, stores (src_node, transfer_idx) pairs contiguously
@@ -187,12 +183,12 @@ struct HelmholtzFMM {
     double* d_p2p_gz2_im;
 
     bool initialized;
+    bool owns_tree_data;  // false when tree/P2P shared from another FMM
 
-    HelmholtzFMM() : initialized(false),
-        d_tgt_pts(0), d_src_pts(0), d_p2p_offsets(0), d_p2p_indices(0),
+    HelmholtzFMM() : initialized(false), owns_tree_data(true),
+        d_tgt_pts(0), d_src_pts(0),
+        d_tgt_to_leaf(0), d_leaf_near_offsets(0), d_leaf_near_nbrs(0),
         d_multi_re(0), d_multi_im(0), d_local_re(0), d_local_im(0),
-        d_transfer_re(0), d_transfer_im(0),
-        d_m2l_tgt(0), d_m2l_src(0), d_m2l_tidx(0),
         d_m2l_csr_offsets(0), d_m2l_csr_tgt_nodes(0),
         d_m2l_csr_src(0), d_m2l_csr_tidx(0), d_transfer_ri(0),
         d_m2m_shift_re(0), d_m2m_shift_im(0), d_m2m_parent(0), d_m2m_child(0),
@@ -216,9 +212,12 @@ struct HelmholtzFMM {
         d_p2p_gz2_re(0), d_p2p_gz2_im(0) {}
 
     // Initialize: build tree, precompute transfers, upload to GPU
+    // If share_tree_from is non-null, reuse its octree, P2P CSR, and position
+    // arrays on GPU (saves ~2 GB VRAM for the second wavenumber).
     void init(const double* targets, int n_tgt,
               const double* sources, int n_src,
-              cdouble k_val, int digits = 3, int max_leaf = 64);
+              cdouble k_val, int digits = 3, int max_leaf = 64,
+              HelmholtzFMM* share_tree_from = nullptr);
 
     // Evaluate: y[i] = sum_j G(r_i, r_j) * q[j]
     // charges: host array (Ns), result: host array (Nt)

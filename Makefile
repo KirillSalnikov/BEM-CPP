@@ -17,6 +17,7 @@ CU_SRCS = $(SRCDIR)/assembly.cu $(SRCDIR)/pmchwt.cu $(SRCDIR)/solver.cu $(SRCDIR
           $(SRCDIR)/pfft.cu $(SRCDIR)/surface_pfft.cu
 CPP_SRCS = $(SRCDIR)/mesh.cpp $(SRCDIR)/rwg.cpp $(SRCDIR)/rhs.cpp \
            $(SRCDIR)/orient.cpp $(SRCDIR)/output.cpp \
+           $(SRCDIR)/go_field.cpp \
            $(SRCDIR)/main.cpp
 
 # Object files

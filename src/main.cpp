@@ -12,6 +12,7 @@
 #include "gmres.h"
 #include "block_gmres.h"
 #include "precond.h"
+#include "go_field.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -48,6 +49,9 @@ static void print_usage(const char* prog) {
     printf("                    B=2: beta [0,pi/2] (mirror sym), G=6: gamma [0,pi/3) (C6 hex)\n");
     printf("  --gamma-mirror    Enable gamma mirror symmetry (sigma_v), halves gamma range\n");
     printf("  --orient-range I0 I1  Only compute orientations [I0, I1) (for cluster parallelism)\n");
+    printf("  --orient-auto [R] Auto orient count from ka (R=resolution, default 4)\n");
+    printf("  --subdiv N      Subdivide OBJ mesh N times (each doubles resolution)\n");
+    printf("  --goi           GO initial guess for GMRES (Fresnel-based surface currents)\n");
 }
 
 int main(int argc, char** argv) {
@@ -81,6 +85,10 @@ int main(int argc, char** argv) {
     int gamma_sym = 1;  // gamma symmetry factor (1=full, 6=C6 hex)
     bool gamma_mirror = false;  // gamma mirror symmetry (sigma_v)
     int orient_i0 = -1, orient_i1 = -1;  // orient range for cluster (-1 = all)
+    bool orient_auto = false;
+    double orient_auto_R = 4.0;  // resolution parameter (1=full, 4=λ/4, 8=λ/8)
+    int subdiv = 0;  // OBJ mesh subdivision count
+    bool use_go_init = false;  // GO initial guess for GMRES
 
     // Parse CLI
     for (int i = 1; i < argc; i++) {
@@ -152,6 +160,13 @@ int main(int argc, char** argv) {
             gamma_sym = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--gamma-mirror") == 0) {
             gamma_mirror = true;
+        } else if (strcmp(argv[i], "--orient-auto") == 0) {
+            orient_auto = true;
+            if (i+1 < argc && argv[i+1][0] != '-') orient_auto_R = atof(argv[++i]);
+        } else if (strcmp(argv[i], "--subdiv") == 0 && i+1 < argc) {
+            subdiv = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--goi") == 0) {
+            use_go_init = true;
         } else if (strcmp(argv[i], "--orient-range") == 0 && i+2 < argc) {
             orient_i0 = atoi(argv[++i]);
             orient_i1 = atoi(argv[++i]);
@@ -216,14 +231,50 @@ int main(int argc, char** argv) {
     Mesh mesh;
     if (obj_file) {
         mesh = load_obj(obj_file);
+        double a_eq_orig = normalize_mesh(mesh);
+        printf("  OBJ normalized: a_eq=%.4f, scaled to unit\n", a_eq_orig);
+        for (int s = 0; s < subdiv; s++)
+            mesh = subdivide_flat(mesh);
+        if (subdiv > 0)
+            printf("  Subdivided %dx: %d vertices, %d triangles\n", subdiv, mesh.nv(), mesh.nt());
     } else if (shape == "hex") {
         mesh = hex_prism(hex_ar, refinements);
     } else {
         double radius = 1.0;
         mesh = icosphere(radius, refinements);
     }
-    printf("  Mesh: %d vertices, %d triangles (%.1fms)\n",
-           mesh.nv(), mesh.nt(), mesh_timer.elapsed_ms());
+    double dmax = mesh_dmax(mesh);
+    // Compute average edge length and mesh resolution
+    double total_area = 0;
+    for (int i = 0; i < mesh.nt(); i++) total_area += mesh.tri_area(i);
+    double h_avg = sqrt(2.0 * total_area / (mesh.nt() * sqrt(3.0)));  // equilateral triangle approx
+    double lambda_ext = 2.0 * M_PI / ka;
+    double lambda_int = 2.0 * M_PI / (ka * std::abs(cdouble(n_re, n_im)));
+    double ppw_ext = lambda_ext / h_avg;  // elements per external wavelength
+    double ppw_int = lambda_int / h_avg;  // elements per internal wavelength
+    printf("  Mesh: %d vertices, %d triangles, D_max=%.3f (%.1fms)\n",
+           mesh.nv(), mesh.nt(), dmax, mesh_timer.elapsed_ms());
+    printf("  Resolution: h_avg=%.4f, lambda_ext/h=%.1f, lambda_int/h=%.1f%s\n",
+           h_avg, ppw_ext, ppw_int,
+           ppw_int < 6.0 ? " [WARNING: mesh too coarse!]" :
+           ppw_int < 10.0 ? " [marginal]" : " [OK]");
+
+    // Auto orient count from ka and mesh dimensions
+    if (orient_auto && !single_orient) {
+        double lambda = 2.0 * M_PI / ka;
+        double xi_deg = 0.69 * lambda / dmax * (180.0 / M_PI);
+        double N_pts = 3.0;
+        double delta = xi_deg / N_pts * orient_auto_R;
+        n_alpha = std::max(4, (int)ceil(360.0 / delta));
+        n_beta  = std::max(2, (int)ceil(180.0 / delta));
+        n_gamma = 1;
+        // Make odd for symmetry of GL nodes
+        if (n_alpha % 2 == 0) n_alpha++;
+        if (n_beta % 2 == 0) n_beta++;
+        printf("  Orient auto (R=%.0f): xi=%.2f deg, delta=%.2f deg -> %d x %d x %d = %d\n",
+               orient_auto_R, xi_deg, delta, n_alpha, n_beta, n_gamma,
+               n_alpha * n_beta * n_gamma);
+    }
 
     // 2. Build RWG basis
     Timer rwg_timer;
@@ -327,6 +378,14 @@ int main(int argc, char** argv) {
             compute_rhs_planewave(rwg, mesh, k_ext, eta_ext, E_perp, k_hat, quad_order, b_perp.data());
 
             std::vector<cdouble> x_par(N2, cdouble(0)), x_perp(N2, cdouble(0));
+            if (use_go_init) {
+                Timer go_timer;
+                compute_go_initial_guess(mesh, rwg, k_ext, m, eta_ext,
+                                         E_par, k_hat, quad_order, x_par.data());
+                compute_go_initial_guess(mesh, rwg, k_ext, m, eta_ext,
+                                         E_perp, k_hat, quad_order, x_perp.data());
+                printf("  GO initial guess computed (%.1fms)\n", go_timer.elapsed_ms());
+            }
             printf("\n  Solving both polarizations (paired GMRES)...\n");
             gmres_solve_paired(fmm_op,
                 b_par.data(), b_perp.data(),
@@ -438,6 +497,13 @@ int main(int argc, char** argv) {
                 std::vector<cdouble> b_par(N2), b_perp(N2);
                 compute_rhs_planewave(rwg, mesh, k_ext, eta_ext, e_par, k_hat, quad_order, b_par.data());
                 compute_rhs_planewave(rwg, mesh, k_ext, eta_ext, e_perp, k_hat, quad_order, b_perp.data());
+
+                if (use_go_init) {
+                    compute_go_initial_guess(mesh, rwg, k_ext, m, eta_ext,
+                                             e_par, k_hat, quad_order, x_par.data());
+                    compute_go_initial_guess(mesh, rwg, k_ext, m, eta_ext,
+                                             e_perp, k_hat, quad_order, x_perp.data());
+                }
 
                 Timer oi_timer;
                 int mv = gmres_solve_paired(fmm_op,
