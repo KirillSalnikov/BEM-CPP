@@ -226,14 +226,15 @@ __global__ void bem_apply_corr_assemble_batch2_kernel(
     const double* cKe_re, const double* cKe_im,
     const double* cLi_re, const double* cLi_im,
     const double* cKi_re, const double* cKi_im,
+    const double* cI,
     int N, double eta_e, double eta_i, double unknown_m_scale, double row_h_scale,
-    double int_op_sign, double k_identity,
+    double int_op_sign, double k_identity, int n_form, double n_form_eps_int,
     double2* y1, double2* y2)
 {
     int m = blockIdx.x * blockDim.x + threadIdx.x;
     if (m >= N) return;
 
-    const int slots = 8;
+    const int slots = 10;
     double* out_re[2] = {mv1_re, mv2_re};
     double* out_im[2] = {mv1_im, mv2_im};
     const double* x_re[2] = {x1_re, x2_re};
@@ -262,6 +263,11 @@ __global__ void bem_apply_corr_assemble_batch2_kernel(
             ar = cLi_re[j] * Mr - cLi_im[j] * Mi; ai = cLi_re[j] * Mi + cLi_im[j] * Mr; r[s5] += ar; im[s5] += ai;
             ar = cKi_re[j] * Jr - cKi_im[j] * Ji; ai = cKi_re[j] * Ji + cKi_im[j] * Jr; r[s6] += ar; im[s6] += ai;
             ar = cKi_re[j] * Mr - cKi_im[j] * Mi; ai = cKi_re[j] * Mi + cKi_im[j] * Mr; r[s7] += ar; im[s7] += ai;
+            double mass = cI[j];
+            r[8 * N + base] += mass * Jr;
+            im[8 * N + base] += mass * Ji;
+            r[9 * N + base] += mass * Mr;
+            im[9 * N + base] += mass * Mi;
         }
     }
 
@@ -276,14 +282,32 @@ __global__ void bem_apply_corr_assemble_batch2_kernel(
         double Mvar_i = x_im[rhs][N + m] / unknown_m_scale;
         double Jvar_r = x_re[rhs][m];
         double Jvar_i = x_im[rhs][m];
-        double ytop_r = eta_e * r[s0] + int_op_sign * eta_i * r[s4] -
-                        (r[s3] + int_op_sign * r[s7] + k_identity * Mvar_r);
-        double ytop_i = eta_e * im[s0] + int_op_sign * eta_i * im[s4] -
-                        (im[s3] + int_op_sign * im[s7] + k_identity * Mvar_i);
-        double ybot_r = row_h_scale * ((r[s2] + int_op_sign * r[s6] + k_identity * Jvar_r) +
-                                       r[s1] / eta_e + int_op_sign * r[s5] / eta_i);
-        double ybot_i = row_h_scale * ((im[s2] + int_op_sign * im[s6] + k_identity * Jvar_i) +
-                                       im[s1] / eta_e + int_op_sign * im[s5] / eta_i);
+        int s8 = 8 * N + m, s9 = 9 * N + m;
+        double IJ_r = n_form ? r[s8] : Jvar_r;
+        double IJ_i = n_form ? im[s8] : Jvar_i;
+        double IM_r = n_form ? r[s9] : Mvar_r;
+        double IM_i = n_form ? im[s9] : Mvar_i;
+        double ytop_r, ytop_i, ybot_r, ybot_i;
+        if (n_form) {
+            ytop_r = (r[s2] + int_op_sign * r[s6] + k_identity * IJ_r) +
+                     (r[s1] / eta_e + int_op_sign * r[s5] / eta_i);
+            ytop_i = (im[s2] + int_op_sign * im[s6] + k_identity * IJ_i) +
+                     (im[s1] / eta_e + int_op_sign * im[s5] / eta_i);
+            double kid_bot = -0.5 * (1.0 + n_form_eps_int);
+            ybot_r = row_h_scale * (-(eta_e * r[s0] - n_form_eps_int * eta_i * r[s4]) +
+                                    (r[s3] - n_form_eps_int * r[s7] + kid_bot * IM_r));
+            ybot_i = row_h_scale * (-(eta_e * im[s0] - n_form_eps_int * eta_i * im[s4]) +
+                                    (im[s3] - n_form_eps_int * im[s7] + kid_bot * IM_i));
+        } else {
+            ytop_r = eta_e * r[s0] + int_op_sign * eta_i * r[s4] -
+                            (r[s3] + int_op_sign * r[s7] + k_identity * Mvar_r);
+            ytop_i = eta_e * im[s0] + int_op_sign * eta_i * im[s4] -
+                            (im[s3] + int_op_sign * im[s7] + k_identity * Mvar_i);
+            ybot_r = row_h_scale * ((r[s2] + int_op_sign * r[s6] + k_identity * Jvar_r) +
+                                           r[s1] / eta_e + int_op_sign * r[s5] / eta_i);
+            ybot_i = row_h_scale * ((im[s2] + int_op_sign * im[s6] + k_identity * Jvar_i) +
+                                           im[s1] / eta_e + int_op_sign * im[s5] / eta_i);
+        }
         if (rhs == 0) {
             y1[m] = make_double2(ytop_r, ytop_i);
             y1[N + m] = make_double2(ybot_r, ybot_i);
@@ -617,10 +641,10 @@ void BemFmmOperator::init_device_workspace()
     CUDA_CHECK(cudaMalloc(&d_K2_im, N * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_out1_complex, N * sizeof(double2)));
     CUDA_CHECK(cudaMalloc(&d_out2_complex, N * sizeof(double2)));
-    CUDA_CHECK(cudaMalloc(&d_mv1_re, 8 * N * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_mv1_im, 8 * N * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_mv2_re, 8 * N * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_mv2_im, 8 * N * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_mv1_re, 10 * N * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_mv1_im, 10 * N * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_mv2_re, 10 * N * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_mv2_im, 10 * N * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_y1_complex, system_size * sizeof(double2)));
     CUDA_CHECK(cudaMalloc(&d_y2_complex, system_size * sizeof(double2)));
 
@@ -644,6 +668,8 @@ void BemFmmOperator::init_device_workspace()
     upload_corr(corr_K_ext_val, &d_corr_K_ext_re, &d_corr_K_ext_im);
     upload_corr(corr_L_int_val, &d_corr_L_int_re, &d_corr_L_int_im);
     upload_corr(corr_K_int_val, &d_corr_K_int_re, &d_corr_K_int_im);
+    CUDA_CHECK(cudaMalloc(&d_corr_I, corr_nnz * sizeof(double)));
+    CUDA_CHECK(cudaMemcpy(d_corr_I, corr_I_val.data(), corr_nnz * sizeof(double), cudaMemcpyHostToDevice));
 }
 
 void BemFmmOperator::free_device_workspace()
@@ -692,6 +718,7 @@ void BemFmmOperator::free_device_workspace()
     cudaFree(d_corr_L_int_im); d_corr_L_int_im = nullptr;
     cudaFree(d_corr_K_int_re); d_corr_K_int_re = nullptr;
     cudaFree(d_corr_K_int_im); d_corr_K_int_im = nullptr;
+    cudaFree(d_corr_I); d_corr_I = nullptr;
 }
 
 void BemFmmOperator::precompute_corrections(const RWG& rwg, const Mesh& mesh, int quad_order)
@@ -762,6 +789,7 @@ void BemFmmOperator::precompute_corrections(const RWG& rwg, const Mesh& mesh, in
     corr_K_ext_val.assign(corr_nnz, cdouble(0));
     corr_L_int_val.assign(corr_nnz, cdouble(0));
     corr_K_int_val.assign(corr_nnz, cdouble(0));
+    corr_I_val.assign(corr_nnz, 0.0);
 
     printf("  [BEM-FMM] Corrections: nnz=%d (%.1f per row, %.3f%% of %lld)\n",
            corr_nnz, (double)corr_nnz / N, 100.0 * corr_nnz / ((long long)N * N), (long long)N * N);
@@ -836,8 +864,13 @@ void BemFmmOperator::precompute_corrections(const RWG& rwg, const Mesh& mesh, in
                     int pos = corr_row_ptr[m] + (int)(it - col_begin);
 
                     // L correction
+                    double mass_corr = 0.0;
                     cdouble DL_vec(0), DL_scl(0);
                     for (int i = 0; i < Nq; i++) {
+                        double f_self = m_f[i*3]*n_f[i*3] +
+                                        m_f[i*3+1]*n_f[i*3+1] +
+                                        m_f[i*3+2]*n_f[i*3+2];
+                        mass_corr += f_self * m_jw[i];
                         for (int j = 0; j < Nq; j++) {
                             double jw_prod = m_jw[i] * n_jw[j];
                             double f_dot = m_f[i*3]*n_f[j*3] + m_f[i*3+1]*n_f[j*3+1] + m_f[i*3+2]*n_f[j*3+2];
@@ -855,6 +888,7 @@ void BemFmmOperator::precompute_corrections(const RWG& rwg, const Mesh& mesh, in
                     }
 
                     vL[pos] += DL_vec + DL_scl + anal_vec + anal_scl;
+                    corr_I_val[pos] += mass_corr;
 
                     // K correction
                     cdouble K_corr(0);
@@ -1799,10 +1833,10 @@ void BemFmmOperator::matvec_batch2(const cdouble* x1_full, const cdouble* x2_ful
         bem_split_complex_kernel<<<grid_sys, block>>>(d_full_x2_complex, d_full_x2_re, d_full_x2_im, system_size);
         CUDA_CHECK(cudaGetLastError());
 
-        CUDA_CHECK(cudaMemset(d_mv1_re, 0, 8 * N * sizeof(double)));
-        CUDA_CHECK(cudaMemset(d_mv1_im, 0, 8 * N * sizeof(double)));
-        CUDA_CHECK(cudaMemset(d_mv2_re, 0, 8 * N * sizeof(double)));
-        CUDA_CHECK(cudaMemset(d_mv2_im, 0, 8 * N * sizeof(double)));
+        CUDA_CHECK(cudaMemset(d_mv1_re, 0, 10 * N * sizeof(double)));
+        CUDA_CHECK(cudaMemset(d_mv1_im, 0, 10 * N * sizeof(double)));
+        CUDA_CHECK(cudaMemset(d_mv2_re, 0, 10 * N * sizeof(double)));
+        CUDA_CHECK(cudaMemset(d_mv2_im, 0, 10 * N * sizeof(double)));
 
         LK_combined_batch2_spfft_device(J1, J2, k_ext, spfft_ext, 0, 2);
         LK_combined_batch2_spfft_device(M1, M2, k_ext, spfft_ext, 1, 3);
@@ -1817,7 +1851,9 @@ void BemFmmOperator::matvec_batch2(const cdouble* x1_full, const cdouble* x2_ful
             d_corr_K_ext_re, d_corr_K_ext_im,
             d_corr_L_int_re, d_corr_L_int_im,
             d_corr_K_int_re, d_corr_K_int_im,
+            d_corr_I,
             N, eta_ext.real(), eta_int.real(), unknown_m_scale, row_h_scale, int_op_sign, k_identity,
+            n_form ? 1 : 0, n_form_eps_int,
             d_y1_complex, d_y2_complex);
         CUDA_CHECK(cudaGetLastError());
 
@@ -1839,10 +1875,10 @@ void BemFmmOperator::matvec_batch2(const cdouble* x1_full, const cdouble* x2_ful
     bem_split_complex_kernel<<<grid_sys, block>>>(d_full_x2_complex, d_full_x2_re, d_full_x2_im, system_size);
     CUDA_CHECK(cudaGetLastError());
 
-    CUDA_CHECK(cudaMemset(d_mv1_re, 0, 8 * N * sizeof(double)));
-    CUDA_CHECK(cudaMemset(d_mv1_im, 0, 8 * N * sizeof(double)));
-    CUDA_CHECK(cudaMemset(d_mv2_re, 0, 8 * N * sizeof(double)));
-    CUDA_CHECK(cudaMemset(d_mv2_im, 0, 8 * N * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_mv1_re, 0, 10 * N * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_mv1_im, 0, 10 * N * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_mv2_re, 0, 10 * N * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_mv2_im, 0, 10 * N * sizeof(double)));
 
     bool use_batch4 = (unknown_m_scale == 1.0 && std::getenv("BEM_FMM_BATCH4"));
     if (use_batch4) {
@@ -1884,7 +1920,9 @@ void BemFmmOperator::matvec_batch2(const cdouble* x1_full, const cdouble* x2_ful
         d_corr_K_ext_re, d_corr_K_ext_im,
         d_corr_L_int_re, d_corr_L_int_im,
         d_corr_K_int_re, d_corr_K_int_im,
+        d_corr_I,
         N, eta_ext.real(), eta_int.real(), unknown_m_scale, row_h_scale, int_op_sign, k_identity,
+        n_form ? 1 : 0, n_form_eps_int,
         d_y1_complex, d_y2_complex);
     CUDA_CHECK(cudaGetLastError());
 
@@ -1950,18 +1988,36 @@ void BemFmmOperator::matvec(const cdouble* x_full, cdouble* y)
         }
     }
 
-    // Assemble PMCHWT blocks
+    // Assemble system blocks
     for (int m = 0; m < N; m++) {
-        cdouble K_sum_J = mv_K_ext_J[m] + int_op_sign * mv_K_int_J[m] + k_identity * J[m];
-        cdouble K_sum_M = mv_K_ext_M[m] + int_op_sign * mv_K_int_M[m] + k_identity * M[m];
+        cdouble IJ = J[m];
+        cdouble IM = M[m];
+        if (n_form) {
+            IJ = cdouble(0);
+            IM = cdouble(0);
+            for (int j = corr_row_ptr[m]; j < corr_row_ptr[m + 1]; j++) {
+                int n = corr_col_idx[j];
+                IJ += corr_I_val[j] * J[n];
+                IM += corr_I_val[j] * M[n];
+            }
+        }
+        cdouble K_sum_J = mv_K_ext_J[m] + int_op_sign * mv_K_int_J[m] + k_identity * IJ;
+        cdouble K_sum_M = mv_K_ext_M[m] + int_op_sign * mv_K_int_M[m] + k_identity * IM;
 
-        // y[:N] = (eta_ext*L_ext + eta_int*L_int)*J - (K_ext+K_int)*M
-        y[m] = (eta_ext * mv_L_ext_J[m] + int_op_sign * eta_int * mv_L_int_J[m]) - K_sum_M;
-
-        // y[N:] = (K_ext+K_int)*J + (L_ext/eta_ext + L_int/eta_int)*M
-        y[N + m] = row_h_scale * (K_sum_J +
-                                  (mv_L_ext_M[m] / eta_ext +
-                                   int_op_sign * mv_L_int_M[m] / eta_int));
+        if (n_form) {
+            y[m] = K_sum_J + (mv_L_ext_M[m] / eta_ext +
+                              int_op_sign * mv_L_int_M[m] / eta_int);
+            cdouble K_sum_M_n = mv_K_ext_M[m] - n_form_eps_int * mv_K_int_M[m] -
+                                0.5 * (1.0 + n_form_eps_int) * IM;
+            y[N + m] = row_h_scale *
+                (-(eta_ext * mv_L_ext_J[m] - n_form_eps_int * eta_int * mv_L_int_J[m]) +
+                 K_sum_M_n);
+        } else {
+            y[m] = (eta_ext * mv_L_ext_J[m] + int_op_sign * eta_int * mv_L_int_J[m]) - K_sum_M;
+            y[N + m] = row_h_scale * (K_sum_J +
+                                      (mv_L_ext_M[m] / eta_ext +
+                                       int_op_sign * mv_L_int_M[m] / eta_int));
+        }
     }
 }
 

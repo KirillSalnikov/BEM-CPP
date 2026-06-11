@@ -30,4 +30,11 @@ Mesh icosphere(double radius, int refinements);
 Mesh regular_prism(int sides, double aspect, int refinements, double equiv_radius,
                    int edge_refine = 0);
 
+// Load and prepare arbitrary closed OBJ meshes.
+Mesh load_obj(const char* filename);
+Mesh subdivide_flat(const Mesh& m);
+double mesh_volume(const Mesh& m);
+double normalize_mesh(Mesh& m);
+double mesh_dmax(const Mesh& m);
+
 #endif // BEM_MESH_H

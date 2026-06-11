@@ -9,7 +9,7 @@
 void write_json(const char* filename,
                 const double* M, const double* theta, int ntheta,
                 double ka, double n_re, double n_im, int refinements,
-                int n_alpha, int n_beta, int n_gamma,
+                int n_alpha, int n_beta, int n_gamma, int alpha_avg,
                 double time_assembly, double time_solve, double time_farfield,
                 double time_total);
 

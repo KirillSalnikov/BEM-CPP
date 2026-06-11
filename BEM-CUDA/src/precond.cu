@@ -6,6 +6,7 @@
 #include <vector>
 #include <algorithm>
 #include <cstdlib>
+#include <limits>
 
 namespace {
 __global__ void precond_split_complex_kernel(const double2* in, double* out_re, double* out_im, int n)
@@ -219,6 +220,22 @@ static void lu_solve_small(const std::vector<cdouble>& LU, const std::vector<int
     }
 }
 
+static int find_csr_col(const std::vector<int>& row_ptr, const std::vector<int>& col_idx,
+                        int row, int col)
+{
+    for (int jc = row_ptr[row]; jc < row_ptr[row + 1]; jc++) {
+        if (col_idx[jc] == col)
+            return jc;
+    }
+    return -1;
+}
+
+static void push_unique(std::vector<int>& ids, int id)
+{
+    if (std::find(ids.begin(), ids.end(), id) == ids.end())
+        ids.push_back(id);
+}
+
 void NearFieldPrecond::build(BemFmmOperator& op)
 {
     Timer timer;
@@ -232,11 +249,100 @@ void NearFieldPrecond::build(BemFmmOperator& op)
     cdouble k_vals[2] = {op.k_ext, op.k_int};
     cdouble eta_e = op.eta_ext, eta_i = op.eta_int;
 
+    const char* env_sweeps = std::getenv("BEM_PREC_SWEEPS");
+    if (env_sweeps)
+        richardson_sweeps = std::max(0, std::atoi(env_sweeps));
+    const char* env_omega = std::getenv("BEM_PREC_OMEGA");
+    if (env_omega)
+        richardson_omega = std::atof(env_omega);
+
+    const char* env_block = std::getenv("BEM_PREC_BLOCK");
+    block_schwarz = (env_block && std::atoi(env_block) != 0);
+    const char* env_block_size = std::getenv("BEM_PREC_BLOCK_SIZE");
+    if (env_block_size)
+        max_block_basis = std::max(2, std::atoi(env_block_size));
+    max_block_basis = std::min(max_block_basis, 16);
+
+    int near_degree = block_schwarz ? max_block_basis : 0;
+    if (const char* env_near = std::getenv("BEM_PREC_NEAR"))
+        near_degree = std::max(0, std::atoi(env_near));
+
     blk_inv.resize(4 * N);
     diag_blk.resize(4 * N);
-    near_row_ptr = op.corr_row_ptr;
-    near_col_idx = op.corr_col_idx;
-    near_blk.assign(4 * op.corr_nnz, cdouble(0));
+    if (block_schwarz && near_degree > 0) {
+        std::vector<double> centers((size_t)N * 3, 0.0);
+        #pragma omp parallel for schedule(static)
+        for (int m = 0; m < N; m++) {
+            double cx = 0.0, cy = 0.0, cz = 0.0;
+            for (int q = 0; q < Nq; q++) {
+                const double* qp = &op.qpts_p[(m * Nq + q) * 3];
+                const double* qm = &op.qpts_m[(m * Nq + q) * 3];
+                cx += qp[0] + qm[0];
+                cy += qp[1] + qm[1];
+                cz += qp[2] + qm[2];
+            }
+            double inv = 0.5 / (double)Nq;
+            centers[(size_t)m * 3 + 0] = cx * inv;
+            centers[(size_t)m * 3 + 1] = cy * inv;
+            centers[(size_t)m * 3 + 2] = cz * inv;
+        }
+
+        std::vector<std::vector<int>> rows(N);
+        #pragma omp parallel for schedule(dynamic, 16)
+        for (int m = 0; m < N; m++) {
+            int keep = std::min(std::max(1, near_degree), N);
+            std::vector<double> best_d2(keep, std::numeric_limits<double>::infinity());
+            std::vector<int> best_id(keep, -1);
+            double mx = centers[(size_t)m * 3 + 0];
+            double my = centers[(size_t)m * 3 + 1];
+            double mz = centers[(size_t)m * 3 + 2];
+            for (int n = 0; n < N; n++) {
+                if (n == m)
+                    continue;
+                double dx = mx - centers[(size_t)n * 3 + 0];
+                double dy = my - centers[(size_t)n * 3 + 1];
+                double dz = mz - centers[(size_t)n * 3 + 2];
+                double d2 = dx*dx + dy*dy + dz*dz;
+                int worst = 0;
+                for (int i = 1; i < keep; i++)
+                    if (best_d2[i] > best_d2[worst])
+                        worst = i;
+                if (d2 < best_d2[worst]) {
+                    best_d2[worst] = d2;
+                    best_id[worst] = n;
+                }
+            }
+            std::vector<int> order(keep);
+            for (int i = 0; i < keep; i++)
+                order[i] = i;
+            std::sort(order.begin(), order.end(), [&](int a, int b) {
+                return best_d2[a] < best_d2[b];
+            });
+
+            std::vector<int> ids;
+            ids.reserve((size_t)keep + (size_t)(op.corr_row_ptr[m + 1] - op.corr_row_ptr[m]) + 1);
+            push_unique(ids, m);
+            for (int idx : order)
+                if (best_id[idx] >= 0)
+                    push_unique(ids, best_id[idx]);
+            for (int jc = op.corr_row_ptr[m]; jc < op.corr_row_ptr[m + 1]; jc++)
+                push_unique(ids, op.corr_col_idx[jc]);
+            rows[m].swap(ids);
+        }
+
+        near_row_ptr.assign(N + 1, 0);
+        for (int m = 0; m < N; m++)
+            near_row_ptr[m + 1] = near_row_ptr[m] + (int)rows[m].size();
+        near_col_idx.resize(near_row_ptr[N]);
+        for (int m = 0; m < N; m++)
+            std::copy(rows[m].begin(), rows[m].end(), near_col_idx.begin() + near_row_ptr[m]);
+        printf("  [Precond] Expanded near graph: degree=%d nnz=%zu (%.1f per row)\n",
+               near_degree, near_col_idx.size(), near_col_idx.empty() ? 0.0 : (double)near_col_idx.size() / (double)N);
+    } else {
+        near_row_ptr = op.corr_row_ptr;
+        near_col_idx = op.corr_col_idx;
+    }
+    near_blk.assign(4 * near_col_idx.size(), cdouble(0));
 
     // For each RWG m, compute diagonal L(m,m) and K(m,m) entries
     #pragma omp parallel for schedule(dynamic, 16)
@@ -332,14 +438,22 @@ void NearFieldPrecond::build(BemFmmOperator& op)
         blk_inv[4*m + 3] =  A_mm * inv_det;
     }
 
+    #pragma omp parallel for schedule(dynamic, 8)
     for (int m = 0; m < N; m++) {
-        for (int jc = op.corr_row_ptr[m]; jc < op.corr_row_ptr[m + 1]; jc++) {
-            int n = op.corr_col_idx[jc];
+        for (int jc = near_row_ptr[m]; jc < near_row_ptr[m + 1]; jc++) {
+            int n = near_col_idx[jc];
             if (n == m)
                 continue;
 
-            cdouble L_vals_k[2] = {op.corr_L_ext_val[jc], op.corr_L_int_val[jc]};
-            cdouble K_vals_k[2] = {op.corr_K_ext_val[jc], op.corr_K_int_val[jc]};
+            cdouble L_vals_k[2] = {0, 0};
+            cdouble K_vals_k[2] = {0, 0};
+            int corr_pos = find_csr_col(op.corr_row_ptr, op.corr_col_idx, m, n);
+            if (corr_pos >= 0) {
+                L_vals_k[0] = op.corr_L_ext_val[corr_pos];
+                K_vals_k[0] = op.corr_K_ext_val[corr_pos];
+                L_vals_k[1] = op.corr_L_int_val[corr_pos];
+                K_vals_k[1] = op.corr_K_int_val[corr_pos];
+            }
 
             for (int hm = 0; hm < 2; hm++) {
                 const double* qm = (hm == 0) ? &op.qpts_p[m * Nq * 3] : &op.qpts_m[m * Nq * 3];
@@ -404,19 +518,6 @@ void NearFieldPrecond::build(BemFmmOperator& op)
         }
     }
 
-    const char* env_sweeps = std::getenv("BEM_PREC_SWEEPS");
-    if (env_sweeps)
-        richardson_sweeps = std::max(0, std::atoi(env_sweeps));
-    const char* env_omega = std::getenv("BEM_PREC_OMEGA");
-    if (env_omega)
-        richardson_omega = std::atof(env_omega);
-
-    const char* env_block = std::getenv("BEM_PREC_BLOCK");
-    block_schwarz = (env_block && std::atoi(env_block) != 0);
-    const char* env_block_size = std::getenv("BEM_PREC_BLOCK_SIZE");
-    if (env_block_size)
-        max_block_basis = std::max(2, std::atoi(env_block_size));
-
     size_t report_block_count = 0;
     blocks.clear();
     max_block_dim = 0;
@@ -453,11 +554,8 @@ void NearFieldPrecond::build(BemFmmOperator& op)
                         C = diag_blk[4*row + 2];
                         D = diag_blk[4*row + 3];
                     } else {
-                        const int* begin = &near_col_idx[near_row_ptr[row]];
-                        const int* end = &near_col_idx[near_row_ptr[row + 1]];
-                        const int* it = std::lower_bound(begin, end, col);
-                        if (it != end && *it == col) {
-                            int pos = near_row_ptr[row] + (int)(it - begin);
+                        int pos = find_csr_col(near_row_ptr, near_col_idx, row, col);
+                        if (pos >= 0) {
                             A = near_blk[4*pos + 0];
                             B = near_blk[4*pos + 1];
                             C = near_blk[4*pos + 2];

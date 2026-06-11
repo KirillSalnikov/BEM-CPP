@@ -27,6 +27,8 @@ struct BemFmmOperator {
     double row_h_scale = 1.0;
     double int_op_sign = 1.0;
     double k_identity = 0.0;
+    bool n_form = false;
+    double n_form_eps_int = 1.0;
 
     // FMM engines (one per wavenumber)
     HelmholtzFMM fmm_ext;
@@ -67,6 +69,7 @@ struct BemFmmOperator {
     std::vector<cdouble> corr_K_ext_val;
     std::vector<cdouble> corr_L_int_val;
     std::vector<cdouble> corr_K_int_val;
+    std::vector<double> corr_I_val;
     int corr_nnz;
 
     // Pre-allocated temporary buffers for matvec (avoid malloc/free per iteration)
@@ -134,6 +137,7 @@ struct BemFmmOperator {
     double* d_corr_L_int_im = nullptr;
     double* d_corr_K_int_re = nullptr;
     double* d_corr_K_int_im = nullptr;
+    double* d_corr_I = nullptr;
 
     // Initialize operator
     void init(const RWG& rwg, const Mesh& mesh,

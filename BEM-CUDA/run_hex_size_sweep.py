@@ -27,7 +27,7 @@ def run(cmd, env=None):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--exe", default="./bin/bem_cuda")
+    p.add_argument("--exe", default="./bin/bem_cuda_fmm")
     p.add_argument("--wrapper", default="./run_orient_mgpu.py")
     p.add_argument("--out-dir", default="hex_oldauto_sweep")
     p.add_argument("--gpus", default="auto:3")

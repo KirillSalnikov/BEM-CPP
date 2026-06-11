@@ -3,16 +3,30 @@ NVCC ?= $(CUDA_HOME)/bin/nvcc
 CXX ?= g++
 ARCH ?= -arch=sm_70
 OPENMP ?= 1
+LAPACK ?= 0
+CUSOLVER ?= 0
+HOST_OPT ?= -O2
+SOLVER_HOST_OPT ?= -O3 -march=native
 
 CUDA_TARGET ?= $(CUDA_HOME)/targets/x86_64-linux
 
-NVFLAGS = $(ARCH) -O3 -I$(CUDA_TARGET)/include -Xcompiler "-O2 -Wall -Wno-unknown-pragmas -std=c++11" -std=c++11
-CXXFLAGS = -O2 -Wall -std=c++11
+NVFLAGS = $(ARCH) -O3 -I$(CUDA_TARGET)/include -Xcompiler "$(HOST_OPT) -Wall -Wno-unknown-pragmas -std=c++11" -std=c++11
+CXXFLAGS = $(HOST_OPT) -Wall -std=c++11
 LDFLAGS = -L$(CUDA_TARGET)/lib -L$(CUDA_HOME)/lib64 -lcudart -lcufft -lm -lstdc++
 
 ifeq ($(OPENMP),1)
 NVFLAGS += -Xcompiler -fopenmp
 LDFLAGS += -Xcompiler -fopenmp
+endif
+
+ifeq ($(LAPACK),1)
+NVFLAGS += -DBEM_USE_LAPACK
+LDFLAGS += -llapack -lblas
+endif
+
+ifeq ($(CUSOLVER),1)
+NVFLAGS += -DBEM_USE_CUSOLVER
+LDFLAGS += -lcusolver -lcublas
 endif
 
 SRCDIR = src
@@ -67,6 +81,8 @@ $(SRCDIR)/%.fmm.o: $(SRCDIR)/%.cu $(SRCDIR)/*.h
 
 $(SRCDIR)/%.fmm.o: $(SRCDIR)/%.cpp $(SRCDIR)/*.h
 	$(NVCC) $(NVFLAGS) -DBEM_FMM_ONLY -x cu -c -o $@ $<
+
+$(SRCDIR)/solver.o $(SRCDIR)/solver.fmm.o: HOST_OPT=$(SOLVER_HOST_OPT)
 
 clean:
 	rm -f $(SRCDIR)/*.o $(TARGET) $(TARGET_FMM)

@@ -5,6 +5,8 @@
 #include <vector>
 #include <map>
 #include <cmath>
+#include <cstdlib>
+#include <algorithm>
 
 // ============================================================
 // CUDA kernel: assemble L,K block (float64 compute)
@@ -64,8 +66,8 @@ __global__ void assemble_LK_kernel(
 
             // Green's function: G = exp(ikR) / (4piR)
             double eR = exp(-k_im * R_safe);
-            double cosR = cos(k_re * R_safe);
-            double sinR = sin(k_re * R_safe);
+            double sinR, cosR;
+            sincos(k_re * R_safe, &sinR, &cosR);
             double G_re = eR * cosR * inv4pi / R_safe;
             double G_im = eR * sinR * inv4pi / R_safe;
             double inv4piR = inv4pi / R_safe;
@@ -145,6 +147,50 @@ struct HalfData {
     std::vector<double> jw;    // (N*Nq) flat
     std::vector<double> divs;  // (N) divergence
     std::vector<int>   tri_idx; // (N) triangle indices
+};
+
+struct DeviceHalfData {
+    double *qpts = 0, *fvals = 0, *jw = 0, *sq_x_sf = 0, *divs = 0;
+    int* tri_idx = 0;
+
+    void upload(const HalfData& h, int N, int Nq)
+    {
+        int Nsq = N * Nq;
+        std::vector<double> cross((size_t)Nsq * 3);
+        for (int i = 0; i < Nsq; i++) {
+            double sx = h.qpts[(size_t)i * 3], sy = h.qpts[(size_t)i * 3 + 1], sz = h.qpts[(size_t)i * 3 + 2];
+            double fx = h.fvals[(size_t)i * 3], fy = h.fvals[(size_t)i * 3 + 1], fz = h.fvals[(size_t)i * 3 + 2];
+            cross[(size_t)i * 3]     = sy * fz - sz * fy;
+            cross[(size_t)i * 3 + 1] = sz * fx - sx * fz;
+            cross[(size_t)i * 3 + 2] = sx * fy - sy * fx;
+        }
+
+        CUDA_CHECK(cudaMalloc(&qpts, (size_t)Nsq * 3 * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&fvals, (size_t)Nsq * 3 * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&sq_x_sf, (size_t)Nsq * 3 * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&jw, (size_t)Nsq * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&tri_idx, (size_t)N * sizeof(int)));
+        CUDA_CHECK(cudaMalloc(&divs, (size_t)N * sizeof(double)));
+
+        CUDA_CHECK(cudaMemcpy(qpts, h.qpts.data(), (size_t)Nsq * 3 * sizeof(double), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(fvals, h.fvals.data(), (size_t)Nsq * 3 * sizeof(double), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(sq_x_sf, cross.data(), (size_t)Nsq * 3 * sizeof(double), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(jw, h.jw.data(), (size_t)Nsq * sizeof(double), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(tri_idx, h.tri_idx.data(), (size_t)N * sizeof(int), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(divs, h.divs.data(), (size_t)N * sizeof(double), cudaMemcpyHostToDevice));
+    }
+
+    void free()
+    {
+        cudaFree(qpts);
+        cudaFree(fvals);
+        cudaFree(jw);
+        cudaFree(sq_x_sf);
+        cudaFree(divs);
+        cudaFree(tri_idx);
+        qpts = fvals = jw = sq_x_sf = divs = 0;
+        tri_idx = 0;
+    }
 };
 
 static HalfData precompute_half(const RWG& rwg, const Mesh& mesh,
@@ -361,90 +407,61 @@ void assemble_L_K_cuda(const RWG& rwg, const Mesh& mesh,
         {&hm, &hm, 1, 1},
     };
 
-    // Allocate device memory for source arrays (reused across batches)
-    int Nsq = N * Nq;
+    DeviceHalfData hp_dev, hm_dev;
+    hp_dev.upload(hp, N, Nq);
+    hm_dev.upload(hm, N, Nq);
+
+    // Batch processing
+    // Memory budget: ~2GB for output; half data live on the device once per operator.
+    int batch_size = std::min(N, std::max(1, (int)(1e9 / (N * 32 + Nq * 24))));
+    // Ensure batch_size is at least 256 for GPU efficiency
+    batch_size = std::max(batch_size, std::min(256, N));
+
+    int max_BN = batch_size * N;
+    double *d_L_re, *d_L_im, *d_K_re, *d_K_im;
+    CUDA_CHECK(cudaMalloc(&d_L_re, (size_t)max_BN * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_L_im, (size_t)max_BN * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_K_re, (size_t)max_BN * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_K_im, (size_t)max_BN * sizeof(double)));
+    std::vector<double> h_L_re(max_BN), h_L_im(max_BN), h_K_re(max_BN), h_K_im(max_BN);
 
     for (int pass = 0; pass < 3; pass++) {
-        HalfData& test = *passes[pass].test;
-        HalfData& src  = *passes[pass].src;
+        DeviceHalfData& test_dev = (passes[pass].th == 0) ? hp_dev : hm_dev;
+        DeviceHalfData& src_dev = (passes[pass].sh == 0) ? hp_dev : hm_dev;
         bool is_cross = (passes[pass].th != passes[pass].sh);
-
-        // Precompute cross(sq, sf) on host
-        std::vector<double> sq_x_sf(Nsq * 3);
-        for (int i = 0; i < Nsq; i++) {
-            double sx = src.qpts[i*3], sy = src.qpts[i*3+1], sz = src.qpts[i*3+2];
-            double fx = src.fvals[i*3], fy = src.fvals[i*3+1], fz = src.fvals[i*3+2];
-            sq_x_sf[i*3]   = sy*fz - sz*fy;
-            sq_x_sf[i*3+1] = sz*fx - sx*fz;
-            sq_x_sf[i*3+2] = sx*fy - sy*fx;
-        }
-
-        // Upload source arrays to device
-        double *d_sq, *d_sf, *d_sq_x_sf, *d_jw_s;
-        int *d_s_tri;
-        double *d_s_div;
-        CUDA_CHECK(cudaMalloc(&d_sq, Nsq * 3 * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_sf, Nsq * 3 * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_sq_x_sf, Nsq * 3 * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_jw_s, Nsq * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_s_tri, N * sizeof(int)));
-        CUDA_CHECK(cudaMalloc(&d_s_div, N * sizeof(double)));
-
-        CUDA_CHECK(cudaMemcpy(d_sq, src.qpts.data(), Nsq*3*sizeof(double), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_sf, src.fvals.data(), Nsq*3*sizeof(double), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_sq_x_sf, sq_x_sf.data(), Nsq*3*sizeof(double), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_jw_s, src.jw.data(), Nsq*sizeof(double), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_s_tri, src.tri_idx.data(), N*sizeof(int), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_s_div, src.divs.data(), N*sizeof(double), cudaMemcpyHostToDevice));
-
-        // Batch processing
-        // Memory budget: ~2GB for test arrays + output
-        // Per element: 4 double outputs = 32 bytes, test arrays roughly BNq*24 bytes.
-        int batch_size = std::min(N, std::max(1, (int)(1e9 / (N * 32 + Nq * 24))));
-        // Ensure batch_size is at least 256 for GPU efficiency
-        batch_size = std::max(batch_size, std::min(256, N));
 
         for (int b_start = 0; b_start < N; b_start += batch_size) {
             int b_end = std::min(b_start + batch_size, N);
             int B = b_end - b_start;
-            int BNq = B * Nq;
-
-            // Upload test batch to device
-            double *d_tp, *d_tf, *d_jw_t;
-            int *d_t_tri;
-            double *d_t_div;
-            double *d_L_re, *d_L_im, *d_K_re, *d_K_im;
-
-            CUDA_CHECK(cudaMalloc(&d_tp, BNq * 3 * sizeof(double)));
-            CUDA_CHECK(cudaMalloc(&d_tf, BNq * 3 * sizeof(double)));
-            CUDA_CHECK(cudaMalloc(&d_jw_t, BNq * sizeof(double)));
-            CUDA_CHECK(cudaMalloc(&d_t_tri, B * sizeof(int)));
-            CUDA_CHECK(cudaMalloc(&d_t_div, B * sizeof(double)));
-            CUDA_CHECK(cudaMalloc(&d_L_re, B * N * sizeof(double)));
-            CUDA_CHECK(cudaMalloc(&d_L_im, B * N * sizeof(double)));
-            CUDA_CHECK(cudaMalloc(&d_K_re, B * N * sizeof(double)));
-            CUDA_CHECK(cudaMalloc(&d_K_im, B * N * sizeof(double)));
-
-            CUDA_CHECK(cudaMemcpy(d_tp, &test.qpts[b_start*Nq*3], BNq*3*sizeof(double), cudaMemcpyHostToDevice));
-            CUDA_CHECK(cudaMemcpy(d_tf, &test.fvals[b_start*Nq*3], BNq*3*sizeof(double), cudaMemcpyHostToDevice));
-            CUDA_CHECK(cudaMemcpy(d_jw_t, &test.jw[b_start*Nq], BNq*sizeof(double), cudaMemcpyHostToDevice));
-            CUDA_CHECK(cudaMemcpy(d_t_tri, &test.tri_idx[b_start], B*sizeof(int), cudaMemcpyHostToDevice));
-            CUDA_CHECK(cudaMemcpy(d_t_div, &test.divs[b_start], B*sizeof(double), cudaMemcpyHostToDevice));
 
             // Launch kernel
-            dim3 block(16, 16);
+            int block_x = 16;
+            int block_y = 16;
+            if (const char* env = std::getenv("BEM_ASM_BLOCK_X"))
+                block_x = std::max(1, atoi(env));
+            if (const char* env = std::getenv("BEM_ASM_BLOCK_Y"))
+                block_y = std::max(1, atoi(env));
+            if (block_x * block_y > 1024)
+                block_y = std::max(1, 1024 / block_x);
+            dim3 block(block_x, block_y);
             dim3 grid((B + block.x - 1) / block.x, (N + block.y - 1) / block.y);
 
             assemble_LK_kernel<<<grid, block>>>(
-                d_tp, d_sq, d_tf, d_sf, d_sq_x_sf,
-                d_jw_t, d_jw_s, d_t_tri, d_s_tri,
-                d_t_div, d_s_div,
+                test_dev.qpts + (size_t)b_start * Nq * 3,
+                src_dev.qpts,
+                test_dev.fvals + (size_t)b_start * Nq * 3,
+                src_dev.fvals, src_dev.sq_x_sf,
+                test_dev.jw + (size_t)b_start * Nq,
+                src_dev.jw,
+                test_dev.tri_idx + b_start,
+                src_dev.tri_idx,
+                test_dev.divs + b_start,
+                src_dev.divs,
                 k_re, k_im, inv4pi, Nq, N, B,
                 d_L_re, d_L_im, d_K_re, d_K_im);
             CUDA_CHECK(cudaGetLastError());
 
             // Download results
-            std::vector<double> h_L_re(B*N), h_L_im(B*N), h_K_re(B*N), h_K_im(B*N);
             CUDA_CHECK(cudaMemcpy(h_L_re.data(), d_L_re, B*N*sizeof(double), cudaMemcpyDeviceToHost));
             CUDA_CHECK(cudaMemcpy(h_L_im.data(), d_L_im, B*N*sizeof(double), cudaMemcpyDeviceToHost));
             CUDA_CHECK(cudaMemcpy(h_K_re.data(), d_K_re, B*N*sizeof(double), cudaMemcpyDeviceToHost));
@@ -470,18 +487,12 @@ void assemble_L_K_cuda(const RWG& rwg, const Mesh& mesh,
                     }
                 }
             }
-
-            // Free test batch device memory
-            cudaFree(d_tp); cudaFree(d_tf); cudaFree(d_jw_t);
-            cudaFree(d_t_tri); cudaFree(d_t_div);
-            cudaFree(d_L_re); cudaFree(d_L_im);
-            cudaFree(d_K_re); cudaFree(d_K_im);
         }
-
-        // Free source device memory
-        cudaFree(d_sq); cudaFree(d_sf); cudaFree(d_sq_x_sf);
-        cudaFree(d_jw_s); cudaFree(d_s_tri); cudaFree(d_s_div);
     }
+    cudaFree(d_L_re); cudaFree(d_L_im);
+    cudaFree(d_K_re); cudaFree(d_K_im);
+    hp_dev.free();
+    hm_dev.free();
 
     double t_main = timer.elapsed_s();
     printf("    Main loop: %.1fs\n", t_main);

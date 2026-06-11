@@ -3,6 +3,11 @@
 #include <set>
 #include <utility>
 #include <tuple>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <sstream>
+#include <string>
 
 Mesh icosphere(double radius, int refinements) {
     double phi = (1.0 + sqrt(5.0)) / 2.0;
@@ -61,6 +66,173 @@ Mesh icosphere(double radius, int refinements) {
     m.verts = verts;
     m.tris = tris;
     return m;
+}
+
+Mesh subdivide_flat(const Mesh& mesh)
+{
+    std::map<std::pair<int,int>, int> edge_mid;
+    std::vector<Vec3> verts = mesh.verts;
+    std::vector<int> new_tris;
+    new_tris.reserve(mesh.tris.size() * 4);
+
+    auto get_mid = [&](int a, int b) -> int {
+        auto key = std::make_pair(std::min(a,b), std::max(a,b));
+        auto it = edge_mid.find(key);
+        if (it != edge_mid.end()) return it->second;
+        Vec3 mid = (verts[a] + verts[b]) * 0.5;
+        int idx = (int)verts.size();
+        verts.push_back(mid);
+        edge_mid[key] = idx;
+        return idx;
+    };
+
+    int ntri = mesh.nt();
+    for (int i = 0; i < ntri; i++) {
+        int a = mesh.tris[3*i], b = mesh.tris[3*i+1], c = mesh.tris[3*i+2];
+        int ab = get_mid(a, b);
+        int bc = get_mid(b, c);
+        int ca = get_mid(c, a);
+        int t[] = {a,ab,ca, b,bc,ab, c,ca,bc, ab,bc,ca};
+        new_tris.insert(new_tris.end(), t, t+12);
+    }
+
+    Mesh m;
+    m.verts = verts;
+    m.tris = new_tris;
+    return m;
+}
+
+Mesh load_obj(const char* filename)
+{
+    Mesh m;
+    std::ifstream file(filename);
+    if (!file.is_open()) {
+        fprintf(stderr, "Error: cannot open OBJ file: %s\n", filename);
+        exit(1);
+    }
+
+    std::string line;
+    while (std::getline(file, line)) {
+        std::istringstream iss(line);
+        std::string prefix;
+        iss >> prefix;
+        if (prefix == "v") {
+            double x, y, z;
+            iss >> x >> y >> z;
+            m.verts.push_back(Vec3(x, y, z));
+        } else if (prefix == "f") {
+            std::vector<int> face_verts;
+            std::string tok;
+            while (iss >> tok) {
+                int vi = std::atoi(tok.c_str()) - 1;
+                if (vi < 0 || vi >= (int)m.verts.size()) {
+                    fprintf(stderr, "Error: OBJ face index out of range in %s\n", filename);
+                    exit(1);
+                }
+                face_verts.push_back(vi);
+            }
+            for (int i = 1; i + 1 < (int)face_verts.size(); i++) {
+                m.tris.push_back(face_verts[0]);
+                m.tris.push_back(face_verts[i]);
+                m.tris.push_back(face_verts[i+1]);
+            }
+        }
+    }
+
+    std::vector<int> clean_tris;
+    clean_tris.reserve(m.tris.size());
+    int n_degenerate = 0;
+    for (int i = 0; i < m.nt(); i++) {
+        int v0 = m.tris[3*i], v1 = m.tris[3*i+1], v2 = m.tris[3*i+2];
+        if (v0 == v1 || v1 == v2 || v0 == v2) {
+            n_degenerate++;
+            continue;
+        }
+        Vec3 e1 = m.verts[v1] - m.verts[v0];
+        Vec3 e2 = m.verts[v2] - m.verts[v0];
+        double area = 0.5 * e1.cross(e2).norm();
+        if (area < 1e-10) {
+            n_degenerate++;
+            continue;
+        }
+        clean_tris.push_back(v0);
+        clean_tris.push_back(v1);
+        clean_tris.push_back(v2);
+    }
+    if (n_degenerate > 0) {
+        m.tris.swap(clean_tris);
+        fprintf(stderr, "Warning: removed %d degenerate triangles from OBJ\n", n_degenerate);
+    }
+
+    std::map<std::pair<int,int>, int> edge_count;
+    for (int i = 0; i < m.nt(); i++) {
+        int v[3] = {m.tris[3*i], m.tris[3*i+1], m.tris[3*i+2]};
+        for (int e = 0; e < 3; e++) {
+            int a = v[e], b = v[(e+1) % 3];
+            auto key = std::make_pair(std::min(a,b), std::max(a,b));
+            edge_count[key]++;
+        }
+    }
+    int n_nonmanifold = 0;
+    for (auto& kv : edge_count)
+        if (kv.second > 2) n_nonmanifold++;
+    if (n_nonmanifold > 0)
+        fprintf(stderr, "Warning: %d non-manifold OBJ edges shared by >2 triangles\n", n_nonmanifold);
+
+    double signed_vol = mesh_volume(m);
+    if (signed_vol < 0.0) {
+        for (int i = 0; i < m.nt(); i++)
+            std::swap(m.tris[3*i + 1], m.tris[3*i + 2]);
+        fprintf(stderr, "Warning: flipped OBJ triangle winding to outward normals\n");
+    }
+
+    printf("  Loaded OBJ: %d vertices, %d triangles from %s\n", m.nv(), m.nt(), filename);
+    return m;
+}
+
+double mesh_volume(const Mesh& m)
+{
+    double vol = 0.0;
+    for (int i = 0; i < m.nt(); i++) {
+        Vec3 v0, v1, v2;
+        m.tri_verts(i, v0, v1, v2);
+        vol += v0.dot(v1.cross(v2));
+    }
+    return vol / 6.0;
+}
+
+double normalize_mesh(Mesh& m)
+{
+    double vol = std::fabs(mesh_volume(m));
+    double a_eq = std::cbrt(3.0 * vol / (4.0 * M_PI));
+    if (a_eq < 1e-30) {
+        fprintf(stderr, "Warning: mesh volume near zero, using bounding radius\n");
+        Vec3 center(0,0,0);
+        for (auto& v : m.verts) center = center + v;
+        center = center * (1.0 / std::max(1, m.nv()));
+        double r2max = 0.0;
+        for (auto& v : m.verts) {
+            double r2 = (v - center).norm2();
+            if (r2 > r2max) r2max = r2;
+        }
+        a_eq = std::sqrt(r2max);
+    }
+    double scale = 1.0 / a_eq;
+    for (auto& v : m.verts)
+        v = v * scale;
+    return a_eq;
+}
+
+double mesh_dmax(const Mesh& m)
+{
+    double xmin=1e30, xmax=-1e30, ymin=1e30, ymax=-1e30, zmin=1e30, zmax=-1e30;
+    for (auto& v : m.verts) {
+        xmin = std::min(xmin, v.x); xmax = std::max(xmax, v.x);
+        ymin = std::min(ymin, v.y); ymax = std::max(ymax, v.y);
+        zmin = std::min(zmin, v.z); zmax = std::max(zmax, v.z);
+    }
+    double dx = xmax-xmin, dy = ymax-ymin, dz = zmax-zmin;
+    return std::sqrt(dx*dx + dy*dy + dz*dz);
 }
 
 static std::vector<double> uniform_grid(int n)
@@ -176,8 +348,8 @@ static void refine_marked_edges(Mesh& m, const std::set<std::pair<int,int>>& mar
     m.tris.swap(out);
 }
 
-static void refine_prism_edges(Mesh& m, const std::vector<Vec3>& poly,
-                               double ztop, double zbot, int seg, int passes)
+static double refine_prism_edges(Mesh& m, const std::vector<Vec3>& poly,
+                                 double ztop, double zbot, int seg, int passes)
 {
     std::vector<std::pair<Vec3, Vec3>> sharp_edges;
     int sides = (int)poly.size();
@@ -228,6 +400,7 @@ static void refine_prism_edges(Mesh& m, const std::vector<Vec3>& poly,
     }
     printf("  [Mesh] Edge refinement: passes=%d, min_angle=%.1f deg, below25=%d/%d\n",
            passes, min_angle * 180.0 / M_PI, below_25, m.nt());
+    return min_angle * 180.0 / M_PI;
 }
 
 Mesh regular_prism(int sides, double aspect, int refinements, double equiv_radius,
@@ -343,7 +516,15 @@ Mesh regular_prism(int sides, double aspect, int refinements, double equiv_radiu
 
     add_cap(ztop, true);
     add_cap(zbot, false);
-    if (edge_refine > 0)
-        refine_prism_edges(m, poly, ztop, zbot, seg, edge_refine);
+    if (edge_refine > 0) {
+        Mesh base = m;
+        double min_angle = refine_prism_edges(m, poly, ztop, zbot, seg, edge_refine);
+        const double min_allowed_angle = 18.0;
+        if (min_angle < min_allowed_angle) {
+            m = base;
+            printf("  [Mesh] Edge refinement rejected: min_angle=%.1f deg < %.1f deg; using base mesh\n",
+                   min_angle, min_allowed_angle);
+        }
+    }
     return m;
 }

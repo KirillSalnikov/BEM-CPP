@@ -10,11 +10,18 @@ import time
 from verify_mie import mie_m11
 
 
-def run(cmd, env=None):
+def run(cmd, env=None, timeout=None, check=True):
     t0 = time.time()
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                          universal_newlines=True, env=env, check=True)
-    return proc.stdout, time.time() - t0
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              universal_newlines=True, env=env, check=check,
+                              timeout=timeout)
+        return proc.stdout, time.time() - t0, proc.returncode, False
+    except subprocess.TimeoutExpired as e:
+        stdout = e.stdout or ""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode(errors="replace")
+        return stdout, time.time() - t0, None, True
 
 
 def rel_stats(theta, values, ka, n_re, n_im):
@@ -61,14 +68,19 @@ def run_bem(args, ka, out_dir):
     if args.bem_accurate:
         cmd += ["--accurate"]
     if args.shape == "hex_prism":
-        cmd += ["--prism-aspect", str(args.prism_aspect),
-                "--edge-refine", str(args.edge_refine)]
+        cmd += ["--prism-aspect", str(args.prism_aspect)]
+        if args.edge_refine is not None:
+            cmd += ["--edge-refine", str(args.edge_refine)]
     if args.scat_plane:
         cmd += ["--scat-plane", args.scat_plane]
     env = os.environ.copy()
     if args.cuda_lib:
         env["LD_LIBRARY_PATH"] = args.cuda_lib + ":" + env.get("LD_LIBRARY_PATH", "")
-    stdout, elapsed = run(cmd, env=env)
+    stdout, elapsed, rc, timed_out = run(cmd, env=env, timeout=args.bem_timeout)
+    if timed_out:
+        raise RuntimeError(f"BEM timed out after {args.bem_timeout}s for ka={ka:g}")
+    if rc != 0:
+        raise RuntimeError(f"BEM failed with rc={rc} for ka={ka:g}\n{stdout[-4000:]}")
     data = json.load(open(out_file))
     total_s = data.get("timing", {}).get("total_s", elapsed)
     solve_s = data.get("timing", {}).get("solve_s", 0.0)
@@ -125,14 +137,29 @@ def run_adda(args, ka, dpl, out_dir):
         "-eps", str(args.adda_eps),
         "-iter", args.adda_iter,
     ]
-    stdout, elapsed = run(cmd)
+    stdout, elapsed, rc, timed_out = run(cmd, timeout=args.adda_timeout, check=False)
     log_path = os.path.join(run_dir, "log")
-    log = open(log_path).read()
+    log = open(log_path).read() if os.path.exists(log_path) else stdout
     wall = re.search(r"Total wall time:\s+([0-9.]+)", log)
     occ = re.search(r"Total number of occupied dipoles:\s+(\d+)", log)
     iters = re.search(r"Total number of iterations:\s+(\d+)", log)
     dpl_eff = re.search(r"Dipoles/lambda:\s+([0-9.]+)", log)
-    theta, m11 = parse_adda_mueller(os.path.join(run_dir, "mueller"))
+    res_matches = re.findall(r"RE\s*=\s*([0-9.eE+-]+)", log)
+    residual = float(res_matches[-1]) if res_matches else None
+    mueller_path = os.path.join(run_dir, "mueller")
+    if timed_out or rc != 0 or not os.path.exists(mueller_path):
+        return {
+            "method": "ADDA",
+            "ka": ka,
+            "dpl": dpl,
+            "dpl_eff": float(dpl_eff.group(1)) if dpl_eff else dpl,
+            "dipoles": int(occ.group(1)) if occ else None,
+            "iterations": int(iters.group(1)) if iters else None,
+            "residual": residual,
+            "time_s": float(wall.group(1)) if wall else elapsed,
+            "status": "timeout" if timed_out else f"failed:{rc}",
+        }
+    theta, m11 = parse_adda_mueller(mueller_path)
     scale, mean_err, max_err = rel_stats(theta, m11, ka, args.n_re, args.n_im)
     return {
         "method": "ADDA",
@@ -141,7 +168,9 @@ def run_adda(args, ka, dpl, out_dir):
         "dpl_eff": float(dpl_eff.group(1)) if dpl_eff else dpl,
         "dipoles": int(occ.group(1)) if occ else None,
         "iterations": int(iters.group(1)) if iters else None,
+        "residual": residual,
         "time_s": float(wall.group(1)) if wall else elapsed,
+        "status": "ok",
         "m11_mie_scale": scale,
         "m11_mean_err": mean_err,
         "m11_max_err": max_err,
@@ -155,11 +184,19 @@ def compact(row):
         detail = f"ref={row['ref']} q={row['quad']} mv={row['matvecs']}"
     else:
         detail = f"dpl={row['dpl']} eff={row['dpl_eff']:.1f} dip={row['dipoles']} it={row['iterations']}"
-    return (f"{row['method']:7s} ka={row['ka']:5.2f} {detail:28s} "
-            f"time={row['time_s']:8.3f}s mean={row['m11_mean_err']:.3e} max={row['m11_max_err']:.3e}")
+    base = (f"{row['method']:7s} ka={row['ka']:5.2f} {detail:28s} "
+            f"time={row['time_s']:8.3f}s")
+    if row.get("status") and row["status"] != "ok":
+        residual = row.get("residual")
+        res = f" residual={residual:.3e}" if residual is not None else ""
+        return f"{base} {row['status']}{res}"
+    return f"{base} mean={row['m11_mean_err']:.3e} max={row['m11_max_err']:.3e}"
 
 
 def compact_prism_diff(bem, adda):
+    if adda.get("status") and adda["status"] != "ok":
+        return (f"BEM-vs-ADDA ka={bem['ka']:5.2f} ref={bem['ref']} vs dpl={adda['dpl']} "
+                f"skipped ({adda['status']})")
     scale, l2_err, mean_err, max_err = rel_stats_against(adda["m11"], bem["m11"])
     return (f"BEM-vs-ADDA ka={bem['ka']:5.2f} ref={bem['ref']} vs dpl={adda['dpl']} "
             f"scale={scale:.4e} l2={l2_err:.3e} mean_rel={mean_err:.3e} max_rel={max_err:.3e}")
@@ -167,7 +204,7 @@ def compact_prism_diff(bem, adda):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--bem-exe", default="./bin/bem_cuda")
+    p.add_argument("--bem-exe", default="./bin/bem_cuda_fmm")
     p.add_argument("--adda-exe", default=os.path.expanduser("~/adda/src/seq/adda"))
     p.add_argument("--cuda-lib", default="")
     p.add_argument("--out-dir", default="bench_bem_adda")
@@ -178,8 +215,8 @@ def main():
     p.add_argument("--shape", choices=["sphere", "hex_prism"], default="sphere")
     p.add_argument("--prism-aspect", type=float, default=1.0,
                    help="For hex_prism: h/Dx, same convention as ADDA prism")
-    p.add_argument("--edge-refine", type=int, default=0,
-                   help="For hex_prism BEM mesh: conforming local edge-refinement passes")
+    p.add_argument("--edge-refine", type=int, default=None,
+                   help="For hex_prism BEM mesh: conforming local edge-refinement passes; omit for solver auto")
     p.add_argument("--ntheta", type=int, default=61)
     p.add_argument("--scat-plane", choices=["yz", "xz"], default="yz",
                    help="BEM single-orient scattering plane; yz matches ADDA default")
@@ -193,9 +230,13 @@ def main():
     p.add_argument("--gmres-tol", type=float, default=None)
     p.add_argument("--gmres-restart", type=int, default=None)
     p.add_argument("--max-leaf", type=int, default=None)
+    p.add_argument("--bem-timeout", type=float, default=None,
+                   help="Per-BEM-run timeout in seconds")
     p.add_argument("--adda-eps", type=float, default=5.0,
                    help="ADDA residual exponent: epsilon=10^(-value)")
     p.add_argument("--adda-iter", default="qmr")
+    p.add_argument("--adda-timeout", type=float, default=None,
+                   help="Per-ADDA-run timeout in seconds; timed-out rows stay in summary")
     p.add_argument("--skip-bem", action="store_true")
     p.add_argument("--skip-adda", action="store_true")
     args = p.parse_args()

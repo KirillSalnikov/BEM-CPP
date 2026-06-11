@@ -74,17 +74,23 @@ def main():
                    help="CPU OpenMP threads per GPU worker; 0 leaves the environment unchanged")
     p.add_argument("--ka", required=True)
     p.add_argument("--ri", nargs=2, default=["1.3116", "0"])
-    p.add_argument("--shape", choices=["sphere", "hex_prism"], default="sphere")
+    p.add_argument("--shape", choices=["sphere", "hex_prism", "obj"], default="sphere")
+    p.add_argument("--obj", default=None,
+                   help="OBJ mesh for --shape obj; bem_cuda normalizes it to unit equal-volume radius")
+    p.add_argument("--subdiv", default="0",
+                   help="Flat midpoint subdivisions for --shape obj")
     p.add_argument("--prism-aspect", default="1")
-    p.add_argument("--edge-refine", default="0")
+    p.add_argument("--edge-refine", default="auto")
     p.add_argument("--ref", default="3")
     p.add_argument("--quad", default=None)
     p.add_argument("--ntheta", default="181")
     p.add_argument("--scat-plane", choices=["yz", "xz"], default="yz")
     p.add_argument("--orient", nargs=3, default=["8", "8", "1"])
+    p.add_argument("--alpha-avg", default="1",
+                   help="Average alpha/phi in far-field only; use with --orient 1 NB NG")
     p.add_argument("--oldauto", choices=["2"], default=None,
                    help="MBS-fast orientation preset. oldauto=2 maps to Nphi=600, Ntheta=181")
-    p.add_argument("--solver", choices=["auto", "fmm", "spfft", "pfft"], default="auto")
+    p.add_argument("--solver", choices=["auto", "dense", "fmm", "spfft", "pfft"], default="auto")
     p.add_argument("--accurate", action="store_true",
                    help="Use bem_cuda --accurate conservative hex_prism defaults")
     p.add_argument("--fmm-digits", default=None)
@@ -128,6 +134,12 @@ def main():
             "--force-orient",
             "--solver", args.solver,
         ]
+        if args.shape == "obj":
+            if not args.obj:
+                raise SystemExit("--shape obj requires --obj")
+            cmd += ["--obj", args.obj, "--subdiv", args.subdiv]
+        if int(args.alpha_avg) > 1:
+            cmd += ["--alpha-avg", args.alpha_avg]
         if args.quad is not None:
             cmd += ["--quad", args.quad]
         if args.fmm_digits is not None:
@@ -139,8 +151,9 @@ def main():
         if args.max_leaf is not None:
             cmd += ["--max-leaf", args.max_leaf]
         if args.shape == "hex_prism":
-            cmd += ["--prism-aspect", args.prism_aspect,
-                    "--edge-refine", args.edge_refine]
+            cmd += ["--prism-aspect", args.prism_aspect]
+            if args.edge_refine != "auto":
+                cmd += ["--edge-refine", args.edge_refine]
         if args.no_prec:
             cmd.append("--no-prec")
         if args.accurate:
@@ -181,6 +194,9 @@ def main():
         "chunks": [{"start": s, "count": c} for s, c in ranges],
     }
 
+    out_dir = os.path.dirname(args.out)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
     with open(args.out, "w") as f:
         json.dump(result, f, indent=2)
     print("Wrote %s, wall %.2fs" % (args.out, wall))
