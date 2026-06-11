@@ -6,6 +6,10 @@ import argparse
 from greek_profiles import select_greek_profile
 
 
+def remove_obj_suffix(name):
+    return name[:-4] if name.endswith(".obj") else name
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("ax", type=float, help="ADDA size parameter A_x")
@@ -21,7 +25,7 @@ def main():
     if args.command:
         out = (
             "runs/greek_larger_valid/"
-            f"bem_{profile.mesh.rsplit('/', 1)[-1].removesuffix('.obj')}_"
+            f"bem_{remove_obj_suffix(profile.mesh.rsplit('/', 1)[-1])}_"
             f"Ax{args.ax:g}_a95b65g20_q4_n181.json"
         )
         print(

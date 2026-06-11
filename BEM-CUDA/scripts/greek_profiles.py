@@ -1,13 +1,9 @@
 """Validated Greek-particle mesh profiles for ADDA comparisons."""
 
-from dataclasses import dataclass
+from collections import namedtuple
 
 
-@dataclass(frozen=True)
-class GreekProfile:
-    max_ax: float
-    mesh: str
-    note: str
+GreekProfile = namedtuple("GreekProfile", ["max_ax", "mesh", "note"])
 
 
 PROFILES = [

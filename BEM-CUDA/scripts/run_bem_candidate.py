@@ -47,6 +47,8 @@ def main():
     parser.add_argument("--ntheta", default="19")
     parser.add_argument("--solver", default="dense")
     parser.add_argument("--system", default="pmchwt")
+    parser.add_argument("--cuda-devices",
+                        help="set CUDA_VISIBLE_DEVICES on the remote run, e.g. 3 or 0,1,2,3")
     parser.add_argument("--mbs", help="MBS/ADDA reference table; defaults to A_x=<ka> in --mbs-dir")
     parser.add_argument("--mbs-dir", default=DEFAULT_MBS_DIR)
     parser.add_argument("--theta-max", default="180")
@@ -88,8 +90,11 @@ def main():
         "--ntheta", args.ntheta,
         "--out", remote_out,
     ]
+    cuda_visible = ""
+    if args.cuda_devices:
+        cuda_visible = f"export CUDA_VISIBLE_DEVICES={shlex.quote(args.cuda_devices)}; "
     remote_cmd = (
-        f"cd {shlex.quote(args.remote_dir)} && {cuda_env}"
+        f"cd {shlex.quote(args.remote_dir)} && {cuda_env}{cuda_visible}"
         "mkdir -p " + shlex.quote(str(Path(remote_out).parent)) + " && "
         "BEM_ORIENT_PROGRESS=100000 " + " ".join(shlex.quote(x) for x in bem_cmd)
     )
