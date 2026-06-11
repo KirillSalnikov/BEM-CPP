@@ -6,6 +6,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from greek_profiles import select_greek_profile
+
 
 DEFAULT_RUNS = Path("runs/greek_larger_valid")
 DEFAULT_MBS_DIR = Path("/home/user/cluster/BEM-CPP/greek/ADDA_for_PO_comparison/refr_1_6__0_002")
@@ -80,18 +82,49 @@ def print_table(rows):
         )
 
 
-def print_best(rows):
+def adda_sizes(mbs_dir):
+    values = []
+    for path in mbs_dir.glob("A_x=*_refr_1_6__0_002.dat"):
+        match = re.search(r"A_x=([0-9.]+)_", path.name)
+        if match:
+            values.append(float(match.group(1)))
+    return sorted(values)
+
+
+def fastest_within(rows, metric, tolerance):
+    best = min(rows, key=lambda r: r[metric])
+    cutoff = (1.0 + tolerance) * best[metric]
+    candidates = [r for r in rows if r[metric] <= cutoff]
+    fastest = min(candidates, key=lambda r: r["time"] if r["time"] is not None else float("inf"))
+    return best, fastest
+
+
+def weak_component_note(row):
+    if row["score6_s11w"] < 0.05 and (row["s12"] > 0.7 or row["s34"] > 0.3):
+        return " weak-component dominated"
+    return ""
+
+
+def print_best(rows, tolerance):
     by_ax = {}
     for r in rows:
         by_ax.setdefault(r["ax"], []).append(r)
-    print("\nBest per A_x by strict score6:")
+    pct = 100.0 * tolerance
+    print(f"\nFastest profiles within {pct:.0f}% of best strict score6:")
     for ax in sorted(by_ax):
-        best = min(by_ax[ax], key=lambda r: r["score6"])
-        fastest_good = min(
-            (r for r in by_ax[ax] if r["score6"] <= 1.15 * best["score6"]),
-            key=lambda r: r["time"] if r["time"] is not None else float("inf"),
+        best, fastest_good = fastest_within(by_ax[ax], "score6", tolerance)
+        note = "best" if fastest_good is best else f"fast within {pct:.0f}% of best"
+        print(
+            f"A_x={ax:g}: {fastest_good['mesh']} "
+            f"time={fastest_good['time']:.2f}s score6={fastest_good['score6']:.6g} "
+            f"score6_s11w={fastest_good['score6_s11w']:.6g} ({note})"
+            f"{weak_component_note(fastest_good)}"
         )
-        note = "best" if fastest_good is best else "fast within 15% of best"
+
+    print(f"\nFastest profiles within {pct:.0f}% of best S11-weighted score:")
+    for ax in sorted(by_ax):
+        best, fastest_good = fastest_within(by_ax[ax], "score6_s11w", tolerance)
+        note = "best" if fastest_good is best else f"fast within {pct:.0f}% of best"
         print(
             f"A_x={ax:g}: {fastest_good['mesh']} "
             f"time={fastest_good['time']:.2f}s score6={fastest_good['score6']:.6g} "
@@ -104,6 +137,8 @@ def main():
     parser.add_argument("--runs", type=Path, default=DEFAULT_RUNS)
     parser.add_argument("--mbs-dir", type=Path, default=DEFAULT_MBS_DIR)
     parser.add_argument("--theta-max", type=float, default=180.0)
+    parser.add_argument("--within", type=float, default=0.15,
+                        help="relative tolerance for fastest-within-best summaries")
     args = parser.parse_args()
 
     rows = []
@@ -113,7 +148,20 @@ def main():
             rows.append(row)
     rows.sort(key=lambda r: (r["ax"], r["score6"], r["time"] or 0.0))
     print_table(rows)
-    print_best(rows)
+    print_best(rows, args.within)
+
+    sizes = adda_sizes(args.mbs_dir)
+    if rows and sizes:
+        max_done = max(r["ax"] for r in rows)
+        next_sizes = [v for v in sizes if v > max_done + 1e-12]
+        if next_sizes:
+            ax = next_sizes[0]
+            profile, extrapolated = select_greek_profile(ax)
+            status = "extrapolated" if extrapolated else "validated"
+            print(
+                f"\nNext ADDA database size: A_x={ax:g}; "
+                f"profile={profile.mesh} ({status})"
+            )
 
 
 if __name__ == "__main__":
