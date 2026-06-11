@@ -90,6 +90,7 @@ Results so far:
 | 27.50 | shapeafine_res_f4200_closed_gmsh_f6000_a35 | 4 | 1157.79 | 0.49273 | accuracy recovers, but runtime is high |
 | 27.50 | shapeafine_res_f4200_closed_gmsh_f6000_a45 | 4 | 1206.89 | 0.43783 | best current accuracy at this size; slightly slower than a35 |
 | 30.25 | shapeafine_res_f4200_closed_gmsh_f6000_a45 | 4 | 1227.51 | 1.35528 | too coarse/insufficient at this size; S12 fails badly |
+| 30.25 | shapeafine_res_f4200_closed_gmsh_f7000_a45 | 4 | 1908.06 | 0.95742 | still fails S12 and is too slow; not a useful production tradeoff |
 
 Recommended production profile:
 
@@ -99,7 +100,7 @@ Recommended production profile:
 - at `A_x=22.83`, use `shapeafine_res_f4200_closed_gmsh_f4200_a35.obj`; the faster gmsh_f3400 profile is already too coarse in S12.
 - at `A_x=25.09`, the same gmsh_f4200 profile still holds with score6 `0.37298`; continue testing larger database sizes with this mesh before increasing face count.
 - at `A_x=27.5`, gmsh_f4200 is no longer enough, and gmsh_f5200 is still too coarse. gmsh_f6000 is required; `a45` improves score6 to `0.43783` versus `0.49273` for `a35`, at a small extra runtime cost.
-- at `A_x=30.25`, even gmsh_f6000_a45 is no longer enough (`score6=1.35528`, dominated by S12). This is the current validated limit of the dense production path before a stronger mesh strategy or a faster validated iterative/FMM path is needed.
+- at `A_x=30.25`, even gmsh_f6000_a45 is no longer enough (`score6=1.35528`, dominated by S12). Increasing to gmsh_f7000_a45 is still not enough (`score6=0.95742`) and costs `1908.06s`, so this is the current validated limit of the dense production path before a stronger mesh strategy or a faster validated iterative/FMM path is needed.
 - for exact ADDA comparison, only use A_x values that exist in the ADDA database. For example, `2*11.89 = 23.78` is not present there; the nearest database sizes are `22.83` and `25.09`, so they are not an exact x2 validation.
 
 Stable large-size command:
