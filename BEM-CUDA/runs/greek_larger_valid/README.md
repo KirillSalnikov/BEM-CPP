@@ -134,6 +134,24 @@ Recommended production profile:
   surface directly is not the right fix for the large-size BEM discrepancy.
 - for exact ADDA comparison, only use A_x values that exist in the ADDA database. For example, `2*11.89 = 23.78` is not present there; the nearest database sizes are `22.83` and `25.09`, so they are not an exact x2 validation.
 
+The current profile table is encoded in `scripts/greek_profiles.py`. Use:
+
+```bash
+python3 scripts/select_greek_profile.py <A_x> --command
+```
+
+or run candidates with:
+
+```bash
+python3 scripts/run_bem_candidate.py --auto-greek-profile \
+  --ka <A_x> --ntheta 181 \
+  --out runs/greek_larger_valid/bem_auto_Ax<A_x>_a95b65g20_q4_n181.json
+```
+
+Sizes above `A_x=30.25` are deliberately marked as extrapolated. The next database
+size is `A_x=33.28`; using f7000 there is only a first probe, not a validated
+production profile.
+
 Stable large-size command:
 
 ```bash

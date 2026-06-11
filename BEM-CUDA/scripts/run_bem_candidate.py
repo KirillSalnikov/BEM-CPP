@@ -11,6 +11,8 @@ import shlex
 import subprocess
 from pathlib import Path
 
+from greek_profiles import select_greek_profile
+
 
 DEFAULT_REMOTE = "kirill_epyc@172.16.0.212"
 DEFAULT_REMOTE_DIR = "/home/kirill_epyc/BEM-CUDA"
@@ -34,7 +36,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--remote", default=DEFAULT_REMOTE)
     parser.add_argument("--remote-dir", default=DEFAULT_REMOTE_DIR)
-    parser.add_argument("--obj", required=True, help="Remote OBJ path, relative to remote repo")
+    parser.add_argument("--obj", help="Remote OBJ path, relative to remote repo")
+    parser.add_argument("--auto-greek-profile", action="store_true",
+                        help="select the current validated Greek-particle mesh profile from --ka")
     parser.add_argument("--out", required=True, help="Remote/local JSON path, relative to repo")
     parser.add_argument("--ka", default="5.645")
     parser.add_argument("--ri", nargs=2, default=["1.6", "0.002"])
@@ -52,6 +56,16 @@ def main():
     mbs_path = args.mbs or default_mbs_path(args.mbs_dir, args.ka)
     if not Path(mbs_path).is_file():
         raise FileNotFoundError(f"reference table not found for ka={args.ka}: {mbs_path}")
+    obj_path = args.obj
+    if args.auto_greek_profile:
+        profile, extrapolated = select_greek_profile(args.ka)
+        obj_path = profile.mesh
+        print(
+            f"Auto Greek profile: {obj_path} "
+            f"({'extrapolated' if extrapolated else 'validated'}; {profile.note})"
+        )
+    if not obj_path:
+        raise ValueError("--obj is required unless --auto-greek-profile is set")
 
     remote_out = args.out
     local_out = Path(args.out)
@@ -66,7 +80,7 @@ def main():
         "./bin/bem_cuda_fmm",
         "--solver", args.solver,
         "--system", args.system,
-        "--obj", args.obj,
+        "--obj", obj_path,
         "--ka", args.ka,
         "--ri", args.ri[0], args.ri[1],
         "--orient", args.orient[0], args.orient[1], args.orient[2],
