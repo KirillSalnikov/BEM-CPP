@@ -60,6 +60,8 @@ def main():
     parser.add_argument("--mbs", help="MBS/ADDA reference table; defaults to A_x=<ka> in --mbs-dir")
     parser.add_argument("--mbs-dir", default=DEFAULT_MBS_DIR)
     parser.add_argument("--theta-max", default="180")
+    parser.add_argument("--skip-existing", action="store_true",
+                        help="skip remote run when local --out already exists; still score it")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -121,8 +123,8 @@ def main():
             "ok=0; wait_msg=\"$wait_msg gpu=$gpu mem=${mem:-unknown}MiB util=${util:-unknown}%\"; fi; "
             "done; "
             "if [ \"$ok\" -eq 1 ]; then "
-            f"echo \"GPU wait satisfied: gpus={','.join(selected_gpus)}\"; break; fi; "
-            "echo \"Waiting for GPUs:"
+            f"echo \"[$(date)] GPU wait satisfied: gpus={','.join(selected_gpus)}\"; break; fi; "
+            "echo \"[$(date)] Waiting for GPUs:"
             "${wait_msg}\"; "
             f"sleep {shlex.quote(args.wait_gpu_interval)}; "
             "done; "
@@ -136,12 +138,15 @@ def main():
         print(remote_cmd)
         return
 
-    run(["ssh", args.remote, remote_cmd])
-    run([
-        "rsync", "-az",
-        f"{args.remote}:{args.remote_dir}/{remote_out}",
-        str(local_out),
-    ])
+    if args.skip_existing and local_out.is_file():
+        print(f"Using existing local result: {local_out}")
+    else:
+        run(["ssh", args.remote, remote_cmd])
+        run([
+            "rsync", "-az",
+            f"{args.remote}:{args.remote_dir}/{remote_out}",
+            str(local_out),
+        ])
     score = subprocess.check_output([
         "scripts/score_mbs.py",
         "--bem", str(local_out),
