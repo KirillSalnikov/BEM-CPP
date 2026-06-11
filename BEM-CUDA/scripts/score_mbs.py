@@ -99,6 +99,26 @@ def score_against_mbs(table, mbs, raw):
     return float(total), parts, float(data_norm / ref_norm)
 
 
+def score_against_mbs_s11_weighted(table, mbs, raw):
+    theta = table[:, 0]
+    data_norm = 1.0 if raw else table[0, COMPONENTS["S11"][2]]
+    ref_s11 = np.interp(theta, mbs[:, 0], mbs[:, COMPONENTS["S11"][3]])
+    ref_norm = 1.0 if raw else ref_s11[0]
+    ref_s11_norm = ref_s11 / ref_norm
+
+    parts = {}
+    total = 0.0
+    for name, (_, _, data_col, mbs_col) in COMPONENTS.items():
+        y = table[:, data_col] / data_norm
+        r = np.interp(theta, mbs[:, 0], mbs[:, mbs_col]) / ref_norm
+        err = y - r
+        denom = max(np.linalg.norm(ref_s11_norm), 1e-300)
+        val = np.linalg.norm(err) / denom
+        parts[name] = float(val)
+        total += val
+    return float(total), parts
+
+
 def main():
     parser = argparse.ArgumentParser()
     src = parser.add_mutually_exclusive_group(required=True)
@@ -119,6 +139,7 @@ def main():
     table = restrict_theta(table, args.theta_max)
     mbs = np.loadtxt(args.mbs, skiprows=1)
     total, parts, scale = score_against_mbs(table, mbs, args.raw)
+    weighted_total, weighted_parts = score_against_mbs_s11_weighted(table, mbs, args.raw)
 
     print(f"Source: {label}")
     print(f"Theta points: {len(table)}")
@@ -129,6 +150,9 @@ def main():
     for name in COMPONENTS:
         print(f"{name}: {parts[name]:.6g}")
     print(f"score6: {total:.6g}")
+    for name in COMPONENTS:
+        print(f"{name}_s11w: {weighted_parts[name]:.6g}")
+    print(f"score6_s11w: {weighted_total:.6g}")
 
 
 if __name__ == "__main__":

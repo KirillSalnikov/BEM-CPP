@@ -93,6 +93,23 @@ Results so far:
 | 30.25 | shapeafine_res_f4200_closed_gmsh_f7000_a45 | 4 | 1908.06 | 0.95742 | still fails S12 and is too slow; not a useful production tradeoff |
 | 30.25 | greek_adda_dpl25_mc_decim6000_ag6_merge6 | 4 | 1345.43 | 3.78269 | ADDA-voxel MC derived mesh is much worse; do not use |
 
+Scoring note:
+
+The original `score6` is intentionally strict: each Mueller element is normalized by
+its own reference norm. At large sizes this can make weak polarization elements
+(`S12`, `S34`) dominate the score even when the absolute error is small compared with
+`S11`. `scripts/score_mbs.py` also reports `score6_s11w`, where every component error
+is normalized by the `S11` norm. This is not a replacement for `score6`, but it avoids
+mistaking a small absolute `S12` discrepancy for a large total-intensity error.
+
+Examples:
+
+| A_x | profile | score6 | score6_s11w | interpretation |
+| ---: | --- | ---: | ---: | --- |
+| 25.09 | gmsh_f4200_a35 | 0.37298 | 0.03798 | good strict score and good absolute score |
+| 27.50 | gmsh_f6000_a45 | 0.43783 | 0.01400 | best current strict/absolute tradeoff at this size |
+| 30.25 | gmsh_f7000_a45 | 0.95742 | 0.02678 | total-intensity-scale error is still small; strict score is dominated by weak S12 |
+
 Recommended production profile:
 
 - for `A_x <= 15.68`: use `shapeafine_res_f3400_ag8.obj` when speed matters; it is the best current speed/accuracy compromise on the larger Greek particle runs
