@@ -110,6 +110,15 @@ Examples:
 | 27.50 | gmsh_f6000_a45 | 0.43783 | 0.01400 | best current strict/absolute tradeoff at this size |
 | 30.25 | gmsh_f7000_a45 | 0.95742 | 0.02678 | total-intensity-scale error is still small; strict score is dominated by weak S12 |
 
+Alpha-averaging check:
+
+The fast `alpha_avg` path was compared with explicit alpha orientation solves on a
+small diagnostic mesh (`shapeafine_f1400_ag8`, `A_x=13.06`, `orient 4 5 3`,
+`ntheta=31`). The maximum Mueller-matrix difference was `1.3e-15`
+(`rel_fro=1.3e-17`). This confirms that the alpha far-field acceleration is not the
+source of the large-size weak-component discrepancy; keep it enabled for production
+runs.
+
 Recommended production profile:
 
 - for `A_x <= 15.68`: use `shapeafine_res_f3400_ag8.obj` when speed matters; it is the best current speed/accuracy compromise on the larger Greek particle runs

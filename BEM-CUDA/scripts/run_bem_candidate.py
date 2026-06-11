@@ -14,7 +14,15 @@ from pathlib import Path
 
 DEFAULT_REMOTE = "kirill_epyc@172.16.0.212"
 DEFAULT_REMOTE_DIR = "/home/kirill_epyc/BEM-CUDA"
-DEFAULT_MBS = "/home/user/cluster/BEM-CPP/greek/ADDA_for_PO_comparison/refr_1_6__0_002/A_x=5.71_refr_1_6__0_002.dat"
+DEFAULT_MBS_DIR = "/home/user/cluster/BEM-CPP/greek/ADDA_for_PO_comparison/refr_1_6__0_002"
+
+
+def format_ax(value):
+    return f"{float(value):.12g}"
+
+
+def default_mbs_path(mbs_dir, ka):
+    return str(Path(mbs_dir) / f"A_x={format_ax(ka)}_refr_1_6__0_002.dat")
 
 
 def run(cmd, **kwargs):
@@ -35,10 +43,15 @@ def main():
     parser.add_argument("--ntheta", default="19")
     parser.add_argument("--solver", default="dense")
     parser.add_argument("--system", default="pmchwt")
-    parser.add_argument("--mbs", default=DEFAULT_MBS)
+    parser.add_argument("--mbs", help="MBS/ADDA reference table; defaults to A_x=<ka> in --mbs-dir")
+    parser.add_argument("--mbs-dir", default=DEFAULT_MBS_DIR)
     parser.add_argument("--theta-max", default="180")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+
+    mbs_path = args.mbs or default_mbs_path(args.mbs_dir, args.ka)
+    if not Path(mbs_path).is_file():
+        raise FileNotFoundError(f"reference table not found for ka={args.ka}: {mbs_path}")
 
     remote_out = args.out
     local_out = Path(args.out)
@@ -79,7 +92,7 @@ def main():
     score = subprocess.check_output([
         "scripts/score_mbs.py",
         "--bem", str(local_out),
-        "--mbs", args.mbs,
+        "--mbs", mbs_path,
         "--theta-max", args.theta_max,
     ], text=True)
     print(score, end="")
