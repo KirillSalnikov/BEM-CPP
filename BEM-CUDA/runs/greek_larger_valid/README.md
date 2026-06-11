@@ -91,6 +91,7 @@ Results so far:
 | 27.50 | shapeafine_res_f4200_closed_gmsh_f6000_a45 | 4 | 1206.89 | 0.43783 | best current accuracy at this size; slightly slower than a35 |
 | 30.25 | shapeafine_res_f4200_closed_gmsh_f6000_a45 | 4 | 1227.51 | 1.35528 | too coarse/insufficient at this size; S12 fails badly |
 | 30.25 | shapeafine_res_f4200_closed_gmsh_f7000_a45 | 4 | 1908.06 | 0.95742 | still fails S12 and is too slow; not a useful production tradeoff |
+| 30.25 | greek_adda_dpl25_mc_decim6000_ag6_merge6 | 4 | 1345.43 | 3.78269 | ADDA-voxel MC derived mesh is much worse; do not use |
 
 Recommended production profile:
 
@@ -101,6 +102,10 @@ Recommended production profile:
 - at `A_x=25.09`, the same gmsh_f4200 profile still holds with score6 `0.37298`; continue testing larger database sizes with this mesh before increasing face count.
 - at `A_x=27.5`, gmsh_f4200 is no longer enough, and gmsh_f5200 is still too coarse. gmsh_f6000 is required; `a45` improves score6 to `0.43783` versus `0.49273` for `a35`, at a small extra runtime cost.
 - at `A_x=30.25`, even gmsh_f6000_a45 is no longer enough (`score6=1.35528`, dominated by S12). Increasing to gmsh_f7000_a45 is still not enough (`score6=0.95742`) and costs `1908.06s`, so this is the current validated limit of the dense production path before a stronger mesh strategy or a faster validated iterative/FMM path is needed.
+- a direct ADDA-voxel marching-cubes decimation path was tested at `A_x=30.25`
+  (`greek_adda_dpl25_mc_decim6000_ag6_merge6`, watertight after vertex-merge repair).
+  It is much worse (`score6=3.78269`, dominated by S12), so matching the voxelized
+  surface directly is not the right fix for the large-size BEM discrepancy.
 - for exact ADDA comparison, only use A_x values that exist in the ADDA database. For example, `2*11.89 = 23.78` is not present there; the nearest database sizes are `22.83` and `25.09`, so they are not an exact x2 validation.
 
 Stable large-size command:
