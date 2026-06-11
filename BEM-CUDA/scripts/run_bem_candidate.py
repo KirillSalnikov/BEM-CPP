@@ -103,21 +103,27 @@ def main():
         cuda_visible = f"export CUDA_VISIBLE_DEVICES={shlex.quote(args.cuda_devices)}; "
     wait_gpu = ""
     if args.wait_gpu_free:
-        selected_gpu = (args.cuda_devices or "0").split(",")[0].strip()
+        selected_gpus = [g.strip() for g in (args.cuda_devices or "0").split(",") if g.strip()]
+        gpu_list = " ".join(shlex.quote(g) for g in selected_gpus)
         wait_gpu = (
             "while true; do "
-            "line=$(nvidia-smi --query-gpu=index,memory.used,utilization.gpu "
-            "--format=csv,noheader,nounits | "
-            f"awk -F, '$1+0 == {shlex.quote(selected_gpu)}+0 {{gsub(/ /,\"\",$2); gsub(/ /,\"\",$3); print $2\" \"$3; exit}}'); "
+            "status=$(nvidia-smi --query-gpu=index,memory.used,utilization.gpu "
+            "--format=csv,noheader,nounits); "
+            "ok=1; wait_msg=''; "
+            f"for gpu in {gpu_list}; do "
+            "line=$(printf '%s\n' \"$status\" | awk -F, -v g=\"$gpu\" "
+            "'$1+0 == g+0 {gsub(/ /,\"\",$2); gsub(/ /,\"\",$3); print $2\" \"$3; exit}'); "
             "mem=$(printf '%s' \"$line\" | awk '{print $1}'); "
             "util=$(printf '%s' \"$line\" | awk '{print $2}'); "
-            "if [ -n \"$mem\" ] && [ -n \"$util\" ] && "
-            f"[ \"$mem\" -le {shlex.quote(args.wait_gpu_mem)} ] && "
-            f"[ \"$util\" -le {shlex.quote(args.wait_gpu_util)} ]; then "
-            "echo \"GPU wait satisfied: gpu="
-            f"{shlex.quote(selected_gpu)} mem=${{mem}}MiB util=${{util}}%\"; break; fi; "
-            "echo \"Waiting for GPU "
-            f"{shlex.quote(selected_gpu)}: mem=${{mem:-unknown}}MiB util=${{util:-unknown}}%\"; "
+            "if [ -z \"$mem\" ] || [ -z \"$util\" ] || "
+            f"[ \"$mem\" -gt {shlex.quote(args.wait_gpu_mem)} ] || "
+            f"[ \"$util\" -gt {shlex.quote(args.wait_gpu_util)} ]; then "
+            "ok=0; wait_msg=\"$wait_msg gpu=$gpu mem=${mem:-unknown}MiB util=${util:-unknown}%\"; fi; "
+            "done; "
+            "if [ \"$ok\" -eq 1 ]; then "
+            f"echo \"GPU wait satisfied: gpus={','.join(selected_gpus)}\"; break; fi; "
+            "echo \"Waiting for GPUs:"
+            "${wait_msg}\"; "
             f"sleep {shlex.quote(args.wait_gpu_interval)}; "
             "done; "
         )
