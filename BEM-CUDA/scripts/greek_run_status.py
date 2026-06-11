@@ -37,7 +37,8 @@ def main():
 
     print("\nLocal result:")
     local_out = Path(args.out)
-    print(f"  {local_out} {'exists' if local_out.is_file() else 'missing'}")
+    has_local_result = local_out.is_file()
+    print(f"  {local_out} {'exists' if has_local_result else 'missing'}")
 
     print("\nWait log tail:")
     log = Path(args.log)
@@ -65,6 +66,20 @@ def main():
     print("\nRemote:")
     remote = run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", args.remote, remote_cmd]).rstrip()
     print(remote if remote else "  no BEM process/result output")
+
+    has_bem = "bem_cuda_fmm" in remote
+    has_remote_result = args.out in remote
+    print("\nSummary:")
+    if has_local_result:
+        print("  result is local; score/update summary next")
+    elif has_remote_result:
+        print("  result is remote; rsync and score next")
+    elif has_bem:
+        print("  BEM is running; monitor solve/far-field progress")
+    elif local:
+        print("  waiting for GPUs; do not start a duplicate watcher")
+    else:
+        print("  no active watcher/result; submit the benchmark run")
 
 
 if __name__ == "__main__":
