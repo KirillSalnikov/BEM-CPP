@@ -49,6 +49,14 @@ def main():
     parser.add_argument("--system", default="pmchwt")
     parser.add_argument("--cuda-devices",
                         help="set CUDA_VISIBLE_DEVICES on the remote run, e.g. 3 or 0,1,2,3")
+    parser.add_argument("--wait-gpu-free", action="store_true",
+                        help="wait on the remote host until the first selected GPU is below util/memory thresholds")
+    parser.add_argument("--wait-gpu-util", default="20",
+                        help="GPU utilization threshold for --wait-gpu-free, percent")
+    parser.add_argument("--wait-gpu-mem", default="1200",
+                        help="GPU memory threshold for --wait-gpu-free, MiB")
+    parser.add_argument("--wait-gpu-interval", default="60",
+                        help="poll interval for --wait-gpu-free, seconds")
     parser.add_argument("--mbs", help="MBS/ADDA reference table; defaults to A_x=<ka> in --mbs-dir")
     parser.add_argument("--mbs-dir", default=DEFAULT_MBS_DIR)
     parser.add_argument("--theta-max", default="180")
@@ -93,8 +101,28 @@ def main():
     cuda_visible = ""
     if args.cuda_devices:
         cuda_visible = f"export CUDA_VISIBLE_DEVICES={shlex.quote(args.cuda_devices)}; "
+    wait_gpu = ""
+    if args.wait_gpu_free:
+        selected_gpu = (args.cuda_devices or "0").split(",")[0].strip()
+        wait_gpu = (
+            "while true; do "
+            "line=$(nvidia-smi --query-gpu=index,memory.used,utilization.gpu "
+            "--format=csv,noheader,nounits | "
+            f"awk -F, '$1+0 == {shlex.quote(selected_gpu)}+0 {{gsub(/ /,\"\",$2); gsub(/ /,\"\",$3); print $2\" \"$3; exit}}'); "
+            "mem=$(printf '%s' \"$line\" | awk '{print $1}'); "
+            "util=$(printf '%s' \"$line\" | awk '{print $2}'); "
+            "if [ -n \"$mem\" ] && [ -n \"$util\" ] && "
+            f"[ \"$mem\" -le {shlex.quote(args.wait_gpu_mem)} ] && "
+            f"[ \"$util\" -le {shlex.quote(args.wait_gpu_util)} ]; then "
+            "echo \"GPU wait satisfied: gpu="
+            f"{shlex.quote(selected_gpu)} mem=${{mem}}MiB util=${{util}}%\"; break; fi; "
+            "echo \"Waiting for GPU "
+            f"{shlex.quote(selected_gpu)}: mem=${{mem:-unknown}}MiB util=${{util:-unknown}}%\"; "
+            f"sleep {shlex.quote(args.wait_gpu_interval)}; "
+            "done; "
+        )
     remote_cmd = (
-        f"cd {shlex.quote(args.remote_dir)} && {cuda_env}{cuda_visible}"
+        f"cd {shlex.quote(args.remote_dir)} && {cuda_env}{cuda_visible}{wait_gpu}"
         "mkdir -p " + shlex.quote(str(Path(remote_out).parent)) + " && "
         "BEM_ORIENT_PROGRESS=100000 " + " ".join(shlex.quote(x) for x in bem_cmd)
     )
