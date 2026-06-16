@@ -10,8 +10,13 @@ DEFAULT_REMOTE = "kirill_epyc@172.16.0.212"
 DEFAULT_REMOTE_DIR = "/home/kirill_epyc/BEM-CUDA"
 
 
-def run(cmd):
-    return subprocess.check_output(cmd, text=True, stderr=subprocess.STDOUT)
+def run(cmd, check=True):
+    try:
+        return subprocess.check_output(cmd, text=True, stderr=subprocess.STDOUT)
+    except subprocess.CalledProcessError as exc:
+        if check:
+            raise
+        return exc.output
 
 
 def main():
@@ -64,7 +69,11 @@ def main():
         f"ls -lh {args.remote_dir}/{args.out} 2>/dev/null || true"
     )
     print("\nRemote:")
-    remote = run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", args.remote, remote_cmd]).rstrip()
+    remote = run(
+        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", args.remote, remote_cmd],
+        check=False,
+    ).rstrip()
+    remote_unreachable = "No route to host" in remote or "Connection timed out" in remote
     print(remote if remote else "  no BEM process/result output")
 
     has_bem = "bem_cuda_fmm" in remote
@@ -72,6 +81,8 @@ def main():
     print("\nSummary:")
     if has_local_result:
         print("  result is local; score/update summary next")
+    elif remote_unreachable:
+        print("  remote is unreachable; reconnect/resubmit watcher when network returns")
     elif has_remote_result:
         print("  result is remote; rsync and score next")
     elif has_bem:
