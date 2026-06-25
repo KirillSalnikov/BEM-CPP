@@ -1,4 +1,6 @@
 #include <iostream>
+#include <iomanip>
+#include <fstream>
 #include <assert.h>
 #include <float.h>
 #include <string>
@@ -24,6 +26,38 @@ int bcount=0;
 #endif
 
 using namespace std;
+
+/// Gauss-Legendre quadrature nodes and weights on [x1, x2]
+static void gaussLegendre(int n, double x1, double x2,
+                           vector<double> &x, vector<double> &w)
+{
+    x.resize(n);
+    w.resize(n);
+    int m = (n + 1) / 2;
+    double xm = 0.5 * (x2 + x1);
+    double xl = 0.5 * (x2 - x1);
+    for (int i = 0; i < m; i++)
+    {
+        double z = cos(M_PI * (i + 0.75) / (n + 0.5));
+        double z1, pp;
+        do {
+            double p1 = 1.0, p2 = 0.0;
+            for (int j = 0; j < n; j++)
+            {
+                double p3 = p2;
+                p2 = p1;
+                p1 = ((2 * j + 1) * z * p2 - j * p3) / (j + 1);
+            }
+            pp = n * (z * p1 - p2) / (z * z - 1.0);
+            z1 = z;
+            z -= p1 / pp;
+        } while (fabs(z - z1) > 1e-14);
+        x[i] = xm - xl * z;
+        x[n - 1 - i] = xm + xl * z;
+        w[i] = 2.0 * xl / ((1.0 - z * z) * pp * pp);
+        w[n - 1 - i] = w[i];
+    }
+}
 
 /// Cube particle: 6 square facets, edge length specified
 class CubeParticle : public Particle
@@ -157,7 +191,7 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("n", 1); // number of internal reflection
     parser.AddRule("pf", zero, true); // particle (filename)
     parser.AddRule("rs", 1, true, "pf"); // resize particle (new size)
-    parser.AddRule("fixed", 2, true); // fixed orientarion (beta, gamma)
+    parser.AddRule("fixed", '+', true); // fixed orientation (beta, gamma [, alpha])
     parser.AddRule("w", 1, true); // wavelength
     parser.AddRule("grid", '+', true); /* backscattering grid:
  (radius, Nphi, Ntheta) when 3 parameters
@@ -173,13 +207,19 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("adda", 0, true); // ADDA mode: compute internal field and output for ADDA
     parser.AddRule("dpl", 1, true); // dipoles per wavelength for ADDA grid (default 10)
     parser.AddRule("norefl", 0, true); // skip all reflections in ADDA mode
-    parser.AddRule("fp", 0, true); // use old Fabry-Perot reflection model (anti-parallel only)
-    parser.AddRule("diffr", 0, true); // enable Kirchhoff diffraction weighting for reflected beams
-    parser.AddRule("nf", 1, true); // minimum Fresnel number for reflected beams (default 1.0)
-    parser.AddRule("rscale", 1, true); // amplitude scaling factor for reflected beams (default 1.0)
-    parser.AddRule("jmax", 1, true); // max Jones matrix norm for reflected beams (default: no filter)
+    parser.AddRule("nokirch", 0, true); // reflections without Kirchhoff diffraction
+    parser.AddRule("maxacts", 1, true); // max nActs for reflected beam segments (default: 1)
     parser.AddRule("goi", 0, true); // incoherent reflected beam accumulation (intensity sum)
+    parser.AddRule("go", 0, true); // use GO-traced reflected beams instead of analytical PW reflection
     parser.AddRule("noinit", 0, true); // skip field files, output only shape (for x_0=0 start)
+    parser.AddRule("gref_dot", 1, true); // n̂_A·n̂_B threshold for reflection pairs (default -0.9)
+    parser.AddRule("ff", 0, true); // compute far-field from GO dipole fields (no ADDA iteration)
+    parser.AddRule("pgoh", 0, true); // PGOH far-field: GO beam Mueller matrices + Fraunhofer diffraction
+    parser.AddRule("blend", 1, true); // Fresnel edge blending: --blend sigma (0 = auto: 0.5)
+    parser.AddRule("sfp", 0, true); // smooth Fabry-Perot: multiply field by 1/(1-R^2*exp(2ikgd))
+    parser.AddRule("mg", 2, true); // multigrid: --mg IntField-Y IntField-X (coarse ADDA field)
+    parser.AddRule("avg", 3, true); // orientation averaging: --avg Nbeta Ngamma Nalpha
+    parser.AddRule("nf_orders", 0, true); // write per-order field files (k0, k1, ...)
 }
 
 ScatteringRange SetConus(ArgPP &parser)
@@ -430,7 +470,8 @@ int main(int argc, const char* argv[])
         additionalSummary += ", fixed orientation, ";
         double beta  = args.GetDoubleValue("fixed", 0);
         double gamma = args.GetDoubleValue("fixed", 1);
-        additionalSummary += "zenith " + to_string(beta) + "\xC2\xB0, azimuth " + to_string(gamma) + "\xC2\xB0" + "\n\n";
+        double alpha = (args.GetArgNumber("fixed") >= 3) ? args.GetDoubleValue("fixed", 2) : 0.0;
+        additionalSummary += "zenith " + to_string(beta) + "\xC2\xB0, azimuth " + to_string(gamma) + "\xC2\xB0, alpha " + to_string(alpha) + "\xC2\xB0" + "\n\n";
         cout << additionalSummary;
         tracer.m_summary = additionalSummary;
 
@@ -438,49 +479,267 @@ int main(int argc, const char* argv[])
         {
             int dpl = args.IsCatched("dpl") ? args.GetIntValue("dpl") : 10;
 
-            // Rotate particle to the specified orientation
+            // Common ADDA flags
+            double blendSigma = 0.0;
+            if (args.IsCatched("blend"))
+            {
+                blendSigma = args.GetDoubleValue("blend");
+                if (blendSigma < 1e-15) blendSigma = 0.5; // --blend 0 -> auto
+            }
+
+            if (args.IsCatched("avg") && args.IsCatched("ff"))
+            {
+                // === Orientation-averaged far-field ===
+                int nBeta  = (int)args.GetDoubleValue("avg", 0);
+                int nGamma = (int)args.GetDoubleValue("avg", 1);
+                int nAlpha = (int)args.GetDoubleValue("avg", 2);
+                if (nAlpha < 1) nAlpha = 1;
+
+                double thMin = args.GetDoubleValue("grid", 0);
+                double thMax = args.GetDoubleValue("grid", 1);
+                int nTh = (int)args.GetDoubleValue("grid", 3);
+
+                cout << "\n=== Orientation-averaged far-field ===" << endl;
+                cout << "  Quadrature: " << nBeta << " x " << nGamma << " x " << nAlpha
+                     << " (beta x gamma x alpha) = " << nBeta * nGamma * nAlpha << " orientations" << endl;
+
+                // Gauss-Legendre for cos(beta) in [-1, 1]
+                vector<double> cosB, wB;
+                gaussLegendre(nBeta, -1.0, 1.0, cosB, wB);
+
+                bool doPGOH = args.IsCatched("pgoh");
+
+                // Accumulation buffers
+                vector<double> accumMueller(nTh * 17, 0.0);
+                double accumCextY = 0, accumCextX = 0;
+                vector<double> accumPGOH(nTh * 17, 0.0);
+                double accumCgeo = 0;
+                double totalWeight = 0;
+                int iOri = 0;
+                int totalOri = nBeta * nGamma * nAlpha;
+
+                for (int ib = 0; ib < nBeta; ++ib)
+                {
+                    double betaRad = acos(cosB[ib]);
+                    for (int ig = 0; ig < nGamma; ++ig)
+                    {
+                        double gammaRad = 2.0 * M_PI * ig / nGamma;
+                        for (int ia = 0; ia < nAlpha; ++ia)
+                        {
+                            double alphaRad = 2.0 * M_PI * ia / nAlpha;
+                            double w = wB[ib] / nGamma / nAlpha;
+
+                            particle->Rotate(betaRad, gammaRad, alphaRad);
+
+                            ADDAFieldComputer addaField(particle, wave, refrIndex, dpl);
+                            if (args.IsCatched("nokirch"))
+                                addaField.m_noKirchhoff = true;
+                            addaField.BuildDipoleGrid();
+
+                            std::vector<InternalBeamSegment> segments;
+                            tracer.m_scattering->SetInternalSegmentStorage(&segments);
+
+                            vector<Beam> outBeams;
+                            tracer.m_scattering->ScatterLight(betaRad, gammaRad, outBeams);
+                            if (!doPGOH) outBeams.clear();
+
+                            if (args.IsCatched("mg"))
+                                addaField.InterpolateCoarseField(args.GetStringValue("mg", 0),
+                                                                  args.GetStringValue("mg", 1),
+                                                                  &tracer.m_incidentLight.direction);
+
+                            addaField.FillUncoveredPerFacet(tracer.m_incidentLight.direction,
+                                                             blendSigma);
+
+                            if (args.IsCatched("sfp"))
+                                addaField.AddSmoothFP(tracer.m_incidentLight.direction);
+
+                            if (!args.IsCatched("norefl") && !args.IsCatched("go"))
+                            {
+                                double grefDot = args.IsCatched("gref_dot") ? args.GetDoubleValue("gref_dot") : -0.9;
+                                addaField.AddGeneralReflection(tracer.m_incidentLight.direction, grefDot);
+                            }
+
+                            tracer.m_scattering->SetInternalSegmentStorage(nullptr);
+
+                            vector<double> mueller;
+                            double cY, cX, cGeoFF;
+                            Point3f ffIncDir = tracer.m_incidentLight.direction;
+                            addaField.ComputeFarFieldCore(thMin, thMax, nTh, mueller, cY, cX,
+                                                          &ffIncDir, &cGeoFF);
+
+                            for (int i = 0; i < nTh * 17; ++i)
+                            {
+                                if (i % 17 == 0)
+                                    accumMueller[i] = mueller[i]; // theta (same for all)
+                                else
+                                    accumMueller[i] += w * mueller[i];
+                            }
+                            accumCextY += w * cY;
+                            accumCextX += w * cX;
+
+                            if (doPGOH)
+                            {
+                                vector<double> pgohMueller;
+                                double cgeo;
+                                addaField.ComputePGOHCore(outBeams, tracer.m_incidentLight,
+                                                          thMin, thMax, nTh, pgohMueller, cgeo);
+                                for (int i = 0; i < nTh * 17; ++i)
+                                {
+                                    if (i % 17 == 0)
+                                        accumPGOH[i] = pgohMueller[i];
+                                    else
+                                        accumPGOH[i] += w * pgohMueller[i];
+                                }
+                                accumCgeo += w * cgeo;
+                            }
+
+                            totalWeight += w;
+
+                            ++iOri;
+                            if (iOri % 10 == 0 || iOri == totalOri)
+                                cout << "  " << iOri << " / " << totalOri << " orientations done\r" << flush;
+                        }
+                    }
+                }
+                cout << endl;
+
+                // Normalize
+                for (int i = 0; i < nTh * 17; ++i)
+                    if (i % 17 != 0)
+                        accumMueller[i] /= totalWeight;
+                accumCextY /= totalWeight;
+                accumCextX /= totalWeight;
+
+                // Write averaged Mueller matrix
+                string avgFile = dirName + "_mueller_avg";
+                ofstream file(avgFile);
+                file << scientific << setprecision(10);
+                for (int it = 0; it < nTh; ++it)
+                {
+                    const double *row = &accumMueller[it * 17];
+                    file << row[0];
+                    for (int j = 1; j < 17; ++j)
+                        file << " " << row[j];
+                    file << endl;
+                }
+                file.close();
+                cout << "Wrote orientation-averaged Mueller matrix: " << avgFile
+                     << " (" << nTh << " angles, " << totalOri << " orientations)" << endl;
+
+                cout << "  <Cext_Y> = " << accumCextY << " um^2" << endl;
+                cout << "  <Cext_X> = " << accumCextX << " um^2" << endl;
+                cout << "  <Cext>   = " << 0.5 * (accumCextY + accumCextX) << " um^2" << endl;
+
+                double Dmax = particle->MaximalDimention();
+                double Csca_geom = M_PI * (Dmax / 2.0) * (Dmax / 2.0);
+                cout << "  <Qext>   = " << 0.5 * (accumCextY + accumCextX) / Csca_geom << endl;
+
+                if (doPGOH)
+                {
+                    // Normalize PGOH
+                    for (int i = 0; i < nTh * 17; ++i)
+                        if (i % 17 != 0)
+                            accumPGOH[i] /= totalWeight;
+                    accumCgeo /= totalWeight;
+
+                    string pgohFile = dirName + "_mueller_pgoh_avg";
+                    ofstream pf(pgohFile);
+                    pf << scientific << setprecision(10);
+                    for (int it = 0; it < nTh; ++it)
+                    {
+                        const double *row = &accumPGOH[it * 17];
+                        pf << row[0];
+                        for (int j = 1; j < 17; ++j)
+                            pf << " " << row[j];
+                        pf << endl;
+                    }
+                    pf.close();
+                    cout << "Wrote orientation-averaged PGOH Mueller: " << pgohFile << endl;
+                    cout << "  <Cgeo> = " << accumCgeo << " um^2" << endl;
+                    cout << "  <Cext_pgoh> = 2*<Cgeo> = " << 2.0 * accumCgeo << " um^2" << endl;
+                }
+            }
+            else
+            {
+            // === Single-orientation ADDA mode ===
             double b = DegToRad(beta);
             double g = DegToRad(gamma);
-            particle->Rotate(b, g, 0);
+            double a = DegToRad(alpha);
+            particle->Rotate(b, g, a);
 
-            // Build dipole grid on the rotated particle
             ADDAFieldComputer addaField(particle, wave, refrIndex, dpl);
+            if (args.IsCatched("nokirch"))
+                addaField.m_noKirchhoff = true;
             addaField.BuildDipoleGrid();
 
-            // Set up segment collection
             std::vector<InternalBeamSegment> segments;
             tracer.m_scattering->SetInternalSegmentStorage(&segments);
 
-            // Run GO tracing (particle already rotated)
             vector<Beam> outBeams;
             tracer.m_scattering->ScatterLight(b, g, outBeams);
-            outBeams.clear();
+            if (!args.IsCatched("pgoh"))
+                outBeams.clear();
 
             cout << "Captured " << segments.size() << " internal beam segments" << endl;
 
-            // Per-facet refracted plane waves with complex Fresnel/Snell
-            addaField.FillUncoveredPerFacet(tracer.m_incidentLight.direction);
+            if (args.IsCatched("mg"))
+                addaField.InterpolateCoarseField(args.GetStringValue("mg", 0),
+                                                  args.GetStringValue("mg", 1),
+                                                  &tracer.m_incidentLight.direction);
 
-            // Reflections: GO-traced beams (default), Fabry-Perot (--fp), none (--norefl)
+            addaField.FillUncoveredPerFacet(tracer.m_incidentLight.direction,
+                                             blendSigma);
+
+            bool writeOrders = args.IsCatched("nf_orders");
+            if (writeOrders)
+            {
+                addaField.WriteFieldFileY(dirName + "_fieldY_k0.dat");
+                addaField.WriteFieldFileX(dirName + "_fieldX_k0.dat");
+                cout << "Wrote order-0 field (direct transmission)" << endl;
+            }
+
+            if (args.IsCatched("sfp"))
+                addaField.AddSmoothFP(tracer.m_incidentLight.direction);
+
             if (!args.IsCatched("norefl"))
             {
-                if (args.IsCatched("fp"))
-                    addaField.AddPerFacetReflection(tracer.m_incidentLight.direction);
+                if (args.IsCatched("go"))
+                {
+                    bool goIncoh = args.IsCatched("goi");
+                    int maxActs = args.IsCatched("maxacts") ? (int)args.GetDoubleValue("maxacts") : 1;
+                    if (writeOrders)
+                    {
+                        for (int k = 1; k <= maxActs; ++k)
+                        {
+                            addaField.AccumulateReflectedBeams(segments, tracer.m_incidentLight.direction,
+                                                               k, goIncoh, k);
+                            addaField.WriteFieldFileY(dirName + "_fieldY_k" + to_string(k) + ".dat");
+                            addaField.WriteFieldFileX(dirName + "_fieldX_k" + to_string(k) + ".dat");
+                            cout << "Wrote cumulative field through order " << k << endl;
+                        }
+                    }
+                    else
+                    {
+                        addaField.AccumulateReflectedBeams(segments, tracer.m_incidentLight.direction,
+                                                           maxActs, goIncoh);
+                    }
+                }
                 else
                 {
-                    double maxJN = args.IsCatched("jmax") ? args.GetDoubleValue("jmax") : 1e10;
-                    double minNF = args.IsCatched("nf") ? args.GetDoubleValue("nf") : 0.0;
-                    double rScale = args.IsCatched("rscale") ? args.GetDoubleValue("rscale") : 1.0;
-                    bool goIncoh = args.IsCatched("goi");
-                    addaField.AccumulateReflectedBeams(segments, tracer.m_incidentLight.direction,
-                                                       maxJN, args.IsCatched("diffr"), minNF, rScale, reflNum, goIncoh);
+                    double grefDot = args.IsCatched("gref_dot") ? args.GetDoubleValue("gref_dot") : -0.9;
+                    addaField.AddGeneralReflection(tracer.m_incidentLight.direction, grefDot);
+                    if (writeOrders)
+                    {
+                        addaField.WriteFieldFileY(dirName + "_fieldY_k1.dat");
+                        addaField.WriteFieldFileX(dirName + "_fieldX_k1.dat");
+                        cout << "Wrote cumulative field through order 1 (analytical reflection)" << endl;
+                    }
                 }
             }
 
-            // Diagnose GO+PW field
             addaField.DiagnoseGOvsPW(tracer.m_incidentLight.direction);
 
-            // Output ADDA files
             bool noInit = args.IsCatched("noinit");
             addaField.WriteGeometryFile(dirName + "_shape.dat");
             if (!noInit)
@@ -489,7 +748,26 @@ int main(int argc, const char* argv[])
                 addaField.WriteFieldFileX(dirName + "_fieldX.dat");
             }
 
-            // Clean up
+            if (args.IsCatched("ff"))
+            {
+                double thMin = args.GetDoubleValue("grid", 0);
+                double thMax = args.GetDoubleValue("grid", 1);
+                int nTh = (int)args.GetDoubleValue("grid", 3);
+                addaField.ComputeFarField(tracer.m_incidentLight.direction,
+                                          thMin, thMax, nTh,
+                                          dirName + "_mueller_go");
+            }
+
+            if (args.IsCatched("pgoh"))
+            {
+                double thMin = args.GetDoubleValue("grid", 0);
+                double thMax = args.GetDoubleValue("grid", 1);
+                int nTh = (int)args.GetDoubleValue("grid", 3);
+                addaField.ComputePGOH(outBeams, tracer.m_incidentLight,
+                                      thMin, thMax, nTh,
+                                      dirName + "_mueller_pgoh");
+            }
+
             tracer.m_scattering->SetInternalSegmentStorage(nullptr);
 
             cout << "\nADDA usage:" << endl;
@@ -501,6 +779,7 @@ int main(int argc, const char* argv[])
                 cout << " -init_field read " << dirName << "_fieldY.dat"
                      << " " << dirName << "_fieldX.dat";
             cout << endl;
+            } // end single-orientation
         }
         else
         {

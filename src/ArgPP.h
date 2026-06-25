@@ -346,7 +346,11 @@ private: // methods
 
 	bool NonKey(const std::string &arg)
 	{
-		return arg[0] != '-';
+		if (arg[0] != '-') return true;
+		// Allow negative numbers: -0.5, -1, -.3, etc.
+		if (arg.size() > 1 && (isdigit(arg[1]) || arg[1] == '.'))
+			return true;
+		return false;
 	}
 
 	bool IsKey(const char symb)
