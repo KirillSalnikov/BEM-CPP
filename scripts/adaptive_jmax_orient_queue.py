@@ -112,6 +112,7 @@ def main() -> int:
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--gpus", default=os.environ.get("BEM_ORIENT_GPUS", "0,1"))
     ap.add_argument("--chunk-size", type=int, default=32)
+    ap.add_argument("--chunk-order", choices=["sequential", "spread"], default="sequential")
     ap.add_argument("--omp-threads", type=int, default=8)
     ap.add_argument("--jmin-alpha", type=int, default=2)
     ap.add_argument("--jmin-beta", type=int, default=2)
@@ -169,6 +170,7 @@ def main() -> int:
         "elements": args.elements,
         "gpus": args.gpus,
         "chunk_size": args.chunk_size,
+        "chunk_order": args.chunk_order,
         "orient_warm_start": args.orient_warm_start,
         "orient_recycle": args.orient_recycle,
         "queue": args.queue,
@@ -197,6 +199,7 @@ def main() -> int:
             "--work-dir", str(work_dir),
             "--gpus", args.gpus,
             "--chunk-size", str(args.chunk_size),
+            "--chunk-order", args.chunk_order,
             "--omp-threads", str(args.omp_threads),
             *args.bem_args,
             "--orient", "1", str(nb), str(ng),
