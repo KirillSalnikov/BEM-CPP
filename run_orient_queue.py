@@ -94,6 +94,8 @@ def main():
     p.add_argument("--cuda-lib", default="")
     p.add_argument("--allow-compute-share", action="store_true",
                    help="allow using GPUs that already have CUDA compute processes")
+    p.add_argument("--no-resume", action="store_true",
+                   help="ignore existing part_*.json files and recompute every chunk")
     args = p.parse_args()
 
     if args.oldauto == "2":
@@ -122,7 +124,34 @@ def main():
 
     running = []
     finished = []
-    next_chunk = 0
+    skipped = []
+    pending = []
+    for idx, (start, count) in enumerate(chunks):
+        part_out = os.path.join(args.work_dir, "part_%04d.json" % idx)
+        reusable = False
+        if not args.no_resume and os.path.exists(part_out):
+            try:
+                with open(part_out, "r") as f:
+                    part = json.load(f)
+                reusable = (
+                    int(part.get("orient_start", -1)) == start
+                    and int(part.get("orient_count", -1)) == count
+                    and int(part.get("orient_total", n_orient)) == n_orient
+                    and "theta" in part
+                    and "mueller" in part
+                )
+            except Exception:
+                reusable = False
+        if reusable:
+            print("SKIP existing chunk %d orientations [%d, %d)" %
+                  (idx, start, start + count), flush=True)
+            item = {"gpu": "reuse", "index": idx, "out": part_out}
+            finished.append(item)
+            skipped.append({"index": idx, "start": start, "count": count, "out": part_out})
+        else:
+            pending.append((idx, start, count))
+
+    next_pending = 0
     t0 = time.time()
 
     def launch(gpu, chunk_index, start, count):
@@ -197,10 +226,10 @@ def main():
             "proc": subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, env=env),
         }
 
-    while next_chunk < len(chunks) and len(running) < len(gpus):
-        s, c = chunks[next_chunk]
-        running.append(launch(gpus[len(running)], next_chunk, s, c))
-        next_chunk += 1
+    while next_pending < len(pending) and len(running) < len(gpus):
+        idx, s, c = pending[next_pending]
+        running.append(launch(gpus[len(running)], idx, s, c))
+        next_pending += 1
 
     while running:
         time.sleep(1)
@@ -213,12 +242,14 @@ def main():
             if rc != 0:
                 raise SystemExit("chunk %d failed with exit code %d" % (item["index"], rc))
             finished.append(item)
-            if next_chunk < len(chunks):
-                s, c = chunks[next_chunk]
-                running.append(launch(item["gpu"], next_chunk, s, c))
-                next_chunk += 1
+            if next_pending < len(pending):
+                idx, s, c = pending[next_pending]
+                running.append(launch(item["gpu"], idx, s, c))
+                next_pending += 1
 
     finished.sort(key=lambda x: x["index"])
+    if not finished:
+        raise SystemExit("no chunks were produced")
     parts = [json.load(open(item["out"])) for item in finished]
     result = parts[0]
     for part in parts[1:]:
@@ -235,6 +266,7 @@ def main():
         "chunk_size": args.chunk_size,
         "orient_file": args.orient_file,
         "chunks": [{"start": s, "count": c} for s, c in chunks],
+        "reused_chunks": skipped,
         "orient_warm_start": args.orient_warm_start or os.environ.get("BEM_ORIENT_WARM_START", "zero"),
         "orient_recycle": args.orient_recycle if args.orient_recycle is not None else os.environ.get("BEM_ORIENT_RECYCLE"),
     }
