@@ -42,11 +42,16 @@ def main():
         "--adda-dir", str(args.adda_dir),
         "--ka", str(args.ka),
         "--component-floor", str(args.component_floor),
-        "--bem-stokes-out", args.bem_stokes_out,
-        "--bem-stokes-in", args.bem_stokes_in,
+        f"--bem-stokes-out={args.bem_stokes_out}",
+        f"--bem-stokes-in={args.bem_stokes_in}",
         "--json-out", str(gate_json),
     ]
-    proc = subprocess.run(gate_cmd, text=True, capture_output=True)
+    proc = subprocess.run(
+        gate_cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        universal_newlines=True,
+    )
     print(proc.stdout, end="")
     if proc.stderr:
         print(proc.stderr, file=sys.stderr, end="")
