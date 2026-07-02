@@ -24,6 +24,7 @@ env \
   RI_IM=0 \
   GPUS="$GPUS" \
   CHUNK_SIZE="${CHUNK_SIZE:-13}" \
+  CHUNK_ORDER="${CHUNK_ORDER:-spread}" \
   OMP_THREADS="${OMP_THREADS:-8}" \
   POLL_S="${POLL_S:-120}" \
   JMIN_ALPHA=8 \

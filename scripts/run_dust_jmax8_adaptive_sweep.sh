@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUN_ROOT=${RUN_ROOT:-runs/dust_jmax8_adaptive_sweep_ri1p6_ka30_20260701}
 GPUS=${GPUS:-0,1}
 CHUNK_SIZE=${CHUNK_SIZE:-13}
+CHUNK_ORDER=${CHUNK_ORDER:-spread}
 OMP_THREADS=${OMP_THREADS:-8}
 POLL_S=${POLL_S:-120}
 NVIDIA_SMI="${BEM_NVIDIA_SMI:-nvidia-smi}"
@@ -153,6 +154,7 @@ final_max_leaf=$FINAL_MAX_LEAF
 preconditioner=$preconditioner_mode
 ntheta=$NTTHETA
 chunk_size=$CHUNK_SIZE
+chunk_order=$CHUNK_ORDER
 orient_warm_start=$ORIENT_WARM_START
 mode=pilot_mesh_adaptive_then_final_quality
 final_from_pilot=$FINAL_FROM_PILOT
@@ -223,6 +225,7 @@ for ka in $KA_LIST; do
     --out-dir "$pilot_dir" \
     --gpus "$GPUS" \
     --chunk-size "$CHUNK_SIZE" \
+    --chunk-order "$CHUNK_ORDER" \
     --omp-threads "$OMP_THREADS" \
     --jmin-alpha "$JMIN_ALPHA" \
     --jmin-beta "$JMIN_BETA" \
@@ -312,6 +315,7 @@ PY
     --work-dir "$final_dir/parts" \
     --gpus "$GPUS" \
     --chunk-size "$CHUNK_SIZE" \
+    --chunk-order "$CHUNK_ORDER" \
     --omp-threads "$OMP_THREADS" \
     --shape obj \
     --obj "$FINAL_MESH" \

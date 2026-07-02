@@ -47,6 +47,26 @@ def add_mueller(dst, src):
                 dst[i][j][k] += src[i][j][k]
 
 
+def spread_order(n):
+    """Return chunk indices interleaved across the full queue.
+
+    This keeps completed early chunks representative of the whole orientation
+    grid, while each chunk itself remains a normal contiguous solver range.
+    """
+    if n <= 0:
+        return []
+    left = 0
+    right = n - 1
+    out = []
+    while left <= right:
+        out.append(left)
+        left += 1
+        if left <= right:
+            out.append(right)
+            right -= 1
+    return out
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--exe", default="./bin/bem_cuda_fmm")
@@ -96,6 +116,8 @@ def main():
                    help="allow using GPUs that already have CUDA compute processes")
     p.add_argument("--no-resume", action="store_true",
                    help="ignore existing part_*.json files and recompute every chunk")
+    p.add_argument("--chunk-order", choices=["sequential", "spread"], default="sequential",
+                   help="launch order for chunks; spread improves early partial diagnostics")
     args = p.parse_args()
 
     if args.oldauto == "2":
@@ -150,6 +172,9 @@ def main():
             skipped.append({"index": idx, "start": start, "count": count, "out": part_out})
         else:
             pending.append((idx, start, count))
+    if args.chunk_order == "spread":
+        order = {idx: pos for pos, idx in enumerate(spread_order(len(chunks)))}
+        pending.sort(key=lambda item: order.get(item[0], item[0]))
 
     next_pending = 0
     t0 = time.time()
@@ -266,6 +291,7 @@ def main():
         "chunk_size": args.chunk_size,
         "orient_file": args.orient_file,
         "chunks": [{"start": s, "count": c} for s, c in chunks],
+        "chunk_order": args.chunk_order,
         "reused_chunks": skipped,
         "orient_warm_start": args.orient_warm_start or os.environ.get("BEM_ORIENT_WARM_START", "zero"),
         "orient_recycle": args.orient_recycle if args.orient_recycle is not None else os.environ.get("BEM_ORIENT_RECYCLE"),
