@@ -32,11 +32,13 @@ ADDA_COMPARE_COMPONENT_FLOOR=${ADDA_COMPARE_COMPONENT_FLOOR:-1e-3}
 BEM_STOKES_OUT=${BEM_STOKES_OUT:-1,-1,-1}
 BEM_STOKES_IN=${BEM_STOKES_IN:--1,-1,1}
 PILOT_SYSTEM=${PILOT_SYSTEM:-muller2-balanced}
+PILOT_QUAD=${PILOT_QUAD:-7}
 PILOT_DIGITS=${PILOT_DIGITS:-3}
 PILOT_GMRES_TOL=${PILOT_GMRES_TOL:-2e-2}
 PILOT_GMRES_RESTART=${PILOT_GMRES_RESTART:-120}
 PILOT_MAX_LEAF=${PILOT_MAX_LEAF:-128}
 FINAL_SYSTEM=${FINAL_SYSTEM:-balanced}
+FINAL_QUAD=${FINAL_QUAD:-7}
 FINAL_DIGITS=${FINAL_DIGITS:-4}
 FINAL_GMRES_TOL=${FINAL_GMRES_TOL:-5e-3}
 FINAL_GMRES_RESTART=${FINAL_GMRES_RESTART:-160}
@@ -138,7 +140,8 @@ final_mesh=$FINAL_MESH
 solver=fmm
 pilot_system=$PILOT_SYSTEM
 final_system=$FINAL_SYSTEM
-quad=7
+pilot_quad=$PILOT_QUAD
+final_quad=$FINAL_QUAD
 pilot_fmm_digits=$PILOT_DIGITS
 pilot_gmres_tol=$PILOT_GMRES_TOL
 pilot_gmres_restart=$PILOT_GMRES_RESTART
@@ -244,7 +247,7 @@ for ka in $KA_LIST; do
     --solver fmm \
     --accurate \
     --system "$PILOT_SYSTEM" \
-    --quad 7 \
+    --quad "$PILOT_QUAD" \
     --fmm-digits "$PILOT_DIGITS" \
     --gmres-tol "$PILOT_GMRES_TOL" \
     --gmres-restart "$PILOT_GMRES_RESTART" \
@@ -320,7 +323,7 @@ PY
     --solver fmm \
     --accurate \
     --system "$FINAL_SYSTEM" \
-    --quad 7 \
+    --quad "$FINAL_QUAD" \
     --fmm-digits "$FINAL_DIGITS" \
     --gmres-tol "$FINAL_GMRES_TOL" \
     --gmres-restart "$FINAL_GMRES_RESTART" \
