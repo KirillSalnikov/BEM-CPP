@@ -8,7 +8,11 @@ GPUS=${GPUS:-0,1}
 CHUNK_SIZE=${CHUNK_SIZE:-13}
 OMP_THREADS=${OMP_THREADS:-8}
 POLL_S=${POLL_S:-180}
-KA_REMAINING=${KA_REMAINING:-"33.28 36.58 40.22 44.21 48.61 53.47 58.81"}
+# Ten nearly uniform sizes over the ADDA-backed high-size interval are:
+# 30.25, 33.42333333, 36.59666667, 39.77, 42.94333333,
+# 46.11666667, 49.29, 52.46333333, 55.63666667, 58.81.
+# The first point is the gate point handled before this follow-up queue.
+KA_REMAINING=${KA_REMAINING:-"33.42333333 36.59666667 39.77 42.94333333 46.11666667 49.29 52.46333333 55.63666667 58.81"}
 
 LEVEL03=${LEVEL03:-$RUN_ROOT/ka30p25/pilot/level03_Ja8_Jb4_Jg4_a256_b17_g17}
 LEVEL04=${LEVEL04:-$RUN_ROOT/ka30p25/pilot/level04_Ja8_Jb5_Jg5_a256_b33_g33}
@@ -44,13 +48,14 @@ run_gate() {
 start_remaining_sweep() {
   local jmin_beta=$1
   local jmin_gamma=$2
-  log "starting remaining ADDA-backed sizes with Jmin beta=$jmin_beta gamma=$jmin_gamma"
+  log "starting remaining uniform sizes with Jmin beta=$jmin_beta gamma=$jmin_gamma"
   env \
     RUN_ROOT="$RUN_ROOT" \
     ADDA_BASE_DIR="/home/kirill_epyc/BEM-CUDA/reference/ADDA_for_PO_comparison" \
     KA_LIST="$KA_REMAINING" \
-    KA_MODE=adda \
-    KA_MIN=30 \
+    KA_MODE=uniform \
+    KA_MIN=30.25 \
+    KA_POINTS=10 \
     RI_RE=1.6 \
     RI_IM=0 \
     GPUS="$GPUS" \
