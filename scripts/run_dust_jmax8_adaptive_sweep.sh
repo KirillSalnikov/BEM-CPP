@@ -66,17 +66,23 @@ PY
 ADDA_BASE_DIR=${ADDA_BASE_DIR:-/home/user/BEM-CPP/greek/ADDA_for_PO_comparison}
 ADDA_REF_DIR=${ADDA_REF_DIR:-$ADDA_BASE_DIR/refr_$(refr_token "$RI_RE")__$(refr_token "$RI_IM")}
 KA_MIN=${KA_MIN:-30}
+KA_MODE=${KA_MODE:-adda}
+KA_POINTS=${KA_POINTS:-10}
+KA_MAX=${KA_MAX:-}
 if [[ -z "${KA_LIST:-}" ]]; then
   if [[ ! -d "$ADDA_REF_DIR" ]]; then
     echo "ADDA reference directory not found: $ADDA_REF_DIR" >&2
     exit 2
   fi
-  KA_LIST=$(python3 - "$ADDA_REF_DIR" "$KA_MIN" <<'PY'
+  KA_LIST=$(python3 - "$ADDA_REF_DIR" "$KA_MIN" "$KA_MODE" "$KA_POINTS" "$KA_MAX" <<'PY'
 import re
 import sys
 from pathlib import Path
 root = Path(sys.argv[1])
 ka_min = float(sys.argv[2])
+mode = sys.argv[3].strip().lower()
+ka_points = int(sys.argv[4])
+ka_max_arg = sys.argv[5].strip()
 vals = []
 for path in root.glob("A_x=*_refr_*.dat"):
     m = re.search(r"A_x=([0-9.]+)_refr_", path.name)
@@ -88,7 +94,22 @@ for path in root.glob("A_x=*_refr_*.dat"):
 vals = sorted(set(vals))
 if not vals:
     raise SystemExit(f"no ADDA A_x files >= {ka_min:g} under {root}")
-print(" ".join(f"{v:g}" for v in vals))
+ka_max = float(ka_max_arg) if ka_max_arg else vals[-1]
+if ka_max < ka_min:
+    raise SystemExit(f"KA_MAX={ka_max:g} is below KA_MIN={ka_min:g}")
+if mode in {"adda", "reference", "adda-backed"}:
+    chosen = [v for v in vals if ka_min <= v <= ka_max]
+elif mode in {"uniform", "uniform10"}:
+    if ka_points < 2:
+        chosen = [ka_min]
+    else:
+        step = (ka_max - ka_min) / (ka_points - 1)
+        chosen = [ka_min + i * step for i in range(ka_points)]
+else:
+    raise SystemExit(f"unknown KA_MODE={mode!r}; use 'adda' or 'uniform'")
+if not chosen:
+    raise SystemExit(f"no ka values selected for mode={mode}, range=[{ka_min:g},{ka_max:g}]")
+print(" ".join(f"{v:.10g}" for v in chosen))
 PY
   )
 fi
@@ -98,6 +119,10 @@ FINAL_MESH=${FINAL_MESH:-runs/greek_larger_valid/meshes/greek_adda_dpl25_mc_gmsh
 cat > "$RUN_ROOT/manifest.txt" <<EOF
 target=dust particle adaptive BEM orientation averaging
 ka_list=$KA_LIST
+ka_mode=$KA_MODE
+ka_points=$KA_POINTS
+ka_min=$KA_MIN
+ka_max=${KA_MAX:-auto_from_adda}
 ri=$RI_RE+$RI_IM i
 adda_reference_dir=$ADDA_REF_DIR
 gpus=$GPUS
