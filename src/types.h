@@ -18,29 +18,8 @@
     } \
 } while(0)
 
-#define CUBLAS_CHECK(call) do { \
-    cublasStatus_t st = (call); \
-    if (st != CUBLAS_STATUS_SUCCESS) { \
-        fprintf(stderr, "cuBLAS error at %s:%d: %d\n", __FILE__, __LINE__, (int)st); \
-        exit(1); \
-    } \
-} while(0)
-
-#define CUSOLVER_CHECK(call) do { \
-    cusolverStatus_t st = (call); \
-    if (st != CUSOLVER_STATUS_SUCCESS) { \
-        fprintf(stderr, "cuSOLVER error at %s:%d: %d\n", __FILE__, __LINE__, (int)st); \
-        exit(1); \
-    } \
-} while(0)
-
 // Complex double on host
 typedef std::complex<double> cdouble;
-
-// FMM internal precision: float32 for tree operations (multipole, local,
-// transfer, shifts).  Switch to double/cuDoubleComplex for full precision.
-typedef float         fmm_real;
-typedef cuFloatComplex fmm_complex;
 
 // Constants
 #ifndef M_PI

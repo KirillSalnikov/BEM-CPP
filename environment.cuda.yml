@@ -1,0 +1,14 @@
+name: bem-cuda-toolchain
+channels:
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - gcc_linux-64=12
+  - gxx_linux-64=12
+  - cuda-version=12.2
+  - cuda-nvcc=12.2.140
+  - cuda-cudart=12.2.140
+  - cuda-cudart-dev=12.2.140
+  - cuda-cudart-static=12.2.140
+  - cuda-cccl=12.2.140

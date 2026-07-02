@@ -3,8 +3,10 @@
 
 #include "types.h"
 #include "fmm.h"
+#ifndef BEM_FMM_ONLY
 #include "pfft.h"
 #include "surface_pfft.h"
+#endif
 #include "rwg.h"
 #include "mesh.h"
 #include "quadrature.h"
@@ -19,18 +21,25 @@ struct BemFmmOperator {
     cdouble k_ext, k_int;
     cdouble eta_ext, eta_int;
 
-    bool use_pfft;     // true = pFFT, false = FMM
-    bool use_spfft;    // true = surface pFFT (2D per face)
+    bool use_pfft = false;
+    bool use_spfft = false;
+    double unknown_m_scale = 1.0;
+    cdouble row_h_scale = cdouble(1.0, 0.0);
+    double int_op_sign = 1.0;
+    double k_identity = 0.0;
+    bool n_form = false;
+    double n_form_eps_int = 1.0;
+    double n_form_m_identity = 0.0;
 
-    // FMM engines (one per wavenumber) -- used when !use_pfft
+    // FMM engines (one per wavenumber)
     HelmholtzFMM fmm_ext;
     HelmholtzFMM fmm_int;
-    // pFFT engines -- used when use_pfft
+#ifndef BEM_FMM_ONLY
     HelmholtzPFFT pfft_ext;
     HelmholtzPFFT pfft_int;
-    // Surface pFFT engines -- used when use_spfft
     HelmholtzSurfacePFFT spfft_ext;
     HelmholtzSurfacePFFT spfft_int;
+#endif
     bool shared_fmm;  // true if k_ext ≈ k_int
 
     // Precomputed quadrature data
@@ -61,6 +70,7 @@ struct BemFmmOperator {
     std::vector<cdouble> corr_K_ext_val;
     std::vector<cdouble> corr_L_int_val;
     std::vector<cdouble> corr_K_int_val;
+    std::vector<double> corr_I_val;
     int corr_nnz;
 
     // Pre-allocated temporary buffers for matvec (avoid malloc/free per iteration)
@@ -79,45 +89,67 @@ struct BemFmmOperator {
     std::vector<cdouble> tmp2_grad[3];
     std::vector<cdouble> mv2_L_ext_J, mv2_L_ext_M, mv2_K_ext_J, mv2_K_ext_M;
     std::vector<cdouble> mv2_L_int_J, mv2_L_int_M, mv2_K_int_J, mv2_K_int_M;
+    std::vector<cdouble> b4_src2, b4_src3;
+    std::vector<cdouble> b4_pot2, b4_pot3;
+    std::vector<cdouble> tmp_M1_phys, tmp_M2_phys;
+    std::vector<cdouble> tmp_single_y;
+    bool tmp_host_registered = false;
 
-    // Batch workspace (extra charge/pot/grad buffers for batched P2P)
-    std::vector<cdouble> b4_src2, b4_src3;  // charges for batch 2,3
-    std::vector<cdouble> b4_pot2, b4_pot3;  // potentials for batch 2,3
-    // Batch8 additional workspace (charges 4-7, pots 4-7, grads 3-5)
-    std::vector<cdouble> b8_src[8];    // all 8 charge vectors
-    std::vector<cdouble> b8_pot[8];    // all 8 potential results
-    std::vector<cdouble> b8_grad[6];   // 6 gradient results
+    double* d_f_p = nullptr;
+    double* d_f_m = nullptr;
+    double* d_jw_p = nullptr;
+    double* d_jw_m = nullptr;
+    double* d_div_p = nullptr;
+    double* d_div_m = nullptr;
+    double2* d_x1_complex = nullptr;
+    double2* d_x2_complex = nullptr;
+    double* d_x1_re = nullptr;
+    double* d_x1_im = nullptr;
+    double* d_x2_re = nullptr;
+    double* d_x2_im = nullptr;
+    double2* d_full_x1_complex = nullptr;
+    double2* d_full_x2_complex = nullptr;
+    double* d_full_x1_re = nullptr;
+    double* d_full_x1_im = nullptr;
+    double* d_full_x2_re = nullptr;
+    double* d_full_x2_im = nullptr;
+    double* d_L1_re = nullptr;
+    double* d_L1_im = nullptr;
+    double* d_K1_re = nullptr;
+    double* d_K1_im = nullptr;
+    double* d_L2_re = nullptr;
+    double* d_L2_im = nullptr;
+    double* d_K2_re = nullptr;
+    double* d_K2_im = nullptr;
+    double2* d_out1_complex = nullptr;
+    double2* d_out2_complex = nullptr;
+    double* d_mv1_re = nullptr;
+    double* d_mv1_im = nullptr;
+    double* d_mv2_re = nullptr;
+    double* d_mv2_im = nullptr;
+    double2* d_y1_complex = nullptr;
+    double2* d_y2_complex = nullptr;
+    double2* h_full_x1_complex = nullptr;
+    double2* h_full_x2_complex = nullptr;
+    double2* h_y1_complex = nullptr;
+    double2* h_y2_complex = nullptr;
+    bool pinned_matvec_stage = false;
+    int* d_corr_row_ptr = nullptr;
+    int* d_corr_col_idx = nullptr;
+    double* d_corr_L_ext_re = nullptr;
+    double* d_corr_L_ext_im = nullptr;
+    double* d_corr_K_ext_re = nullptr;
+    double* d_corr_K_ext_im = nullptr;
+    double* d_corr_L_int_re = nullptr;
+    double* d_corr_L_int_im = nullptr;
+    double* d_corr_K_int_re = nullptr;
+    double* d_corr_K_int_im = nullptr;
+    double* d_corr_I = nullptr;
 
-    // GPU arrays for charge packing (uploaded once in init, reused every matvec)
-    double* d_f_p;       // (N*Nq*3) basis values, plus half
-    double* d_f_m;       // (N*Nq*3) basis values, minus half
-    double* d_jw_p;      // (N*Nq) Jacobian weights, plus half
-    double* d_jw_m;      // (N*Nq)
-    double* d_div_p;     // (N) divergence, plus half
-    double* d_div_m;     // (N) divergence, minus half
-    // GPU workspace for charge packing / result accumulation
-    double* d_x_re;      // (N) input coefficient re
-    double* d_x_im;      // (N) input coefficient im
-    double* d_src_re;    // (2*N*Nq) packed charges re
-    double* d_src_im;    // (2*N*Nq)
-    double* d_phi_re;    // (2*N*Nq) FMM potential result re
-    double* d_phi_im;    // (2*N*Nq)
-    double* d_L_re;      // (N) L operator result re
-    double* d_L_im;      // (N)
-    double* d_K_re;      // (N) K operator result re
-    double* d_K_im;      // (N)
-    // Gradient storage for K operator (3 sets, one per source component d=0,1,2)
-    double* d_grad_buf_re[3];  // each (2*N*Nq*3) = (Nt*3)
-    double* d_grad_buf_im[3];
-    bool gpu_pack_ready; // true after GPU arrays initialized
-
-    // Host staging for x coefficient split (GPU-native SurfPFFT path)
-    std::vector<double> h_x_split_re, h_x_split_im;  // (N)
-
-    // Initialize operator (use_pfft_=true for pFFT acceleration)
+    // Initialize operator
     void init(const RWG& rwg, const Mesh& mesh,
               cdouble k_ext, cdouble k_int,
-              double eta_ext, double eta_int,
+              cdouble eta_ext, cdouble eta_int,
               int quad_order = 7, int fmm_digits = 3, int max_leaf = 64,
               bool use_pfft_ = false, bool use_spfft_ = false);
 
@@ -142,28 +174,54 @@ private:
     void LK_combined(const cdouble* x, cdouble k, HelmholtzFMM& fmm,
                      cdouble* L_result, cdouble* K_result);
 
-    // pFFT variant of LK_combined
+#ifndef BEM_FMM_ONLY
     void LK_combined(const cdouble* x, cdouble k, HelmholtzPFFT& pf,
                      cdouble* L_result, cdouble* K_result);
 
-    // Surface pFFT variant of LK_combined
     void LK_combined(const cdouble* x, cdouble k, HelmholtzSurfacePFFT& spf,
                      cdouble* L_result, cdouble* K_result);
+#endif
 
-    // Batched combined L+K for two RHS vectors (FMM variant)
+    // Batched combined L+K for two RHS vectors
     void LK_combined_batch2(const cdouble* x1, const cdouble* x2,
                              cdouble kv, HelmholtzFMM& fmm,
                              cdouble* L_result1, cdouble* K_result1,
                              cdouble* L_result2, cdouble* K_result2);
-
-    // Batched combined L+K for two RHS vectors (Surface pFFT variant — uses batch8 P2P)
+#ifndef BEM_FMM_ONLY
     void LK_combined_batch2(const cdouble* x1, const cdouble* x2,
                              cdouble kv, HelmholtzSurfacePFFT& spf,
                              cdouble* L_result1, cdouble* K_result1,
                              cdouble* L_result2, cdouble* K_result2);
+#endif
+    void LK_combined_batch2_device(const cdouble* x1, const cdouble* x2,
+                                   cdouble kv, HelmholtzFMM& fmm,
+                                   int L_slot, int K_slot);
+    void LK_combined_batch2_device_split(const double* x1_re, const double* x1_im,
+                                         const double* x2_re, const double* x2_im,
+                                         cdouble kv, HelmholtzFMM& fmm,
+                                         int L_slot, int K_slot);
+    void LK_combined_batch4_jm_device_split(const double* J1_re, const double* J1_im,
+                                            const double* J2_re, const double* J2_im,
+                                            const double* M1_re, const double* M1_im,
+                                            const double* M2_re, const double* M2_im,
+                                            cdouble kv, HelmholtzFMM& fmm,
+                                            int LJ_slot, int KJ_slot,
+                                            int LM_slot, int KM_slot);
+#ifndef BEM_FMM_ONLY
+    void LK_combined_batch2_spfft_device_split(const double* x1_re, const double* x1_im,
+                                               const double* x2_re, const double* x2_im,
+                                               cdouble kv, HelmholtzSurfacePFFT& spf,
+                                               int L_slot, int K_slot);
+#endif
 
     // Precompute singular corrections
     void precompute_corrections(const RWG& rwg, const Mesh& mesh, int quad_order);
+
+    void register_tmp_host_buffers();
+    void unregister_tmp_host_buffers();
+    void ensure_host_workspace();
+    void init_device_workspace();
+    void free_device_workspace();
 };
 
 #endif // BEM_BEM_FMM_H

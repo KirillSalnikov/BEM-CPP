@@ -4,7 +4,7 @@
 #include "types.h"
 #include <complex>
 
-// LU factorization + solve using cuSOLVER.
+// LU factorization + solve.
 // Z is (n x n) complex double, overwritten with LU factors.
 // ipiv is output pivot array (size n), allocated by caller.
 // Returns 0 on success.

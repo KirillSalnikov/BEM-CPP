@@ -1,32 +1,35 @@
 #include "assembly.h"
 #include "graglia.h"
+#include "gpu_select.h"
 #include <cstring>
 #include <cstdio>
 #include <vector>
 #include <map>
 #include <cmath>
+#include <cstdlib>
+#include <algorithm>
 
 // ============================================================
-// CUDA kernel: assemble L,K block (float32 compute)
+// CUDA kernel: assemble L,K block (float64 compute)
 // Ported from OpenCL kernel in bem_opencl.py
 // ============================================================
 
 __global__ void assemble_LK_kernel(
-    const float* __restrict__ tp,       // (B*Nq, 3) test quad points
-    const float* __restrict__ sq,       // (N*Nq, 3) source quad points
-    const float* __restrict__ tf,       // (B*Nq, 3) test basis fn values
-    const float* __restrict__ sf,       // (N*Nq, 3) source basis fn values
-    const float* __restrict__ sq_x_sf,  // (N*Nq, 3) cross(sq, sf) precomputed
-    const float* __restrict__ jw_t,     // (B*Nq) test Jacobian*weights
-    const float* __restrict__ jw_s,     // (N*Nq) source Jacobian*weights
+    const double* __restrict__ tp,       // (B*Nq, 3) test quad points
+    const double* __restrict__ sq,       // (N*Nq, 3) source quad points
+    const double* __restrict__ tf,       // (B*Nq, 3) test basis fn values
+    const double* __restrict__ sf,       // (N*Nq, 3) source basis fn values
+    const double* __restrict__ sq_x_sf,  // (N*Nq, 3) cross(sq, sf) precomputed
+    const double* __restrict__ jw_t,     // (B*Nq) test Jacobian*weights
+    const double* __restrict__ jw_s,     // (N*Nq) source Jacobian*weights
     const int* __restrict__ t_tri,      // (B) test triangle indices
     const int* __restrict__ s_tri,      // (N) source triangle indices
-    const float* __restrict__ t_div,    // (B) test divergence
-    const float* __restrict__ s_div,    // (N) source divergence
-    float k_re, float k_im, float inv4pi_f,
+    const double* __restrict__ t_div,    // (B) test divergence
+    const double* __restrict__ s_div,    // (N) source divergence
+    double k_re, double k_im, double inv4pi,
     int Nq, int N_src, int B,
-    float* __restrict__ L_re, float* __restrict__ L_im,
-    float* __restrict__ K_re, float* __restrict__ K_im)
+    double* __restrict__ L_re, double* __restrict__ L_im,
+    double* __restrict__ K_re, double* __restrict__ K_im)
 {
     int b = blockIdx.x * blockDim.x + threadIdx.x;
     int n = blockIdx.y * blockDim.y + threadIdx.y;
@@ -35,75 +38,75 @@ __global__ void assemble_LK_kernel(
 
     int is_sing = (t_tri[b] == s_tri[n]);
 
-    float Lvec_re = 0.0f, Lvec_im = 0.0f;
-    float Lscl_re = 0.0f, Lscl_im = 0.0f;
-    float Kacc_re = 0.0f, Kacc_im = 0.0f;
+    double Lvec_re = 0.0, Lvec_im = 0.0;
+    double Lscl_re = 0.0, Lscl_im = 0.0;
+    double Kacc_re = 0.0, Kacc_im = 0.0;
 
     for (int iq = 0; iq < Nq; iq++) {
         int ti = b * Nq + iq;
-        float tpx = __ldg(&tp[ti * 3 + 0]);
-        float tpy = __ldg(&tp[ti * 3 + 1]);
-        float tpz = __ldg(&tp[ti * 3 + 2]);
-        float tfx = __ldg(&tf[ti * 3 + 0]);
-        float tfy = __ldg(&tf[ti * 3 + 1]);
-        float tfz = __ldg(&tf[ti * 3 + 2]);
-        float jwt = __ldg(&jw_t[ti]);
+        double tpx = __ldg(&tp[ti * 3 + 0]);
+        double tpy = __ldg(&tp[ti * 3 + 1]);
+        double tpz = __ldg(&tp[ti * 3 + 2]);
+        double tfx = __ldg(&tf[ti * 3 + 0]);
+        double tfy = __ldg(&tf[ti * 3 + 1]);
+        double tfz = __ldg(&tf[ti * 3 + 2]);
+        double jwt = __ldg(&jw_t[ti]);
 
         for (int jq = 0; jq < Nq; jq++) {
             int sj = n * Nq + jq;
 
-            float sqx = __ldg(&sq[sj * 3 + 0]);
-            float sqy = __ldg(&sq[sj * 3 + 1]);
-            float sqz = __ldg(&sq[sj * 3 + 2]);
+            double sqx = __ldg(&sq[sj * 3 + 0]);
+            double sqy = __ldg(&sq[sj * 3 + 1]);
+            double sqz = __ldg(&sq[sj * 3 + 2]);
 
-            float dx = tpx - sqx;
-            float dy = tpy - sqy;
-            float dz = tpz - sqz;
-            float R = sqrtf(dx*dx + dy*dy + dz*dz);
-            float R_safe = fmaxf(R, 1e-7f);
+            double dx = tpx - sqx;
+            double dy = tpy - sqy;
+            double dz = tpz - sqz;
+            double R = sqrt(dx*dx + dy*dy + dz*dz);
+            double R_safe = fmax(R, 1e-12);
 
             // Green's function: G = exp(ikR) / (4piR)
-            float eR = expf(-k_im * R_safe);
-            float cosR = cosf(k_re * R_safe);
-            float sinR = sinf(k_re * R_safe);
-            float G_re = eR * cosR * inv4pi_f / R_safe;
-            float G_im = eR * sinR * inv4pi_f / R_safe;
-            float inv4piR = inv4pi_f / R_safe;
+            double eR = exp(-k_im * R_safe);
+            double sinR, cosR;
+            sincos(k_re * R_safe, &sinR, &cosR);
+            double G_re = eR * cosR * inv4pi / R_safe;
+            double G_im = eR * sinR * inv4pi / R_safe;
+            double inv4piR = inv4pi / R_safe;
 
-            float Gu_re = G_re;
-            float Gu_im = G_im;
+            double Gu_re = G_re;
+            double Gu_im = G_im;
             if (is_sing) {
                 Gu_re -= inv4piR;  // G_smooth = (exp(ikR) - 1) / (4piR)
             }
 
-            float jw = jwt * __ldg(&jw_s[sj]);
+            double jw = jwt * __ldg(&jw_s[sj]);
 
-            float sfx = __ldg(&sf[sj * 3 + 0]);
-            float sfy = __ldg(&sf[sj * 3 + 1]);
-            float sfz = __ldg(&sf[sj * 3 + 2]);
-            float f_dot = tfx * sfx + tfy * sfy + tfz * sfz;
+            double sfx = __ldg(&sf[sj * 3 + 0]);
+            double sfy = __ldg(&sf[sj * 3 + 1]);
+            double sfz = __ldg(&sf[sj * 3 + 2]);
+            double f_dot = tfx * sfx + tfy * sfy + tfz * sfz;
 
-            float Gjw_re = Gu_re * jw;
-            float Gjw_im = Gu_im * jw;
+            double Gjw_re = Gu_re * jw;
+            double Gjw_im = Gu_im * jw;
             Lvec_re += f_dot * Gjw_re;
             Lvec_im += f_dot * Gjw_im;
             Lscl_re += Gjw_re;
             Lscl_im += Gjw_im;
 
             // K operator
-            if (!is_sing && R > 1e-6f) {
-                float a_re = (-k_im - 1.0f / R_safe) / R_safe;
-                float a_im = k_re / R_safe;
-                float gc_re = G_re * a_re - G_im * a_im;
-                float gc_im = G_re * a_im + G_im * a_re;
-                float gGjw_re = gc_re * jw;
-                float gGjw_im = gc_im * jw;
+            if (!is_sing && R > 1e-12) {
+                double a_re = (-k_im - 1.0 / R_safe) / R_safe;
+                double a_im = k_re / R_safe;
+                double gc_re = G_re * a_re - G_im * a_im;
+                double gc_im = G_re * a_im + G_im * a_re;
+                double gGjw_re = gc_re * jw;
+                double gGjw_im = gc_im * jw;
 
                 // Triple product: tf x tp . sf - tf . (sq x sf)
-                float cx_val = tfy * tpz - tfz * tpy;
-                float cy_val = tfz * tpx - tfx * tpz;
-                float cz_val = tfx * tpy - tfy * tpx;
-                float triple = cx_val * sfx + cy_val * sfy + cz_val * sfz
+                double cx_val = tfy * tpz - tfz * tpy;
+                double cy_val = tfz * tpx - tfx * tpz;
+                double cz_val = tfx * tpy - tfy * tpx;
+                double triple = cx_val * sfx + cy_val * sfy + cz_val * sfz
                     - tfx * __ldg(&sq_x_sf[sj * 3 + 0])
                     - tfy * __ldg(&sq_x_sf[sj * 3 + 1])
                     - tfz * __ldg(&sq_x_sf[sj * 3 + 2]);
@@ -115,17 +118,17 @@ __global__ void assemble_LK_kernel(
     }
 
     // Combine: L[b,n] = ik * Lvec - (i/k) * div_prod * Lscl
-    float ik_re = -k_im;
-    float ik_im_f = k_re;
-    float k_sq = k_re * k_re + k_im * k_im;
-    float iok_re = k_im / k_sq;
-    float iok_im = k_re / k_sq;
-    float div_prod = __ldg(&t_div[b]) * __ldg(&s_div[n]);
+    double ik_re = -k_im;
+    double ik_im_f = k_re;
+    double k_sq = k_re * k_re + k_im * k_im;
+    double iok_re = k_im / k_sq;
+    double iok_im = k_re / k_sq;
+    double div_prod = __ldg(&t_div[b]) * __ldg(&s_div[n]);
 
-    float term1_re = ik_re * Lvec_re - ik_im_f * Lvec_im;
-    float term1_im = ik_re * Lvec_im + ik_im_f * Lvec_re;
-    float term2_re = iok_re * div_prod * Lscl_re - iok_im * div_prod * Lscl_im;
-    float term2_im = iok_re * div_prod * Lscl_im + iok_im * div_prod * Lscl_re;
+    double term1_re = ik_re * Lvec_re - ik_im_f * Lvec_im;
+    double term1_im = ik_re * Lvec_im + ik_im_f * Lvec_re;
+    double term2_re = iok_re * div_prod * Lscl_re - iok_im * div_prod * Lscl_im;
+    double term2_im = iok_re * div_prod * Lscl_im + iok_im * div_prod * Lscl_re;
 
     int idx = b * N_src + n;
     L_re[idx] = term1_re - term2_re;
@@ -140,11 +143,55 @@ __global__ void assemble_LK_kernel(
 // ============================================================
 
 struct HalfData {
-    std::vector<float> qpts;  // (N*Nq, 3) flat
-    std::vector<float> fvals; // (N*Nq, 3) flat
-    std::vector<float> jw;    // (N*Nq) flat
-    std::vector<float> divs;  // (N) divergence
+    std::vector<double> qpts;  // (N*Nq, 3) flat
+    std::vector<double> fvals; // (N*Nq, 3) flat
+    std::vector<double> jw;    // (N*Nq) flat
+    std::vector<double> divs;  // (N) divergence
     std::vector<int>   tri_idx; // (N) triangle indices
+};
+
+struct DeviceHalfData {
+    double *qpts = 0, *fvals = 0, *jw = 0, *sq_x_sf = 0, *divs = 0;
+    int* tri_idx = 0;
+
+    void upload(const HalfData& h, int N, int Nq)
+    {
+        int Nsq = N * Nq;
+        std::vector<double> cross((size_t)Nsq * 3);
+        for (int i = 0; i < Nsq; i++) {
+            double sx = h.qpts[(size_t)i * 3], sy = h.qpts[(size_t)i * 3 + 1], sz = h.qpts[(size_t)i * 3 + 2];
+            double fx = h.fvals[(size_t)i * 3], fy = h.fvals[(size_t)i * 3 + 1], fz = h.fvals[(size_t)i * 3 + 2];
+            cross[(size_t)i * 3]     = sy * fz - sz * fy;
+            cross[(size_t)i * 3 + 1] = sz * fx - sx * fz;
+            cross[(size_t)i * 3 + 2] = sx * fy - sy * fx;
+        }
+
+        CUDA_CHECK(cudaMalloc(&qpts, (size_t)Nsq * 3 * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&fvals, (size_t)Nsq * 3 * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&sq_x_sf, (size_t)Nsq * 3 * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&jw, (size_t)Nsq * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&tri_idx, (size_t)N * sizeof(int)));
+        CUDA_CHECK(cudaMalloc(&divs, (size_t)N * sizeof(double)));
+
+        CUDA_CHECK(cudaMemcpy(qpts, h.qpts.data(), (size_t)Nsq * 3 * sizeof(double), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(fvals, h.fvals.data(), (size_t)Nsq * 3 * sizeof(double), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(sq_x_sf, cross.data(), (size_t)Nsq * 3 * sizeof(double), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(jw, h.jw.data(), (size_t)Nsq * sizeof(double), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(tri_idx, h.tri_idx.data(), (size_t)N * sizeof(int), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(divs, h.divs.data(), (size_t)N * sizeof(double), cudaMemcpyHostToDevice));
+    }
+
+    void free()
+    {
+        cudaFree(qpts);
+        cudaFree(fvals);
+        cudaFree(jw);
+        cudaFree(sq_x_sf);
+        cudaFree(divs);
+        cudaFree(tri_idx);
+        qpts = fvals = jw = sq_x_sf = divs = 0;
+        tri_idx = 0;
+    }
 };
 
 static HalfData precompute_half(const RWG& rwg, const Mesh& mesh,
@@ -170,7 +217,7 @@ static HalfData precompute_half(const RWG& rwg, const Mesh& mesh,
         double len = rwg.length[n];
 
         h.tri_idx[n] = ti;
-        h.divs[n] = (float)(sign * len / area);  // +l/A or -l/A
+        h.divs[n] = sign * len / area;  // +l/A or -l/A
 
         Vec3 v0, v1, v2;
         mesh.tri_verts(ti, v0, v1, v2);
@@ -183,18 +230,18 @@ static HalfData precompute_half(const RWG& rwg, const Mesh& mesh,
             Vec3 rr = v0 * l0 + v1 * l1 + v2 * l2;
 
             int idx = (n * Nq + q) * 3;
-            h.qpts[idx]     = (float)rr.x;
-            h.qpts[idx + 1] = (float)rr.y;
-            h.qpts[idx + 2] = (float)rr.z;
+            h.qpts[idx]     = rr.x;
+            h.qpts[idx + 1] = rr.y;
+            h.qpts[idx + 2] = rr.z;
 
             // Basis function value: sign * (l/2A) * (r - r_free)
             Vec3 fv = (rr - free_v) * coeff;
-            h.fvals[idx]     = (float)fv.x;
-            h.fvals[idx + 1] = (float)fv.y;
-            h.fvals[idx + 2] = (float)fv.z;
+            h.fvals[idx]     = fv.x;
+            h.fvals[idx + 1] = fv.y;
+            h.fvals[idx + 2] = fv.z;
 
             // Jacobian * weight = area * w_q
-            h.jw[n * Nq + q] = (float)(area * quad.wts[q]);
+            h.jw[n * Nq + q] = area * quad.wts[q];
         }
     }
     return h;
@@ -342,12 +389,12 @@ void assemble_L_K_cuda(const RWG& rwg, const Mesh& mesh,
     HalfData hm = precompute_half(rwg, mesh, quad, -1);
 
     // Initialize output to zero
-    memset(L, 0, N * N * sizeof(std::complex<double>));
-    memset(K, 0, N * N * sizeof(std::complex<double>));
+    std::fill_n(L, (size_t)N * N, std::complex<double>(0.0, 0.0));
+    std::fill_n(K, (size_t)N * N, std::complex<double>(0.0, 0.0));
 
-    float k_re = (float)k.real();
-    float k_im = (float)k.imag();
-    float inv4pi_f = (float)INV4PI;
+    double k_re = k.real();
+    double k_im = k.imag();
+    double inv4pi = INV4PI;
 
     // 3 passes: (p,p), (p,m), (m,m). Cross-term (m,p) = transpose of (p,m).
     struct Pass {
@@ -361,94 +408,65 @@ void assemble_L_K_cuda(const RWG& rwg, const Mesh& mesh,
         {&hm, &hm, 1, 1},
     };
 
-    // Allocate device memory for source arrays (reused across batches)
-    int Nsq = N * Nq;
+    DeviceHalfData hp_dev, hm_dev;
+    hp_dev.upload(hp, N, Nq);
+    hm_dev.upload(hm, N, Nq);
+
+    // Batch processing
+    // Memory budget: ~2GB for output; half data live on the device once per operator.
+    int batch_size = std::min(N, std::max(1, (int)(1e9 / (N * 32 + Nq * 24))));
+    // Ensure batch_size is at least 256 for GPU efficiency
+    batch_size = std::max(batch_size, std::min(256, N));
+
+    int max_BN = batch_size * N;
+    double *d_L_re, *d_L_im, *d_K_re, *d_K_im;
+    CUDA_CHECK(cudaMalloc(&d_L_re, (size_t)max_BN * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_L_im, (size_t)max_BN * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_K_re, (size_t)max_BN * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_K_im, (size_t)max_BN * sizeof(double)));
+    std::vector<double> h_L_re(max_BN), h_L_im(max_BN), h_K_re(max_BN), h_K_im(max_BN);
 
     for (int pass = 0; pass < 3; pass++) {
-        HalfData& test = *passes[pass].test;
-        HalfData& src  = *passes[pass].src;
+        DeviceHalfData& test_dev = (passes[pass].th == 0) ? hp_dev : hm_dev;
+        DeviceHalfData& src_dev = (passes[pass].sh == 0) ? hp_dev : hm_dev;
         bool is_cross = (passes[pass].th != passes[pass].sh);
-
-        // Precompute cross(sq, sf) on host
-        std::vector<float> sq_x_sf(Nsq * 3);
-        for (int i = 0; i < Nsq; i++) {
-            float sx = src.qpts[i*3], sy = src.qpts[i*3+1], sz = src.qpts[i*3+2];
-            float fx = src.fvals[i*3], fy = src.fvals[i*3+1], fz = src.fvals[i*3+2];
-            sq_x_sf[i*3]   = sy*fz - sz*fy;
-            sq_x_sf[i*3+1] = sz*fx - sx*fz;
-            sq_x_sf[i*3+2] = sx*fy - sy*fx;
-        }
-
-        // Upload source arrays to device
-        float *d_sq, *d_sf, *d_sq_x_sf, *d_jw_s;
-        int *d_s_tri;
-        float *d_s_div;
-        CUDA_CHECK(cudaMalloc(&d_sq, Nsq * 3 * sizeof(float)));
-        CUDA_CHECK(cudaMalloc(&d_sf, Nsq * 3 * sizeof(float)));
-        CUDA_CHECK(cudaMalloc(&d_sq_x_sf, Nsq * 3 * sizeof(float)));
-        CUDA_CHECK(cudaMalloc(&d_jw_s, Nsq * sizeof(float)));
-        CUDA_CHECK(cudaMalloc(&d_s_tri, N * sizeof(int)));
-        CUDA_CHECK(cudaMalloc(&d_s_div, N * sizeof(float)));
-
-        CUDA_CHECK(cudaMemcpy(d_sq, src.qpts.data(), Nsq*3*sizeof(float), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_sf, src.fvals.data(), Nsq*3*sizeof(float), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_sq_x_sf, sq_x_sf.data(), Nsq*3*sizeof(float), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_jw_s, src.jw.data(), Nsq*sizeof(float), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_s_tri, src.tri_idx.data(), N*sizeof(int), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_s_div, src.divs.data(), N*sizeof(float), cudaMemcpyHostToDevice));
-
-        // Batch processing
-        // Memory budget: ~2GB for test arrays + output
-        // Per element: ~4 floats output = 16 bytes, test arrays ~BNq*12 bytes
-        int batch_size = std::min(N, std::max(1, (int)(1e9 / (N * 16 + Nq * 12))));
-        // Ensure batch_size is at least 256 for GPU efficiency
-        batch_size = std::max(batch_size, std::min(256, N));
 
         for (int b_start = 0; b_start < N; b_start += batch_size) {
             int b_end = std::min(b_start + batch_size, N);
             int B = b_end - b_start;
-            int BNq = B * Nq;
-
-            // Upload test batch to device
-            float *d_tp, *d_tf, *d_jw_t;
-            int *d_t_tri;
-            float *d_t_div;
-            float *d_L_re, *d_L_im, *d_K_re, *d_K_im;
-
-            CUDA_CHECK(cudaMalloc(&d_tp, BNq * 3 * sizeof(float)));
-            CUDA_CHECK(cudaMalloc(&d_tf, BNq * 3 * sizeof(float)));
-            CUDA_CHECK(cudaMalloc(&d_jw_t, BNq * sizeof(float)));
-            CUDA_CHECK(cudaMalloc(&d_t_tri, B * sizeof(int)));
-            CUDA_CHECK(cudaMalloc(&d_t_div, B * sizeof(float)));
-            CUDA_CHECK(cudaMalloc(&d_L_re, B * N * sizeof(float)));
-            CUDA_CHECK(cudaMalloc(&d_L_im, B * N * sizeof(float)));
-            CUDA_CHECK(cudaMalloc(&d_K_re, B * N * sizeof(float)));
-            CUDA_CHECK(cudaMalloc(&d_K_im, B * N * sizeof(float)));
-
-            CUDA_CHECK(cudaMemcpy(d_tp, &test.qpts[b_start*Nq*3], BNq*3*sizeof(float), cudaMemcpyHostToDevice));
-            CUDA_CHECK(cudaMemcpy(d_tf, &test.fvals[b_start*Nq*3], BNq*3*sizeof(float), cudaMemcpyHostToDevice));
-            CUDA_CHECK(cudaMemcpy(d_jw_t, &test.jw[b_start*Nq], BNq*sizeof(float), cudaMemcpyHostToDevice));
-            CUDA_CHECK(cudaMemcpy(d_t_tri, &test.tri_idx[b_start], B*sizeof(int), cudaMemcpyHostToDevice));
-            CUDA_CHECK(cudaMemcpy(d_t_div, &test.divs[b_start], B*sizeof(float), cudaMemcpyHostToDevice));
 
             // Launch kernel
-            dim3 block(16, 16);
+            int block_x = 16;
+            int block_y = 16;
+            if (bem_env_has_value("BEM_ASM_BLOCK_X"))
+                block_x = std::max(1, bem_env_int("BEM_ASM_BLOCK_X", block_x));
+            if (bem_env_has_value("BEM_ASM_BLOCK_Y"))
+                block_y = std::max(1, bem_env_int("BEM_ASM_BLOCK_Y", block_y));
+            if (block_x * block_y > 1024)
+                block_y = std::max(1, 1024 / block_x);
+            dim3 block(block_x, block_y);
             dim3 grid((B + block.x - 1) / block.x, (N + block.y - 1) / block.y);
 
             assemble_LK_kernel<<<grid, block>>>(
-                d_tp, d_sq, d_tf, d_sf, d_sq_x_sf,
-                d_jw_t, d_jw_s, d_t_tri, d_s_tri,
-                d_t_div, d_s_div,
-                k_re, k_im, inv4pi_f, Nq, N, B,
+                test_dev.qpts + (size_t)b_start * Nq * 3,
+                src_dev.qpts,
+                test_dev.fvals + (size_t)b_start * Nq * 3,
+                src_dev.fvals, src_dev.sq_x_sf,
+                test_dev.jw + (size_t)b_start * Nq,
+                src_dev.jw,
+                test_dev.tri_idx + b_start,
+                src_dev.tri_idx,
+                test_dev.divs + b_start,
+                src_dev.divs,
+                k_re, k_im, inv4pi, Nq, N, B,
                 d_L_re, d_L_im, d_K_re, d_K_im);
             CUDA_CHECK(cudaGetLastError());
 
             // Download results
-            std::vector<float> h_L_re(B*N), h_L_im(B*N), h_K_re(B*N), h_K_im(B*N);
-            CUDA_CHECK(cudaMemcpy(h_L_re.data(), d_L_re, B*N*sizeof(float), cudaMemcpyDeviceToHost));
-            CUDA_CHECK(cudaMemcpy(h_L_im.data(), d_L_im, B*N*sizeof(float), cudaMemcpyDeviceToHost));
-            CUDA_CHECK(cudaMemcpy(h_K_re.data(), d_K_re, B*N*sizeof(float), cudaMemcpyDeviceToHost));
-            CUDA_CHECK(cudaMemcpy(h_K_im.data(), d_K_im, B*N*sizeof(float), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(h_L_re.data(), d_L_re, B*N*sizeof(double), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(h_L_im.data(), d_L_im, B*N*sizeof(double), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(h_K_re.data(), d_K_re, B*N*sizeof(double), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(h_K_im.data(), d_K_im, B*N*sizeof(double), cudaMemcpyDeviceToHost));
 
             // Accumulate into double-precision L, K
             for (int b = 0; b < B; b++) {
@@ -470,18 +488,12 @@ void assemble_L_K_cuda(const RWG& rwg, const Mesh& mesh,
                     }
                 }
             }
-
-            // Free test batch device memory
-            cudaFree(d_tp); cudaFree(d_tf); cudaFree(d_jw_t);
-            cudaFree(d_t_tri); cudaFree(d_t_div);
-            cudaFree(d_L_re); cudaFree(d_L_im);
-            cudaFree(d_K_re); cudaFree(d_K_im);
         }
-
-        // Free source device memory
-        cudaFree(d_sq); cudaFree(d_sf); cudaFree(d_sq_x_sf);
-        cudaFree(d_jw_s); cudaFree(d_s_tri); cudaFree(d_s_div);
     }
+    cudaFree(d_L_re); cudaFree(d_L_im);
+    cudaFree(d_K_re); cudaFree(d_K_im);
+    hp_dev.free();
+    hm_dev.free();
 
     double t_main = timer.elapsed_s();
     printf("    Main loop: %.1fs\n", t_main);

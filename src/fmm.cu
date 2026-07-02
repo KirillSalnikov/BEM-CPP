@@ -1,7 +1,9 @@
 #include "fmm.h"
+#include "gpu_select.h"
 #include <cuda_runtime.h>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <cmath>
 #include <map>
 #include <vector>
@@ -9,6 +11,28 @@
 
 // P2P launchers (from p2p.cu)
 #include "p2p.h"
+
+__global__ void split_complex_kernel(const double2* __restrict__ in,
+                                     double* __restrict__ out_re,
+                                     double* __restrict__ out_im,
+                                     int n)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    double2 v = in[i];
+    out_re[i] = v.x;
+    out_im[i] = v.y;
+}
+
+__global__ void pack_complex_kernel(const double* __restrict__ in_re,
+                                    const double* __restrict__ in_im,
+                                    double2* __restrict__ out,
+                                    int n)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    out[i] = make_double2(in_re[i], in_im[i]);
+}
 
 // ============================================================
 // Spherical Bessel / Hankel functions
@@ -49,23 +73,24 @@ cdouble spherical_hankel1(int n, cdouble z) {
 }
 
 // ============================================================
-// CUDA kernels for FMM tree operations (float32 internal precision)
+// CUDA kernels for FMM tree operations
 // All use ORIGINAL-ORDER indices for positions and charges
 // ============================================================
 
-// P2M kernel: double positions/charges in, float32 multipole out
+// P2M kernel: one block per leaf, threads split L directions
+// src_ids: flat array of original source indices per leaf
 __global__ void p2m_kernel(
-    const double* __restrict__ src_pts,
-    const double* __restrict__ q_re,
+    const double* __restrict__ src_pts,      // (Ns*3) original order
+    const double* __restrict__ q_re,         // (Ns) original order
     const double* __restrict__ q_im,
-    const fmm_real* __restrict__ dirs,
-    float k_re, float k_im,
-    fmm_real* __restrict__ multi_re,
-    fmm_real* __restrict__ multi_im,
-    const int* __restrict__ leaf_indices,
-    const int* __restrict__ src_id_offsets,
-    const int* __restrict__ src_ids,
-    const double* __restrict__ node_centers,
+    const double* __restrict__ dirs,         // (L*3)
+    double k_re, double k_im,
+    double* __restrict__ multi_re,           // (n_nodes*L)
+    double* __restrict__ multi_im,
+    const int* __restrict__ leaf_indices,    // (n_leaves) node index
+    const int* __restrict__ src_id_offsets,  // (n_leaves+1) into src_ids
+    const int* __restrict__ src_ids,         // flat original source IDs
+    const double* __restrict__ node_centers, // (n_nodes*3)
     int L, int n_leaves)
 {
     int leaf_id = blockIdx.x;
@@ -77,29 +102,30 @@ __global__ void p2m_kernel(
     int s_count = s_end - s_start;
     if (s_count == 0) return;
 
-    float cx = (float)node_centers[node*3];
-    float cy = (float)node_centers[node*3+1];
-    float cz = (float)node_centers[node*3+2];
+    double cx = node_centers[node*3];
+    double cy = node_centers[node*3+1];
+    double cz = node_centers[node*3+2];
 
     int base = node * L;
 
     for (int l = threadIdx.x; l < L; l += blockDim.x) {
-        float dx = dirs[l*3], dy = dirs[l*3+1], dz = dirs[l*3+2];
-        float acc_re = 0.0f, acc_im = 0.0f;
+        double dx = dirs[l*3], dy = dirs[l*3+1], dz = dirs[l*3+2];
+        double acc_re = 0.0, acc_im = 0.0;
 
         for (int s = s_start; s < s_end; s++) {
-            int sid = src_ids[s];
-            float rx = (float)(src_pts[sid*3]   - (double)cx);
-            float ry = (float)(src_pts[sid*3+1] - (double)cy);
-            float rz = (float)(src_pts[sid*3+2] - (double)cz);
-            float dot = dx*rx + dy*ry + dz*rz;
+            int sid = src_ids[s];  // original source index
+            double rx = src_pts[sid*3]   - cx;
+            double ry = src_pts[sid*3+1] - cy;
+            double rz = src_pts[sid*3+2] - cz;
+            double dot = dx*rx + dy*ry + dz*rz;
 
-            float phase_re = k_im * dot;
-            float phase_im = -k_re * dot;
-            float e_re = expf(phase_re) * cosf(phase_im);
-            float e_im = expf(phase_re) * sinf(phase_im);
+            // exp(-ik * s_hat . r_rel)
+            double phase_re = k_im * dot;
+            double phase_im = -k_re * dot;
+            double e_re = exp(phase_re) * cos(phase_im);
+            double e_im = exp(phase_re) * sin(phase_im);
 
-            float qr = (float)q_re[sid], qi = (float)q_im[sid];
+            double qr = q_re[sid], qi = q_im[sid];
             acc_re += e_re * qr - e_im * qi;
             acc_im += e_re * qi + e_im * qr;
         }
@@ -109,367 +135,18 @@ __global__ void p2m_kernel(
     }
 }
 
-// M2M kernel (all float32)
-__global__ void m2m_kernel(
-    const int*      __restrict__ parent_idx,
-    const int*      __restrict__ child_idx,
-    const fmm_real* __restrict__ shift_re,
-    const fmm_real* __restrict__ shift_im,
-    fmm_real* __restrict__ multi_re,
-    fmm_real* __restrict__ multi_im,
-    int L, int n_pairs, int offset)
-{
-    int pair = blockIdx.x + offset;
-    if (pair >= offset + n_pairs) return;
-
-    int p = parent_idx[pair];
-    int c = child_idx[pair];
-    int shift_base = pair * L;
-    int p_base = p * L;
-    int c_base = c * L;
-
-    for (int l = threadIdx.x; l < L; l += blockDim.x) {
-        float cr = multi_re[c_base + l];
-        float ci = multi_im[c_base + l];
-        float sr = shift_re[shift_base + l];
-        float si = shift_im[shift_base + l];
-        atomicAdd(&multi_re[p_base + l], cr * sr - ci * si);
-        atomicAdd(&multi_im[p_base + l], cr * si + ci * sr);
-    }
-}
-
-// M2L legacy kernel (float32, kept for batch2 fallback)
-__global__ void m2l_kernel(
-    const int*      __restrict__ tgt_idx,
-    const int*      __restrict__ src_idx,
-    const int*      __restrict__ transfer_idx,
-    const fmm_real* __restrict__ transfer_re,
-    const fmm_real* __restrict__ transfer_im,
-    const fmm_real* __restrict__ multi_re,
-    const fmm_real* __restrict__ multi_im,
-    fmm_real* __restrict__ local_re,
-    fmm_real* __restrict__ local_im,
-    int L, int n_pairs, int offset)
-{
-    int pair = blockIdx.x + offset;
-    if (pair >= offset + n_pairs) return;
-
-    int tgt = tgt_idx[pair];
-    int src = src_idx[pair];
-    int tidx = transfer_idx[pair];
-
-    int t_base = tidx * L;
-    int s_base = src * L;
-    int l_base = tgt * L;
-
-    for (int l = threadIdx.x; l < L; l += blockDim.x) {
-        float tr = transfer_re[t_base + l];
-        float ti = transfer_im[t_base + l];
-        float mr = multi_re[s_base + l];
-        float mi = multi_im[s_base + l];
-        atomicAdd(&local_re[l_base + l], tr * mr - ti * mi);
-        atomicAdd(&local_im[l_base + l], tr * mi + ti * mr);
-    }
-}
-
-// ============================================================
-// Optimized M2L kernel (opt3): one block per unique target node.
-// CSR structure, shared memory for transfer coefficients,
-// register accumulators (no atomicAdd). Float32 precision.
-// Uses float2 vectorized loads for interleaved transfer data.
-// ============================================================
-__global__ void m2l_target_kernel(
-    const int*      __restrict__ csr_offsets,
-    const int*      __restrict__ csr_tgt_nodes,
-    const int*      __restrict__ csr_src,
-    const int*      __restrict__ csr_tidx,
-    const fmm_real* __restrict__ transfer_ri,
-    const fmm_real* __restrict__ multi_re,
-    const fmm_real* __restrict__ multi_im,
-    fmm_real* __restrict__ local_re,
-    fmm_real* __restrict__ local_im,
-    int L, int n_targets, int tgt_offset, int pair_offset)
-{
-    int tgt_id = blockIdx.x + tgt_offset;
-    if (tgt_id >= tgt_offset + n_targets) return;
-
-    int tgt_node = csr_tgt_nodes[tgt_id];
-    int pair_start = csr_offsets[tgt_id] + pair_offset;
-    int pair_end   = csr_offsets[tgt_id + 1] + pair_offset;
-    int n_src = pair_end - pair_start;
-    if (n_src == 0) return;
-
-    int l_base = tgt_node * L;
-    int tid = threadIdx.x;
-    int nthreads = blockDim.x;
-
-    extern __shared__ fmm_real smem[];  // size = L * 2 fmm_reals
-
-    int n_slots = (L + nthreads - 1) / nthreads;
-    const int CHUNK = 8;
-    int n_chunks = (n_slots + CHUNK - 1) / CHUNK;
-
-    for (int chunk = 0; chunk < n_chunks; chunk++) {
-        int slot_start = chunk * CHUNK;
-        int slot_end = slot_start + CHUNK;
-        if (slot_end > n_slots) slot_end = n_slots;
-        int n_active = slot_end - slot_start;
-
-        float acc_re[CHUNK], acc_im[CHUNK];
-        for (int s = 0; s < n_active; s++) {
-            acc_re[s] = 0.0f;
-            acc_im[s] = 0.0f;
-        }
-
-        for (int p = pair_start; p < pair_end; p++) {
-            int src_node = csr_src[p];
-            int tidx_val = csr_tidx[p];
-
-            int t_base = tidx_val * L * 2;
-            for (int i = tid; i < L; i += nthreads) {
-                float2 val = *reinterpret_cast<const float2*>(&transfer_ri[t_base + i * 2]);
-                smem[i * 2]     = val.x;
-                smem[i * 2 + 1] = val.y;
-            }
-            __syncthreads();
-
-            int s_base = src_node * L;
-            for (int s = 0; s < n_active; s++) {
-                int l = (slot_start + s) * nthreads + tid;
-                if (l < L) {
-                    float tr = smem[l * 2];
-                    float ti = smem[l * 2 + 1];
-                    float mr = multi_re[s_base + l];
-                    float mi = multi_im[s_base + l];
-                    acc_re[s] += tr * mr - ti * mi;
-                    acc_im[s] += tr * mi + ti * mr;
-                }
-            }
-
-            __syncthreads();
-        }
-
-        for (int s = 0; s < n_active; s++) {
-            int l = (slot_start + s) * nthreads + tid;
-            if (l < L) {
-                local_re[l_base + l] += acc_re[s];
-                local_im[l_base + l] += acc_im[s];
-            }
-        }
-    }
-}
-
-// L2L kernel (all float32)
-__global__ void l2l_kernel(
-    const int*      __restrict__ parent_idx,
-    const int*      __restrict__ child_idx,
-    const fmm_real* __restrict__ shift_re,
-    const fmm_real* __restrict__ shift_im,
-    const fmm_real* __restrict__ local_re_in,
-    const fmm_real* __restrict__ local_im_in,
-    fmm_real* __restrict__ local_re,
-    fmm_real* __restrict__ local_im,
-    int L, int n_pairs, int offset)
-{
-    int pair = blockIdx.x + offset;
-    if (pair >= offset + n_pairs) return;
-
-    int p = parent_idx[pair];
-    int c = child_idx[pair];
-    int shift_base = pair * L;
-    int p_base = p * L;
-    int c_base = c * L;
-
-    for (int l = threadIdx.x; l < L; l += blockDim.x) {
-        float pr = local_re_in[p_base + l];
-        float pi = local_im_in[p_base + l];
-        float sr = shift_re[shift_base + l];
-        float si = shift_im[shift_base + l];
-        atomicAdd(&local_re[c_base + l], pr * sr - pi * si);
-        atomicAdd(&local_im[c_base + l], pr * si + pi * sr);
-    }
-}
-
-// L2P kernel: float32 local -> double64 output
-__global__ void l2p_kernel(
-    const double*   __restrict__ tgt_pts,
-    const fmm_real* __restrict__ dirs,
-    const fmm_real* __restrict__ weights,
-    const fmm_real* __restrict__ local_re,
-    const fmm_real* __restrict__ local_im,
-    float k_re, float k_im,
-    double prefac_re, double prefac_im,
-    double* __restrict__ out_re,
-    double* __restrict__ out_im,
-    const int* __restrict__ leaf_indices,
-    const int* __restrict__ tgt_id_offsets,
-    const int* __restrict__ tgt_ids,
-    const double* __restrict__ node_centers,
-    int L, int n_leaves)
-{
-    int leaf_id = blockIdx.x;
-    if (leaf_id >= n_leaves) return;
-
-    int node = leaf_indices[leaf_id];
-    int t_start = tgt_id_offsets[leaf_id];
-    int t_end = tgt_id_offsets[leaf_id + 1];
-    int t_count = t_end - t_start;
-    if (t_count == 0) return;
-
-    float ccx = (float)node_centers[node*3];
-    float ccy = (float)node_centers[node*3+1];
-    float ccz = (float)node_centers[node*3+2];
-    int l_base = node * L;
-
-    for (int t = threadIdx.x; t < t_count; t += blockDim.x) {
-        int tid = tgt_ids[t_start + t];
-        float rx = (float)(tgt_pts[tid*3]   - (double)ccx);
-        float ry = (float)(tgt_pts[tid*3+1] - (double)ccy);
-        float rz = (float)(tgt_pts[tid*3+2] - (double)ccz);
-
-        float acc_re = 0.0f, acc_im = 0.0f;
-        for (int l = 0; l < L; l++) {
-            float dx = dirs[l*3], dy = dirs[l*3+1], dz = dirs[l*3+2];
-            float dot = dx*rx + dy*ry + dz*rz;
-            float phase_re = -k_im * dot;
-            float phase_im = k_re * dot;
-            float e_re = expf(phase_re) * cosf(phase_im);
-            float e_im = expf(phase_re) * sinf(phase_im);
-
-            float lr = local_re[l_base + l];
-            float li = local_im[l_base + l];
-            float wl = weights[l];
-            float wlr = wl * lr, wli = wl * li;
-            acc_re += wlr * e_re - wli * e_im;
-            acc_im += wlr * e_im + wli * e_re;
-        }
-
-        double final_re = prefac_re * (double)acc_re - prefac_im * (double)acc_im;
-        double final_im = prefac_re * (double)acc_im + prefac_im * (double)acc_re;
-        atomicAdd(&out_re[tid], final_re);
-        atomicAdd(&out_im[tid], final_im);
-    }
-}
-
-// Repack gradient from 6 separate arrays into interleaved xyz
-__global__ void repack_gradient_kernel(
-    const double* __restrict__ gx_re, const double* __restrict__ gx_im,
-    const double* __restrict__ gy_re, const double* __restrict__ gy_im,
-    const double* __restrict__ gz_re, const double* __restrict__ gz_im,
-    double* __restrict__ out_re, double* __restrict__ out_im,
-    int N)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= N) return;
-
-    out_re[i*3]   = gx_re[i];
-    out_re[i*3+1] = gy_re[i];
-    out_re[i*3+2] = gz_re[i];
-
-    out_im[i*3]   = gx_im[i];
-    out_im[i*3+1] = gy_im[i];
-    out_im[i*3+2] = gz_im[i];
-}
-
-// Vector addition kernel for merging P2P results into FMM results
-__global__ void vector_add_kernel(double* __restrict__ dst, const double* __restrict__ src, int N)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < N) dst[i] += src[i];
-}
-
-// L2P gradient kernel: float32 local -> double64 gradient
-__global__ void l2p_gradient_kernel(
-    const double*   __restrict__ tgt_pts,
-    const fmm_real* __restrict__ dirs,
-    const fmm_real* __restrict__ weights,
-    const fmm_real* __restrict__ local_re,
-    const fmm_real* __restrict__ local_im,
-    float k_re, float k_im,
-    double prefac_re, double prefac_im,
-    float ik2_re, float ik2_im,
-    double* __restrict__ gx_re, double* __restrict__ gx_im,
-    double* __restrict__ gy_re, double* __restrict__ gy_im,
-    double* __restrict__ gz_re, double* __restrict__ gz_im,
-    const int* __restrict__ leaf_indices,
-    const int* __restrict__ tgt_id_offsets,
-    const int* __restrict__ tgt_ids,
-    const double* __restrict__ node_centers,
-    int L, int n_leaves)
-{
-    int leaf_id = blockIdx.x;
-    if (leaf_id >= n_leaves) return;
-
-    int node = leaf_indices[leaf_id];
-    int t_start = tgt_id_offsets[leaf_id];
-    int t_end = tgt_id_offsets[leaf_id + 1];
-    int t_count = t_end - t_start;
-    if (t_count == 0) return;
-
-    float ccx = (float)node_centers[node*3];
-    float ccy = (float)node_centers[node*3+1];
-    float ccz = (float)node_centers[node*3+2];
-    int l_base = node * L;
-
-    for (int t = threadIdx.x; t < t_count; t += blockDim.x) {
-        int tid = tgt_ids[t_start + t];
-        float rx = (float)(tgt_pts[tid*3]   - (double)ccx);
-        float ry = (float)(tgt_pts[tid*3+1] - (double)ccy);
-        float rz = (float)(tgt_pts[tid*3+2] - (double)ccz);
-
-        float ax_re = 0, ax_im = 0, ay_re = 0, ay_im = 0, az_re = 0, az_im = 0;
-
-        for (int l = 0; l < L; l++) {
-            float dx = dirs[l*3], dy = dirs[l*3+1], dz = dirs[l*3+2];
-            float dot = dx*rx + dy*ry + dz*rz;
-            float phase_re = -k_im * dot;
-            float phase_im = k_re * dot;
-            float e_re = expf(phase_re) * cosf(phase_im);
-            float e_im = expf(phase_re) * sinf(phase_im);
-
-            float lr = local_re[l_base + l], li = local_im[l_base + l];
-            float wl = weights[l];
-            float wlr = wl * lr, wli = wl * li;
-            float pr = wlr * e_re - wli * e_im;
-            float pi = wlr * e_im + wli * e_re;
-
-            float ikpr = ik2_re * pr - ik2_im * pi;
-            float ikpi = ik2_re * pi + ik2_im * pr;
-
-            ax_re += ikpr * dx; ax_im += ikpi * dx;
-            ay_re += ikpr * dy; ay_im += ikpi * dy;
-            az_re += ikpr * dz; az_im += ikpi * dz;
-        }
-
-        atomicAdd(&gx_re[tid], prefac_re*(double)ax_re - prefac_im*(double)ax_im);
-        atomicAdd(&gx_im[tid], prefac_re*(double)ax_im + prefac_im*(double)ax_re);
-        atomicAdd(&gy_re[tid], prefac_re*(double)ay_re - prefac_im*(double)ay_im);
-        atomicAdd(&gy_im[tid], prefac_re*(double)ay_im + prefac_im*(double)ay_re);
-        atomicAdd(&gz_re[tid], prefac_re*(double)az_re - prefac_im*(double)az_im);
-        atomicAdd(&gz_im[tid], prefac_re*(double)az_im + prefac_im*(double)az_re);
-    }
-}
-
-// ============================================================
-// Batch-2 FMM kernels: two charge vectors, single tree traversal
-// Phase/shift factors computed once, applied to both charge sets
-// Float32 for FMM internal (dirs, multipole, local, shifts, transfers)
-// Double64 for positions, charges, results
-// ============================================================
-
-// P2M batch-2: float32 multipole output, double charges
-__global__ void p2m_batch2_kernel(
+__global__ void p2m_kernel_batch2(
     const double* __restrict__ src_pts,
     const double* __restrict__ q1_re,
     const double* __restrict__ q1_im,
     const double* __restrict__ q2_re,
     const double* __restrict__ q2_im,
-    const fmm_real* __restrict__ dirs,
-    float k_re, float k_im,
-    fmm_real* __restrict__ multi1_re,
-    fmm_real* __restrict__ multi1_im,
-    fmm_real* __restrict__ multi2_re,
-    fmm_real* __restrict__ multi2_im,
+    const double* __restrict__ dirs,
+    double k_re, double k_im,
+    double* __restrict__ multi1_re,
+    double* __restrict__ multi1_im,
+    double* __restrict__ multi2_re,
+    double* __restrict__ multi2_im,
     const int* __restrict__ leaf_indices,
     const int* __restrict__ src_id_offsets,
     const int* __restrict__ src_ids,
@@ -482,58 +159,115 @@ __global__ void p2m_batch2_kernel(
     int node = leaf_indices[leaf_id];
     int s_start = src_id_offsets[leaf_id];
     int s_end = src_id_offsets[leaf_id + 1];
-    int s_count = s_end - s_start;
-    if (s_count == 0) return;
+    if (s_end == s_start) return;
 
-    float ccx = (float)node_centers[node*3];
-    float ccy = (float)node_centers[node*3+1];
-    float ccz = (float)node_centers[node*3+2];
-
+    double cx = node_centers[node*3];
+    double cy = node_centers[node*3+1];
+    double cz = node_centers[node*3+2];
     int base = node * L;
 
     for (int l = threadIdx.x; l < L; l += blockDim.x) {
-        float dx = dirs[l*3], dy = dirs[l*3+1], dz = dirs[l*3+2];
-        float acc1_re = 0.0f, acc1_im = 0.0f;
-        float acc2_re = 0.0f, acc2_im = 0.0f;
+        double dx = dirs[l*3], dy = dirs[l*3+1], dz = dirs[l*3+2];
+        double a1_re = 0.0, a1_im = 0.0, a2_re = 0.0, a2_im = 0.0;
 
         for (int s = s_start; s < s_end; s++) {
             int sid = src_ids[s];
-            float rx = (float)(src_pts[sid*3]   - (double)ccx);
-            float ry = (float)(src_pts[sid*3+1] - (double)ccy);
-            float rz = (float)(src_pts[sid*3+2] - (double)ccz);
-            float dot = dx*rx + dy*ry + dz*rz;
+            double rx = src_pts[sid*3]   - cx;
+            double ry = src_pts[sid*3+1] - cy;
+            double rz = src_pts[sid*3+2] - cz;
+            double dot = dx*rx + dy*ry + dz*rz;
+            double phase_re = k_im * dot;
+            double phase_im = -k_re * dot;
+            double e_re = exp(phase_re) * cos(phase_im);
+            double e_im = exp(phase_re) * sin(phase_im);
 
-            float phase_re = k_im * dot;
-            float phase_im = -k_re * dot;
-            float e_re = expf(phase_re) * cosf(phase_im);
-            float e_im = expf(phase_re) * sinf(phase_im);
-
-            float qr1 = (float)q1_re[sid], qi1 = (float)q1_im[sid];
-            acc1_re += e_re * qr1 - e_im * qi1;
-            acc1_im += e_re * qi1 + e_im * qr1;
-
-            float qr2 = (float)q2_re[sid], qi2 = (float)q2_im[sid];
-            acc2_re += e_re * qr2 - e_im * qi2;
-            acc2_im += e_re * qi2 + e_im * qr2;
+            double q1r = q1_re[sid], q1i = q1_im[sid];
+            double q2r = q2_re[sid], q2i = q2_im[sid];
+            a1_re += e_re * q1r - e_im * q1i;
+            a1_im += e_re * q1i + e_im * q1r;
+            a2_re += e_re * q2r - e_im * q2i;
+            a2_im += e_re * q2i + e_im * q2r;
         }
 
-        multi1_re[base + l] = acc1_re;
-        multi1_im[base + l] = acc1_im;
-        multi2_re[base + l] = acc2_re;
-        multi2_im[base + l] = acc2_im;
+        multi1_re[base + l] = a1_re;
+        multi1_im[base + l] = a1_im;
+        multi2_re[base + l] = a2_re;
+        multi2_im[base + l] = a2_im;
     }
 }
 
-// M2M batch-2 (float32)
-__global__ void m2m_batch2_kernel(
-    const int*      __restrict__ parent_idx,
-    const int*      __restrict__ child_idx,
-    const fmm_real* __restrict__ shift_re,
-    const fmm_real* __restrict__ shift_im,
-    fmm_real* __restrict__ multi1_re,
-    fmm_real* __restrict__ multi1_im,
-    fmm_real* __restrict__ multi2_re,
-    fmm_real* __restrict__ multi2_im,
+__global__ void p2m_kernel_batch4(
+    const double* __restrict__ src_pts,
+    const double* __restrict__ q1_re, const double* __restrict__ q1_im,
+    const double* __restrict__ q2_re, const double* __restrict__ q2_im,
+    const double* __restrict__ q3_re, const double* __restrict__ q3_im,
+    const double* __restrict__ q4_re, const double* __restrict__ q4_im,
+    const double* __restrict__ dirs,
+    double k_re, double k_im,
+    double* __restrict__ m1_re, double* __restrict__ m1_im,
+    double* __restrict__ m2_re, double* __restrict__ m2_im,
+    double* __restrict__ m3_re, double* __restrict__ m3_im,
+    double* __restrict__ m4_re, double* __restrict__ m4_im,
+    const int* __restrict__ leaf_indices,
+    const int* __restrict__ src_id_offsets,
+    const int* __restrict__ src_ids,
+    const double* __restrict__ node_centers,
+    int L, int n_leaves)
+{
+    int leaf_id = blockIdx.x;
+    if (leaf_id >= n_leaves) return;
+
+    int node = leaf_indices[leaf_id];
+    int s_start = src_id_offsets[leaf_id];
+    int s_end = src_id_offsets[leaf_id + 1];
+    if (s_end == s_start) return;
+
+    double cx = node_centers[node*3];
+    double cy = node_centers[node*3+1];
+    double cz = node_centers[node*3+2];
+    int base = node * L;
+
+    for (int l = threadIdx.x; l < L; l += blockDim.x) {
+        double dx = dirs[l*3], dy = dirs[l*3+1], dz = dirs[l*3+2];
+        double a1r = 0.0, a1i = 0.0, a2r = 0.0, a2i = 0.0;
+        double a3r = 0.0, a3i = 0.0, a4r = 0.0, a4i = 0.0;
+
+        for (int s = s_start; s < s_end; s++) {
+            int sid = src_ids[s];
+            double rx = src_pts[sid*3] - cx;
+            double ry = src_pts[sid*3+1] - cy;
+            double rz = src_pts[sid*3+2] - cz;
+            double dot = dx*rx + dy*ry + dz*rz;
+            double phase_re = k_im * dot;
+            double phase_im = -k_re * dot;
+            double e_re = exp(phase_re) * cos(phase_im);
+            double e_im = exp(phase_re) * sin(phase_im);
+
+            double qr = q1_re[sid], qi = q1_im[sid];
+            a1r += e_re * qr - e_im * qi; a1i += e_re * qi + e_im * qr;
+            qr = q2_re[sid]; qi = q2_im[sid];
+            a2r += e_re * qr - e_im * qi; a2i += e_re * qi + e_im * qr;
+            qr = q3_re[sid]; qi = q3_im[sid];
+            a3r += e_re * qr - e_im * qi; a3i += e_re * qi + e_im * qr;
+            qr = q4_re[sid]; qi = q4_im[sid];
+            a4r += e_re * qr - e_im * qi; a4i += e_re * qi + e_im * qr;
+        }
+
+        m1_re[base + l] = a1r; m1_im[base + l] = a1i;
+        m2_re[base + l] = a2r; m2_im[base + l] = a2i;
+        m3_re[base + l] = a3r; m3_im[base + l] = a3i;
+        m4_re[base + l] = a4r; m4_im[base + l] = a4i;
+    }
+}
+
+// M2M kernel: propagate multipole from child to parent
+__global__ void m2m_kernel(
+    const int*    __restrict__ parent_idx,
+    const int*    __restrict__ child_idx,
+    const double* __restrict__ shift_re,
+    const double* __restrict__ shift_im,
+    double* __restrict__ multi_re,
+    double* __restrict__ multi_im,
     int L, int n_pairs, int offset)
 {
     int pair = blockIdx.x + offset;
@@ -546,36 +280,83 @@ __global__ void m2m_batch2_kernel(
     int c_base = c * L;
 
     for (int l = threadIdx.x; l < L; l += blockDim.x) {
-        float sr = shift_re[shift_base + l];
-        float si = shift_im[shift_base + l];
-
-        float cr1 = multi1_re[c_base + l];
-        float ci1 = multi1_im[c_base + l];
-        atomicAdd(&multi1_re[p_base + l], cr1 * sr - ci1 * si);
-        atomicAdd(&multi1_im[p_base + l], cr1 * si + ci1 * sr);
-
-        float cr2 = multi2_re[c_base + l];
-        float ci2 = multi2_im[c_base + l];
-        atomicAdd(&multi2_re[p_base + l], cr2 * sr - ci2 * si);
-        atomicAdd(&multi2_im[p_base + l], cr2 * si + ci2 * sr);
+        double cr = multi_re[c_base + l];
+        double ci = multi_im[c_base + l];
+        double sr = shift_re[shift_base + l];
+        double si = shift_im[shift_base + l];
+        atomicAdd(&multi_re[p_base + l], cr * sr - ci * si);
+        atomicAdd(&multi_im[p_base + l], cr * si + ci * sr);
     }
 }
 
-// M2L batch-2 legacy (float32)
-__global__ void m2l_batch2_kernel(
-    const int*      __restrict__ tgt_idx,
-    const int*      __restrict__ src_idx,
-    const int*      __restrict__ transfer_idx,
-    const fmm_real* __restrict__ transfer_re,
-    const fmm_real* __restrict__ transfer_im,
-    const fmm_real* __restrict__ multi1_re,
-    const fmm_real* __restrict__ multi1_im,
-    const fmm_real* __restrict__ multi2_re,
-    const fmm_real* __restrict__ multi2_im,
-    fmm_real* __restrict__ local1_re,
-    fmm_real* __restrict__ local1_im,
-    fmm_real* __restrict__ local2_re,
-    fmm_real* __restrict__ local2_im,
+__global__ void m2m_kernel_batch2(
+    const int*    __restrict__ parent_idx,
+    const int*    __restrict__ child_idx,
+    const double* __restrict__ shift_re,
+    const double* __restrict__ shift_im,
+    double* __restrict__ multi1_re,
+    double* __restrict__ multi1_im,
+    double* __restrict__ multi2_re,
+    double* __restrict__ multi2_im,
+    int L, int n_pairs, int offset)
+{
+    int pair = blockIdx.x + offset;
+    if (pair >= offset + n_pairs) return;
+
+    int p = parent_idx[pair];
+    int c = child_idx[pair];
+    int shift_base = pair * L;
+    int p_base = p * L;
+    int c_base = c * L;
+
+    for (int l = threadIdx.x; l < L; l += blockDim.x) {
+        double sr = shift_re[shift_base + l], si = shift_im[shift_base + l];
+        double c1r = multi1_re[c_base + l], c1i = multi1_im[c_base + l];
+        double c2r = multi2_re[c_base + l], c2i = multi2_im[c_base + l];
+        atomicAdd(&multi1_re[p_base + l], c1r * sr - c1i * si);
+        atomicAdd(&multi1_im[p_base + l], c1r * si + c1i * sr);
+        atomicAdd(&multi2_re[p_base + l], c2r * sr - c2i * si);
+        atomicAdd(&multi2_im[p_base + l], c2r * si + c2i * sr);
+    }
+}
+
+__global__ void m2m_kernel_batch4(
+    const int* __restrict__ parent_idx, const int* __restrict__ child_idx,
+    const double* __restrict__ shift_re, const double* __restrict__ shift_im,
+    double* __restrict__ m1_re, double* __restrict__ m1_im,
+    double* __restrict__ m2_re, double* __restrict__ m2_im,
+    double* __restrict__ m3_re, double* __restrict__ m3_im,
+    double* __restrict__ m4_re, double* __restrict__ m4_im,
+    int L, int n_pairs, int offset)
+{
+    int pair = blockIdx.x + offset;
+    if (pair >= offset + n_pairs) return;
+    int p = parent_idx[pair], c = child_idx[pair];
+    int shift_base = pair * L, p_base = p * L, c_base = c * L;
+    for (int l = threadIdx.x; l < L; l += blockDim.x) {
+        double sr = shift_re[shift_base + l], si = shift_im[shift_base + l];
+        double cr = m1_re[c_base + l], ci = m1_im[c_base + l];
+        atomicAdd(&m1_re[p_base + l], cr * sr - ci * si); atomicAdd(&m1_im[p_base + l], cr * si + ci * sr);
+        cr = m2_re[c_base + l]; ci = m2_im[c_base + l];
+        atomicAdd(&m2_re[p_base + l], cr * sr - ci * si); atomicAdd(&m2_im[p_base + l], cr * si + ci * sr);
+        cr = m3_re[c_base + l]; ci = m3_im[c_base + l];
+        atomicAdd(&m3_re[p_base + l], cr * sr - ci * si); atomicAdd(&m3_im[p_base + l], cr * si + ci * sr);
+        cr = m4_re[c_base + l]; ci = m4_im[c_base + l];
+        atomicAdd(&m4_re[p_base + l], cr * sr - ci * si); atomicAdd(&m4_im[p_base + l], cr * si + ci * sr);
+    }
+}
+
+// M2L kernel: translate multipole to local expansion
+__global__ void m2l_kernel(
+    const int*    __restrict__ tgt_idx,
+    const int*    __restrict__ src_idx,
+    const int*    __restrict__ transfer_idx,
+    const double* __restrict__ transfer_re,
+    const double* __restrict__ transfer_im,
+    const double* __restrict__ multi_re,
+    const double* __restrict__ multi_im,
+    double* __restrict__ local_re,
+    double* __restrict__ local_im,
     int L, int n_pairs, int offset)
 {
     int pair = blockIdx.x + offset;
@@ -590,129 +371,93 @@ __global__ void m2l_batch2_kernel(
     int l_base = tgt * L;
 
     for (int l = threadIdx.x; l < L; l += blockDim.x) {
-        float tr = transfer_re[t_base + l];
-        float ti = transfer_im[t_base + l];
-
-        float mr1 = multi1_re[s_base + l];
-        float mi1 = multi1_im[s_base + l];
-        atomicAdd(&local1_re[l_base + l], tr * mr1 - ti * mi1);
-        atomicAdd(&local1_im[l_base + l], tr * mi1 + ti * mr1);
-
-        float mr2 = multi2_re[s_base + l];
-        float mi2 = multi2_im[s_base + l];
-        atomicAdd(&local2_re[l_base + l], tr * mr2 - ti * mi2);
-        atomicAdd(&local2_im[l_base + l], tr * mi2 + ti * mr2);
+        double tr = transfer_re[t_base + l];
+        double ti = transfer_im[t_base + l];
+        double mr = multi_re[s_base + l];
+        double mi = multi_im[s_base + l];
+        atomicAdd(&local_re[l_base + l], tr * mr - ti * mi);
+        atomicAdd(&local_im[l_base + l], tr * mi + ti * mr);
     }
 }
 
-// Optimized CSR M2L batch-2: one block per unique target, no atomicAdd
-// Same algorithm as m2l_target_kernel but processes two multipole/local vectors
-__global__ void m2l_target_batch2_kernel(
-    const int*      __restrict__ csr_offsets,
-    const int*      __restrict__ csr_tgt_nodes,
-    const int*      __restrict__ csr_src,
-    const int*      __restrict__ csr_tidx,
-    const fmm_real* __restrict__ transfer_ri,
-    const fmm_real* __restrict__ multi1_re,
-    const fmm_real* __restrict__ multi1_im,
-    const fmm_real* __restrict__ multi2_re,
-    const fmm_real* __restrict__ multi2_im,
-    fmm_real* __restrict__ local1_re,
-    fmm_real* __restrict__ local1_im,
-    fmm_real* __restrict__ local2_re,
-    fmm_real* __restrict__ local2_im,
-    int L, int n_targets, int tgt_offset, int pair_offset)
+__global__ void m2l_kernel_batch2(
+    const int*    __restrict__ tgt_idx,
+    const int*    __restrict__ src_idx,
+    const int*    __restrict__ transfer_idx,
+    const double* __restrict__ transfer_re,
+    const double* __restrict__ transfer_im,
+    const double* __restrict__ multi1_re,
+    const double* __restrict__ multi1_im,
+    const double* __restrict__ multi2_re,
+    const double* __restrict__ multi2_im,
+    double* __restrict__ local1_re,
+    double* __restrict__ local1_im,
+    double* __restrict__ local2_re,
+    double* __restrict__ local2_im,
+    int L, int n_pairs, int offset)
 {
-    int tgt_id = blockIdx.x + tgt_offset;
-    if (tgt_id >= tgt_offset + n_targets) return;
+    int pair = blockIdx.x + offset;
+    if (pair >= offset + n_pairs) return;
 
-    int tgt_node = csr_tgt_nodes[tgt_id];
-    int pair_start = csr_offsets[tgt_id] + pair_offset;
-    int pair_end   = csr_offsets[tgt_id + 1] + pair_offset;
-    int n_src = pair_end - pair_start;
-    if (n_src == 0) return;
+    int tgt = tgt_idx[pair];
+    int src = src_idx[pair];
+    int tidx = transfer_idx[pair];
+    int t_base = tidx * L;
+    int s_base = src * L;
+    int l_base = tgt * L;
 
-    int l_base = tgt_node * L;
-    int tid = threadIdx.x;
-    int nthreads = blockDim.x;
-
-    extern __shared__ fmm_real smem[];  // size = L * 2
-
-    int n_slots = (L + nthreads - 1) / nthreads;
-    const int CHUNK = 4;  // smaller chunk than single (4 accumulators per slot vs 2)
-    int n_chunks = (n_slots + CHUNK - 1) / CHUNK;
-
-    for (int chunk = 0; chunk < n_chunks; chunk++) {
-        int slot_start = chunk * CHUNK;
-        int slot_end = slot_start + CHUNK;
-        if (slot_end > n_slots) slot_end = n_slots;
-        int n_active = slot_end - slot_start;
-
-        float acc1_re[CHUNK], acc1_im[CHUNK];
-        float acc2_re[CHUNK], acc2_im[CHUNK];
-        for (int s = 0; s < n_active; s++) {
-            acc1_re[s] = 0.0f; acc1_im[s] = 0.0f;
-            acc2_re[s] = 0.0f; acc2_im[s] = 0.0f;
-        }
-
-        for (int p = pair_start; p < pair_end; p++) {
-            int src_node = csr_src[p];
-            int tidx_val = csr_tidx[p];
-
-            // Load transfer function into shared memory (float2 vectorized)
-            int t_base = tidx_val * L * 2;
-            for (int i = tid; i < L; i += nthreads) {
-                float2 val = *reinterpret_cast<const float2*>(&transfer_ri[t_base + i * 2]);
-                smem[i * 2]     = val.x;
-                smem[i * 2 + 1] = val.y;
-            }
-            __syncthreads();
-
-            int s_base = src_node * L;
-            for (int s = 0; s < n_active; s++) {
-                int l = (slot_start + s) * nthreads + tid;
-                if (l < L) {
-                    float tr = smem[l * 2];
-                    float ti = smem[l * 2 + 1];
-                    float mr1 = multi1_re[s_base + l];
-                    float mi1 = multi1_im[s_base + l];
-                    acc1_re[s] += tr * mr1 - ti * mi1;
-                    acc1_im[s] += tr * mi1 + ti * mr1;
-                    float mr2 = multi2_re[s_base + l];
-                    float mi2 = multi2_im[s_base + l];
-                    acc2_re[s] += tr * mr2 - ti * mi2;
-                    acc2_im[s] += tr * mi2 + ti * mr2;
-                }
-            }
-            __syncthreads();
-        }
-
-        for (int s = 0; s < n_active; s++) {
-            int l = (slot_start + s) * nthreads + tid;
-            if (l < L) {
-                local1_re[l_base + l] += acc1_re[s];
-                local1_im[l_base + l] += acc1_im[s];
-                local2_re[l_base + l] += acc2_re[s];
-                local2_im[l_base + l] += acc2_im[s];
-            }
-        }
+    for (int l = threadIdx.x; l < L; l += blockDim.x) {
+        double tr = transfer_re[t_base + l], ti = transfer_im[t_base + l];
+        double m1r = multi1_re[s_base + l], m1i = multi1_im[s_base + l];
+        double m2r = multi2_re[s_base + l], m2i = multi2_im[s_base + l];
+        atomicAdd(&local1_re[l_base + l], tr * m1r - ti * m1i);
+        atomicAdd(&local1_im[l_base + l], tr * m1i + ti * m1r);
+        atomicAdd(&local2_re[l_base + l], tr * m2r - ti * m2i);
+        atomicAdd(&local2_im[l_base + l], tr * m2i + ti * m2r);
     }
 }
 
-// L2L batch-2 (float32)
-__global__ void l2l_batch2_kernel(
-    const int*      __restrict__ parent_idx,
-    const int*      __restrict__ child_idx,
-    const fmm_real* __restrict__ shift_re,
-    const fmm_real* __restrict__ shift_im,
-    const fmm_real* __restrict__ local1_re_in,
-    const fmm_real* __restrict__ local1_im_in,
-    const fmm_real* __restrict__ local2_re_in,
-    const fmm_real* __restrict__ local2_im_in,
-    fmm_real* __restrict__ local1_re,
-    fmm_real* __restrict__ local1_im,
-    fmm_real* __restrict__ local2_re,
-    fmm_real* __restrict__ local2_im,
+__global__ void m2l_kernel_batch4(
+    const int* __restrict__ tgt_idx, const int* __restrict__ src_idx,
+    const int* __restrict__ transfer_idx,
+    const double* __restrict__ transfer_re, const double* __restrict__ transfer_im,
+    const double* __restrict__ m1_re, const double* __restrict__ m1_im,
+    const double* __restrict__ m2_re, const double* __restrict__ m2_im,
+    const double* __restrict__ m3_re, const double* __restrict__ m3_im,
+    const double* __restrict__ m4_re, const double* __restrict__ m4_im,
+    double* __restrict__ l1_re, double* __restrict__ l1_im,
+    double* __restrict__ l2_re, double* __restrict__ l2_im,
+    double* __restrict__ l3_re, double* __restrict__ l3_im,
+    double* __restrict__ l4_re, double* __restrict__ l4_im,
+    int L, int n_pairs, int offset)
+{
+    int pair = blockIdx.x + offset;
+    if (pair >= offset + n_pairs) return;
+    int tgt = tgt_idx[pair], src = src_idx[pair], tidx = transfer_idx[pair];
+    int t_base = tidx * L, s_base = src * L, l_base = tgt * L;
+    for (int l = threadIdx.x; l < L; l += blockDim.x) {
+        double tr = transfer_re[t_base + l], ti = transfer_im[t_base + l];
+        double mr = m1_re[s_base + l], mi = m1_im[s_base + l];
+        atomicAdd(&l1_re[l_base + l], tr * mr - ti * mi); atomicAdd(&l1_im[l_base + l], tr * mi + ti * mr);
+        mr = m2_re[s_base + l]; mi = m2_im[s_base + l];
+        atomicAdd(&l2_re[l_base + l], tr * mr - ti * mi); atomicAdd(&l2_im[l_base + l], tr * mi + ti * mr);
+        mr = m3_re[s_base + l]; mi = m3_im[s_base + l];
+        atomicAdd(&l3_re[l_base + l], tr * mr - ti * mi); atomicAdd(&l3_im[l_base + l], tr * mi + ti * mr);
+        mr = m4_re[s_base + l]; mi = m4_im[s_base + l];
+        atomicAdd(&l4_re[l_base + l], tr * mr - ti * mi); atomicAdd(&l4_im[l_base + l], tr * mi + ti * mr);
+    }
+}
+
+// L2L kernel
+__global__ void l2l_kernel(
+    const int*    __restrict__ parent_idx,
+    const int*    __restrict__ child_idx,
+    const double* __restrict__ shift_re,
+    const double* __restrict__ shift_im,
+    const double* local_re_in,
+    const double* local_im_in,
+    double* local_re,
+    double* local_im,
     int L, int n_pairs, int offset)
 {
     int pair = blockIdx.x + offset;
@@ -725,31 +470,151 @@ __global__ void l2l_batch2_kernel(
     int c_base = c * L;
 
     for (int l = threadIdx.x; l < L; l += blockDim.x) {
-        float sr = shift_re[shift_base + l];
-        float si = shift_im[shift_base + l];
-
-        float pr1 = local1_re_in[p_base + l];
-        float pi1 = local1_im_in[p_base + l];
-        atomicAdd(&local1_re[c_base + l], pr1 * sr - pi1 * si);
-        atomicAdd(&local1_im[c_base + l], pr1 * si + pi1 * sr);
-
-        float pr2 = local2_re_in[p_base + l];
-        float pi2 = local2_im_in[p_base + l];
-        atomicAdd(&local2_re[c_base + l], pr2 * sr - pi2 * si);
-        atomicAdd(&local2_im[c_base + l], pr2 * si + pi2 * sr);
+        double pr = local_re_in[p_base + l];
+        double pi = local_im_in[p_base + l];
+        double sr = shift_re[shift_base + l];
+        double si = shift_im[shift_base + l];
+        atomicAdd(&local_re[c_base + l], pr * sr - pi * si);
+        atomicAdd(&local_im[c_base + l], pr * si + pi * sr);
     }
 }
 
-// L2P batch-2 potential: float32 local -> double output
-__global__ void l2p_batch2_kernel(
-    const double*   __restrict__ tgt_pts,
-    const fmm_real* __restrict__ dirs,
-    const fmm_real* __restrict__ weights,
-    const fmm_real* __restrict__ local1_re,
-    const fmm_real* __restrict__ local1_im,
-    const fmm_real* __restrict__ local2_re,
-    const fmm_real* __restrict__ local2_im,
-    float k_re, float k_im,
+__global__ void l2l_kernel_batch2(
+    const int*    __restrict__ parent_idx,
+    const int*    __restrict__ child_idx,
+    const double* __restrict__ shift_re,
+    const double* __restrict__ shift_im,
+    const double* local1_re_in,
+    const double* local1_im_in,
+    double* local1_re,
+    double* local1_im,
+    const double* local2_re_in,
+    const double* local2_im_in,
+    double* local2_re,
+    double* local2_im,
+    int L, int n_pairs, int offset)
+{
+    int pair = blockIdx.x + offset;
+    if (pair >= offset + n_pairs) return;
+
+    int p = parent_idx[pair];
+    int c = child_idx[pair];
+    int shift_base = pair * L;
+    int p_base = p * L;
+    int c_base = c * L;
+
+    for (int l = threadIdx.x; l < L; l += blockDim.x) {
+        double sr = shift_re[shift_base + l], si = shift_im[shift_base + l];
+        double p1r = local1_re_in[p_base + l], p1i = local1_im_in[p_base + l];
+        double p2r = local2_re_in[p_base + l], p2i = local2_im_in[p_base + l];
+        atomicAdd(&local1_re[c_base + l], p1r * sr - p1i * si);
+        atomicAdd(&local1_im[c_base + l], p1r * si + p1i * sr);
+        atomicAdd(&local2_re[c_base + l], p2r * sr - p2i * si);
+        atomicAdd(&local2_im[c_base + l], p2r * si + p2i * sr);
+    }
+}
+
+__global__ void l2l_kernel_batch4(
+    const int* __restrict__ parent_idx, const int* __restrict__ child_idx,
+    const double* __restrict__ shift_re, const double* __restrict__ shift_im,
+    const double* l1_re_in, const double* l1_im_in,
+    double* l1_re, double* l1_im,
+    const double* l2_re_in, const double* l2_im_in,
+    double* l2_re, double* l2_im,
+    const double* l3_re_in, const double* l3_im_in,
+    double* l3_re, double* l3_im,
+    const double* l4_re_in, const double* l4_im_in,
+    double* l4_re, double* l4_im,
+    int L, int n_pairs, int offset)
+{
+    int pair = blockIdx.x + offset;
+    if (pair >= offset + n_pairs) return;
+    int p = parent_idx[pair], c = child_idx[pair];
+    int shift_base = pair * L, p_base = p * L, c_base = c * L;
+    for (int l = threadIdx.x; l < L; l += blockDim.x) {
+        double sr = shift_re[shift_base + l], si = shift_im[shift_base + l];
+        double pr = l1_re_in[p_base + l], pi = l1_im_in[p_base + l];
+        atomicAdd(&l1_re[c_base + l], pr * sr - pi * si); atomicAdd(&l1_im[c_base + l], pr * si + pi * sr);
+        pr = l2_re_in[p_base + l]; pi = l2_im_in[p_base + l];
+        atomicAdd(&l2_re[c_base + l], pr * sr - pi * si); atomicAdd(&l2_im[c_base + l], pr * si + pi * sr);
+        pr = l3_re_in[p_base + l]; pi = l3_im_in[p_base + l];
+        atomicAdd(&l3_re[c_base + l], pr * sr - pi * si); atomicAdd(&l3_im[c_base + l], pr * si + pi * sr);
+        pr = l4_re_in[p_base + l]; pi = l4_im_in[p_base + l];
+        atomicAdd(&l4_re[c_base + l], pr * sr - pi * si); atomicAdd(&l4_im[c_base + l], pr * si + pi * sr);
+    }
+}
+
+// L2P kernel: evaluate local expansion at target points
+// tgt_ids: flat array of original target indices per leaf
+__global__ void l2p_kernel(
+    const double* __restrict__ tgt_pts,      // (Nt*3) original order
+    const double* __restrict__ dirs,
+    const double* __restrict__ weights,
+    const double* __restrict__ local_re,
+    const double* __restrict__ local_im,
+    double k_re, double k_im,
+    double prefac_re, double prefac_im,
+    double* __restrict__ out_re,             // (Nt) indexed by original tgt ID
+    double* __restrict__ out_im,
+    const int* __restrict__ leaf_indices,
+    const int* __restrict__ tgt_id_offsets,  // (n_leaves+1)
+    const int* __restrict__ tgt_ids,         // flat original target IDs
+    const double* __restrict__ node_centers,
+    int L, int n_leaves)
+{
+    int leaf_id = blockIdx.x;
+    if (leaf_id >= n_leaves) return;
+
+    int node = leaf_indices[leaf_id];
+    int t_start = tgt_id_offsets[leaf_id];
+    int t_end = tgt_id_offsets[leaf_id + 1];
+    int t_count = t_end - t_start;
+    if (t_count == 0) return;
+
+    double ccx = node_centers[node*3];
+    double ccy = node_centers[node*3+1];
+    double ccz = node_centers[node*3+2];
+    int l_base = node * L;
+
+    for (int t = threadIdx.x; t < t_count; t += blockDim.x) {
+        int tid = tgt_ids[t_start + t];  // original target index
+        double rx = tgt_pts[tid*3]   - ccx;
+        double ry = tgt_pts[tid*3+1] - ccy;
+        double rz = tgt_pts[tid*3+2] - ccz;
+
+        double acc_re = 0.0, acc_im = 0.0;
+        for (int l = 0; l < L; l++) {
+            double dx = dirs[l*3], dy = dirs[l*3+1], dz = dirs[l*3+2];
+            double dot = dx*rx + dy*ry + dz*rz;
+            double phase_re = -k_im * dot;
+            double phase_im = k_re * dot;
+            double e_re = exp(phase_re) * cos(phase_im);
+            double e_im = exp(phase_re) * sin(phase_im);
+
+            double lr = local_re[l_base + l];
+            double li = local_im[l_base + l];
+            double wl = weights[l];
+            double wlr = wl * lr, wli = wl * li;
+            acc_re += wlr * e_re - wli * e_im;
+            acc_im += wlr * e_im + wli * e_re;
+        }
+
+        double final_re = prefac_re * acc_re - prefac_im * acc_im;
+        double final_im = prefac_re * acc_im + prefac_im * acc_re;
+        atomicAdd(&out_re[tid], final_re);
+        atomicAdd(&out_im[tid], final_im);
+    }
+}
+
+__global__ void l2p_kernel_batch2(
+    const double* __restrict__ tgt_pts,
+    const double* __restrict__ dirs,
+    const double* __restrict__ weights,
+    const double* __restrict__ local1_re,
+    const double* __restrict__ local1_im,
+    const double* __restrict__ local2_re,
+    const double* __restrict__ local2_im,
+    double k_re, double k_im,
     double prefac_re, double prefac_im,
     double* __restrict__ out1_re,
     double* __restrict__ out1_im,
@@ -770,68 +635,203 @@ __global__ void l2p_batch2_kernel(
     int t_count = t_end - t_start;
     if (t_count == 0) return;
 
-    float ccx = (float)node_centers[node*3];
-    float ccy = (float)node_centers[node*3+1];
-    float ccz = (float)node_centers[node*3+2];
+    double ccx = node_centers[node*3];
+    double ccy = node_centers[node*3+1];
+    double ccz = node_centers[node*3+2];
     int l_base = node * L;
 
     for (int t = threadIdx.x; t < t_count; t += blockDim.x) {
         int tid = tgt_ids[t_start + t];
-        float rx = (float)(tgt_pts[tid*3]   - (double)ccx);
-        float ry = (float)(tgt_pts[tid*3+1] - (double)ccy);
-        float rz = (float)(tgt_pts[tid*3+2] - (double)ccz);
-
-        float acc1_re = 0.0f, acc1_im = 0.0f;
-        float acc2_re = 0.0f, acc2_im = 0.0f;
+        double rx = tgt_pts[tid*3]   - ccx;
+        double ry = tgt_pts[tid*3+1] - ccy;
+        double rz = tgt_pts[tid*3+2] - ccz;
+        double a1_re = 0.0, a1_im = 0.0, a2_re = 0.0, a2_im = 0.0;
 
         for (int l = 0; l < L; l++) {
-            float dx = dirs[l*3], dy = dirs[l*3+1], dz = dirs[l*3+2];
-            float dot = dx*rx + dy*ry + dz*rz;
+            double dx = dirs[l*3], dy = dirs[l*3+1], dz = dirs[l*3+2];
+            double dot = dx*rx + dy*ry + dz*rz;
+            double phase_re = -k_im * dot;
+            double phase_im = k_re * dot;
+            double e_re = exp(phase_re) * cos(phase_im);
+            double e_im = exp(phase_re) * sin(phase_im);
+            double wl = weights[l];
 
-            float phase_re = -k_im * dot;
-            float phase_im = k_re * dot;
-            float e_re = expf(phase_re) * cosf(phase_im);
-            float e_im = expf(phase_re) * sinf(phase_im);
-
-            float wl = weights[l];
-
-            float lr1 = local1_re[l_base + l];
-            float li1 = local1_im[l_base + l];
-            float wlr1 = wl * lr1, wli1 = wl * li1;
-            acc1_re += wlr1 * e_re - wli1 * e_im;
-            acc1_im += wlr1 * e_im + wli1 * e_re;
-
-            float lr2 = local2_re[l_base + l];
-            float li2 = local2_im[l_base + l];
-            float wlr2 = wl * lr2, wli2 = wl * li2;
-            acc2_re += wlr2 * e_re - wli2 * e_im;
-            acc2_im += wlr2 * e_im + wli2 * e_re;
+            double l1r = wl * local1_re[l_base + l], l1i = wl * local1_im[l_base + l];
+            double l2r = wl * local2_re[l_base + l], l2i = wl * local2_im[l_base + l];
+            a1_re += l1r * e_re - l1i * e_im;
+            a1_im += l1r * e_im + l1i * e_re;
+            a2_re += l2r * e_re - l2i * e_im;
+            a2_im += l2r * e_im + l2i * e_re;
         }
 
-        double f1_re = prefac_re * (double)acc1_re - prefac_im * (double)acc1_im;
-        double f1_im = prefac_re * (double)acc1_im + prefac_im * (double)acc1_re;
-        atomicAdd(&out1_re[tid], f1_re);
-        atomicAdd(&out1_im[tid], f1_im);
-
-        double f2_re = prefac_re * (double)acc2_re - prefac_im * (double)acc2_im;
-        double f2_im = prefac_re * (double)acc2_im + prefac_im * (double)acc2_re;
-        atomicAdd(&out2_re[tid], f2_re);
-        atomicAdd(&out2_im[tid], f2_im);
+        atomicAdd(&out1_re[tid], prefac_re * a1_re - prefac_im * a1_im);
+        atomicAdd(&out1_im[tid], prefac_re * a1_im + prefac_im * a1_re);
+        atomicAdd(&out2_re[tid], prefac_re * a2_re - prefac_im * a2_im);
+        atomicAdd(&out2_im[tid], prefac_re * a2_im + prefac_im * a2_re);
     }
 }
 
-// L2P batch-2 gradient: float32 local -> double gradient
-__global__ void l2p_gradient_batch2_kernel(
-    const double*   __restrict__ tgt_pts,
-    const fmm_real* __restrict__ dirs,
-    const fmm_real* __restrict__ weights,
-    const fmm_real* __restrict__ local1_re,
-    const fmm_real* __restrict__ local1_im,
-    const fmm_real* __restrict__ local2_re,
-    const fmm_real* __restrict__ local2_im,
-    float k_re, float k_im,
+__global__ void l2p_kernel_batch4(
+    const double* __restrict__ tgt_pts,
+    const double* __restrict__ dirs,
+    const double* __restrict__ weights,
+    const double* __restrict__ l1_re, const double* __restrict__ l1_im,
+    const double* __restrict__ l2_re, const double* __restrict__ l2_im,
+    const double* __restrict__ l3_re, const double* __restrict__ l3_im,
+    const double* __restrict__ l4_re, const double* __restrict__ l4_im,
+    double k_re, double k_im, double prefac_re, double prefac_im,
+    double* __restrict__ out1_re, double* __restrict__ out1_im,
+    double* __restrict__ out2_re, double* __restrict__ out2_im,
+    double* __restrict__ out3_re, double* __restrict__ out3_im,
+    double* __restrict__ out4_re, double* __restrict__ out4_im,
+    const int* __restrict__ leaf_indices,
+    const int* __restrict__ tgt_id_offsets,
+    const int* __restrict__ tgt_ids,
+    const double* __restrict__ node_centers,
+    int L, int n_leaves)
+{
+    int leaf_id = blockIdx.x;
+    if (leaf_id >= n_leaves) return;
+    int node = leaf_indices[leaf_id];
+    int t_start = tgt_id_offsets[leaf_id], t_end = tgt_id_offsets[leaf_id + 1];
+    if (t_end == t_start) return;
+    double ccx = node_centers[node*3], ccy = node_centers[node*3+1], ccz = node_centers[node*3+2];
+    int l_base = node * L;
+
+    for (int t = threadIdx.x; t < t_end - t_start; t += blockDim.x) {
+        int tid = tgt_ids[t_start + t];
+        double rx = tgt_pts[tid*3] - ccx, ry = tgt_pts[tid*3+1] - ccy, rz = tgt_pts[tid*3+2] - ccz;
+        double a1r = 0.0, a1i = 0.0, a2r = 0.0, a2i = 0.0, a3r = 0.0, a3i = 0.0, a4r = 0.0, a4i = 0.0;
+        for (int l = 0; l < L; l++) {
+            double dx = dirs[l*3], dy = dirs[l*3+1], dz = dirs[l*3+2];
+            double dot = dx*rx + dy*ry + dz*rz;
+            double e_re = exp(-k_im * dot) * cos(k_re * dot);
+            double e_im = exp(-k_im * dot) * sin(k_re * dot);
+            double wl = weights[l];
+            double lr = wl * l1_re[l_base + l], li = wl * l1_im[l_base + l];
+            a1r += lr * e_re - li * e_im; a1i += lr * e_im + li * e_re;
+            lr = wl * l2_re[l_base + l]; li = wl * l2_im[l_base + l];
+            a2r += lr * e_re - li * e_im; a2i += lr * e_im + li * e_re;
+            lr = wl * l3_re[l_base + l]; li = wl * l3_im[l_base + l];
+            a3r += lr * e_re - li * e_im; a3i += lr * e_im + li * e_re;
+            lr = wl * l4_re[l_base + l]; li = wl * l4_im[l_base + l];
+            a4r += lr * e_re - li * e_im; a4i += lr * e_im + li * e_re;
+        }
+        atomicAdd(&out1_re[tid], prefac_re * a1r - prefac_im * a1i);
+        atomicAdd(&out1_im[tid], prefac_re * a1i + prefac_im * a1r);
+        atomicAdd(&out2_re[tid], prefac_re * a2r - prefac_im * a2i);
+        atomicAdd(&out2_im[tid], prefac_re * a2i + prefac_im * a2r);
+        atomicAdd(&out3_re[tid], prefac_re * a3r - prefac_im * a3i);
+        atomicAdd(&out3_im[tid], prefac_re * a3i + prefac_im * a3r);
+        atomicAdd(&out4_re[tid], prefac_re * a4r - prefac_im * a4i);
+        atomicAdd(&out4_im[tid], prefac_re * a4i + prefac_im * a4r);
+    }
+}
+
+// Repack gradient from 6 separate component arrays into interleaved xyz format
+// Output: out_re[i*3+0]=gx_re[i], out_re[i*3+1]=gy_re[i], out_re[i*3+2]=gz_re[i], same for im
+__global__ void repack_gradient_kernel(
+    const double* __restrict__ gx_re, const double* __restrict__ gx_im,
+    const double* __restrict__ gy_re, const double* __restrict__ gy_im,
+    const double* __restrict__ gz_re, const double* __restrict__ gz_im,
+    double* __restrict__ out_re, double* __restrict__ out_im,
+    int N)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= N) return;
+
+    out_re[i*3]   = gx_re[i];
+    out_re[i*3+1] = gy_re[i];
+    out_re[i*3+2] = gz_re[i];
+
+    out_im[i*3]   = gx_im[i];
+    out_im[i*3+1] = gy_im[i];
+    out_im[i*3+2] = gz_im[i];
+}
+
+// L2P gradient kernel
+__global__ void l2p_gradient_kernel(
+    const double* __restrict__ tgt_pts,
+    const double* __restrict__ dirs,
+    const double* __restrict__ weights,
+    const double* __restrict__ local_re,
+    const double* __restrict__ local_im,
+    double k_re, double k_im,
     double prefac_re, double prefac_im,
-    float ik2_re, float ik2_im,
+    double ik2_re, double ik2_im,
+    double* __restrict__ gx_re, double* __restrict__ gx_im,
+    double* __restrict__ gy_re, double* __restrict__ gy_im,
+    double* __restrict__ gz_re, double* __restrict__ gz_im,
+    const int* __restrict__ leaf_indices,
+    const int* __restrict__ tgt_id_offsets,
+    const int* __restrict__ tgt_ids,
+    const double* __restrict__ node_centers,
+    int L, int n_leaves)
+{
+    int leaf_id = blockIdx.x;
+    if (leaf_id >= n_leaves) return;
+
+    int node = leaf_indices[leaf_id];
+    int t_start = tgt_id_offsets[leaf_id];
+    int t_end = tgt_id_offsets[leaf_id + 1];
+    int t_count = t_end - t_start;
+    if (t_count == 0) return;
+
+    double ccx = node_centers[node*3];
+    double ccy = node_centers[node*3+1];
+    double ccz = node_centers[node*3+2];
+    int l_base = node * L;
+
+    for (int t = threadIdx.x; t < t_count; t += blockDim.x) {
+        int tid = tgt_ids[t_start + t];
+        double rx = tgt_pts[tid*3]   - ccx;
+        double ry = tgt_pts[tid*3+1] - ccy;
+        double rz = tgt_pts[tid*3+2] - ccz;
+
+        double ax_re = 0, ax_im = 0, ay_re = 0, ay_im = 0, az_re = 0, az_im = 0;
+
+        for (int l = 0; l < L; l++) {
+            double dx = dirs[l*3], dy = dirs[l*3+1], dz = dirs[l*3+2];
+            double dot = dx*rx + dy*ry + dz*rz;
+            double phase_re = -k_im * dot;
+            double phase_im = k_re * dot;
+            double e_re = exp(phase_re) * cos(phase_im);
+            double e_im = exp(phase_re) * sin(phase_im);
+
+            double lr = local_re[l_base + l], li = local_im[l_base + l];
+            double wl = weights[l];
+            double wlr = wl * lr, wli = wl * li;
+            double pr = wlr * e_re - wli * e_im;
+            double pi = wlr * e_im + wli * e_re;
+
+            double ikpr = ik2_re * pr - ik2_im * pi;
+            double ikpi = ik2_re * pi + ik2_im * pr;
+
+            ax_re += ikpr * dx; ax_im += ikpi * dx;
+            ay_re += ikpr * dy; ay_im += ikpi * dy;
+            az_re += ikpr * dz; az_im += ikpi * dz;
+        }
+
+        atomicAdd(&gx_re[tid], prefac_re*ax_re - prefac_im*ax_im);
+        atomicAdd(&gx_im[tid], prefac_re*ax_im + prefac_im*ax_re);
+        atomicAdd(&gy_re[tid], prefac_re*ay_re - prefac_im*ay_im);
+        atomicAdd(&gy_im[tid], prefac_re*ay_im + prefac_im*ay_re);
+        atomicAdd(&gz_re[tid], prefac_re*az_re - prefac_im*az_im);
+        atomicAdd(&gz_im[tid], prefac_re*az_im + prefac_im*az_re);
+    }
+}
+
+__global__ void l2p_gradient_kernel_batch2(
+    const double* __restrict__ tgt_pts,
+    const double* __restrict__ dirs,
+    const double* __restrict__ weights,
+    const double* __restrict__ local1_re,
+    const double* __restrict__ local1_im,
+    const double* __restrict__ local2_re,
+    const double* __restrict__ local2_im,
+    double k_re, double k_im,
+    double prefac_re, double prefac_im,
+    double ik2_re, double ik2_im,
     double* __restrict__ gx1_re, double* __restrict__ gx1_im,
     double* __restrict__ gy1_re, double* __restrict__ gy1_im,
     double* __restrict__ gz1_re, double* __restrict__ gz1_im,
@@ -853,65 +853,143 @@ __global__ void l2p_gradient_batch2_kernel(
     int t_count = t_end - t_start;
     if (t_count == 0) return;
 
-    float ccx = (float)node_centers[node*3];
-    float ccy = (float)node_centers[node*3+1];
-    float ccz = (float)node_centers[node*3+2];
+    double ccx = node_centers[node*3];
+    double ccy = node_centers[node*3+1];
+    double ccz = node_centers[node*3+2];
     int l_base = node * L;
 
     for (int t = threadIdx.x; t < t_count; t += blockDim.x) {
         int tid = tgt_ids[t_start + t];
-        float rx = (float)(tgt_pts[tid*3]   - (double)ccx);
-        float ry = (float)(tgt_pts[tid*3+1] - (double)ccy);
-        float rz = (float)(tgt_pts[tid*3+2] - (double)ccz);
+        double rx = tgt_pts[tid*3]   - ccx;
+        double ry = tgt_pts[tid*3+1] - ccy;
+        double rz = tgt_pts[tid*3+2] - ccz;
 
-        float ax1_re = 0, ax1_im = 0, ay1_re = 0, ay1_im = 0, az1_re = 0, az1_im = 0;
-        float ax2_re = 0, ax2_im = 0, ay2_re = 0, ay2_im = 0, az2_re = 0, az2_im = 0;
+        double ax1_re = 0, ax1_im = 0, ay1_re = 0, ay1_im = 0, az1_re = 0, az1_im = 0;
+        double ax2_re = 0, ax2_im = 0, ay2_re = 0, ay2_im = 0, az2_re = 0, az2_im = 0;
 
         for (int l = 0; l < L; l++) {
-            float dx = dirs[l*3], dy = dirs[l*3+1], dz = dirs[l*3+2];
-            float dot = dx*rx + dy*ry + dz*rz;
+            double dx = dirs[l*3], dy = dirs[l*3+1], dz = dirs[l*3+2];
+            double dot = dx*rx + dy*ry + dz*rz;
+            double phase_re = -k_im * dot;
+            double phase_im = k_re * dot;
+            double e_re = exp(phase_re) * cos(phase_im);
+            double e_im = exp(phase_re) * sin(phase_im);
+            double wl = weights[l];
 
-            float phase_re = -k_im * dot;
-            float phase_im = k_re * dot;
-            float e_re = expf(phase_re) * cosf(phase_im);
-            float e_im = expf(phase_re) * sinf(phase_im);
+            double l1r = wl * local1_re[l_base + l], l1i = wl * local1_im[l_base + l];
+            double p1r = l1r * e_re - l1i * e_im;
+            double p1i = l1r * e_im + l1i * e_re;
+            double ikp1r = ik2_re * p1r - ik2_im * p1i;
+            double ikp1i = ik2_re * p1i + ik2_im * p1r;
+            ax1_re += ikp1r * dx; ax1_im += ikp1i * dx;
+            ay1_re += ikp1r * dy; ay1_im += ikp1i * dy;
+            az1_re += ikp1r * dz; az1_im += ikp1i * dz;
 
-            float wl = weights[l];
-
-            float lr1 = local1_re[l_base + l], li1 = local1_im[l_base + l];
-            float wlr1 = wl * lr1, wli1 = wl * li1;
-            float pr1 = wlr1 * e_re - wli1 * e_im;
-            float pi1 = wlr1 * e_im + wli1 * e_re;
-            float ikpr1 = ik2_re * pr1 - ik2_im * pi1;
-            float ikpi1 = ik2_re * pi1 + ik2_im * pr1;
-            ax1_re += ikpr1 * dx; ax1_im += ikpi1 * dx;
-            ay1_re += ikpr1 * dy; ay1_im += ikpi1 * dy;
-            az1_re += ikpr1 * dz; az1_im += ikpi1 * dz;
-
-            float lr2 = local2_re[l_base + l], li2 = local2_im[l_base + l];
-            float wlr2 = wl * lr2, wli2 = wl * li2;
-            float pr2 = wlr2 * e_re - wli2 * e_im;
-            float pi2 = wlr2 * e_im + wli2 * e_re;
-            float ikpr2 = ik2_re * pr2 - ik2_im * pi2;
-            float ikpi2 = ik2_re * pi2 + ik2_im * pr2;
-            ax2_re += ikpr2 * dx; ax2_im += ikpi2 * dx;
-            ay2_re += ikpr2 * dy; ay2_im += ikpi2 * dy;
-            az2_re += ikpr2 * dz; az2_im += ikpi2 * dz;
+            double l2r = wl * local2_re[l_base + l], l2i = wl * local2_im[l_base + l];
+            double p2r = l2r * e_re - l2i * e_im;
+            double p2i = l2r * e_im + l2i * e_re;
+            double ikp2r = ik2_re * p2r - ik2_im * p2i;
+            double ikp2i = ik2_re * p2i + ik2_im * p2r;
+            ax2_re += ikp2r * dx; ax2_im += ikp2i * dx;
+            ay2_re += ikp2r * dy; ay2_im += ikp2i * dy;
+            az2_re += ikp2r * dz; az2_im += ikp2i * dz;
         }
 
-        atomicAdd(&gx1_re[tid], prefac_re*(double)ax1_re - prefac_im*(double)ax1_im);
-        atomicAdd(&gx1_im[tid], prefac_re*(double)ax1_im + prefac_im*(double)ax1_re);
-        atomicAdd(&gy1_re[tid], prefac_re*(double)ay1_re - prefac_im*(double)ay1_im);
-        atomicAdd(&gy1_im[tid], prefac_re*(double)ay1_im + prefac_im*(double)ay1_re);
-        atomicAdd(&gz1_re[tid], prefac_re*(double)az1_re - prefac_im*(double)az1_im);
-        atomicAdd(&gz1_im[tid], prefac_re*(double)az1_im + prefac_im*(double)az1_re);
+        atomicAdd(&gx1_re[tid], prefac_re*ax1_re - prefac_im*ax1_im);
+        atomicAdd(&gx1_im[tid], prefac_re*ax1_im + prefac_im*ax1_re);
+        atomicAdd(&gy1_re[tid], prefac_re*ay1_re - prefac_im*ay1_im);
+        atomicAdd(&gy1_im[tid], prefac_re*ay1_im + prefac_im*ay1_re);
+        atomicAdd(&gz1_re[tid], prefac_re*az1_re - prefac_im*az1_im);
+        atomicAdd(&gz1_im[tid], prefac_re*az1_im + prefac_im*az1_re);
 
-        atomicAdd(&gx2_re[tid], prefac_re*(double)ax2_re - prefac_im*(double)ax2_im);
-        atomicAdd(&gx2_im[tid], prefac_re*(double)ax2_im + prefac_im*(double)ax2_re);
-        atomicAdd(&gy2_re[tid], prefac_re*(double)ay2_re - prefac_im*(double)ay2_im);
-        atomicAdd(&gy2_im[tid], prefac_re*(double)ay2_im + prefac_im*(double)ay2_re);
-        atomicAdd(&gz2_re[tid], prefac_re*(double)az2_re - prefac_im*(double)az2_im);
-        atomicAdd(&gz2_im[tid], prefac_re*(double)az2_im + prefac_im*(double)az2_re);
+        atomicAdd(&gx2_re[tid], prefac_re*ax2_re - prefac_im*ax2_im);
+        atomicAdd(&gx2_im[tid], prefac_re*ax2_im + prefac_im*ax2_re);
+        atomicAdd(&gy2_re[tid], prefac_re*ay2_re - prefac_im*ay2_im);
+        atomicAdd(&gy2_im[tid], prefac_re*ay2_im + prefac_im*ay2_re);
+        atomicAdd(&gz2_re[tid], prefac_re*az2_re - prefac_im*az2_im);
+        atomicAdd(&gz2_im[tid], prefac_re*az2_im + prefac_im*az2_re);
+    }
+}
+
+__global__ void l2p_gradient_kernel_batch4(
+    const double* __restrict__ tgt_pts,
+    const double* __restrict__ dirs,
+    const double* __restrict__ weights,
+    const double* __restrict__ l1_re, const double* __restrict__ l1_im,
+    const double* __restrict__ l2_re, const double* __restrict__ l2_im,
+    const double* __restrict__ l3_re, const double* __restrict__ l3_im,
+    const double* __restrict__ l4_re, const double* __restrict__ l4_im,
+    double k_re, double k_im, double prefac_re, double prefac_im,
+    double ik2_re, double ik2_im,
+    double* __restrict__ gx1_re, double* __restrict__ gx1_im,
+    double* __restrict__ gy1_re, double* __restrict__ gy1_im,
+    double* __restrict__ gz1_re, double* __restrict__ gz1_im,
+    double* __restrict__ gx2_re, double* __restrict__ gx2_im,
+    double* __restrict__ gy2_re, double* __restrict__ gy2_im,
+    double* __restrict__ gz2_re, double* __restrict__ gz2_im,
+    double* __restrict__ gx3_re, double* __restrict__ gx3_im,
+    double* __restrict__ gy3_re, double* __restrict__ gy3_im,
+    double* __restrict__ gz3_re, double* __restrict__ gz3_im,
+    double* __restrict__ gx4_re, double* __restrict__ gx4_im,
+    double* __restrict__ gy4_re, double* __restrict__ gy4_im,
+    double* __restrict__ gz4_re, double* __restrict__ gz4_im,
+    const int* __restrict__ leaf_indices,
+    const int* __restrict__ tgt_id_offsets,
+    const int* __restrict__ tgt_ids,
+    const double* __restrict__ node_centers,
+    int L, int n_leaves)
+{
+    int leaf_id = blockIdx.x;
+    if (leaf_id >= n_leaves) return;
+    int node = leaf_indices[leaf_id];
+    int t_start = tgt_id_offsets[leaf_id], t_end = tgt_id_offsets[leaf_id + 1];
+    if (t_end == t_start) return;
+    double ccx = node_centers[node*3], ccy = node_centers[node*3+1], ccz = node_centers[node*3+2];
+    int l_base = node * L;
+
+    for (int t = threadIdx.x; t < t_end - t_start; t += blockDim.x) {
+        int tid = tgt_ids[t_start + t];
+        double rx = tgt_pts[tid*3] - ccx, ry = tgt_pts[tid*3+1] - ccy, rz = tgt_pts[tid*3+2] - ccz;
+        double ax1r=0, ax1i=0, ay1r=0, ay1i=0, az1r=0, az1i=0;
+        double ax2r=0, ax2i=0, ay2r=0, ay2i=0, az2r=0, az2i=0;
+        double ax3r=0, ax3i=0, ay3r=0, ay3i=0, az3r=0, az3i=0;
+        double ax4r=0, ax4i=0, ay4r=0, ay4i=0, az4r=0, az4i=0;
+        for (int l = 0; l < L; l++) {
+            double dx = dirs[l*3], dy = dirs[l*3+1], dz = dirs[l*3+2];
+            double dot = dx*rx + dy*ry + dz*rz;
+            double e_re = exp(-k_im * dot) * cos(k_re * dot);
+            double e_im = exp(-k_im * dot) * sin(k_re * dot);
+            double wl = weights[l];
+#define ACC_GRAD(LR, LI, AXR, AXI, AYR, AYI, AZR, AZI) \
+            do { \
+                double pr = (wl * (LR)) * e_re - (wl * (LI)) * e_im; \
+                double pi = (wl * (LR)) * e_im + (wl * (LI)) * e_re; \
+                double ikpr = ik2_re * pr - ik2_im * pi; \
+                double ikpi = ik2_re * pi + ik2_im * pr; \
+                AXR += ikpr * dx; AXI += ikpi * dx; \
+                AYR += ikpr * dy; AYI += ikpi * dy; \
+                AZR += ikpr * dz; AZI += ikpi * dz; \
+            } while (0)
+            ACC_GRAD(l1_re[l_base + l], l1_im[l_base + l], ax1r, ax1i, ay1r, ay1i, az1r, az1i);
+            ACC_GRAD(l2_re[l_base + l], l2_im[l_base + l], ax2r, ax2i, ay2r, ay2i, az2r, az2i);
+            ACC_GRAD(l3_re[l_base + l], l3_im[l_base + l], ax3r, ax3i, ay3r, ay3i, az3r, az3i);
+            ACC_GRAD(l4_re[l_base + l], l4_im[l_base + l], ax4r, ax4i, ay4r, ay4i, az4r, az4i);
+#undef ACC_GRAD
+        }
+#define STORE_GRAD(GXR, GXI, GYR, GYI, GZR, GZI, AXR, AXI, AYR, AYI, AZR, AZI) \
+        do { \
+            atomicAdd(&(GXR)[tid], prefac_re*(AXR) - prefac_im*(AXI)); \
+            atomicAdd(&(GXI)[tid], prefac_re*(AXI) + prefac_im*(AXR)); \
+            atomicAdd(&(GYR)[tid], prefac_re*(AYR) - prefac_im*(AYI)); \
+            atomicAdd(&(GYI)[tid], prefac_re*(AYI) + prefac_im*(AYR)); \
+            atomicAdd(&(GZR)[tid], prefac_re*(AZR) - prefac_im*(AZI)); \
+            atomicAdd(&(GZI)[tid], prefac_re*(AZI) + prefac_im*(AZR)); \
+        } while (0)
+        STORE_GRAD(gx1_re, gx1_im, gy1_re, gy1_im, gz1_re, gz1_im, ax1r, ax1i, ay1r, ay1i, az1r, az1i);
+        STORE_GRAD(gx2_re, gx2_im, gy2_re, gy2_im, gz2_re, gz2_im, ax2r, ax2i, ay2r, ay2i, az2r, az2i);
+        STORE_GRAD(gx3_re, gx3_im, gy3_re, gy3_im, gz3_re, gz3_im, ax3r, ax3i, ay3r, ay3i, az3r, az3i);
+        STORE_GRAD(gx4_re, gx4_im, gy4_re, gy4_im, gz4_re, gz4_im, ax4r, ax4i, ay4r, ay4i, az4r, az4i);
+#undef STORE_GRAD
     }
 }
 
@@ -938,64 +1016,25 @@ static DisplacementKey make_key(const double d[3], double eps) {
 
 void HelmholtzFMM::init(const double* targets, int n_tgt,
                           const double* sources, int n_src,
-                          cdouble k_val, int digits, int max_leaf,
-                          HelmholtzFMM* share_tree_from)
+                          cdouble k_val, int digits, int max_leaf)
 {
     Timer timer;
     k = k_val;
     Nt = n_tgt;
     Ns = n_src;
 
-    if (share_tree_from) {
-        // Reuse octree, P2P, and position arrays from another FMM instance.
-        // Saves ~2 GB VRAM by avoiding duplicate P2P CSR allocation.
-        owns_tree_data = false;
-        tree = share_tree_from->tree;
-        n_nodes = share_tree_from->n_nodes;
-        leaf_info = share_tree_from->leaf_info;
-        h_leaf_indices = share_tree_from->h_leaf_indices;
-        h_tgt_id_offsets = share_tree_from->h_tgt_id_offsets;
-        h_src_id_offsets = share_tree_from->h_src_id_offsets;
-        h_tgt_ids_flat = share_tree_from->h_tgt_ids_flat;
-        h_src_ids_flat = share_tree_from->h_src_ids_flat;
-        h_node_centers = share_tree_from->h_node_centers;
-        p2p_nnz = share_tree_from->p2p_nnz;
-        // Share GPU pointers (NOT owned — don't free in cleanup)
-        d_tgt_pts = share_tree_from->d_tgt_pts;
-        d_src_pts = share_tree_from->d_src_pts;
-        d_tgt_to_leaf = share_tree_from->d_tgt_to_leaf;
-        d_leaf_near_offsets = share_tree_from->d_leaf_near_offsets;
-        d_leaf_near_nbrs = share_tree_from->d_leaf_near_nbrs;
-        d_node_centers_cached = share_tree_from->d_node_centers_cached;
-        d_leaf_idx_cached = share_tree_from->d_leaf_idx_cached;
-        d_src_id_offsets_cached = share_tree_from->d_src_id_offsets_cached;
-        d_src_ids_cached = share_tree_from->d_src_ids_cached;
-        d_tgt_id_offsets_cached = share_tree_from->d_tgt_id_offsets_cached;
-        d_tgt_ids_cached = share_tree_from->d_tgt_ids_cached;
-        printf("  [FMM] Sharing tree from k=%.4f FMM: %d nodes, P2P nnz=%d\n",
-               share_tree_from->k.real(), n_nodes, p2p_nnz);
-    } else {
-        // Build own octree
-        owns_tree_data = true;
-        tree.build(targets, n_tgt, sources, n_src, max_leaf);
-        n_nodes = (int)tree.nodes.size();
-    }
+    // Build octree (uses combined point set internally)
+    tree.build(targets, n_tgt, sources, n_src, max_leaf);
+    n_nodes = (int)tree.nodes.size();
 
-    // Sphere quadrature — L based on COARSEST M2L level for angular resolution.
-    // Transfer function truncation is per-level (see M2L precompute below).
+    // Sphere quadrature
     double leaf_hs = tree.nodes[tree.leaves[0]].half_size;
     double leaf_box_size = 2.0 * leaf_hs;
-    // Quadrature p must resolve multipoles at the coarsest M2L level (level 2).
-    // p_quad = truncation_order(k, coarsest_box) ensures angular resolution.
-    double coarsest_m2l_box = leaf_box_size;
-    if (tree.max_level > 2)
-        coarsest_m2l_box = leaf_box_size * (1 << (tree.max_level - 2));
-    p = fmm_truncation_order(std::abs(k), coarsest_m2l_box, digits);
+    p = fmm_truncation_order(std::abs(k), leaf_box_size, digits);
     squad.init(p);
     L = squad.L;
 
-    // Build leaf info with ORIGINAL IDs (skip if shared from another FMM)
-    if (owns_tree_data) {
+    // Build leaf info with ORIGINAL IDs
     leaf_info.clear();
     for (int li : tree.leaves) {
         LeafInfo info;
@@ -1015,6 +1054,8 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
     }
 
     // Build per-leaf original ID arrays
+    // tgt_ids_flat: for each leaf, list of original target IDs
+    // src_ids_flat: for each leaf, list of original source IDs (0-based, i.e. orig - Nt)
     std::vector<int> tgt_ids_flat, src_ids_flat;
     std::vector<int> tgt_id_offsets_h, src_id_offsets_h;
     int n_leaves = (int)leaf_info.size();
@@ -1040,74 +1081,12 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
     tgt_id_offsets_h[n_leaves] = (int)tgt_ids_flat.size();
     src_id_offsets_h[n_leaves] = (int)src_ids_flat.size();
 
-    // Build leaf-to-leaf P2P neighbor list (replaces point-to-point CSR)
-    // Each leaf's neighbor list = [self] + octree near_list, mapped to leaf indices.
-    // This uses ~1 MB instead of ~6 GB for the point-to-point CSR.
-    {
-        // Build node_idx -> leaf_idx map
-        std::unordered_map<int, int> node_to_leaf;
-        node_to_leaf.reserve(n_leaves);
-        for (int li = 0; li < n_leaves; li++)
-            node_to_leaf[leaf_info[li].node_idx] = li;
-
-        leaf_near_offsets.resize(n_leaves + 1);
-        leaf_near_nbrs.clear();
-        leaf_near_nbrs.reserve(n_leaves * 27);
-
-        for (int li = 0; li < n_leaves; li++) {
-            leaf_near_offsets[li] = (int)leaf_near_nbrs.size();
-            int node_idx = leaf_info[li].node_idx;
-            const OctreeNode& leaf = tree.nodes[node_idx];
-
-            // Self (always first)
-            leaf_near_nbrs.push_back(li);
-            // Octree near-neighbors
-            for (int ni = leaf.near_start; ni < leaf.near_start + leaf.near_count; ni++) {
-                auto it = node_to_leaf.find(tree.near_list[ni]);
-                if (it != node_to_leaf.end())
-                    leaf_near_nbrs.push_back(it->second);
-            }
-        }
-        leaf_near_offsets[n_leaves] = (int)leaf_near_nbrs.size();
-
-        // Build target -> leaf mapping
-        tgt_to_leaf.resize(Nt, -1);
-        for (int li = 0; li < n_leaves; li++) {
-            int tgt_off = tgt_id_offsets_h[li];
-            int tgt_cnt = tgt_id_offsets_h[li + 1] - tgt_off;
-            for (int j = 0; j < tgt_cnt; j++)
-                tgt_to_leaf[tgt_ids_flat[tgt_off + j]] = li;
-        }
-
-        // Compute p2p_nnz for diagnostics
-        size_t nnz = 0;
-        for (int li = 0; li < n_leaves; li++) {
-            int n_tgt_in_leaf = tgt_id_offsets_h[li + 1] - tgt_id_offsets_h[li];
-            int n_src_near = 0;
-            for (int ni = leaf_near_offsets[li]; ni < leaf_near_offsets[li + 1]; ni++)
-                n_src_near += src_id_offsets_h[leaf_near_nbrs[ni] + 1] - src_id_offsets_h[leaf_near_nbrs[ni]];
-            nnz += (size_t)n_tgt_in_leaf * n_src_near;
-        }
-        p2p_nnz = (int)std::min(nnz, (size_t)INT_MAX);
-        printf("  [FMM] P2P leaf-to-leaf: %d leaves, %d near pairs, %zu interactions\n",
-               n_leaves, (int)leaf_near_nbrs.size(), nnz);
-    }
-
-    // Store leaf ID arrays on host (before locals go out of scope)
-    h_leaf_indices.resize(n_leaves);
-    for (int i = 0; i < n_leaves; i++) h_leaf_indices[i] = leaf_info[i].node_idx;
-    h_tgt_id_offsets = tgt_id_offsets_h;
-    h_src_id_offsets = src_id_offsets_h;
-    h_tgt_ids_flat = tgt_ids_flat;
-    h_src_ids_flat = src_ids_flat;
-
-    h_node_centers.resize(n_nodes * 3);
-    for (int i = 0; i < n_nodes; i++) {
-        h_node_centers[i*3]   = tree.nodes[i].center[0];
-        h_node_centers[i*3+1] = tree.nodes[i].center[1];
-        h_node_centers[i*3+2] = tree.nodes[i].center[2];
-    }
-    } // end if (owns_tree_data)
+    // Near-field P2P is evaluated from compressed leaf-neighbor lists.
+    // Do not materialize per-target source CSR: for ref6 this scales as
+    // O(N_targets * sources_per_neighbor_leaf) and can exceed host memory.
+    p2p_offsets.clear();
+    p2p_indices.clear();
+    p2p_nnz = 0;
 
     // Precompute M2L transfer functions
     printf("  [FMM] Precomputing M2L transfers...\n");
@@ -1121,14 +1100,6 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
     for (int level = 1; level <= tree.max_level; level++) {
         M2LBatch& batch = m2l_batches[level];
         batch.n_pairs = 0;
-
-        // Per-level transfer truncation order:
-        // At coarser levels, boxes are bigger → need more Legendre terms.
-        // This is safe because kd_min = 2*ka_box grows proportionally,
-        // so the Hankel series converges and |T| stays bounded.
-        double level_box_size = leaf_box_size * (1 << (tree.max_level - level));
-        int p_transfer = fmm_truncation_order(std::abs(k), level_box_size, digits);
-        // p_transfer is naturally correct for each level (including leaf)
 
         for (int ni : tree.level_nodes[level]) {
             const OctreeNode& node = tree.nodes[ni];
@@ -1158,10 +1129,10 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
                         cdouble sum(0, 0);
                         double P_prev = 1.0, P_curr = cos_angle;
                         sum += 1.0 * spherical_hankel1(0, kd) * P_prev;
-                        if (p_transfer >= 1)
+                        if (p >= 1)
                             sum += 3.0 * cdouble(0, 1) * spherical_hankel1(1, kd) * P_curr;
                         cdouble i_pow(0, 1);
-                        for (int l = 2; l <= p_transfer; l++) {
+                        for (int l = 2; l <= p; l++) {
                             double P_next = ((2*l - 1) * cos_angle * P_curr - (l - 1) * P_prev) / l;
                             i_pow *= cdouble(0, 1);
                             sum += (2.0*l + 1.0) * i_pow * spherical_hankel1(l, kd) * P_next;
@@ -1184,14 +1155,6 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
         }
     }
     printf("  [FMM] %d unique transfers, %d total M2L pairs\n", n_unique_transfers, total_m2l);
-    // Print per-level transfer info
-    for (int level = 2; level <= tree.max_level; level++) {
-        double lvl_box = leaf_box_size * (1 << (tree.max_level - level));
-        int pt = fmm_truncation_order(std::abs(k), lvl_box, digits);
-        if (m2l_batches[level].n_pairs > 0)
-            printf("  [FMM] Level %d: box=%.4f, ka_box=%.2f, p_transfer=%d, %d pairs\n",
-                   level, lvl_box, std::abs(k)*lvl_box, pt, m2l_batches[level].n_pairs);
-    }
 
     // Precompute M2M shifts
     m2m_data.resize(tree.max_level + 1);
@@ -1237,111 +1200,63 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
     // ============================================================
     printf("  [FMM] Uploading to GPU...\n");
 
-    // Target and source positions + P2P CSR (skip if shared from another FMM)
-    if (owns_tree_data) {
-        CUDA_CHECK(cudaMalloc(&d_tgt_pts, Nt * 3 * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_src_pts, Ns * 3 * sizeof(double)));
-        CUDA_CHECK(cudaMemcpy(d_tgt_pts, targets, Nt * 3 * sizeof(double), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_src_pts, sources, Ns * 3 * sizeof(double), cudaMemcpyHostToDevice));
+    // Target and source positions in ORIGINAL order
+    CUDA_CHECK(cudaMalloc(&d_tgt_pts, Nt * 3 * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_src_pts, Ns * 3 * sizeof(double)));
+    CUDA_CHECK(cudaMemcpy(d_tgt_pts, targets, Nt * 3 * sizeof(double), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_src_pts, sources, Ns * 3 * sizeof(double), cudaMemcpyHostToDevice));
 
-        // Leaf-to-leaf P2P arrays (tiny: ~1 MB total instead of ~6 GB CSR)
-        int n_near_total = (int)leaf_near_nbrs.size();
-        int nl = (int)leaf_info.size();
-        CUDA_CHECK(cudaMalloc(&d_tgt_to_leaf, Nt * sizeof(int)));
-        CUDA_CHECK(cudaMemcpy(d_tgt_to_leaf, tgt_to_leaf.data(), Nt * sizeof(int), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMalloc(&d_leaf_near_offsets, (nl + 1) * sizeof(int)));
-        CUDA_CHECK(cudaMemcpy(d_leaf_near_offsets, leaf_near_offsets.data(), (nl + 1) * sizeof(int), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMalloc(&d_leaf_near_nbrs, n_near_total * sizeof(int)));
-        CUDA_CHECK(cudaMemcpy(d_leaf_near_nbrs, leaf_near_nbrs.data(), n_near_total * sizeof(int), cudaMemcpyHostToDevice));
-    }
+    d_p2p_offsets = nullptr;
+    d_p2p_indices = nullptr;
 
-    // FMM arrays (float32)
-    CUDA_CHECK(cudaMalloc(&d_multi_re, n_nodes * L * sizeof(fmm_real)));
-    CUDA_CHECK(cudaMalloc(&d_multi_im, n_nodes * L * sizeof(fmm_real)));
-    CUDA_CHECK(cudaMalloc(&d_local_re, n_nodes * L * sizeof(fmm_real)));
-    CUDA_CHECK(cudaMalloc(&d_local_im, n_nodes * L * sizeof(fmm_real)));
+    // FMM arrays
+    CUDA_CHECK(cudaMalloc(&d_multi_re, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_multi_im, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_local_re, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_local_im, n_nodes * L * sizeof(double)));
 
-    // M2L transfer functions: interleaved [re,im] for CSR M2L kernel
+    // Transfers
     if (n_unique_transfers > 0) {
-        int tc_size = n_unique_transfers * L;
-        std::vector<fmm_real> t_ri(tc_size * 2);
-        for (int i = 0; i < tc_size; i++) {
-            t_ri[i * 2]     = (fmm_real)transfer_cache[i].real();
-            t_ri[i * 2 + 1] = (fmm_real)transfer_cache[i].imag();
+        std::vector<double> t_re(n_unique_transfers * L), t_im(n_unique_transfers * L);
+        for (int i = 0; i < n_unique_transfers * L; i++) {
+            t_re[i] = transfer_cache[i].real();
+            t_im[i] = transfer_cache[i].imag();
         }
-        CUDA_CHECK(cudaMalloc(&d_transfer_ri, tc_size * 2 * sizeof(fmm_real)));
-        CUDA_CHECK(cudaMemcpy(d_transfer_ri, t_ri.data(), tc_size * 2 * sizeof(fmm_real), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMalloc(&d_transfer_re, n_unique_transfers * L * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_transfer_im, n_unique_transfers * L * sizeof(double)));
+        CUDA_CHECK(cudaMemcpy(d_transfer_re, t_re.data(), n_unique_transfers * L * sizeof(double), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_transfer_im, t_im.data(), n_unique_transfers * L * sizeof(double), cudaMemcpyHostToDevice));
     }
 
-    // Optimized M2L: build target-sorted CSR structure per level
+    // M2L batch (concat levels)
     {
-        std::vector<int> all_csr_offsets, all_csr_tgt_nodes, all_csr_src, all_csr_tidx;
-        m2l_csr_level_info.resize(tree.max_level + 1);
+        std::vector<int> all_tgt, all_src, all_tidx;
         m2l_level_info.resize(tree.max_level + 1);
-
         for (int level = 0; level <= tree.max_level; level++) {
-            m2l_csr_level_info[level].offsets_start = (int)all_csr_offsets.size();
-            m2l_csr_level_info[level].nodes_start = (int)all_csr_tgt_nodes.size();
-            m2l_csr_level_info[level].pair_offset = (int)all_csr_src.size();
-            m2l_csr_level_info[level].n_targets = 0;
-
-            m2l_level_info[level].offset = 0;
+            m2l_level_info[level].offset = (int)all_tgt.size();
             m2l_level_info[level].count = 0;
-
-            if (level >= (int)m2l_batches.size() || m2l_batches[level].n_pairs == 0)
-                continue;
-
-            const M2LBatch& b = m2l_batches[level];
-
-            std::map<int, std::vector<std::pair<int,int>>> tgt_map;
-            for (int i = 0; i < b.n_pairs; i++) {
-                tgt_map[b.tgt_idx[i]].push_back({b.src_idx[i], b.transfer_idx[i]});
+            if (level < (int)m2l_batches.size() && m2l_batches[level].n_pairs > 0) {
+                const M2LBatch& b = m2l_batches[level];
+                all_tgt.insert(all_tgt.end(), b.tgt_idx.begin(), b.tgt_idx.end());
+                all_src.insert(all_src.end(), b.src_idx.begin(), b.src_idx.end());
+                all_tidx.insert(all_tidx.end(), b.transfer_idx.begin(), b.transfer_idx.end());
+                m2l_level_info[level].count = b.n_pairs;
             }
-
-            int level_pair_base = (int)all_csr_src.size();
-            for (auto& kv : tgt_map) {
-                int tgt_node = kv.first;
-                const auto& pairs = kv.second;
-
-                all_csr_offsets.push_back((int)all_csr_src.size() - level_pair_base);
-                all_csr_tgt_nodes.push_back(tgt_node);
-
-                for (auto& pr : pairs) {
-                    all_csr_src.push_back(pr.first);
-                    all_csr_tidx.push_back(pr.second);
-                }
-            }
-            all_csr_offsets.push_back((int)all_csr_src.size() - level_pair_base);
-
-            m2l_csr_level_info[level].n_targets = (int)tgt_map.size();
         }
-
-        if (!all_csr_tgt_nodes.empty()) {
-            CUDA_CHECK(cudaMalloc(&d_m2l_csr_offsets, all_csr_offsets.size() * sizeof(int)));
-            CUDA_CHECK(cudaMalloc(&d_m2l_csr_tgt_nodes, all_csr_tgt_nodes.size() * sizeof(int)));
-            CUDA_CHECK(cudaMalloc(&d_m2l_csr_src, all_csr_src.size() * sizeof(int)));
-            CUDA_CHECK(cudaMalloc(&d_m2l_csr_tidx, all_csr_tidx.size() * sizeof(int)));
-            CUDA_CHECK(cudaMemcpy(d_m2l_csr_offsets, all_csr_offsets.data(),
-                                  all_csr_offsets.size() * sizeof(int), cudaMemcpyHostToDevice));
-            CUDA_CHECK(cudaMemcpy(d_m2l_csr_tgt_nodes, all_csr_tgt_nodes.data(),
-                                  all_csr_tgt_nodes.size() * sizeof(int), cudaMemcpyHostToDevice));
-            CUDA_CHECK(cudaMemcpy(d_m2l_csr_src, all_csr_src.data(),
-                                  all_csr_src.size() * sizeof(int), cudaMemcpyHostToDevice));
-            CUDA_CHECK(cudaMemcpy(d_m2l_csr_tidx, all_csr_tidx.data(),
-                                  all_csr_tidx.size() * sizeof(int), cudaMemcpyHostToDevice));
-
-            int total_targets = 0;
-            for (int level = 0; level <= tree.max_level; level++)
-                total_targets += m2l_csr_level_info[level].n_targets;
-            printf("  [FMM] M2L CSR: %d unique targets, %d total pairs\n",
-                   total_targets, (int)all_csr_src.size());
+        if (!all_tgt.empty()) {
+            CUDA_CHECK(cudaMalloc(&d_m2l_tgt, all_tgt.size() * sizeof(int)));
+            CUDA_CHECK(cudaMalloc(&d_m2l_src, all_src.size() * sizeof(int)));
+            CUDA_CHECK(cudaMalloc(&d_m2l_tidx, all_tidx.size() * sizeof(int)));
+            CUDA_CHECK(cudaMemcpy(d_m2l_tgt, all_tgt.data(), all_tgt.size() * sizeof(int), cudaMemcpyHostToDevice));
+            CUDA_CHECK(cudaMemcpy(d_m2l_src, all_src.data(), all_src.size() * sizeof(int), cudaMemcpyHostToDevice));
+            CUDA_CHECK(cudaMemcpy(d_m2l_tidx, all_tidx.data(), all_tidx.size() * sizeof(int), cudaMemcpyHostToDevice));
         }
     }
 
-    // M2M shifts (concat, float32)
+    // M2M shifts (concat)
     {
         std::vector<int> all_p, all_c;
-        std::vector<fmm_real> all_s_re, all_s_im;
+        std::vector<double> all_s_re, all_s_im;
         m2m_level_info.resize(tree.max_level + 1);
         for (int level = 0; level <= tree.max_level; level++) {
             m2m_level_info[level].offset = (int)all_p.size();
@@ -1349,26 +1264,26 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
             if (level < (int)m2m_data.size() && !m2m_data[level].pairs.empty()) {
                 const LevelShifts& ls = m2m_data[level];
                 for (auto& pr : ls.pairs) { all_p.push_back(pr.parent); all_c.push_back(pr.child); }
-                for (auto& s : ls.shifts) { all_s_re.push_back((fmm_real)s.real()); all_s_im.push_back((fmm_real)s.imag()); }
+                for (auto& s : ls.shifts) { all_s_re.push_back(s.real()); all_s_im.push_back(s.imag()); }
                 m2m_level_info[level].count = (int)ls.pairs.size();
             }
         }
         if (!all_p.empty()) {
             CUDA_CHECK(cudaMalloc(&d_m2m_parent, all_p.size() * sizeof(int)));
             CUDA_CHECK(cudaMalloc(&d_m2m_child, all_c.size() * sizeof(int)));
-            CUDA_CHECK(cudaMalloc(&d_m2m_shift_re, all_s_re.size() * sizeof(fmm_real)));
-            CUDA_CHECK(cudaMalloc(&d_m2m_shift_im, all_s_im.size() * sizeof(fmm_real)));
+            CUDA_CHECK(cudaMalloc(&d_m2m_shift_re, all_s_re.size() * sizeof(double)));
+            CUDA_CHECK(cudaMalloc(&d_m2m_shift_im, all_s_im.size() * sizeof(double)));
             CUDA_CHECK(cudaMemcpy(d_m2m_parent, all_p.data(), all_p.size() * sizeof(int), cudaMemcpyHostToDevice));
             CUDA_CHECK(cudaMemcpy(d_m2m_child, all_c.data(), all_c.size() * sizeof(int), cudaMemcpyHostToDevice));
-            CUDA_CHECK(cudaMemcpy(d_m2m_shift_re, all_s_re.data(), all_s_re.size() * sizeof(fmm_real), cudaMemcpyHostToDevice));
-            CUDA_CHECK(cudaMemcpy(d_m2m_shift_im, all_s_im.data(), all_s_im.size() * sizeof(fmm_real), cudaMemcpyHostToDevice));
+            CUDA_CHECK(cudaMemcpy(d_m2m_shift_re, all_s_re.data(), all_s_re.size() * sizeof(double), cudaMemcpyHostToDevice));
+            CUDA_CHECK(cudaMemcpy(d_m2m_shift_im, all_s_im.data(), all_s_im.size() * sizeof(double), cudaMemcpyHostToDevice));
         }
     }
 
-    // L2L shifts (concat, float32)
+    // L2L shifts (concat)
     {
         std::vector<int> all_p, all_c;
-        std::vector<fmm_real> all_s_re, all_s_im;
+        std::vector<double> all_s_re, all_s_im;
         l2l_level_info.resize(tree.max_level + 1);
         for (int level = 0; level <= tree.max_level; level++) {
             l2l_level_info[level].offset = (int)all_p.size();
@@ -1376,23 +1291,23 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
             if (level < (int)l2l_data.size() && !l2l_data[level].pairs.empty()) {
                 const LevelShifts& ls = l2l_data[level];
                 for (auto& pr : ls.pairs) { all_p.push_back(pr.parent); all_c.push_back(pr.child); }
-                for (auto& s : ls.shifts) { all_s_re.push_back((fmm_real)s.real()); all_s_im.push_back((fmm_real)s.imag()); }
+                for (auto& s : ls.shifts) { all_s_re.push_back(s.real()); all_s_im.push_back(s.imag()); }
                 l2l_level_info[level].count = (int)ls.pairs.size();
             }
         }
         if (!all_p.empty()) {
             CUDA_CHECK(cudaMalloc(&d_l2l_parent, all_p.data() ? all_p.size() * sizeof(int) : sizeof(int)));
             CUDA_CHECK(cudaMalloc(&d_l2l_child, all_c.size() * sizeof(int)));
-            CUDA_CHECK(cudaMalloc(&d_l2l_shift_re, all_s_re.size() * sizeof(fmm_real)));
-            CUDA_CHECK(cudaMalloc(&d_l2l_shift_im, all_s_im.size() * sizeof(fmm_real)));
+            CUDA_CHECK(cudaMalloc(&d_l2l_shift_re, all_s_re.size() * sizeof(double)));
+            CUDA_CHECK(cudaMalloc(&d_l2l_shift_im, all_s_im.size() * sizeof(double)));
             CUDA_CHECK(cudaMemcpy(d_l2l_parent, all_p.data(), all_p.size() * sizeof(int), cudaMemcpyHostToDevice));
             CUDA_CHECK(cudaMemcpy(d_l2l_child, all_c.data(), all_c.size() * sizeof(int), cudaMemcpyHostToDevice));
-            CUDA_CHECK(cudaMemcpy(d_l2l_shift_re, all_s_re.data(), all_s_re.size() * sizeof(fmm_real), cudaMemcpyHostToDevice));
-            CUDA_CHECK(cudaMemcpy(d_l2l_shift_im, all_s_im.data(), all_s_im.size() * sizeof(fmm_real), cudaMemcpyHostToDevice));
+            CUDA_CHECK(cudaMemcpy(d_l2l_shift_re, all_s_re.data(), all_s_re.size() * sizeof(double), cudaMemcpyHostToDevice));
+            CUDA_CHECK(cudaMemcpy(d_l2l_shift_im, all_s_im.data(), all_s_im.size() * sizeof(double), cudaMemcpyHostToDevice));
         }
     }
 
-    // Charge/result buffers (double)
+    // Charge/result buffers
     CUDA_CHECK(cudaMalloc(&d_charges_re, Ns * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_charges_im, Ns * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_result_re, Nt * sizeof(double)));
@@ -1400,1001 +1315,228 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
     CUDA_CHECK(cudaMalloc(&d_grad_re, Nt * 3 * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_grad_im, Nt * 3 * sizeof(double)));
 
-    // Batch-2 workspace (charges/results double, multipole/local float32)
+    // Batch-2 workspace buffers
     CUDA_CHECK(cudaMalloc(&d_charges2_re, Ns * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_charges2_im, Ns * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_result2_re, Nt * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_result2_im, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_multi2_re, n_nodes * L * sizeof(fmm_real)));
-    CUDA_CHECK(cudaMalloc(&d_multi2_im, n_nodes * L * sizeof(fmm_real)));
-    CUDA_CHECK(cudaMalloc(&d_local2_re, n_nodes * L * sizeof(fmm_real)));
-    CUDA_CHECK(cudaMalloc(&d_local2_im, n_nodes * L * sizeof(fmm_real)));
     CUDA_CHECK(cudaMalloc(&d_grad2_re, Nt * 3 * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_grad2_im, Nt * 3 * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_gy2_re_cached, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_gy2_im_cached, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_gz2_re_cached, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_gz2_im_cached, Nt * sizeof(double)));
-
-    // Tree-cached GPU arrays (skip if shared from another FMM)
-    if (owns_tree_data) {
-        int n_leaves = (int)leaf_info.size();
-        CUDA_CHECK(cudaMalloc(&d_node_centers_cached, n_nodes * 3 * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_leaf_idx_cached, n_leaves * sizeof(int)));
-        CUDA_CHECK(cudaMalloc(&d_src_id_offsets_cached, (n_leaves + 1) * sizeof(int)));
-        CUDA_CHECK(cudaMalloc(&d_src_ids_cached, std::max((int)h_src_ids_flat.size(), 1) * sizeof(int)));
-        CUDA_CHECK(cudaMalloc(&d_tgt_id_offsets_cached, (n_leaves + 1) * sizeof(int)));
-        CUDA_CHECK(cudaMalloc(&d_tgt_ids_cached, std::max((int)h_tgt_ids_flat.size(), 1) * sizeof(int)));
-
-        CUDA_CHECK(cudaMemcpy(d_node_centers_cached, h_node_centers.data(), n_nodes * 3 * sizeof(double), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_leaf_idx_cached, h_leaf_indices.data(), n_leaves * sizeof(int), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_src_id_offsets_cached, h_src_id_offsets.data(), (n_leaves + 1) * sizeof(int), cudaMemcpyHostToDevice));
-        if (!h_src_ids_flat.empty())
-            CUDA_CHECK(cudaMemcpy(d_src_ids_cached, h_src_ids_flat.data(), h_src_ids_flat.size() * sizeof(int), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_tgt_id_offsets_cached, h_tgt_id_offsets.data(), (n_leaves + 1) * sizeof(int), cudaMemcpyHostToDevice));
-        if (!h_tgt_ids_flat.empty())
-            CUDA_CHECK(cudaMemcpy(d_tgt_ids_cached, h_tgt_ids_flat.data(), h_tgt_ids_flat.size() * sizeof(int), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMalloc(&d_multi2_re, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_multi2_im, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_local2_re, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_local2_im, n_nodes * L * sizeof(double)));
+    bool request_batch4 = bem_env_flag_enabled("BEM_FMM_ALLOC_BATCH4") ||
+                          bem_env_flag_enabled("BEM_FMM_BATCH4");
+    bool alloc_batch4 = request_batch4;
+    batch4_allocated = false;
+    auto free_batch4_workspace = [&]() {
+        cudaFree(d_charges3_re); d_charges3_re = nullptr;
+        cudaFree(d_charges3_im); d_charges3_im = nullptr;
+        cudaFree(d_charges4_re); d_charges4_re = nullptr;
+        cudaFree(d_charges4_im); d_charges4_im = nullptr;
+        cudaFree(d_result3_re); d_result3_re = nullptr;
+        cudaFree(d_result3_im); d_result3_im = nullptr;
+        cudaFree(d_result4_re); d_result4_re = nullptr;
+        cudaFree(d_result4_im); d_result4_im = nullptr;
+        cudaFree(d_grad3_re); d_grad3_re = nullptr;
+        cudaFree(d_grad3_im); d_grad3_im = nullptr;
+        cudaFree(d_grad4_re); d_grad4_re = nullptr;
+        cudaFree(d_grad4_im); d_grad4_im = nullptr;
+        cudaFree(d_multi3_re); d_multi3_re = nullptr;
+        cudaFree(d_multi3_im); d_multi3_im = nullptr;
+        cudaFree(d_multi4_re); d_multi4_re = nullptr;
+        cudaFree(d_multi4_im); d_multi4_im = nullptr;
+        cudaFree(d_local3_re); d_local3_re = nullptr;
+        cudaFree(d_local3_im); d_local3_im = nullptr;
+        cudaFree(d_local4_re); d_local4_re = nullptr;
+        cudaFree(d_local4_im); d_local4_im = nullptr;
+        cudaFree(d_gy3_re_cached); d_gy3_re_cached = nullptr;
+        cudaFree(d_gy3_im_cached); d_gy3_im_cached = nullptr;
+        cudaFree(d_gz3_re_cached); d_gz3_re_cached = nullptr;
+        cudaFree(d_gz3_im_cached); d_gz3_im_cached = nullptr;
+        cudaFree(d_gx3_re_tmp_cached); d_gx3_re_tmp_cached = nullptr;
+        cudaFree(d_gx3_im_tmp_cached); d_gx3_im_tmp_cached = nullptr;
+        cudaFree(d_gy4_re_cached); d_gy4_re_cached = nullptr;
+        cudaFree(d_gy4_im_cached); d_gy4_im_cached = nullptr;
+        cudaFree(d_gz4_re_cached); d_gz4_re_cached = nullptr;
+        cudaFree(d_gz4_im_cached); d_gz4_im_cached = nullptr;
+        cudaFree(d_gx4_re_tmp_cached); d_gx4_re_tmp_cached = nullptr;
+        cudaFree(d_gx4_im_tmp_cached); d_gx4_im_tmp_cached = nullptr;
+        cudaGetLastError();
+    };
+    auto try_malloc_double = [&](double** ptr, size_t count, const char* name) {
+        cudaError_t err = cudaMalloc(ptr, count * sizeof(double));
+        if (err != cudaSuccess) {
+            fprintf(stderr, "  [FMM] batch4 workspace unavailable at %s (%s); falling back to batch2\n",
+                    name, cudaGetErrorString(err));
+            *ptr = nullptr;
+            cudaGetLastError();
+            return false;
+        }
+        return true;
+    };
+    if (alloc_batch4) {
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_charges3_re, Ns, "charges3_re");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_charges3_im, Ns, "charges3_im");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_charges4_re, Ns, "charges4_re");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_charges4_im, Ns, "charges4_im");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_result3_re, Nt, "result3_re");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_result3_im, Nt, "result3_im");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_result4_re, Nt, "result4_re");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_result4_im, Nt, "result4_im");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_grad3_re, (size_t)Nt * 3, "grad3_re");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_grad3_im, (size_t)Nt * 3, "grad3_im");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_grad4_re, (size_t)Nt * 3, "grad4_re");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_grad4_im, (size_t)Nt * 3, "grad4_im");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_multi3_re, (size_t)n_nodes * L, "multi3_re");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_multi3_im, (size_t)n_nodes * L, "multi3_im");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_multi4_re, (size_t)n_nodes * L, "multi4_re");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_multi4_im, (size_t)n_nodes * L, "multi4_im");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_local3_re, (size_t)n_nodes * L, "local3_re");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_local3_im, (size_t)n_nodes * L, "local3_im");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_local4_re, (size_t)n_nodes * L, "local4_re");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_local4_im, (size_t)n_nodes * L, "local4_im");
+        if (!alloc_batch4)
+            free_batch4_workspace();
     }
 
-    // Sphere quadrature directions/weights (k-dependent, always allocated)
-    CUDA_CHECK(cudaMalloc(&d_dirs_cached, L * 3 * sizeof(fmm_real)));
-    CUDA_CHECK(cudaMalloc(&d_weights_cached, L * sizeof(fmm_real)));
-    {
-        std::vector<fmm_real> dirs_f(L * 3), weights_f(L);
-        for (int i = 0; i < L * 3; i++) dirs_f[i] = (fmm_real)squad.dirs[i];
-        for (int i = 0; i < L; i++) weights_f[i] = (fmm_real)squad.weights[i];
-        CUDA_CHECK(cudaMemcpy(d_dirs_cached, dirs_f.data(), L * 3 * sizeof(fmm_real), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_weights_cached, weights_f.data(), L * sizeof(fmm_real), cudaMemcpyHostToDevice));
+    // Store leaf ID arrays on host
+    h_leaf_indices.resize(n_leaves);
+    for (int i = 0; i < n_leaves; i++) h_leaf_indices[i] = leaf_info[i].node_idx;
+    h_tgt_id_offsets = tgt_id_offsets_h;
+    h_src_id_offsets = src_id_offsets_h;
+    h_tgt_ids_flat = tgt_ids_flat;
+    h_src_ids_flat = src_ids_flat;
+
+    // Node centers
+    h_node_centers.resize(n_nodes * 3);
+    for (int i = 0; i < n_nodes; i++) {
+        h_node_centers[i*3]   = tree.nodes[i].center[0];
+        h_node_centers[i*3+1] = tree.nodes[i].center[1];
+        h_node_centers[i*3+2] = tree.nodes[i].center[2];
     }
+
+    // Cached GPU arrays for run_tree() — allocated once, reused every call
+    CUDA_CHECK(cudaMalloc(&d_node_centers_cached, n_nodes * 3 * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_dirs_cached, L * 3 * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_weights_cached, L * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_leaf_idx_cached, n_leaves * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_src_id_offsets_cached, (n_leaves + 1) * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_src_ids_cached, std::max((int)h_src_ids_flat.size(), 1) * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_tgt_id_offsets_cached, (n_leaves + 1) * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_tgt_ids_cached, std::max((int)h_tgt_ids_flat.size(), 1) * sizeof(int)));
+    std::vector<int> node_to_leaf(n_nodes, -1);
+    for (int i = 0; i < n_leaves; i++) node_to_leaf[h_leaf_indices[i]] = i;
+    std::vector<int> leaf_near_offsets(n_leaves + 1, 0);
+    std::vector<int> leaf_near_ids;
+    for (int li_idx = 0; li_idx < n_leaves; li_idx++) {
+        int node_idx = h_leaf_indices[li_idx];
+        const OctreeNode& leaf = tree.nodes[node_idx];
+        leaf_near_offsets[li_idx] = (int)leaf_near_ids.size();
+        for (int ni = leaf.near_start; ni < leaf.near_start + leaf.near_count; ni++) {
+            int nb_leaf = node_to_leaf[tree.near_list[ni]];
+            if (nb_leaf >= 0)
+                leaf_near_ids.push_back(nb_leaf);
+        }
+    }
+    leaf_near_offsets[n_leaves] = (int)leaf_near_ids.size();
+    CUDA_CHECK(cudaMalloc(&d_leaf_near_offsets_cached, (n_leaves + 1) * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_leaf_near_ids_cached, std::max((int)leaf_near_ids.size(), 1) * sizeof(int)));
+
+    CUDA_CHECK(cudaMemcpy(d_node_centers_cached, h_node_centers.data(), n_nodes * 3 * sizeof(double), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_dirs_cached, squad.dirs.data(), L * 3 * sizeof(double), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_weights_cached, squad.weights.data(), L * sizeof(double), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_leaf_idx_cached, h_leaf_indices.data(), n_leaves * sizeof(int), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_src_id_offsets_cached, h_src_id_offsets.data(), (n_leaves + 1) * sizeof(int), cudaMemcpyHostToDevice));
+    if (!h_src_ids_flat.empty())
+        CUDA_CHECK(cudaMemcpy(d_src_ids_cached, h_src_ids_flat.data(), h_src_ids_flat.size() * sizeof(int), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_tgt_id_offsets_cached, h_tgt_id_offsets.data(), (n_leaves + 1) * sizeof(int), cudaMemcpyHostToDevice));
+    if (!h_tgt_ids_flat.empty())
+        CUDA_CHECK(cudaMemcpy(d_tgt_ids_cached, h_tgt_ids_flat.data(), h_tgt_ids_flat.size() * sizeof(int), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_leaf_near_offsets_cached, leaf_near_offsets.data(), (n_leaves + 1) * sizeof(int), cudaMemcpyHostToDevice));
+    if (!leaf_near_ids.empty())
+        CUDA_CHECK(cudaMemcpy(d_leaf_near_ids_cached, leaf_near_ids.data(), leaf_near_ids.size() * sizeof(int), cudaMemcpyHostToDevice));
 
     // Cached gradient workspace arrays
     CUDA_CHECK(cudaMalloc(&d_gy_re_cached, Nt * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_gy_im_cached, Nt * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_gz_re_cached, Nt * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_gz_im_cached, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_gx_re_tmp_cached, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_gx_im_tmp_cached, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_gy2_re_cached, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_gy2_im_cached, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_gz2_re_cached, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_gz2_im_cached, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_gx2_re_tmp_cached, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_gx2_im_tmp_cached, Nt * sizeof(double)));
+    if (alloc_batch4) {
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_gy3_re_cached, Nt, "gy3_re");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_gy3_im_cached, Nt, "gy3_im");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_gz3_re_cached, Nt, "gz3_re");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_gz3_im_cached, Nt, "gz3_im");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_gx3_re_tmp_cached, Nt, "gx3_re");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_gx3_im_tmp_cached, Nt, "gx3_im");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_gy4_re_cached, Nt, "gy4_re");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_gy4_im_cached, Nt, "gy4_im");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_gz4_re_cached, Nt, "gz4_re");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_gz4_im_cached, Nt, "gz4_im");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_gx4_re_tmp_cached, Nt, "gx4_re");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_gx4_im_tmp_cached, Nt, "gx4_im");
+        if (!alloc_batch4)
+            free_batch4_workspace();
+    }
+    batch4_allocated = alloc_batch4;
 
-    // Pre-allocated temp buffers for gradient repack
-    CUDA_CHECK(cudaMalloc(&d_gx_re_tmp, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_gx_im_tmp, Nt * sizeof(double)));
-
-    // Pre-allocated host-side re/im split buffers
-    h_q_re_buf.resize(Ns); h_q_im_buf.resize(Ns);
-    h_q2_re_buf.resize(Ns); h_q2_im_buf.resize(Ns);
-    int max_buf = std::max(Nt, Nt * 3);
-    h_res_re_buf.resize(max_buf); h_res_im_buf.resize(max_buf);
-    h_res2_re_buf.resize(max_buf); h_res2_im_buf.resize(max_buf);
-
-    // CUDA streams for P2P/FMM pipeline overlap
-    CUDA_CHECK(cudaStreamCreate(&stream_fmm));
-    CUDA_CHECK(cudaStreamCreate(&stream_p2p));
-
-    // P2P output buffers (separate from FMM to allow concurrent execution)
-    CUDA_CHECK(cudaMalloc(&d_p2p_pot_re, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_p2p_pot_im, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_p2p_pot2_re, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_p2p_pot2_im, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_p2p_gx_re, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_p2p_gx_im, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_p2p_gy_re, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_p2p_gy_im, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_p2p_gz_re, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_p2p_gz_im, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_p2p_gx2_re, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_p2p_gx2_im, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_p2p_gy2_re, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_p2p_gy2_im, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_p2p_gz2_re, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_p2p_gz2_im, Nt * sizeof(double)));
+    int complex_tmp_n = std::max(Ns, 3 * Nt);
+    CUDA_CHECK(cudaMalloc(&d_complex_tmp1, complex_tmp_n * sizeof(double2)));
+    CUDA_CHECK(cudaMalloc(&d_complex_tmp2, complex_tmp_n * sizeof(double2)));
 
     initialized = true;
-
-    // GPU memory summary
-    size_t gpu_bytes = 0;
-    if (owns_tree_data) {
-        gpu_bytes += (Nt + Ns) * 3 * sizeof(double);              // positions
-        int n_near_tot = (int)leaf_near_nbrs.size();
-        int nl2 = (int)leaf_info.size();
-        gpu_bytes += (Nt + nl2 + 1 + n_near_tot) * sizeof(int);  // P2P leaf-to-leaf
-        gpu_bytes += n_nodes * 3 * sizeof(double);                 // node centers
-        int nl = (int)leaf_info.size();
-        gpu_bytes += (nl + (nl+1)*2 + h_src_ids_flat.size() + h_tgt_ids_flat.size()) * sizeof(int);
-    }
-    gpu_bytes += 4ULL * n_nodes * L * sizeof(fmm_real);            // multi/local
-    gpu_bytes += 4ULL * n_nodes * L * sizeof(fmm_real);            // batch-2 multi/local
-    gpu_bytes += (2*Nt + 2*Ns + 6*Nt) * sizeof(double);           // charges/results/grad
-    gpu_bytes += (2*Nt + 2*Ns + 10*Nt) * sizeof(double);          // batch-2
-    gpu_bytes += 16ULL * Nt * sizeof(double);                      // P2P output
-    printf("  [FMM] Init complete: p=%d L=%d, %d nodes, ~%.0f MB GPU%s, %.1fms\n",
-           p, L, n_nodes, gpu_bytes / 1e6, owns_tree_data ? "" : " (shared tree)", timer.elapsed_ms());
+    printf("  [FMM] Init complete: p=%d L=%d, %d nodes, %.1fms\n",
+           p, L, n_nodes, timer.elapsed_ms());
 }
 
-// Helper to run the full FMM tree traversal (float32 FMM + CSR M2L)
-// P2P runs concurrently with FMM tree on separate CUDA stream
+// Helper to run the full FMM tree traversal (shared between evaluate and evaluate_gradient)
 void HelmholtzFMM::run_tree(const double* h_q_re, const double* h_q_im, bool need_grad)
 {
-    int n_leaves = (int)leaf_info.size();
-
-    // Upload charges (synchronous — data visible to all streams after return)
     CUDA_CHECK(cudaMemcpy(d_charges_re, h_q_re, Ns * sizeof(double), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_charges_im, h_q_im, Ns * sizeof(double), cudaMemcpyHostToDevice));
+    run_tree_uploaded(need_grad);
+}
 
-    // Use cached GPU arrays
-    double *d_node_centers = d_node_centers_cached;
-    fmm_real *d_dirs = d_dirs_cached;
-    fmm_real *d_weights = d_weights_cached;
-    int *d_leaf_idx = d_leaf_idx_cached;
-    int *d_src_id_offsets = d_src_id_offsets_cached;
-    int *d_src_ids = d_src_ids_cached;
-    int *d_tgt_id_offsets = d_tgt_id_offsets_cached;
-    int *d_tgt_ids = d_tgt_ids_cached;
+void HelmholtzFMM::run_tree_uploaded(bool need_grad)
+{
+    int n_leaves = (int)leaf_info.size();
 
-    float k_re_f = (float)k.real(), k_im_f = (float)k.imag();
-    int block_L = std::min(L, 256);
-
-    // === Launch P2P on stream_p2p (concurrent with FMM tree) ===
-    if (!need_grad) {
-        cudaMemsetAsync(d_p2p_pot_re, 0, Nt * sizeof(double), stream_p2p);
-        cudaMemsetAsync(d_p2p_pot_im, 0, Nt * sizeof(double), stream_p2p);
-        launch_p2p_potential(d_tgt_pts, d_src_pts,
-            d_charges_re, d_charges_im,
-            d_tgt_to_leaf, d_leaf_near_offsets, d_leaf_near_nbrs,
-            d_src_id_offsets_cached, d_src_ids_cached,
-            k.real(), k.imag(),
-            d_p2p_pot_re, d_p2p_pot_im, Nt, stream_p2p);
-    } else {
-        cudaMemsetAsync(d_p2p_gx_re, 0, Nt * sizeof(double), stream_p2p);
-        cudaMemsetAsync(d_p2p_gx_im, 0, Nt * sizeof(double), stream_p2p);
-        cudaMemsetAsync(d_p2p_gy_re, 0, Nt * sizeof(double), stream_p2p);
-        cudaMemsetAsync(d_p2p_gy_im, 0, Nt * sizeof(double), stream_p2p);
-        cudaMemsetAsync(d_p2p_gz_re, 0, Nt * sizeof(double), stream_p2p);
-        cudaMemsetAsync(d_p2p_gz_im, 0, Nt * sizeof(double), stream_p2p);
-        launch_p2p_gradient(d_tgt_pts, d_src_pts,
-            d_charges_re, d_charges_im,
-            d_tgt_to_leaf, d_leaf_near_offsets, d_leaf_near_nbrs,
-            d_src_id_offsets_cached, d_src_ids_cached,
-            k.real(), k.imag(),
-            d_p2p_gx_re, d_p2p_gx_im,
-            d_p2p_gy_re, d_p2p_gy_im,
-            d_p2p_gz_re, d_p2p_gz_im, Nt, stream_p2p);
-    }
-
-    // === FMM tree on stream_fmm (concurrent with P2P) ===
     // Clear multipole/local arrays
-    cudaMemsetAsync(d_multi_re, 0, n_nodes * L * sizeof(fmm_real), stream_fmm);
-    cudaMemsetAsync(d_multi_im, 0, n_nodes * L * sizeof(fmm_real), stream_fmm);
-    cudaMemsetAsync(d_local_re, 0, n_nodes * L * sizeof(fmm_real), stream_fmm);
-    cudaMemsetAsync(d_local_im, 0, n_nodes * L * sizeof(fmm_real), stream_fmm);
+    CUDA_CHECK(cudaMemset(d_multi_re, 0, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_multi_im, 0, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_local_re, 0, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_local_im, 0, n_nodes * L * sizeof(double)));
 
-    // P2M
-    if (n_leaves > 0) {
-        p2m_kernel<<<n_leaves, block_L, 0, stream_fmm>>>(
-            d_src_pts, d_charges_re, d_charges_im,
-            d_dirs, k_re_f, k_im_f,
-            d_multi_re, d_multi_im,
-            d_leaf_idx, d_src_id_offsets, d_src_ids,
-            d_node_centers, L, n_leaves);
-    }
-
-    // M2M (bottom-up) — stream ordering guarantees sequential execution
-    for (int level = tree.max_level - 1; level >= 1; level--) {
-        if (level < (int)m2m_level_info.size() && m2m_level_info[level].count > 0) {
-            int off = m2m_level_info[level].offset;
-            int cnt = m2m_level_info[level].count;
-            m2m_kernel<<<cnt, block_L, 0, stream_fmm>>>(d_m2m_parent, d_m2m_child,
-                d_m2m_shift_re, d_m2m_shift_im, d_multi_re, d_multi_im, L, cnt, off);
-        }
-    }
-
-    // M2L (optimized CSR)
-    {
-        int smem_size = L * 2 * sizeof(fmm_real);
-        for (int level = 1; level <= tree.max_level; level++) {
-            if (level < (int)m2l_csr_level_info.size() && m2l_csr_level_info[level].n_targets > 0) {
-                int n_tgts = m2l_csr_level_info[level].n_targets;
-                int off_off = m2l_csr_level_info[level].offsets_start;
-                int nodes_off = m2l_csr_level_info[level].nodes_start;
-                int pair_off = m2l_csr_level_info[level].pair_offset;
-                m2l_target_kernel<<<n_tgts, block_L, smem_size, stream_fmm>>>(
-                    d_m2l_csr_offsets + off_off,
-                    d_m2l_csr_tgt_nodes + nodes_off,
-                    d_m2l_csr_src,
-                    d_m2l_csr_tidx,
-                    d_transfer_ri,
-                    d_multi_re, d_multi_im,
-                    d_local_re, d_local_im,
-                    L, n_tgts, 0, pair_off);
-            }
-        }
-    }
-
-    // L2L (top-down)
-    for (int level = 2; level <= tree.max_level; level++) {
-        if (level < (int)l2l_level_info.size() && l2l_level_info[level].count > 0) {
-            int off = l2l_level_info[level].offset;
-            int cnt = l2l_level_info[level].count;
-            l2l_kernel<<<cnt, block_L, 0, stream_fmm>>>(d_l2l_parent, d_l2l_child,
-                d_l2l_shift_re, d_l2l_shift_im,
-                d_local_re, d_local_im, d_local_re, d_local_im, L, cnt, off);
-        }
-    }
-
-    cdouble ik_val = cdouble(0, 1) * k;
-    cdouble prefactor = ik_val / (16.0 * M_PI * M_PI);
-    int merge_grid = (Nt + 255) / 256;
-
-    if (!need_grad) {
-        // L2P (potential) on stream_fmm
-        cudaMemsetAsync(d_result_re, 0, Nt * sizeof(double), stream_fmm);
-        cudaMemsetAsync(d_result_im, 0, Nt * sizeof(double), stream_fmm);
-        if (n_leaves > 0) {
-            l2p_kernel<<<n_leaves, 256, 0, stream_fmm>>>(
-                d_tgt_pts, d_dirs, d_weights,
-                d_local_re, d_local_im,
-                k_re_f, k_im_f, prefactor.real(), prefactor.imag(),
-                d_result_re, d_result_im,
-                d_leaf_idx, d_tgt_id_offsets, d_tgt_ids,
-                d_node_centers, L, n_leaves);
-        }
-
-        // Wait for both streams
-        CUDA_CHECK(cudaStreamSynchronize(stream_fmm));
-        CUDA_CHECK(cudaStreamSynchronize(stream_p2p));
-
-        // Merge P2P results into FMM results
-        vector_add_kernel<<<merge_grid, 256>>>(d_result_re, d_p2p_pot_re, Nt);
-        vector_add_kernel<<<merge_grid, 256>>>(d_result_im, d_p2p_pot_im, Nt);
-        CUDA_CHECK(cudaDeviceSynchronize());
-    } else {
-        // L2P (gradient) on stream_fmm
-        double *d_gx_re = d_grad_re, *d_gx_im = d_grad_im;
-        double *d_gy_re = d_gy_re_cached, *d_gy_im = d_gy_im_cached;
-        double *d_gz_re = d_gz_re_cached, *d_gz_im = d_gz_im_cached;
-        cudaMemsetAsync(d_gx_re, 0, Nt * sizeof(double), stream_fmm);
-        cudaMemsetAsync(d_gx_im, 0, Nt * sizeof(double), stream_fmm);
-        cudaMemsetAsync(d_gy_re, 0, Nt * sizeof(double), stream_fmm);
-        cudaMemsetAsync(d_gy_im, 0, Nt * sizeof(double), stream_fmm);
-        cudaMemsetAsync(d_gz_re, 0, Nt * sizeof(double), stream_fmm);
-        cudaMemsetAsync(d_gz_im, 0, Nt * sizeof(double), stream_fmm);
-
-        if (n_leaves > 0) {
-            l2p_gradient_kernel<<<n_leaves, 256, 0, stream_fmm>>>(
-                d_tgt_pts, d_dirs, d_weights,
-                d_local_re, d_local_im,
-                k_re_f, k_im_f, prefactor.real(), prefactor.imag(),
-                (float)ik_val.real(), (float)ik_val.imag(),
-                d_gx_re, d_gx_im, d_gy_re, d_gy_im, d_gz_re, d_gz_im,
-                d_leaf_idx, d_tgt_id_offsets, d_tgt_ids,
-                d_node_centers, L, n_leaves);
-        }
-
-        // Wait for both streams
-        CUDA_CHECK(cudaStreamSynchronize(stream_fmm));
-        CUDA_CHECK(cudaStreamSynchronize(stream_p2p));
-
-        // Merge P2P gradient results
-        vector_add_kernel<<<merge_grid, 256>>>(d_gx_re, d_p2p_gx_re, Nt);
-        vector_add_kernel<<<merge_grid, 256>>>(d_gx_im, d_p2p_gx_im, Nt);
-        vector_add_kernel<<<merge_grid, 256>>>(d_gy_re, d_p2p_gy_re, Nt);
-        vector_add_kernel<<<merge_grid, 256>>>(d_gy_im, d_p2p_gy_im, Nt);
-        vector_add_kernel<<<merge_grid, 256>>>(d_gz_re, d_p2p_gz_re, Nt);
-        vector_add_kernel<<<merge_grid, 256>>>(d_gz_im, d_p2p_gz_im, Nt);
-        CUDA_CHECK(cudaDeviceSynchronize());
-
-        // Repack gradient [gx,gy,gz] -> interleaved [x0,y0,z0,x1,y1,z1,...]
-        // Use pre-allocated temp buffers (allocated in init())
-        CUDA_CHECK(cudaMemcpy(this->d_gx_re_tmp, d_gx_re, Nt * sizeof(double), cudaMemcpyDeviceToDevice));
-        CUDA_CHECK(cudaMemcpy(this->d_gx_im_tmp, d_gx_im, Nt * sizeof(double), cudaMemcpyDeviceToDevice));
-
-        int repack_block = 256;
-        int repack_grid = (Nt + repack_block - 1) / repack_block;
-        repack_gradient_kernel<<<repack_grid, repack_block>>>(
-            this->d_gx_re_tmp, this->d_gx_im_tmp, d_gy_re, d_gy_im, d_gz_re, d_gz_im,
-            d_grad_re, d_grad_im, Nt);
-        CUDA_CHECK(cudaDeviceSynchronize());
-    }
-}
-
-// Fused batch-2 tree traversal: two charge vectors, single tree walk (float32 FMM)
-// Fused batch-2 tree traversal: two charge vectors, single tree walk (float32 FMM)
-// P2P runs concurrently with FMM tree on separate CUDA stream
-void HelmholtzFMM::run_tree_batch2(
-    const double* h_q1_re, const double* h_q1_im,
-    const double* h_q2_re, const double* h_q2_im,
-    bool need_grad)
-{
-    // Profiling: set BEM_PROFILE=1 to print per-stage timing (first 3 calls)
-    static int profile_calls = 0;
-    static bool profile_enabled = false;
-    static bool profile_checked = false;
-    if (!profile_checked) {
-        const char* env = getenv("BEM_PROFILE");
-        profile_enabled = (env && atoi(env) > 0);
-        profile_checked = true;
-    }
-    bool do_profile = profile_enabled && (profile_calls < 3);
-    if (do_profile) profile_calls++;
-
-    cudaEvent_t ev_start, ev_upload, ev_p2p_launch, ev_p2m, ev_m2m, ev_m2l, ev_l2l, ev_l2p, ev_merge, ev_end;
-    if (do_profile) {
-        cudaEventCreate(&ev_start); cudaEventCreate(&ev_upload);
-        cudaEventCreate(&ev_p2p_launch); cudaEventCreate(&ev_p2m);
-        cudaEventCreate(&ev_m2m); cudaEventCreate(&ev_m2l);
-        cudaEventCreate(&ev_l2l); cudaEventCreate(&ev_l2p);
-        cudaEventCreate(&ev_merge); cudaEventCreate(&ev_end);
-        cudaEventRecord(ev_start);
-    }
-
-    int n_leaves = (int)leaf_info.size();
-
-    // Upload both charge vectors (synchronous — data visible to all streams)
-    CUDA_CHECK(cudaMemcpy(d_charges_re, h_q1_re, Ns * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_charges_im, h_q1_im, Ns * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_charges2_re, h_q2_re, Ns * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_charges2_im, h_q2_im, Ns * sizeof(double), cudaMemcpyHostToDevice));
-    if (do_profile) cudaEventRecord(ev_upload);
-
-    // Cached GPU array aliases
+    // Use cached GPU arrays (allocated once in init())
     double *d_node_centers = d_node_centers_cached;
-    fmm_real *d_dirs = d_dirs_cached;
-    fmm_real *d_weights = d_weights_cached;
+    double *d_dirs = d_dirs_cached;
+    double *d_weights = d_weights_cached;
     int *d_leaf_idx = d_leaf_idx_cached;
     int *d_src_id_offsets = d_src_id_offsets_cached;
     int *d_src_ids = d_src_ids_cached;
     int *d_tgt_id_offsets = d_tgt_id_offsets_cached;
     int *d_tgt_ids = d_tgt_ids_cached;
 
-    float k_re_f = (float)k.real(), k_im_f = (float)k.imag();
-    int block_L = std::min(L, 256);
-
-    // === Launch P2P on stream_p2p (concurrent with FMM tree) ===
-    if (!need_grad) {
-        // P2P batch-2 potential into separate buffers
-        cudaMemsetAsync(d_p2p_pot_re, 0, Nt * sizeof(double), stream_p2p);
-        cudaMemsetAsync(d_p2p_pot_im, 0, Nt * sizeof(double), stream_p2p);
-        cudaMemsetAsync(d_p2p_pot2_re, 0, Nt * sizeof(double), stream_p2p);
-        cudaMemsetAsync(d_p2p_pot2_im, 0, Nt * sizeof(double), stream_p2p);
-        launch_p2p_potential_batch2(
-            d_tgt_pts, d_src_pts,
-            d_charges_re, d_charges_im,
-            d_charges2_re, d_charges2_im,
-            d_tgt_to_leaf, d_leaf_near_offsets, d_leaf_near_nbrs,
-            d_src_id_offsets_cached, d_src_ids_cached,
-            k.real(), k.imag(),
-            d_p2p_pot_re, d_p2p_pot_im,
-            d_p2p_pot2_re, d_p2p_pot2_im, Nt, stream_p2p);
-    } else {
-        // P2P batch-2 pot+grad into separate buffers
-        cudaMemsetAsync(d_p2p_pot_re, 0, Nt * sizeof(double), stream_p2p);
-        cudaMemsetAsync(d_p2p_pot_im, 0, Nt * sizeof(double), stream_p2p);
-        cudaMemsetAsync(d_p2p_pot2_re, 0, Nt * sizeof(double), stream_p2p);
-        cudaMemsetAsync(d_p2p_pot2_im, 0, Nt * sizeof(double), stream_p2p);
-        cudaMemsetAsync(d_p2p_gx_re, 0, Nt * sizeof(double), stream_p2p);
-        cudaMemsetAsync(d_p2p_gx_im, 0, Nt * sizeof(double), stream_p2p);
-        cudaMemsetAsync(d_p2p_gy_re, 0, Nt * sizeof(double), stream_p2p);
-        cudaMemsetAsync(d_p2p_gy_im, 0, Nt * sizeof(double), stream_p2p);
-        cudaMemsetAsync(d_p2p_gz_re, 0, Nt * sizeof(double), stream_p2p);
-        cudaMemsetAsync(d_p2p_gz_im, 0, Nt * sizeof(double), stream_p2p);
-        cudaMemsetAsync(d_p2p_gx2_re, 0, Nt * sizeof(double), stream_p2p);
-        cudaMemsetAsync(d_p2p_gx2_im, 0, Nt * sizeof(double), stream_p2p);
-        cudaMemsetAsync(d_p2p_gy2_re, 0, Nt * sizeof(double), stream_p2p);
-        cudaMemsetAsync(d_p2p_gy2_im, 0, Nt * sizeof(double), stream_p2p);
-        cudaMemsetAsync(d_p2p_gz2_re, 0, Nt * sizeof(double), stream_p2p);
-        cudaMemsetAsync(d_p2p_gz2_im, 0, Nt * sizeof(double), stream_p2p);
-        launch_p2p_pot_grad_batch2(Nt,
-            d_tgt_pts, d_src_pts,
-            d_charges_re, d_charges_im,
-            d_charges2_re, d_charges2_im,
-            d_tgt_to_leaf, d_leaf_near_offsets, d_leaf_near_nbrs,
-            d_src_id_offsets_cached, d_src_ids_cached,
-            k.real(), k.imag(),
-            d_p2p_pot_re, d_p2p_pot_im,
-            d_p2p_pot2_re, d_p2p_pot2_im,
-            d_p2p_gx_re, d_p2p_gx_im, d_p2p_gy_re, d_p2p_gy_im, d_p2p_gz_re, d_p2p_gz_im,
-            d_p2p_gx2_re, d_p2p_gx2_im, d_p2p_gy2_re, d_p2p_gy2_im, d_p2p_gz2_re, d_p2p_gz2_im,
-            stream_p2p);
-    }
-    if (do_profile) cudaEventRecord(ev_p2p_launch);
-
-    // === FMM tree on stream_fmm (concurrent with P2P) ===
-    // Clear multipole/local arrays
-    cudaMemsetAsync(d_multi_re, 0, n_nodes * L * sizeof(fmm_real), stream_fmm);
-    cudaMemsetAsync(d_multi_im, 0, n_nodes * L * sizeof(fmm_real), stream_fmm);
-    cudaMemsetAsync(d_local_re, 0, n_nodes * L * sizeof(fmm_real), stream_fmm);
-    cudaMemsetAsync(d_local_im, 0, n_nodes * L * sizeof(fmm_real), stream_fmm);
-    cudaMemsetAsync(d_multi2_re, 0, n_nodes * L * sizeof(fmm_real), stream_fmm);
-    cudaMemsetAsync(d_multi2_im, 0, n_nodes * L * sizeof(fmm_real), stream_fmm);
-    cudaMemsetAsync(d_local2_re, 0, n_nodes * L * sizeof(fmm_real), stream_fmm);
-    cudaMemsetAsync(d_local2_im, 0, n_nodes * L * sizeof(fmm_real), stream_fmm);
-
-    // P2M batch-2
-    if (n_leaves > 0) {
-        p2m_batch2_kernel<<<n_leaves, block_L, 0, stream_fmm>>>(
-            d_src_pts,
-            d_charges_re, d_charges_im,
-            d_charges2_re, d_charges2_im,
-            d_dirs, k_re_f, k_im_f,
-            d_multi_re, d_multi_im,
-            d_multi2_re, d_multi2_im,
-            d_leaf_idx, d_src_id_offsets, d_src_ids,
-            d_node_centers, L, n_leaves);
-    }
-    if (do_profile) { cudaEventRecord(ev_p2m, stream_fmm); }
-
-    // M2M batch-2 (bottom-up) — stream ordering guarantees sequential execution
-    for (int level = tree.max_level - 1; level >= 1; level--) {
-        if (level < (int)m2m_level_info.size() && m2m_level_info[level].count > 0) {
-            int off = m2m_level_info[level].offset;
-            int cnt = m2m_level_info[level].count;
-            m2m_batch2_kernel<<<cnt, block_L, 0, stream_fmm>>>(
-                d_m2m_parent, d_m2m_child,
-                d_m2m_shift_re, d_m2m_shift_im,
-                d_multi_re, d_multi_im,
-                d_multi2_re, d_multi2_im,
-                L, cnt, off);
-        }
-    }
-
-    if (do_profile) { cudaEventRecord(ev_m2m, stream_fmm); }
-
-    // M2L batch-2 (optimized CSR kernel)
-    {
-        int smem_size = L * 2 * sizeof(fmm_real);
-        for (int level = 1; level <= tree.max_level; level++) {
-            if (level < (int)m2l_csr_level_info.size() && m2l_csr_level_info[level].n_targets > 0) {
-                int n_tgts = m2l_csr_level_info[level].n_targets;
-                int off_off = m2l_csr_level_info[level].offsets_start;
-                int nodes_off = m2l_csr_level_info[level].nodes_start;
-                int pair_off = m2l_csr_level_info[level].pair_offset;
-                m2l_target_batch2_kernel<<<n_tgts, block_L, smem_size, stream_fmm>>>(
-                    d_m2l_csr_offsets + off_off,
-                    d_m2l_csr_tgt_nodes + nodes_off,
-                    d_m2l_csr_src,
-                    d_m2l_csr_tidx,
-                    d_transfer_ri,
-                    d_multi_re, d_multi_im,
-                    d_multi2_re, d_multi2_im,
-                    d_local_re, d_local_im,
-                    d_local2_re, d_local2_im,
-                    L, n_tgts, 0, pair_off);
-            }
-        }
-    }
-    if (do_profile) { cudaEventRecord(ev_m2l, stream_fmm); }
-
-    // L2L batch-2 (top-down)
-    for (int level = 2; level <= tree.max_level; level++) {
-        if (level < (int)l2l_level_info.size() && l2l_level_info[level].count > 0) {
-            int off = l2l_level_info[level].offset;
-            int cnt = l2l_level_info[level].count;
-            l2l_batch2_kernel<<<cnt, block_L, 0, stream_fmm>>>(
-                d_l2l_parent, d_l2l_child,
-                d_l2l_shift_re, d_l2l_shift_im,
-                d_local_re, d_local_im,
-                d_local2_re, d_local2_im,
-                d_local_re, d_local_im,
-                d_local2_re, d_local2_im,
-                L, cnt, off);
-        }
-    }
-
-    if (do_profile) { cudaEventRecord(ev_l2l, stream_fmm); }
-
-    cdouble ik_val = cdouble(0, 1) * k;
-    cdouble prefactor = ik_val / (16.0 * M_PI * M_PI);
-    int merge_grid = (Nt + 255) / 256;
-
-    if (!need_grad) {
-        // L2P batch-2 (potential) on stream_fmm
-        cudaMemsetAsync(d_result_re, 0, Nt * sizeof(double), stream_fmm);
-        cudaMemsetAsync(d_result_im, 0, Nt * sizeof(double), stream_fmm);
-        cudaMemsetAsync(d_result2_re, 0, Nt * sizeof(double), stream_fmm);
-        cudaMemsetAsync(d_result2_im, 0, Nt * sizeof(double), stream_fmm);
-        if (n_leaves > 0) {
-            l2p_batch2_kernel<<<n_leaves, 256, 0, stream_fmm>>>(
-                d_tgt_pts, d_dirs, d_weights,
-                d_local_re, d_local_im,
-                d_local2_re, d_local2_im,
-                k_re_f, k_im_f, prefactor.real(), prefactor.imag(),
-                d_result_re, d_result_im,
-                d_result2_re, d_result2_im,
-                d_leaf_idx, d_tgt_id_offsets, d_tgt_ids,
-                d_node_centers, L, n_leaves);
-        }
-
-        if (do_profile) { cudaEventRecord(ev_l2p, stream_fmm); }
-
-        // Wait for both streams
-        CUDA_CHECK(cudaStreamSynchronize(stream_fmm));
-        CUDA_CHECK(cudaStreamSynchronize(stream_p2p));
-        if (do_profile) { cudaEventRecord(ev_merge); }
-
-        // Merge P2P results
-        vector_add_kernel<<<merge_grid, 256>>>(d_result_re, d_p2p_pot_re, Nt);
-        vector_add_kernel<<<merge_grid, 256>>>(d_result_im, d_p2p_pot_im, Nt);
-        vector_add_kernel<<<merge_grid, 256>>>(d_result2_re, d_p2p_pot2_re, Nt);
-        vector_add_kernel<<<merge_grid, 256>>>(d_result2_im, d_p2p_pot2_im, Nt);
-        CUDA_CHECK(cudaDeviceSynchronize());
-        if (do_profile) { cudaEventRecord(ev_end); cudaEventSynchronize(ev_end); }
-    } else {
-        // L2P batch-2 (potential) on stream_fmm
-        cudaMemsetAsync(d_result_re, 0, Nt * sizeof(double), stream_fmm);
-        cudaMemsetAsync(d_result_im, 0, Nt * sizeof(double), stream_fmm);
-        cudaMemsetAsync(d_result2_re, 0, Nt * sizeof(double), stream_fmm);
-        cudaMemsetAsync(d_result2_im, 0, Nt * sizeof(double), stream_fmm);
-        if (n_leaves > 0) {
-            l2p_batch2_kernel<<<n_leaves, 256, 0, stream_fmm>>>(
-                d_tgt_pts, d_dirs, d_weights,
-                d_local_re, d_local_im,
-                d_local2_re, d_local2_im,
-                k_re_f, k_im_f, prefactor.real(), prefactor.imag(),
-                d_result_re, d_result_im,
-                d_result2_re, d_result2_im,
-                d_leaf_idx, d_tgt_id_offsets, d_tgt_ids,
-                d_node_centers, L, n_leaves);
-        }
-
-        // L2P batch-2 (gradient) on stream_fmm
-        double *d_gx1_re = d_grad_re, *d_gx1_im = d_grad_im;
-        double *d_gy1_re = d_gy_re_cached, *d_gy1_im = d_gy_im_cached;
-        double *d_gz1_re = d_gz_re_cached, *d_gz1_im = d_gz_im_cached;
-        double *d_gx2_re = d_grad2_re, *d_gx2_im = d_grad2_im;
-        double *d_gy2_re = d_gy2_re_cached, *d_gy2_im = d_gy2_im_cached;
-        double *d_gz2_re = d_gz2_re_cached, *d_gz2_im = d_gz2_im_cached;
-
-        cudaMemsetAsync(d_gx1_re, 0, Nt * sizeof(double), stream_fmm);
-        cudaMemsetAsync(d_gx1_im, 0, Nt * sizeof(double), stream_fmm);
-        cudaMemsetAsync(d_gy1_re, 0, Nt * sizeof(double), stream_fmm);
-        cudaMemsetAsync(d_gy1_im, 0, Nt * sizeof(double), stream_fmm);
-        cudaMemsetAsync(d_gz1_re, 0, Nt * sizeof(double), stream_fmm);
-        cudaMemsetAsync(d_gz1_im, 0, Nt * sizeof(double), stream_fmm);
-        cudaMemsetAsync(d_gx2_re, 0, Nt * sizeof(double), stream_fmm);
-        cudaMemsetAsync(d_gx2_im, 0, Nt * sizeof(double), stream_fmm);
-        cudaMemsetAsync(d_gy2_re, 0, Nt * sizeof(double), stream_fmm);
-        cudaMemsetAsync(d_gy2_im, 0, Nt * sizeof(double), stream_fmm);
-        cudaMemsetAsync(d_gz2_re, 0, Nt * sizeof(double), stream_fmm);
-        cudaMemsetAsync(d_gz2_im, 0, Nt * sizeof(double), stream_fmm);
-
-        if (n_leaves > 0) {
-            l2p_gradient_batch2_kernel<<<n_leaves, 256, 0, stream_fmm>>>(
-                d_tgt_pts, d_dirs, d_weights,
-                d_local_re, d_local_im,
-                d_local2_re, d_local2_im,
-                k_re_f, k_im_f, prefactor.real(), prefactor.imag(),
-                (float)ik_val.real(), (float)ik_val.imag(),
-                d_gx1_re, d_gx1_im, d_gy1_re, d_gy1_im, d_gz1_re, d_gz1_im,
-                d_gx2_re, d_gx2_im, d_gy2_re, d_gy2_im, d_gz2_re, d_gz2_im,
-                d_leaf_idx, d_tgt_id_offsets, d_tgt_ids,
-                d_node_centers, L, n_leaves);
-        }
-
-        if (do_profile) { cudaEventRecord(ev_l2p, stream_fmm); }
-
-        // Wait for both streams
-        CUDA_CHECK(cudaStreamSynchronize(stream_fmm));
-        CUDA_CHECK(cudaStreamSynchronize(stream_p2p));
-        if (do_profile) { cudaEventRecord(ev_merge); }
-
-        // Merge P2P results: potential
-        vector_add_kernel<<<merge_grid, 256>>>(d_result_re, d_p2p_pot_re, Nt);
-        vector_add_kernel<<<merge_grid, 256>>>(d_result_im, d_p2p_pot_im, Nt);
-        vector_add_kernel<<<merge_grid, 256>>>(d_result2_re, d_p2p_pot2_re, Nt);
-        vector_add_kernel<<<merge_grid, 256>>>(d_result2_im, d_p2p_pot2_im, Nt);
-        // Merge P2P results: gradient vec 1
-        vector_add_kernel<<<merge_grid, 256>>>(d_gx1_re, d_p2p_gx_re, Nt);
-        vector_add_kernel<<<merge_grid, 256>>>(d_gx1_im, d_p2p_gx_im, Nt);
-        vector_add_kernel<<<merge_grid, 256>>>(d_gy1_re, d_p2p_gy_re, Nt);
-        vector_add_kernel<<<merge_grid, 256>>>(d_gy1_im, d_p2p_gy_im, Nt);
-        vector_add_kernel<<<merge_grid, 256>>>(d_gz1_re, d_p2p_gz_re, Nt);
-        vector_add_kernel<<<merge_grid, 256>>>(d_gz1_im, d_p2p_gz_im, Nt);
-        // Merge P2P results: gradient vec 2
-        vector_add_kernel<<<merge_grid, 256>>>(d_gx2_re, d_p2p_gx2_re, Nt);
-        vector_add_kernel<<<merge_grid, 256>>>(d_gx2_im, d_p2p_gx2_im, Nt);
-        vector_add_kernel<<<merge_grid, 256>>>(d_gy2_re, d_p2p_gy2_re, Nt);
-        vector_add_kernel<<<merge_grid, 256>>>(d_gy2_im, d_p2p_gy2_im, Nt);
-        vector_add_kernel<<<merge_grid, 256>>>(d_gz2_re, d_p2p_gz2_re, Nt);
-        vector_add_kernel<<<merge_grid, 256>>>(d_gz2_im, d_p2p_gz2_im, Nt);
-        CUDA_CHECK(cudaDeviceSynchronize());
-
-        // Repack gradients for both vectors (reuse pre-allocated temp buffers)
-        {
-            int repack_block = 256;
-            int repack_grid2 = (Nt + repack_block - 1) / repack_block;
-
-            // Vec 1: repack using pre-allocated d_gx_re_tmp/d_gx_im_tmp
-            CUDA_CHECK(cudaMemcpy(this->d_gx_re_tmp, d_gx1_re, Nt * sizeof(double), cudaMemcpyDeviceToDevice));
-            CUDA_CHECK(cudaMemcpy(this->d_gx_im_tmp, d_gx1_im, Nt * sizeof(double), cudaMemcpyDeviceToDevice));
-            repack_gradient_kernel<<<repack_grid2, repack_block>>>(
-                this->d_gx_re_tmp, this->d_gx_im_tmp, d_gy1_re, d_gy1_im, d_gz1_re, d_gz1_im,
-                d_grad_re, d_grad_im, Nt);
-            CUDA_CHECK(cudaDeviceSynchronize());
-
-            // Vec 2: reuse same temp buffers
-            CUDA_CHECK(cudaMemcpy(this->d_gx_re_tmp, d_gx2_re, Nt * sizeof(double), cudaMemcpyDeviceToDevice));
-            CUDA_CHECK(cudaMemcpy(this->d_gx_im_tmp, d_gx2_im, Nt * sizeof(double), cudaMemcpyDeviceToDevice));
-            repack_gradient_kernel<<<repack_grid2, repack_block>>>(
-                this->d_gx_re_tmp, this->d_gx_im_tmp, d_gy2_re, d_gy2_im, d_gz2_re, d_gz2_im,
-                d_grad2_re, d_grad2_im, Nt);
-            CUDA_CHECK(cudaDeviceSynchronize());
-        }
-        if (do_profile) { cudaEventRecord(ev_end); cudaEventSynchronize(ev_end); }
-    }
-
-    // Print profiling results
-    if (do_profile) {
-        float t_upload, t_p2p_launch, t_p2m, t_m2m, t_m2l, t_l2l, t_l2p, t_merge, t_end;
-        cudaEventElapsedTime(&t_upload, ev_start, ev_upload);
-        cudaEventElapsedTime(&t_p2p_launch, ev_upload, ev_p2p_launch);
-        cudaEventElapsedTime(&t_p2m, ev_p2p_launch, ev_p2m);
-        cudaEventElapsedTime(&t_m2m, ev_p2m, ev_m2m);
-        cudaEventElapsedTime(&t_m2l, ev_m2m, ev_m2l);
-        cudaEventElapsedTime(&t_l2l, ev_m2l, ev_l2l);
-        cudaEventElapsedTime(&t_l2p, ev_l2l, ev_l2p);
-        cudaEventElapsedTime(&t_merge, ev_l2p, ev_merge);
-        cudaEventElapsedTime(&t_end, ev_merge, ev_end);
-        float total;
-        cudaEventElapsedTime(&total, ev_start, ev_end);
-        // Also measure total P2P time (from upload end to merge start includes P2P running concurrently)
-        float t_p2p_total;
-        cudaEventElapsedTime(&t_p2p_total, ev_upload, ev_merge);
-        printf("  [PROFILE run_tree_batch2 #%d] total=%.1fms\n", profile_calls, total);
-        printf("    upload=%.1f  P2P_launch=%.1f  P2M=%.1f  M2M=%.1f  M2L=%.1f  L2L=%.1f  L2P=%.1f  sync+merge=%.1f+%.1f\n",
-               t_upload, t_p2p_launch, t_p2m, t_m2m, t_m2l, t_l2l, t_l2p, t_merge, t_end);
-        printf("    FMM_tree(P2M+M2M+M2L+L2L+L2P)=%.1f  P2P_concurrent=%.1f\n",
-               t_p2m + t_m2m + t_m2l + t_l2l + t_l2p, t_p2p_total);
-
-        cudaEventDestroy(ev_start); cudaEventDestroy(ev_upload);
-        cudaEventDestroy(ev_p2p_launch); cudaEventDestroy(ev_p2m);
-        cudaEventDestroy(ev_m2m); cudaEventDestroy(ev_m2l);
-        cudaEventDestroy(ev_l2l); cudaEventDestroy(ev_l2p);
-        cudaEventDestroy(ev_merge); cudaEventDestroy(ev_end);
-    }
-}
-
-void HelmholtzFMM::evaluate(const cdouble* charges, cdouble* result)
-{
-    for (int i = 0; i < Ns; i++) { h_q_re_buf[i] = charges[i].real(); h_q_im_buf[i] = charges[i].imag(); }
-
-    run_tree(h_q_re_buf.data(), h_q_im_buf.data(), false);
-
-    // Download results
-    CUDA_CHECK(cudaMemcpy(h_res_re_buf.data(), d_result_re, Nt * sizeof(double), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(h_res_im_buf.data(), d_result_im, Nt * sizeof(double), cudaMemcpyDeviceToHost));
-
-    for (int i = 0; i < Nt; i++)
-        result[i] = cdouble(h_res_re_buf[i], h_res_im_buf[i]);
-}
-
-void HelmholtzFMM::evaluate_gradient(const cdouble* charges, cdouble* grad_result)
-{
-    for (int i = 0; i < Ns; i++) { h_q_re_buf[i] = charges[i].real(); h_q_im_buf[i] = charges[i].imag(); }
-
-    run_tree(h_q_re_buf.data(), h_q_im_buf.data(), true);
-
-    // Download interleaved gradient
-    CUDA_CHECK(cudaMemcpy(h_res_re_buf.data(), d_grad_re, Nt * 3 * sizeof(double), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(h_res_im_buf.data(), d_grad_im, Nt * 3 * sizeof(double), cudaMemcpyDeviceToHost));
-
-    for (int i = 0; i < Nt * 3; i++)
-        grad_result[i] = cdouble(h_res_re_buf[i], h_res_im_buf[i]);
-}
-
-// GPU-resident evaluate: charges already on device, results stay on device
-// Avoids all host<->device transfers for charges and results
-void HelmholtzFMM::evaluate_gpu(const double* d_q_re, const double* d_q_im,
-                                 double* d_res_re, double* d_res_im)
-{
-    int n_leaves = (int)leaf_info.size();
-
-    // Copy charges to internal buffer (device-to-device)
-    CUDA_CHECK(cudaMemcpy(d_charges_re, d_q_re, Ns * sizeof(double), cudaMemcpyDeviceToDevice));
-    CUDA_CHECK(cudaMemcpy(d_charges_im, d_q_im, Ns * sizeof(double), cudaMemcpyDeviceToDevice));
-
-    float k_re_f = (float)k.real(), k_im_f = (float)k.imag();
-    int block_L = std::min(L, 256);
-
-    // Clear multipole/local
-    CUDA_CHECK(cudaMemset(d_multi_re, 0, n_nodes * L * sizeof(fmm_real)));
-    CUDA_CHECK(cudaMemset(d_multi_im, 0, n_nodes * L * sizeof(fmm_real)));
-    CUDA_CHECK(cudaMemset(d_local_re, 0, n_nodes * L * sizeof(fmm_real)));
-    CUDA_CHECK(cudaMemset(d_local_im, 0, n_nodes * L * sizeof(fmm_real)));
-
-    // P2P on separate stream (potential only)
-    cudaMemsetAsync(d_p2p_pot_re, 0, Nt * sizeof(double), stream_p2p);
-    cudaMemsetAsync(d_p2p_pot_im, 0, Nt * sizeof(double), stream_p2p);
-    launch_p2p_potential(d_tgt_pts, d_src_pts,
-        d_charges_re, d_charges_im,
-        d_tgt_to_leaf, d_leaf_near_offsets, d_leaf_near_nbrs,
-        d_src_id_offsets_cached, d_src_ids_cached,
-        k.real(), k.imag(),
-        d_p2p_pot_re, d_p2p_pot_im, Nt, stream_p2p);
-
-    // P2M
-    if (n_leaves > 0) {
-        p2m_kernel<<<n_leaves, block_L, 0, stream_fmm>>>(
-            d_src_pts, d_charges_re, d_charges_im,
-            d_dirs_cached, k_re_f, k_im_f,
-            d_multi_re, d_multi_im,
-            d_leaf_idx_cached, d_src_id_offsets_cached, d_src_ids_cached,
-            d_node_centers_cached, L, n_leaves);
-    }
-
-    // M2M (bottom-up)
-    for (int level = tree.max_level - 1; level >= 1; level--) {
-        if (level < (int)m2m_level_info.size() && m2m_level_info[level].count > 0) {
-            int off = m2m_level_info[level].offset;
-            int cnt = m2m_level_info[level].count;
-            m2m_kernel<<<cnt, block_L, 0, stream_fmm>>>(d_m2m_parent, d_m2m_child,
-                d_m2m_shift_re, d_m2m_shift_im, d_multi_re, d_multi_im, L, cnt, off);
-        }
-    }
-
-    // M2L (CSR)
-    {
-        int smem_size = L * 2 * sizeof(fmm_real);
-        for (int level = 1; level <= tree.max_level; level++) {
-            if (level < (int)m2l_csr_level_info.size() && m2l_csr_level_info[level].n_targets > 0) {
-                int n_tgts = m2l_csr_level_info[level].n_targets;
-                int pair_off = m2l_csr_level_info[level].pair_offset;
-                m2l_target_kernel<<<n_tgts, block_L, smem_size, stream_fmm>>>(
-                    d_m2l_csr_offsets + m2l_csr_level_info[level].offsets_start,
-                    d_m2l_csr_tgt_nodes + m2l_csr_level_info[level].nodes_start,
-                    d_m2l_csr_src, d_m2l_csr_tidx,
-                    d_transfer_ri,
-                    d_multi_re, d_multi_im, d_local_re, d_local_im,
-                    L, n_tgts, 0, pair_off);
-            }
-        }
-    }
-
-    // L2L (top-down)
-    for (int level = 2; level <= tree.max_level; level++) {
-        if (level < (int)l2l_level_info.size() && l2l_level_info[level].count > 0) {
-            int off = l2l_level_info[level].offset;
-            int cnt = l2l_level_info[level].count;
-            l2l_kernel<<<cnt, block_L, 0, stream_fmm>>>(d_l2l_parent, d_l2l_child,
-                d_l2l_shift_re, d_l2l_shift_im,
-                d_local_re, d_local_im, d_local_re, d_local_im, L, cnt, off);
-        }
-    }
-
-    // L2P (potential only)
-    cdouble ik_val = cdouble(0, 1) * k;
-    cdouble prefactor = ik_val / (16.0 * M_PI * M_PI);
-    CUDA_CHECK(cudaMemset(d_result_re, 0, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMemset(d_result_im, 0, Nt * sizeof(double)));
-    if (n_leaves > 0) {
-        l2p_kernel<<<n_leaves, 256, 0, stream_fmm>>>(
-            d_tgt_pts, d_dirs_cached, d_weights_cached,
-            d_local_re, d_local_im,
-            k_re_f, k_im_f, prefactor.real(), prefactor.imag(),
-            d_result_re, d_result_im,
-            d_leaf_idx_cached, d_tgt_id_offsets_cached, d_tgt_ids_cached,
-            d_node_centers_cached, L, n_leaves);
-    }
-
-    // Wait for both streams
-    cudaStreamSynchronize(stream_fmm);
-    cudaStreamSynchronize(stream_p2p);
-
-    // Merge FMM + P2P results directly into output
-    int block = 256, grid = (Nt + block - 1) / block;
-    vector_add_kernel<<<grid, block>>>(d_result_re, d_p2p_pot_re, Nt);
-    vector_add_kernel<<<grid, block>>>(d_result_im, d_p2p_pot_im, Nt);
-
-    // Copy to output
-    CUDA_CHECK(cudaMemcpy(d_res_re, d_result_re, Nt * sizeof(double), cudaMemcpyDeviceToDevice));
-    CUDA_CHECK(cudaMemcpy(d_res_im, d_result_im, Nt * sizeof(double), cudaMemcpyDeviceToDevice));
-}
-
-void HelmholtzFMM::evaluate_pot_grad_gpu(const double* d_q_re, const double* d_q_im,
-                                          double* d_pot_re, double* d_pot_im,
-                                          double* d_grad_re_out, double* d_grad_im_out)
-{
-    // Full GPU-resident pot+grad: no H2D/D2H copies, everything stays on device
-    int n_leaves = (int)leaf_info.size();
-
-    // Copy input charges to FMM internal buffers (D2D)
-    CUDA_CHECK(cudaMemcpy(d_charges_re, d_q_re, Ns * sizeof(double), cudaMemcpyDeviceToDevice));
-    CUDA_CHECK(cudaMemcpy(d_charges_im, d_q_im, Ns * sizeof(double), cudaMemcpyDeviceToDevice));
-
-    // Cached GPU array aliases
-    double *d_node_centers = d_node_centers_cached;
-    fmm_real *d_dirs = d_dirs_cached;
-    fmm_real *d_weights = d_weights_cached;
-    int *d_leaf_idx = d_leaf_idx_cached;
-    int *d_src_id_offsets = d_src_id_offsets_cached;
-    int *d_src_ids = d_src_ids_cached;
-    int *d_tgt_id_offsets = d_tgt_id_offsets_cached;
-    int *d_tgt_ids = d_tgt_ids_cached;
-
-    float k_re_f = (float)k.real(), k_im_f = (float)k.imag();
-    int block_L = std::min(L, 256);
-
-    // === P2P pot+grad on stream_p2p (concurrent with FMM tree) ===
-    cudaMemsetAsync(d_p2p_gx_re, 0, Nt * sizeof(double), stream_p2p);
-    cudaMemsetAsync(d_p2p_gx_im, 0, Nt * sizeof(double), stream_p2p);
-    cudaMemsetAsync(d_p2p_gy_re, 0, Nt * sizeof(double), stream_p2p);
-    cudaMemsetAsync(d_p2p_gy_im, 0, Nt * sizeof(double), stream_p2p);
-    cudaMemsetAsync(d_p2p_gz_re, 0, Nt * sizeof(double), stream_p2p);
-    cudaMemsetAsync(d_p2p_gz_im, 0, Nt * sizeof(double), stream_p2p);
-    launch_p2p_gradient(d_tgt_pts, d_src_pts,
-        d_charges_re, d_charges_im,
-        d_tgt_to_leaf, d_leaf_near_offsets, d_leaf_near_nbrs,
-        d_src_id_offsets_cached, d_src_ids_cached,
-        k.real(), k.imag(),
-        d_p2p_gx_re, d_p2p_gx_im,
-        d_p2p_gy_re, d_p2p_gy_im,
-        d_p2p_gz_re, d_p2p_gz_im, Nt, stream_p2p);
-
-    // === FMM tree on stream_fmm ===
-    cudaMemsetAsync(d_multi_re, 0, n_nodes * L * sizeof(fmm_real), stream_fmm);
-    cudaMemsetAsync(d_multi_im, 0, n_nodes * L * sizeof(fmm_real), stream_fmm);
-    cudaMemsetAsync(d_local_re, 0, n_nodes * L * sizeof(fmm_real), stream_fmm);
-    cudaMemsetAsync(d_local_im, 0, n_nodes * L * sizeof(fmm_real), stream_fmm);
-
-    // P2M
-    if (n_leaves > 0) {
-        p2m_kernel<<<n_leaves, block_L, 0, stream_fmm>>>(
-            d_src_pts, d_charges_re, d_charges_im,
-            d_dirs, k_re_f, k_im_f,
-            d_multi_re, d_multi_im,
-            d_leaf_idx, d_src_id_offsets, d_src_ids,
-            d_node_centers, L, n_leaves);
-    }
-
-    // M2M (bottom-up)
-    for (int level = tree.max_level - 1; level >= 1; level--) {
-        if (level < (int)m2m_level_info.size() && m2m_level_info[level].count > 0) {
-            int off = m2m_level_info[level].offset;
-            int cnt = m2m_level_info[level].count;
-            m2m_kernel<<<cnt, block_L, 0, stream_fmm>>>(d_m2m_parent, d_m2m_child,
-                d_m2m_shift_re, d_m2m_shift_im, d_multi_re, d_multi_im, L, cnt, off);
-        }
-    }
-
-    // M2L (optimized CSR)
-    {
-        int smem_size = L * 2 * sizeof(fmm_real);
-        for (int level = 1; level <= tree.max_level; level++) {
-            if (level < (int)m2l_csr_level_info.size() && m2l_csr_level_info[level].n_targets > 0) {
-                int n_tgts = m2l_csr_level_info[level].n_targets;
-                int off_off = m2l_csr_level_info[level].offsets_start;
-                int nodes_off = m2l_csr_level_info[level].nodes_start;
-                int pair_off = m2l_csr_level_info[level].pair_offset;
-                m2l_target_kernel<<<n_tgts, block_L, smem_size, stream_fmm>>>(
-                    d_m2l_csr_offsets + off_off,
-                    d_m2l_csr_tgt_nodes + nodes_off,
-                    d_m2l_csr_src, d_m2l_csr_tidx,
-                    d_transfer_ri,
-                    d_multi_re, d_multi_im,
-                    d_local_re, d_local_im,
-                    L, n_tgts, 0, pair_off);
-            }
-        }
-    }
-
-    // L2L (top-down)
-    for (int level = 2; level <= tree.max_level; level++) {
-        if (level < (int)l2l_level_info.size() && l2l_level_info[level].count > 0) {
-            int off = l2l_level_info[level].offset;
-            int cnt = l2l_level_info[level].count;
-            l2l_kernel<<<cnt, block_L, 0, stream_fmm>>>(d_l2l_parent, d_l2l_child,
-                d_l2l_shift_re, d_l2l_shift_im,
-                d_local_re, d_local_im, d_local_re, d_local_im, L, cnt, off);
-        }
-    }
-
-    cdouble ik_val = cdouble(0, 1) * k;
-    cdouble prefactor = ik_val / (16.0 * M_PI * M_PI);
-    int merge_grid = (Nt + 255) / 256;
-
-    // L2P potential
-    cudaMemsetAsync(d_result_re, 0, Nt * sizeof(double), stream_fmm);
-    cudaMemsetAsync(d_result_im, 0, Nt * sizeof(double), stream_fmm);
-    if (n_leaves > 0) {
-        l2p_kernel<<<n_leaves, 256, 0, stream_fmm>>>(
-            d_tgt_pts, d_dirs, d_weights,
-            d_local_re, d_local_im,
-            k_re_f, k_im_f, prefactor.real(), prefactor.imag(),
-            d_result_re, d_result_im,
-            d_leaf_idx, d_tgt_id_offsets, d_tgt_ids,
-            d_node_centers, L, n_leaves);
-    }
-
-    // L2P gradient
-    double *d_gx_re = d_grad_re, *d_gx_im = d_grad_im;
-    double *d_gy_re = d_gy_re_cached, *d_gy_im = d_gy_im_cached;
-    double *d_gz_re = d_gz_re_cached, *d_gz_im = d_gz_im_cached;
-    cudaMemsetAsync(d_gx_re, 0, Nt * sizeof(double), stream_fmm);
-    cudaMemsetAsync(d_gx_im, 0, Nt * sizeof(double), stream_fmm);
-    cudaMemsetAsync(d_gy_re, 0, Nt * sizeof(double), stream_fmm);
-    cudaMemsetAsync(d_gy_im, 0, Nt * sizeof(double), stream_fmm);
-    cudaMemsetAsync(d_gz_re, 0, Nt * sizeof(double), stream_fmm);
-    cudaMemsetAsync(d_gz_im, 0, Nt * sizeof(double), stream_fmm);
-
-    if (n_leaves > 0) {
-        l2p_gradient_kernel<<<n_leaves, 256, 0, stream_fmm>>>(
-            d_tgt_pts, d_dirs, d_weights,
-            d_local_re, d_local_im,
-            k_re_f, k_im_f, prefactor.real(), prefactor.imag(),
-            (float)ik_val.real(), (float)ik_val.imag(),
-            d_gx_re, d_gx_im, d_gy_re, d_gy_im, d_gz_re, d_gz_im,
-            d_leaf_idx, d_tgt_id_offsets, d_tgt_ids,
-            d_node_centers, L, n_leaves);
-    }
-
-    // Wait for both streams
-    CUDA_CHECK(cudaStreamSynchronize(stream_fmm));
-    CUDA_CHECK(cudaStreamSynchronize(stream_p2p));
-
-    // Merge P2P gradient results
-    vector_add_kernel<<<merge_grid, 256>>>(d_gx_re, d_p2p_gx_re, Nt);
-    vector_add_kernel<<<merge_grid, 256>>>(d_gx_im, d_p2p_gx_im, Nt);
-    vector_add_kernel<<<merge_grid, 256>>>(d_gy_re, d_p2p_gy_re, Nt);
-    vector_add_kernel<<<merge_grid, 256>>>(d_gy_im, d_p2p_gy_im, Nt);
-    vector_add_kernel<<<merge_grid, 256>>>(d_gz_re, d_p2p_gz_re, Nt);
-    vector_add_kernel<<<merge_grid, 256>>>(d_gz_im, d_p2p_gz_im, Nt);
-    CUDA_CHECK(cudaDeviceSynchronize());
-
-    // Copy potential to output (D2D)
-    CUDA_CHECK(cudaMemcpy(d_pot_re, d_result_re, Nt * sizeof(double), cudaMemcpyDeviceToDevice));
-    CUDA_CHECK(cudaMemcpy(d_pot_im, d_result_im, Nt * sizeof(double), cudaMemcpyDeviceToDevice));
-
-    // Repack gradient [gx,gy,gz] -> interleaved [x0,y0,z0,...] into output
-    CUDA_CHECK(cudaMemcpy(d_gx_re_tmp, d_gx_re, Nt * sizeof(double), cudaMemcpyDeviceToDevice));
-    CUDA_CHECK(cudaMemcpy(d_gx_im_tmp, d_gx_im, Nt * sizeof(double), cudaMemcpyDeviceToDevice));
-    int repack_block = 256;
-    int repack_grid = (Nt + repack_block - 1) / repack_block;
-    repack_gradient_kernel<<<repack_grid, repack_block>>>(
-        d_gx_re_tmp, d_gx_im_tmp, d_gy_re, d_gy_im, d_gz_re, d_gz_im,
-        d_grad_re_out, d_grad_im_out, Nt);
-    CUDA_CHECK(cudaDeviceSynchronize());
-}
-
-void HelmholtzFMM::evaluate_pot_grad(const cdouble* charges,
-                                      cdouble* pot_result,
-                                      cdouble* grad_result)
-{
-    int n_leaves = (int)leaf_info.size();
-
-    // Split charges into re/im (using pre-allocated buffers)
-    for (int i = 0; i < Ns; i++) {
-        h_q_re_buf[i] = charges[i].real();
-        h_q_im_buf[i] = charges[i].imag();
-    }
-
-    // Upload charges (double)
-    CUDA_CHECK(cudaMemcpy(d_charges_re, h_q_re_buf.data(), Ns * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_charges_im, h_q_im_buf.data(), Ns * sizeof(double), cudaMemcpyHostToDevice));
-
-    // Clear multipole/local arrays (float32)
-    CUDA_CHECK(cudaMemset(d_multi_re, 0, n_nodes * L * sizeof(fmm_real)));
-    CUDA_CHECK(cudaMemset(d_multi_im, 0, n_nodes * L * sizeof(fmm_real)));
-    CUDA_CHECK(cudaMemset(d_local_re, 0, n_nodes * L * sizeof(fmm_real)));
-    CUDA_CHECK(cudaMemset(d_local_im, 0, n_nodes * L * sizeof(fmm_real)));
-
-    // Cached GPU array aliases
-    double *d_node_centers = d_node_centers_cached;
-    fmm_real *d_dirs = d_dirs_cached;
-    fmm_real *d_weights = d_weights_cached;
-    int *d_leaf_idx = d_leaf_idx_cached;
-    int *d_src_id_offsets = d_src_id_offsets_cached;
-    int *d_src_ids = d_src_ids_cached;
-    int *d_tgt_id_offsets = d_tgt_id_offsets_cached;
-    int *d_tgt_ids = d_tgt_ids_cached;
-
-    float k_re_f = (float)k.real(), k_im_f = (float)k.imag();
     int block_L = std::min(L, 256);
 
     // === P2M ===
     if (n_leaves > 0) {
         p2m_kernel<<<n_leaves, block_L>>>(
             d_src_pts, d_charges_re, d_charges_im,
-            d_dirs, k_re_f, k_im_f,
+            d_dirs, k.real(), k.imag(),
             d_multi_re, d_multi_im,
             d_leaf_idx, d_src_id_offsets, d_src_ids,
             d_node_centers, L, n_leaves);
-        CUDA_CHECK(cudaDeviceSynchronize());
+        CUDA_CHECK(cudaGetLastError());
     }
 
     // === M2M (bottom-up) ===
@@ -2404,30 +1546,19 @@ void HelmholtzFMM::evaluate_pot_grad(const cdouble* charges,
             int cnt = m2m_level_info[level].count;
             m2m_kernel<<<cnt, block_L>>>(d_m2m_parent, d_m2m_child,
                 d_m2m_shift_re, d_m2m_shift_im, d_multi_re, d_multi_im, L, cnt, off);
-            CUDA_CHECK(cudaDeviceSynchronize());
+            CUDA_CHECK(cudaGetLastError());
         }
     }
 
-    // === M2L (optimized CSR) ===
-    {
-        int smem_size = L * 2 * sizeof(fmm_real);
-        for (int level = 1; level <= tree.max_level; level++) {
-            if (level < (int)m2l_csr_level_info.size() && m2l_csr_level_info[level].n_targets > 0) {
-                int n_tgts = m2l_csr_level_info[level].n_targets;
-                int off_off = m2l_csr_level_info[level].offsets_start;
-                int nodes_off = m2l_csr_level_info[level].nodes_start;
-                int pair_off = m2l_csr_level_info[level].pair_offset;
-                m2l_target_kernel<<<n_tgts, block_L, smem_size>>>(
-                    d_m2l_csr_offsets + off_off,
-                    d_m2l_csr_tgt_nodes + nodes_off,
-                    d_m2l_csr_src,
-                    d_m2l_csr_tidx,
-                    d_transfer_ri,
-                    d_multi_re, d_multi_im,
-                    d_local_re, d_local_im,
-                    L, n_tgts, 0, pair_off);
-                CUDA_CHECK(cudaDeviceSynchronize());
-            }
+    // === M2L ===
+    for (int level = 1; level <= tree.max_level; level++) {
+        if (level < (int)m2l_level_info.size() && m2l_level_info[level].count > 0) {
+            int off = m2l_level_info[level].offset;
+            int cnt = m2l_level_info[level].count;
+            m2l_kernel<<<cnt, block_L>>>(d_m2l_tgt, d_m2l_src, d_m2l_tidx,
+                d_transfer_re, d_transfer_im, d_multi_re, d_multi_im,
+                d_local_re, d_local_im, L, cnt, off);
+            CUDA_CHECK(cudaGetLastError());
         }
     }
 
@@ -2439,71 +1570,80 @@ void HelmholtzFMM::evaluate_pot_grad(const cdouble* charges,
             l2l_kernel<<<cnt, block_L>>>(d_l2l_parent, d_l2l_child,
                 d_l2l_shift_re, d_l2l_shift_im,
                 d_local_re, d_local_im, d_local_re, d_local_im, L, cnt, off);
-            CUDA_CHECK(cudaDeviceSynchronize());
+            CUDA_CHECK(cudaGetLastError());
         }
     }
 
     cdouble ik_val = cdouble(0, 1) * k;
     cdouble prefactor = ik_val / (16.0 * M_PI * M_PI);
 
-    // === L2P potential ===
-    CUDA_CHECK(cudaMemset(d_result_re, 0, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMemset(d_result_im, 0, Nt * sizeof(double)));
-    if (n_leaves > 0) {
-        l2p_kernel<<<n_leaves, 256>>>(
-            d_tgt_pts, d_dirs, d_weights,
-            d_local_re, d_local_im,
-            k_re_f, k_im_f, prefactor.real(), prefactor.imag(),
-            d_result_re, d_result_im,
-            d_leaf_idx, d_tgt_id_offsets, d_tgt_ids,
-            d_node_centers, L, n_leaves);
-        CUDA_CHECK(cudaDeviceSynchronize());
-    }
+    if (!need_grad) {
+        // === L2P (potential) ===
+        CUDA_CHECK(cudaMemset(d_result_re, 0, Nt * sizeof(double)));
+        CUDA_CHECK(cudaMemset(d_result_im, 0, Nt * sizeof(double)));
+        if (n_leaves > 0) {
+            int block_tgt = 256;
+            l2p_kernel<<<n_leaves, block_tgt>>>(
+                d_tgt_pts, d_dirs, d_weights,
+                d_local_re, d_local_im,
+                k.real(), k.imag(), prefactor.real(), prefactor.imag(),
+                d_result_re, d_result_im,
+                d_leaf_idx, d_tgt_id_offsets, d_tgt_ids,
+                d_node_centers, L, n_leaves);
+            CUDA_CHECK(cudaGetLastError());
+        }
 
-    // === L2P gradient ===
-    double *d_gx_re = d_grad_re, *d_gx_im = d_grad_im;
-    double *d_gy_re = d_gy_re_cached, *d_gy_im = d_gy_im_cached;
-    double *d_gz_re = d_gz_re_cached, *d_gz_im = d_gz_im_cached;
-    CUDA_CHECK(cudaMemset(d_gx_re, 0, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMemset(d_gx_im, 0, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMemset(d_gy_re, 0, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMemset(d_gy_im, 0, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMemset(d_gz_re, 0, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMemset(d_gz_im, 0, Nt * sizeof(double)));
+        // === P2P (potential) ===
+        launch_p2p_potential_leaf(d_tgt_pts, d_src_pts,
+            d_charges_re, d_charges_im,
+            d_tgt_id_offsets_cached, d_tgt_ids_cached,
+            d_src_id_offsets_cached, d_src_ids_cached,
+            d_leaf_near_offsets_cached, d_leaf_near_ids_cached,
+            n_leaves, k.real(), k.imag(),
+            d_result_re, d_result_im);
+        CUDA_CHECK(cudaGetLastError());
+    } else {
+        // === L2P (gradient) ===
+        CUDA_CHECK(cudaMemset(d_grad_re, 0, Nt * 3 * sizeof(double)));
+        CUDA_CHECK(cudaMemset(d_grad_im, 0, Nt * 3 * sizeof(double)));
 
-    if (n_leaves > 0) {
-        l2p_gradient_kernel<<<n_leaves, 256>>>(
-            d_tgt_pts, d_dirs, d_weights,
-            d_local_re, d_local_im,
-            k_re_f, k_im_f, prefactor.real(), prefactor.imag(),
-            (float)ik_val.real(), (float)ik_val.imag(),
-            d_gx_re, d_gx_im, d_gy_re, d_gy_im, d_gz_re, d_gz_im,
-            d_leaf_idx, d_tgt_id_offsets, d_tgt_ids,
-            d_node_centers, L, n_leaves);
-        CUDA_CHECK(cudaDeviceSynchronize());
-    }
+        // grad uses 6 separate arrays: gx, gy, gz (re/im)
+        // gx aliases d_grad_re/im; gy, gz use cached arrays
+        double *d_gx_re = d_grad_re, *d_gx_im = d_grad_im;
+        double *d_gy_re = d_gy_re_cached, *d_gy_im = d_gy_im_cached;
+        double *d_gz_re = d_gz_re_cached, *d_gz_im = d_gz_im_cached;
+        CUDA_CHECK(cudaMemset(d_gy_re, 0, Nt * sizeof(double)));
+        CUDA_CHECK(cudaMemset(d_gy_im, 0, Nt * sizeof(double)));
+        CUDA_CHECK(cudaMemset(d_gz_re, 0, Nt * sizeof(double)));
+        CUDA_CHECK(cudaMemset(d_gz_im, 0, Nt * sizeof(double)));
 
-    // === P2P combined potential + gradient (stays double) ===
-    launch_p2p_pot_grad(Nt,
-        d_tgt_pts, d_src_pts,
-        d_charges_re, d_charges_im,
-        d_tgt_to_leaf, d_leaf_near_offsets, d_leaf_near_nbrs,
-        d_src_id_offsets_cached, d_src_ids_cached,
-        k.real(), k.imag(),
-        d_result_re, d_result_im,
-        d_gx_re, d_gx_im, d_gy_re, d_gy_im, d_gz_re, d_gz_im);
-    CUDA_CHECK(cudaDeviceSynchronize());
+        if (n_leaves > 0) {
+            l2p_gradient_kernel<<<n_leaves, 256>>>(
+                d_tgt_pts, d_dirs, d_weights,
+                d_local_re, d_local_im,
+                k.real(), k.imag(), prefactor.real(), prefactor.imag(),
+                ik_val.real(), ik_val.imag(),
+                d_gx_re, d_gx_im, d_gy_re, d_gy_im, d_gz_re, d_gz_im,
+                d_leaf_idx, d_tgt_id_offsets, d_tgt_ids,
+                d_node_centers, L, n_leaves);
+            CUDA_CHECK(cudaGetLastError());
+        }
 
-    // === Download potential ===
-    {
-        CUDA_CHECK(cudaMemcpy(h_res_re_buf.data(), d_result_re, Nt * sizeof(double), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(h_res_im_buf.data(), d_result_im, Nt * sizeof(double), cudaMemcpyDeviceToHost));
-        for (int i = 0; i < Nt; i++)
-            pot_result[i] = cdouble(h_res_re_buf[i], h_res_im_buf[i]);
-    }
+        // P2P gradient
+        launch_p2p_gradient_leaf(d_tgt_pts, d_src_pts,
+            d_charges_re, d_charges_im,
+            d_tgt_id_offsets_cached, d_tgt_ids_cached,
+            d_src_id_offsets_cached, d_src_ids_cached,
+            d_leaf_near_offsets_cached, d_leaf_near_ids_cached,
+            n_leaves, k.real(), k.imag(),
+            d_gx_re, d_gx_im, d_gy_re, d_gy_im, d_gz_re, d_gz_im);
+        CUDA_CHECK(cudaGetLastError());
 
-    // === Repack gradient (using pre-allocated temp buffers) ===
-    {
+        // Repack gradient on GPU: 6 separate arrays -> interleaved [x0,y0,z0,x1,...]
+        // d_gx_re aliases d_grad_re[0..Nt-1], so we need a temp copy of gx
+        // to avoid overwriting source data during interleaving.
+        double *d_gx_re_tmp = d_gx_re_tmp_cached;
+        double *d_gx_im_tmp = d_gx_im_tmp_cached;
         CUDA_CHECK(cudaMemcpy(d_gx_re_tmp, d_gx_re, Nt * sizeof(double), cudaMemcpyDeviceToDevice));
         CUDA_CHECK(cudaMemcpy(d_gx_im_tmp, d_gx_im, Nt * sizeof(double), cudaMemcpyDeviceToDevice));
 
@@ -2512,35 +1652,414 @@ void HelmholtzFMM::evaluate_pot_grad(const cdouble* charges,
         repack_gradient_kernel<<<repack_grid, repack_block>>>(
             d_gx_re_tmp, d_gx_im_tmp, d_gy_re, d_gy_im, d_gz_re, d_gz_im,
             d_grad_re, d_grad_im, Nt);
-        CUDA_CHECK(cudaDeviceSynchronize());
+        CUDA_CHECK(cudaGetLastError());
 
-        CUDA_CHECK(cudaMemcpy(h_res_re_buf.data(), d_grad_re, Nt * 3 * sizeof(double), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(h_res_im_buf.data(), d_grad_im, Nt * 3 * sizeof(double), cudaMemcpyDeviceToHost));
-        for (int i = 0; i < Nt * 3; i++)
-            grad_result[i] = cdouble(h_res_re_buf[i], h_res_im_buf[i]);
     }
+}
+
+void HelmholtzFMM::evaluate(const cdouble* charges, cdouble* result)
+{
+    int block = 256;
+    int grid_src = (Ns + block - 1) / block;
+    CUDA_CHECK(cudaMemcpy(d_complex_tmp1, charges, Ns * sizeof(double2), cudaMemcpyHostToDevice));
+    split_complex_kernel<<<grid_src, block>>>(d_complex_tmp1, d_charges_re, d_charges_im, Ns);
+    CUDA_CHECK(cudaGetLastError());
+
+    run_tree_uploaded(false);
+
+    int grid_tgt = (Nt + block - 1) / block;
+    pack_complex_kernel<<<grid_tgt, block>>>(d_result_re, d_result_im, d_complex_tmp1, Nt);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaMemcpy(result, d_complex_tmp1, Nt * sizeof(double2), cudaMemcpyDeviceToHost));
+}
+
+void HelmholtzFMM::evaluate_gradient(const cdouble* charges, cdouble* grad_result)
+{
+    int block = 256;
+    int grid_src = (Ns + block - 1) / block;
+    CUDA_CHECK(cudaMemcpy(d_complex_tmp1, charges, Ns * sizeof(double2), cudaMemcpyHostToDevice));
+    split_complex_kernel<<<grid_src, block>>>(d_complex_tmp1, d_charges_re, d_charges_im, Ns);
+    CUDA_CHECK(cudaGetLastError());
+
+    run_tree_uploaded(true);
+
+    int ngrad = Nt * 3;
+    int grid_grad = (ngrad + block - 1) / block;
+    pack_complex_kernel<<<grid_grad, block>>>(d_grad_re, d_grad_im, d_complex_tmp1, ngrad);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaMemcpy(grad_result, d_complex_tmp1, ngrad * sizeof(double2), cudaMemcpyDeviceToHost));
+}
+
+void HelmholtzFMM::evaluate_pot_grad(const cdouble* charges,
+                                      cdouble* pot_result,
+                                      cdouble* grad_result)
+{
+    int block = 256;
+    int grid_src = (Ns + block - 1) / block;
+    CUDA_CHECK(cudaMemcpy(d_complex_tmp1, charges, Ns * sizeof(double2), cudaMemcpyHostToDevice));
+    split_complex_kernel<<<grid_src, block>>>(d_complex_tmp1, d_charges_re, d_charges_im, Ns);
+    CUDA_CHECK(cudaGetLastError());
+
+    evaluate_pot_grad_uploaded();
+
+    int grid_tgt = (Nt + block - 1) / block;
+    pack_complex_kernel<<<grid_tgt, block>>>(d_result_re, d_result_im, d_complex_tmp1, Nt);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaMemcpy(pot_result, d_complex_tmp1, Nt * sizeof(double2), cudaMemcpyDeviceToHost));
+
+    int ngrad = Nt * 3;
+    int grid_grad = (ngrad + block - 1) / block;
+    pack_complex_kernel<<<grid_grad, block>>>(d_grad_re, d_grad_im, d_complex_tmp1, ngrad);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaMemcpy(grad_result, d_complex_tmp1, ngrad * sizeof(double2), cudaMemcpyDeviceToHost));
+}
+
+void HelmholtzFMM::evaluate_pot_grad_uploaded()
+{
+    int n_leaves = (int)leaf_info.size();
+
+    CUDA_CHECK(cudaMemset(d_multi_re, 0, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_multi_im, 0, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_local_re, 0, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_local_im, 0, n_nodes * L * sizeof(double)));
+
+    double *d_node_centers = d_node_centers_cached;
+    double *d_dirs = d_dirs_cached;
+    double *d_weights = d_weights_cached;
+    int *d_leaf_idx = d_leaf_idx_cached;
+    int *d_src_id_offsets = d_src_id_offsets_cached;
+    int *d_src_ids = d_src_ids_cached;
+    int *d_tgt_id_offsets = d_tgt_id_offsets_cached;
+    int *d_tgt_ids = d_tgt_ids_cached;
+
+    int block_L = std::min(L, 256);
+
+    if (n_leaves > 0) {
+        p2m_kernel<<<n_leaves, block_L>>>(
+            d_src_pts, d_charges_re, d_charges_im,
+            d_dirs, k.real(), k.imag(),
+            d_multi_re, d_multi_im,
+            d_leaf_idx, d_src_id_offsets, d_src_ids,
+            d_node_centers, L, n_leaves);
+        CUDA_CHECK(cudaGetLastError());
+    }
+
+    for (int level = tree.max_level - 1; level >= 1; level--) {
+        if (level < (int)m2m_level_info.size() && m2m_level_info[level].count > 0) {
+            int off = m2m_level_info[level].offset;
+            int cnt = m2m_level_info[level].count;
+            m2m_kernel<<<cnt, block_L>>>(d_m2m_parent, d_m2m_child,
+                d_m2m_shift_re, d_m2m_shift_im, d_multi_re, d_multi_im, L, cnt, off);
+            CUDA_CHECK(cudaGetLastError());
+        }
+    }
+
+    for (int level = 1; level <= tree.max_level; level++) {
+        if (level < (int)m2l_level_info.size() && m2l_level_info[level].count > 0) {
+            int off = m2l_level_info[level].offset;
+            int cnt = m2l_level_info[level].count;
+            m2l_kernel<<<cnt, block_L>>>(d_m2l_tgt, d_m2l_src, d_m2l_tidx,
+                d_transfer_re, d_transfer_im, d_multi_re, d_multi_im,
+                d_local_re, d_local_im, L, cnt, off);
+            CUDA_CHECK(cudaGetLastError());
+        }
+    }
+
+    for (int level = 2; level <= tree.max_level; level++) {
+        if (level < (int)l2l_level_info.size() && l2l_level_info[level].count > 0) {
+            int off = l2l_level_info[level].offset;
+            int cnt = l2l_level_info[level].count;
+            l2l_kernel<<<cnt, block_L>>>(d_l2l_parent, d_l2l_child,
+                d_l2l_shift_re, d_l2l_shift_im,
+                d_local_re, d_local_im, d_local_re, d_local_im, L, cnt, off);
+            CUDA_CHECK(cudaGetLastError());
+        }
+    }
+
+    cdouble ik_val = cdouble(0, 1) * k;
+    cdouble prefactor = ik_val / (16.0 * M_PI * M_PI);
+
+    CUDA_CHECK(cudaMemset(d_result_re, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_result_im, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gx_re_tmp_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gx_im_tmp_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gy_re_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gy_im_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gz_re_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gz_im_cached, 0, Nt * sizeof(double)));
+
+    if (n_leaves > 0) {
+        l2p_kernel<<<n_leaves, 256>>>(
+            d_tgt_pts, d_dirs, d_weights,
+            d_local_re, d_local_im,
+            k.real(), k.imag(), prefactor.real(), prefactor.imag(),
+            d_result_re, d_result_im,
+            d_leaf_idx, d_tgt_id_offsets, d_tgt_ids,
+            d_node_centers, L, n_leaves);
+        CUDA_CHECK(cudaGetLastError());
+
+        l2p_gradient_kernel<<<n_leaves, 256>>>(
+            d_tgt_pts, d_dirs, d_weights,
+            d_local_re, d_local_im,
+            k.real(), k.imag(), prefactor.real(), prefactor.imag(),
+            ik_val.real(), ik_val.imag(),
+            d_gx_re_tmp_cached, d_gx_im_tmp_cached,
+            d_gy_re_cached, d_gy_im_cached,
+            d_gz_re_cached, d_gz_im_cached,
+            d_leaf_idx, d_tgt_id_offsets, d_tgt_ids,
+            d_node_centers, L, n_leaves);
+        CUDA_CHECK(cudaGetLastError());
+    }
+
+    launch_p2p_pot_grad_leaf(
+        d_tgt_pts, d_src_pts,
+        d_charges_re, d_charges_im,
+        d_tgt_id_offsets_cached, d_tgt_ids_cached,
+        d_src_id_offsets_cached, d_src_ids_cached,
+        d_leaf_near_offsets_cached, d_leaf_near_ids_cached,
+        n_leaves, k.real(), k.imag(),
+        d_result_re, d_result_im,
+        d_gx_re_tmp_cached, d_gx_im_tmp_cached,
+        d_gy_re_cached, d_gy_im_cached,
+        d_gz_re_cached, d_gz_im_cached);
+    CUDA_CHECK(cudaGetLastError());
+
+    int repack_block = 256;
+    int repack_grid = (Nt + repack_block - 1) / repack_block;
+    repack_gradient_kernel<<<repack_grid, repack_block>>>(
+        d_gx_re_tmp_cached, d_gx_im_tmp_cached,
+        d_gy_re_cached, d_gy_im_cached,
+        d_gz_re_cached, d_gz_im_cached,
+        d_grad_re, d_grad_im, Nt);
+    CUDA_CHECK(cudaGetLastError());
 }
 
 void HelmholtzFMM::evaluate_batch2(
     const cdouble* charges1, const cdouble* charges2,
     cdouble* result1, cdouble* result2)
 {
-    for (int i = 0; i < Ns; i++) {
-        h_q_re_buf[i] = charges1[i].real(); h_q_im_buf[i] = charges1[i].imag();
-        h_q2_re_buf[i] = charges2[i].real(); h_q2_im_buf[i] = charges2[i].imag();
+    int block = 256;
+    int grid_src = (Ns + block - 1) / block;
+    CUDA_CHECK(cudaMemcpy(d_complex_tmp1, charges1, Ns * sizeof(double2), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_complex_tmp2, charges2, Ns * sizeof(double2), cudaMemcpyHostToDevice));
+    split_complex_kernel<<<grid_src, block>>>(d_complex_tmp1, d_charges_re, d_charges_im, Ns);
+    split_complex_kernel<<<grid_src, block>>>(d_complex_tmp2, d_charges2_re, d_charges2_im, Ns);
+    CUDA_CHECK(cudaGetLastError());
+
+    evaluate_batch2_uploaded();
+
+    int grid_tgt = (Nt + block - 1) / block;
+    pack_complex_kernel<<<grid_tgt, block>>>(d_result_re, d_result_im, d_complex_tmp1, Nt);
+    pack_complex_kernel<<<grid_tgt, block>>>(d_result2_re, d_result2_im, d_complex_tmp2, Nt);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaMemcpy(result1, d_complex_tmp1, Nt * sizeof(double2), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(result2, d_complex_tmp2, Nt * sizeof(double2), cudaMemcpyDeviceToHost));
+}
+
+void HelmholtzFMM::evaluate_batch2_uploaded()
+{
+    int n_leaves = (int)leaf_info.size();
+
+    CUDA_CHECK(cudaMemset(d_multi_re, 0, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_multi_im, 0, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_local_re, 0, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_local_im, 0, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_multi2_re, 0, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_multi2_im, 0, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_local2_re, 0, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_local2_im, 0, n_nodes * L * sizeof(double)));
+
+    int block_L = std::min(L, 256);
+    if (n_leaves > 0) {
+        p2m_kernel_batch2<<<n_leaves, block_L>>>(
+            d_src_pts, d_charges_re, d_charges_im, d_charges2_re, d_charges2_im,
+            d_dirs_cached, k.real(), k.imag(),
+            d_multi_re, d_multi_im, d_multi2_re, d_multi2_im,
+            d_leaf_idx_cached, d_src_id_offsets_cached, d_src_ids_cached,
+            d_node_centers_cached, L, n_leaves);
+        CUDA_CHECK(cudaGetLastError());
     }
 
-    run_tree_batch2(h_q_re_buf.data(), h_q_im_buf.data(), h_q2_re_buf.data(), h_q2_im_buf.data(), false);
-
-    CUDA_CHECK(cudaMemcpy(h_res_re_buf.data(), d_result_re, Nt * sizeof(double), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(h_res_im_buf.data(), d_result_im, Nt * sizeof(double), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(h_res2_re_buf.data(), d_result2_re, Nt * sizeof(double), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(h_res2_im_buf.data(), d_result2_im, Nt * sizeof(double), cudaMemcpyDeviceToHost));
-
-    for (int i = 0; i < Nt; i++) {
-        result1[i] = cdouble(h_res_re_buf[i], h_res_im_buf[i]);
-        result2[i] = cdouble(h_res2_re_buf[i], h_res2_im_buf[i]);
+    for (int level = tree.max_level - 1; level >= 1; level--) {
+        if (level < (int)m2m_level_info.size() && m2m_level_info[level].count > 0) {
+            int off = m2m_level_info[level].offset;
+            int cnt = m2m_level_info[level].count;
+            m2m_kernel_batch2<<<cnt, block_L>>>(d_m2m_parent, d_m2m_child,
+                d_m2m_shift_re, d_m2m_shift_im,
+                d_multi_re, d_multi_im, d_multi2_re, d_multi2_im, L, cnt, off);
+            CUDA_CHECK(cudaGetLastError());
+        }
     }
+
+    for (int level = 1; level <= tree.max_level; level++) {
+        if (level < (int)m2l_level_info.size() && m2l_level_info[level].count > 0) {
+            int off = m2l_level_info[level].offset;
+            int cnt = m2l_level_info[level].count;
+            m2l_kernel_batch2<<<cnt, block_L>>>(d_m2l_tgt, d_m2l_src, d_m2l_tidx,
+                d_transfer_re, d_transfer_im,
+                d_multi_re, d_multi_im, d_multi2_re, d_multi2_im,
+                d_local_re, d_local_im, d_local2_re, d_local2_im, L, cnt, off);
+            CUDA_CHECK(cudaGetLastError());
+        }
+    }
+
+    for (int level = 2; level <= tree.max_level; level++) {
+        if (level < (int)l2l_level_info.size() && l2l_level_info[level].count > 0) {
+            int off = l2l_level_info[level].offset;
+            int cnt = l2l_level_info[level].count;
+            l2l_kernel_batch2<<<cnt, block_L>>>(d_l2l_parent, d_l2l_child,
+                d_l2l_shift_re, d_l2l_shift_im,
+                d_local_re, d_local_im, d_local_re, d_local_im,
+                d_local2_re, d_local2_im, d_local2_re, d_local2_im, L, cnt, off);
+            CUDA_CHECK(cudaGetLastError());
+        }
+    }
+
+    cdouble ik_val = cdouble(0, 1) * k;
+    cdouble prefactor = ik_val / (16.0 * M_PI * M_PI);
+
+    CUDA_CHECK(cudaMemset(d_result_re, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_result_im, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_result2_re, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_result2_im, 0, Nt * sizeof(double)));
+    if (n_leaves > 0) {
+        l2p_kernel_batch2<<<n_leaves, 256>>>(
+            d_tgt_pts, d_dirs_cached, d_weights_cached,
+            d_local_re, d_local_im, d_local2_re, d_local2_im,
+            k.real(), k.imag(), prefactor.real(), prefactor.imag(),
+            d_result_re, d_result_im, d_result2_re, d_result2_im,
+            d_leaf_idx_cached, d_tgt_id_offsets_cached, d_tgt_ids_cached,
+            d_node_centers_cached, L, n_leaves);
+        CUDA_CHECK(cudaGetLastError());
+    }
+
+    launch_p2p_potential_batch2_leaf(
+        d_tgt_pts, d_src_pts,
+        d_charges_re, d_charges_im, d_charges2_re, d_charges2_im,
+        d_tgt_id_offsets_cached, d_tgt_ids_cached,
+        d_src_id_offsets_cached, d_src_ids_cached,
+        d_leaf_near_offsets_cached, d_leaf_near_ids_cached,
+        n_leaves, k.real(), k.imag(),
+        d_result_re, d_result_im, d_result2_re, d_result2_im);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+void HelmholtzFMM::evaluate_batch4_far_uploaded()
+{
+    int n_leaves = (int)leaf_info.size();
+
+    CUDA_CHECK(cudaMemset(d_multi_re, 0, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_multi_im, 0, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_local_re, 0, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_local_im, 0, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_multi2_re, 0, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_multi2_im, 0, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_local2_re, 0, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_local2_im, 0, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_multi3_re, 0, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_multi3_im, 0, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_local3_re, 0, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_local3_im, 0, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_multi4_re, 0, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_multi4_im, 0, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_local4_re, 0, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_local4_im, 0, n_nodes * L * sizeof(double)));
+
+    int block_L = std::min(L, 256);
+    if (n_leaves > 0) {
+        p2m_kernel_batch4<<<n_leaves, block_L>>>(
+            d_src_pts,
+            d_charges_re, d_charges_im, d_charges2_re, d_charges2_im,
+            d_charges3_re, d_charges3_im, d_charges4_re, d_charges4_im,
+            d_dirs_cached, k.real(), k.imag(),
+            d_multi_re, d_multi_im, d_multi2_re, d_multi2_im,
+            d_multi3_re, d_multi3_im, d_multi4_re, d_multi4_im,
+            d_leaf_idx_cached, d_src_id_offsets_cached, d_src_ids_cached,
+            d_node_centers_cached, L, n_leaves);
+        CUDA_CHECK(cudaGetLastError());
+    }
+
+    for (int level = tree.max_level - 1; level >= 1; level--) {
+        if (level < (int)m2m_level_info.size() && m2m_level_info[level].count > 0) {
+            int off = m2m_level_info[level].offset, cnt = m2m_level_info[level].count;
+            m2m_kernel_batch4<<<cnt, block_L>>>(d_m2m_parent, d_m2m_child,
+                d_m2m_shift_re, d_m2m_shift_im,
+                d_multi_re, d_multi_im, d_multi2_re, d_multi2_im,
+                d_multi3_re, d_multi3_im, d_multi4_re, d_multi4_im,
+                L, cnt, off);
+            CUDA_CHECK(cudaGetLastError());
+        }
+    }
+
+    for (int level = 1; level <= tree.max_level; level++) {
+        if (level < (int)m2l_level_info.size() && m2l_level_info[level].count > 0) {
+            int off = m2l_level_info[level].offset, cnt = m2l_level_info[level].count;
+            m2l_kernel_batch4<<<cnt, block_L>>>(d_m2l_tgt, d_m2l_src, d_m2l_tidx,
+                d_transfer_re, d_transfer_im,
+                d_multi_re, d_multi_im, d_multi2_re, d_multi2_im,
+                d_multi3_re, d_multi3_im, d_multi4_re, d_multi4_im,
+                d_local_re, d_local_im, d_local2_re, d_local2_im,
+                d_local3_re, d_local3_im, d_local4_re, d_local4_im,
+                L, cnt, off);
+            CUDA_CHECK(cudaGetLastError());
+        }
+    }
+
+    for (int level = 2; level <= tree.max_level; level++) {
+        if (level < (int)l2l_level_info.size() && l2l_level_info[level].count > 0) {
+            int off = l2l_level_info[level].offset, cnt = l2l_level_info[level].count;
+            l2l_kernel_batch4<<<cnt, block_L>>>(d_l2l_parent, d_l2l_child,
+                d_l2l_shift_re, d_l2l_shift_im,
+                d_local_re, d_local_im, d_local_re, d_local_im,
+                d_local2_re, d_local2_im, d_local2_re, d_local2_im,
+                d_local3_re, d_local3_im, d_local3_re, d_local3_im,
+                d_local4_re, d_local4_im, d_local4_re, d_local4_im,
+                L, cnt, off);
+            CUDA_CHECK(cudaGetLastError());
+        }
+    }
+
+    cdouble ik_val = cdouble(0, 1) * k;
+    cdouble prefactor = ik_val / (16.0 * M_PI * M_PI);
+
+    CUDA_CHECK(cudaMemset(d_result_re, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_result_im, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_result2_re, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_result2_im, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_result3_re, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_result3_im, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_result4_re, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_result4_im, 0, Nt * sizeof(double)));
+    if (n_leaves > 0) {
+        l2p_kernel_batch4<<<n_leaves, 256>>>(
+            d_tgt_pts, d_dirs_cached, d_weights_cached,
+            d_local_re, d_local_im, d_local2_re, d_local2_im,
+            d_local3_re, d_local3_im, d_local4_re, d_local4_im,
+            k.real(), k.imag(), prefactor.real(), prefactor.imag(),
+            d_result_re, d_result_im, d_result2_re, d_result2_im,
+            d_result3_re, d_result3_im, d_result4_re, d_result4_im,
+            d_leaf_idx_cached, d_tgt_id_offsets_cached, d_tgt_ids_cached,
+            d_node_centers_cached, L, n_leaves);
+        CUDA_CHECK(cudaGetLastError());
+    }
+
+}
+
+void HelmholtzFMM::evaluate_batch4_uploaded()
+{
+    evaluate_batch4_far_uploaded();
+    int n_leaves = (int)leaf_info.size();
+    launch_p2p_potential_batch4_leaf(
+        d_tgt_pts, d_src_pts,
+        d_charges_re, d_charges_im, d_charges2_re, d_charges2_im,
+        d_charges3_re, d_charges3_im, d_charges4_re, d_charges4_im,
+        d_tgt_id_offsets_cached, d_tgt_ids_cached,
+        d_src_id_offsets_cached, d_src_ids_cached,
+        d_leaf_near_offsets_cached, d_leaf_near_ids_cached,
+        n_leaves, k.real(), k.imag(),
+        d_result_re, d_result_im, d_result2_re, d_result2_im,
+        d_result3_re, d_result3_im, d_result4_re, d_result4_im);
+    CUDA_CHECK(cudaGetLastError());
 }
 
 void HelmholtzFMM::evaluate_pot_grad_batch2(
@@ -2548,63 +2067,249 @@ void HelmholtzFMM::evaluate_pot_grad_batch2(
     cdouble* pot1, cdouble* grad1,
     cdouble* pot2, cdouble* grad2)
 {
-    for (int i = 0; i < Ns; i++) {
-        h_q_re_buf[i] = charges1[i].real(); h_q_im_buf[i] = charges1[i].imag();
-        h_q2_re_buf[i] = charges2[i].real(); h_q2_im_buf[i] = charges2[i].imag();
+    int block = 256;
+    int grid_src = (Ns + block - 1) / block;
+    CUDA_CHECK(cudaMemcpy(d_complex_tmp1, charges1, Ns * sizeof(double2), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_complex_tmp2, charges2, Ns * sizeof(double2), cudaMemcpyHostToDevice));
+    split_complex_kernel<<<grid_src, block>>>(d_complex_tmp1, d_charges_re, d_charges_im, Ns);
+    split_complex_kernel<<<grid_src, block>>>(d_complex_tmp2, d_charges2_re, d_charges2_im, Ns);
+    CUDA_CHECK(cudaGetLastError());
+
+    evaluate_pot_grad_batch2_uploaded();
+
+    int grid_tgt = (Nt + block - 1) / block;
+    pack_complex_kernel<<<grid_tgt, block>>>(d_result_re, d_result_im, d_complex_tmp1, Nt);
+    pack_complex_kernel<<<grid_tgt, block>>>(d_result2_re, d_result2_im, d_complex_tmp2, Nt);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaMemcpy(pot1, d_complex_tmp1, Nt * sizeof(double2), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(pot2, d_complex_tmp2, Nt * sizeof(double2), cudaMemcpyDeviceToHost));
+
+    int ngrad = Nt * 3;
+    int grid_grad = (ngrad + block - 1) / block;
+    pack_complex_kernel<<<grid_grad, block>>>(d_grad_re, d_grad_im, d_complex_tmp1, ngrad);
+    pack_complex_kernel<<<grid_grad, block>>>(d_grad2_re, d_grad2_im, d_complex_tmp2, ngrad);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaMemcpy(grad1, d_complex_tmp1, ngrad * sizeof(double2), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(grad2, d_complex_tmp2, ngrad * sizeof(double2), cudaMemcpyDeviceToHost));
+}
+
+void HelmholtzFMM::evaluate_pot_grad_batch2_uploaded()
+{
+    int n_leaves = (int)leaf_info.size();
+
+    CUDA_CHECK(cudaMemset(d_multi_re, 0, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_multi_im, 0, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_local_re, 0, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_local_im, 0, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_multi2_re, 0, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_multi2_im, 0, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_local2_re, 0, n_nodes * L * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_local2_im, 0, n_nodes * L * sizeof(double)));
+
+    int block_L = std::min(L, 256);
+    if (n_leaves > 0) {
+        p2m_kernel_batch2<<<n_leaves, block_L>>>(
+            d_src_pts, d_charges_re, d_charges_im, d_charges2_re, d_charges2_im,
+            d_dirs_cached, k.real(), k.imag(),
+            d_multi_re, d_multi_im, d_multi2_re, d_multi2_im,
+            d_leaf_idx_cached, d_src_id_offsets_cached, d_src_ids_cached,
+            d_node_centers_cached, L, n_leaves);
+        CUDA_CHECK(cudaGetLastError());
     }
 
-    run_tree_batch2(h_q_re_buf.data(), h_q_im_buf.data(), h_q2_re_buf.data(), h_q2_im_buf.data(), true);
-
-    // Download potential for both vectors
-    {
-        CUDA_CHECK(cudaMemcpy(h_res_re_buf.data(), d_result_re, Nt * sizeof(double), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(h_res_im_buf.data(), d_result_im, Nt * sizeof(double), cudaMemcpyDeviceToHost));
-        for (int i = 0; i < Nt; i++)
-            pot1[i] = cdouble(h_res_re_buf[i], h_res_im_buf[i]);
-
-        CUDA_CHECK(cudaMemcpy(h_res_re_buf.data(), d_result2_re, Nt * sizeof(double), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(h_res_im_buf.data(), d_result2_im, Nt * sizeof(double), cudaMemcpyDeviceToHost));
-        for (int i = 0; i < Nt; i++)
-            pot2[i] = cdouble(h_res_re_buf[i], h_res_im_buf[i]);
+    for (int level = tree.max_level - 1; level >= 1; level--) {
+        if (level < (int)m2m_level_info.size() && m2m_level_info[level].count > 0) {
+            int off = m2m_level_info[level].offset;
+            int cnt = m2m_level_info[level].count;
+            m2m_kernel_batch2<<<cnt, block_L>>>(d_m2m_parent, d_m2m_child,
+                d_m2m_shift_re, d_m2m_shift_im,
+                d_multi_re, d_multi_im, d_multi2_re, d_multi2_im, L, cnt, off);
+            CUDA_CHECK(cudaGetLastError());
+        }
     }
 
-    // Download gradient for both vectors
-    {
-        CUDA_CHECK(cudaMemcpy(h_res_re_buf.data(), d_grad_re, Nt * 3 * sizeof(double), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(h_res_im_buf.data(), d_grad_im, Nt * 3 * sizeof(double), cudaMemcpyDeviceToHost));
-        for (int i = 0; i < Nt * 3; i++)
-            grad1[i] = cdouble(h_res_re_buf[i], h_res_im_buf[i]);
-
-        CUDA_CHECK(cudaMemcpy(h_res_re_buf.data(), d_grad2_re, Nt * 3 * sizeof(double), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(h_res_im_buf.data(), d_grad2_im, Nt * 3 * sizeof(double), cudaMemcpyDeviceToHost));
-        for (int i = 0; i < Nt * 3; i++)
-            grad2[i] = cdouble(h_res_re_buf[i], h_res_im_buf[i]);
+    for (int level = 1; level <= tree.max_level; level++) {
+        if (level < (int)m2l_level_info.size() && m2l_level_info[level].count > 0) {
+            int off = m2l_level_info[level].offset;
+            int cnt = m2l_level_info[level].count;
+            m2l_kernel_batch2<<<cnt, block_L>>>(d_m2l_tgt, d_m2l_src, d_m2l_tidx,
+                d_transfer_re, d_transfer_im,
+                d_multi_re, d_multi_im, d_multi2_re, d_multi2_im,
+                d_local_re, d_local_im, d_local2_re, d_local2_im, L, cnt, off);
+            CUDA_CHECK(cudaGetLastError());
+        }
     }
+
+    for (int level = 2; level <= tree.max_level; level++) {
+        if (level < (int)l2l_level_info.size() && l2l_level_info[level].count > 0) {
+            int off = l2l_level_info[level].offset;
+            int cnt = l2l_level_info[level].count;
+            l2l_kernel_batch2<<<cnt, block_L>>>(d_l2l_parent, d_l2l_child,
+                d_l2l_shift_re, d_l2l_shift_im,
+                d_local_re, d_local_im, d_local_re, d_local_im,
+                d_local2_re, d_local2_im, d_local2_re, d_local2_im, L, cnt, off);
+            CUDA_CHECK(cudaGetLastError());
+        }
+    }
+
+    cdouble ik_val = cdouble(0, 1) * k;
+    cdouble prefactor = ik_val / (16.0 * M_PI * M_PI);
+
+    CUDA_CHECK(cudaMemset(d_result_re, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_result_im, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_result2_re, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_result2_im, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gx_re_tmp_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gx_im_tmp_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gy_re_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gy_im_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gz_re_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gz_im_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gx2_re_tmp_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gx2_im_tmp_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gy2_re_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gy2_im_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gz2_re_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gz2_im_cached, 0, Nt * sizeof(double)));
+
+    if (n_leaves > 0) {
+        l2p_kernel_batch2<<<n_leaves, 256>>>(
+            d_tgt_pts, d_dirs_cached, d_weights_cached,
+            d_local_re, d_local_im, d_local2_re, d_local2_im,
+            k.real(), k.imag(), prefactor.real(), prefactor.imag(),
+            d_result_re, d_result_im, d_result2_re, d_result2_im,
+            d_leaf_idx_cached, d_tgt_id_offsets_cached, d_tgt_ids_cached,
+            d_node_centers_cached, L, n_leaves);
+        CUDA_CHECK(cudaGetLastError());
+
+        l2p_gradient_kernel_batch2<<<n_leaves, 256>>>(
+            d_tgt_pts, d_dirs_cached, d_weights_cached,
+            d_local_re, d_local_im, d_local2_re, d_local2_im,
+            k.real(), k.imag(), prefactor.real(), prefactor.imag(),
+            ik_val.real(), ik_val.imag(),
+            d_gx_re_tmp_cached, d_gx_im_tmp_cached, d_gy_re_cached, d_gy_im_cached, d_gz_re_cached, d_gz_im_cached,
+            d_gx2_re_tmp_cached, d_gx2_im_tmp_cached, d_gy2_re_cached, d_gy2_im_cached, d_gz2_re_cached, d_gz2_im_cached,
+            d_leaf_idx_cached, d_tgt_id_offsets_cached, d_tgt_ids_cached,
+            d_node_centers_cached, L, n_leaves);
+        CUDA_CHECK(cudaGetLastError());
+    }
+
+    launch_p2p_pot_grad_batch2_leaf(
+        d_tgt_pts, d_src_pts,
+        d_charges_re, d_charges_im, d_charges2_re, d_charges2_im,
+        d_tgt_id_offsets_cached, d_tgt_ids_cached,
+        d_src_id_offsets_cached, d_src_ids_cached,
+        d_leaf_near_offsets_cached, d_leaf_near_ids_cached,
+        n_leaves, k.real(), k.imag(),
+        d_result_re, d_result_im,
+        d_gx_re_tmp_cached, d_gx_im_tmp_cached, d_gy_re_cached, d_gy_im_cached, d_gz_re_cached, d_gz_im_cached,
+        d_result2_re, d_result2_im,
+        d_gx2_re_tmp_cached, d_gx2_im_tmp_cached, d_gy2_re_cached, d_gy2_im_cached, d_gz2_re_cached, d_gz2_im_cached);
+    CUDA_CHECK(cudaGetLastError());
+
+    int repack_block = 256;
+    int repack_grid = (Nt + repack_block - 1) / repack_block;
+    repack_gradient_kernel<<<repack_grid, repack_block>>>(
+        d_gx_re_tmp_cached, d_gx_im_tmp_cached,
+        d_gy_re_cached, d_gy_im_cached, d_gz_re_cached, d_gz_im_cached,
+        d_grad_re, d_grad_im, Nt);
+    CUDA_CHECK(cudaGetLastError());
+    repack_gradient_kernel<<<repack_grid, repack_block>>>(
+        d_gx2_re_tmp_cached, d_gx2_im_tmp_cached,
+        d_gy2_re_cached, d_gy2_im_cached, d_gz2_re_cached, d_gz2_im_cached,
+        d_grad2_re, d_grad2_im, Nt);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+void HelmholtzFMM::evaluate_pot_grad_batch4_uploaded()
+{
+    evaluate_batch4_far_uploaded();
+
+    int n_leaves = (int)leaf_info.size();
+    cdouble ik_val = cdouble(0, 1) * k;
+    cdouble prefactor = ik_val / (16.0 * M_PI * M_PI);
+
+    CUDA_CHECK(cudaMemset(d_gx_re_tmp_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gx_im_tmp_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gy_re_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gy_im_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gz_re_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gz_im_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gx2_re_tmp_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gx2_im_tmp_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gy2_re_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gy2_im_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gz2_re_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gz2_im_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gx3_re_tmp_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gx3_im_tmp_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gy3_re_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gy3_im_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gz3_re_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gz3_im_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gx4_re_tmp_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gx4_im_tmp_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gy4_re_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gy4_im_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gz4_re_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gz4_im_cached, 0, Nt * sizeof(double)));
+
+    if (n_leaves > 0) {
+        l2p_gradient_kernel_batch4<<<n_leaves, 256>>>(
+            d_tgt_pts, d_dirs_cached, d_weights_cached,
+            d_local_re, d_local_im, d_local2_re, d_local2_im,
+            d_local3_re, d_local3_im, d_local4_re, d_local4_im,
+            k.real(), k.imag(), prefactor.real(), prefactor.imag(),
+            ik_val.real(), ik_val.imag(),
+            d_gx_re_tmp_cached, d_gx_im_tmp_cached, d_gy_re_cached, d_gy_im_cached, d_gz_re_cached, d_gz_im_cached,
+            d_gx2_re_tmp_cached, d_gx2_im_tmp_cached, d_gy2_re_cached, d_gy2_im_cached, d_gz2_re_cached, d_gz2_im_cached,
+            d_gx3_re_tmp_cached, d_gx3_im_tmp_cached, d_gy3_re_cached, d_gy3_im_cached, d_gz3_re_cached, d_gz3_im_cached,
+            d_gx4_re_tmp_cached, d_gx4_im_tmp_cached, d_gy4_re_cached, d_gy4_im_cached, d_gz4_re_cached, d_gz4_im_cached,
+            d_leaf_idx_cached, d_tgt_id_offsets_cached, d_tgt_ids_cached,
+            d_node_centers_cached, L, n_leaves);
+        CUDA_CHECK(cudaGetLastError());
+    }
+
+    launch_p2p_pot_grad_batch4_leaf(
+        d_tgt_pts, d_src_pts,
+        d_charges_re, d_charges_im, d_charges2_re, d_charges2_im,
+        d_charges3_re, d_charges3_im, d_charges4_re, d_charges4_im,
+        d_tgt_id_offsets_cached, d_tgt_ids_cached,
+        d_src_id_offsets_cached, d_src_ids_cached,
+        d_leaf_near_offsets_cached, d_leaf_near_ids_cached,
+        n_leaves, k.real(), k.imag(),
+        d_result_re, d_result_im,
+        d_gx_re_tmp_cached, d_gx_im_tmp_cached, d_gy_re_cached, d_gy_im_cached, d_gz_re_cached, d_gz_im_cached,
+        d_result2_re, d_result2_im,
+        d_gx2_re_tmp_cached, d_gx2_im_tmp_cached, d_gy2_re_cached, d_gy2_im_cached, d_gz2_re_cached, d_gz2_im_cached,
+        d_result3_re, d_result3_im,
+        d_gx3_re_tmp_cached, d_gx3_im_tmp_cached, d_gy3_re_cached, d_gy3_im_cached, d_gz3_re_cached, d_gz3_im_cached,
+        d_result4_re, d_result4_im,
+        d_gx4_re_tmp_cached, d_gx4_im_tmp_cached, d_gy4_re_cached, d_gy4_im_cached, d_gz4_re_cached, d_gz4_im_cached);
+    CUDA_CHECK(cudaGetLastError());
+
+    int block = 256;
+    int grid = (Nt + block - 1) / block;
+    repack_gradient_kernel<<<grid, block>>>(d_gx_re_tmp_cached, d_gx_im_tmp_cached,
+        d_gy_re_cached, d_gy_im_cached, d_gz_re_cached, d_gz_im_cached, d_grad_re, d_grad_im, Nt);
+    repack_gradient_kernel<<<grid, block>>>(d_gx2_re_tmp_cached, d_gx2_im_tmp_cached,
+        d_gy2_re_cached, d_gy2_im_cached, d_gz2_re_cached, d_gz2_im_cached, d_grad2_re, d_grad2_im, Nt);
+    repack_gradient_kernel<<<grid, block>>>(d_gx3_re_tmp_cached, d_gx3_im_tmp_cached,
+        d_gy3_re_cached, d_gy3_im_cached, d_gz3_re_cached, d_gz3_im_cached, d_grad3_re, d_grad3_im, Nt);
+    repack_gradient_kernel<<<grid, block>>>(d_gx4_re_tmp_cached, d_gx4_im_tmp_cached,
+        d_gy4_re_cached, d_gy4_im_cached, d_gz4_re_cached, d_gz4_im_cached, d_grad4_re, d_grad4_im, Nt);
+    CUDA_CHECK(cudaGetLastError());
 }
 
 void HelmholtzFMM::cleanup()
 {
     if (!initialized) return;
-
-    // Tree-shared arrays: only free if we own them
-    if (owns_tree_data) {
-        cudaFree(d_tgt_pts); cudaFree(d_src_pts);
-        cudaFree(d_tgt_to_leaf);
-        cudaFree(d_leaf_near_offsets); cudaFree(d_leaf_near_nbrs);
-        cudaFree(d_node_centers_cached);
-        cudaFree(d_leaf_idx_cached);
-        cudaFree(d_src_id_offsets_cached); cudaFree(d_src_ids_cached);
-        cudaFree(d_tgt_id_offsets_cached); cudaFree(d_tgt_ids_cached);
-    }
-
-    // k-dependent arrays (always owned)
+    cudaFree(d_tgt_pts); cudaFree(d_src_pts);
+    cudaFree(d_p2p_offsets); cudaFree(d_p2p_indices);
     cudaFree(d_multi_re); cudaFree(d_multi_im);
     cudaFree(d_local_re); cudaFree(d_local_im);
-    if (d_m2l_csr_offsets) cudaFree(d_m2l_csr_offsets);
-    if (d_m2l_csr_tgt_nodes) cudaFree(d_m2l_csr_tgt_nodes);
-    if (d_m2l_csr_src) cudaFree(d_m2l_csr_src);
-    if (d_m2l_csr_tidx) cudaFree(d_m2l_csr_tidx);
-    if (d_transfer_ri) cudaFree(d_transfer_ri);
+    cudaFree(d_transfer_re); cudaFree(d_transfer_im);
+    cudaFree(d_m2l_tgt); cudaFree(d_m2l_src); cudaFree(d_m2l_tidx);
     cudaFree(d_m2m_shift_re); cudaFree(d_m2m_shift_im);
     cudaFree(d_m2m_parent); cudaFree(d_m2m_child);
     cudaFree(d_l2l_shift_re); cudaFree(d_l2l_shift_im);
@@ -2616,31 +2321,50 @@ void HelmholtzFMM::cleanup()
     if (d_charges2_im) cudaFree(d_charges2_im);
     if (d_result2_re) cudaFree(d_result2_re);
     if (d_result2_im) cudaFree(d_result2_im);
+    if (d_grad2_re) cudaFree(d_grad2_re);
+    if (d_grad2_im) cudaFree(d_grad2_im);
     if (d_multi2_re) cudaFree(d_multi2_re);
     if (d_multi2_im) cudaFree(d_multi2_im);
     if (d_local2_re) cudaFree(d_local2_re);
     if (d_local2_im) cudaFree(d_local2_im);
-    if (d_grad2_re) cudaFree(d_grad2_re);
-    if (d_grad2_im) cudaFree(d_grad2_im);
-    if (d_gy2_re_cached) cudaFree(d_gy2_re_cached);
-    if (d_gy2_im_cached) cudaFree(d_gy2_im_cached);
-    if (d_gz2_re_cached) cudaFree(d_gz2_re_cached);
-    if (d_gz2_im_cached) cudaFree(d_gz2_im_cached);
-    cudaFree(d_dirs_cached); cudaFree(d_weights_cached);
+    if (d_charges3_re) cudaFree(d_charges3_re);
+    if (d_charges3_im) cudaFree(d_charges3_im);
+    if (d_charges4_re) cudaFree(d_charges4_re);
+    if (d_charges4_im) cudaFree(d_charges4_im);
+    if (d_result3_re) cudaFree(d_result3_re);
+    if (d_result3_im) cudaFree(d_result3_im);
+    if (d_result4_re) cudaFree(d_result4_re);
+    if (d_result4_im) cudaFree(d_result4_im);
+    if (d_grad3_re) cudaFree(d_grad3_re);
+    if (d_grad3_im) cudaFree(d_grad3_im);
+    if (d_grad4_re) cudaFree(d_grad4_re);
+    if (d_grad4_im) cudaFree(d_grad4_im);
+    if (d_multi3_re) cudaFree(d_multi3_re);
+    if (d_multi3_im) cudaFree(d_multi3_im);
+    if (d_multi4_re) cudaFree(d_multi4_re);
+    if (d_multi4_im) cudaFree(d_multi4_im);
+    if (d_local3_re) cudaFree(d_local3_re);
+    if (d_local3_im) cudaFree(d_local3_im);
+    if (d_local4_re) cudaFree(d_local4_re);
+    if (d_local4_im) cudaFree(d_local4_im);
+    cudaFree(d_node_centers_cached); cudaFree(d_dirs_cached); cudaFree(d_weights_cached);
+    cudaFree(d_leaf_idx_cached);
+    cudaFree(d_src_id_offsets_cached); cudaFree(d_src_ids_cached);
+    cudaFree(d_tgt_id_offsets_cached); cudaFree(d_tgt_ids_cached);
+    cudaFree(d_leaf_near_offsets_cached); cudaFree(d_leaf_near_ids_cached);
     cudaFree(d_gy_re_cached); cudaFree(d_gy_im_cached);
     cudaFree(d_gz_re_cached); cudaFree(d_gz_im_cached);
-    if (d_gx_re_tmp) cudaFree(d_gx_re_tmp);
-    if (d_gx_im_tmp) cudaFree(d_gx_im_tmp);
-    // P2P/FMM overlap resources
-    if (stream_fmm) cudaStreamDestroy(stream_fmm);
-    if (stream_p2p) cudaStreamDestroy(stream_p2p);
-    cudaFree(d_p2p_pot_re); cudaFree(d_p2p_pot_im);
-    cudaFree(d_p2p_pot2_re); cudaFree(d_p2p_pot2_im);
-    cudaFree(d_p2p_gx_re); cudaFree(d_p2p_gx_im);
-    cudaFree(d_p2p_gy_re); cudaFree(d_p2p_gy_im);
-    cudaFree(d_p2p_gz_re); cudaFree(d_p2p_gz_im);
-    cudaFree(d_p2p_gx2_re); cudaFree(d_p2p_gx2_im);
-    cudaFree(d_p2p_gy2_re); cudaFree(d_p2p_gy2_im);
-    cudaFree(d_p2p_gz2_re); cudaFree(d_p2p_gz2_im);
+    cudaFree(d_gx_re_tmp_cached); cudaFree(d_gx_im_tmp_cached);
+    cudaFree(d_gy2_re_cached); cudaFree(d_gy2_im_cached);
+    cudaFree(d_gz2_re_cached); cudaFree(d_gz2_im_cached);
+    cudaFree(d_gx2_re_tmp_cached); cudaFree(d_gx2_im_tmp_cached);
+    cudaFree(d_gy3_re_cached); cudaFree(d_gy3_im_cached);
+    cudaFree(d_gz3_re_cached); cudaFree(d_gz3_im_cached);
+    cudaFree(d_gx3_re_tmp_cached); cudaFree(d_gx3_im_tmp_cached);
+    cudaFree(d_gy4_re_cached); cudaFree(d_gy4_im_cached);
+    cudaFree(d_gz4_re_cached); cudaFree(d_gz4_im_cached);
+    cudaFree(d_gx4_re_tmp_cached); cudaFree(d_gx4_im_tmp_cached);
+    cudaFree(d_complex_tmp1); cudaFree(d_complex_tmp2);
     initialized = false;
+    batch4_allocated = false;
 }

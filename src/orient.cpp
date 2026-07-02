@@ -70,36 +70,12 @@ void gauss_legendre(int n, std::vector<double>& nodes, std::vector<double>& weig
 }
 
 
-std::vector<Orientation> generate_orientations(int n_alpha, int n_beta, int n_gamma,
-                                               int beta_sym, int gamma_sym,
-                                               bool gamma_mirror) {
+std::vector<Orientation> generate_orientations(int n_alpha, int n_beta, int n_gamma) {
     std::vector<double> mu_nodes, mu_weights;
-
-    if (beta_sym == 2) {
-        // Beta symmetry: generate GL(2*n_beta) on [-1,1], keep only positive nodes (cos>0 => beta<90)
-        // This gives EXACT equivalence to full GL(2*n_beta) when f(beta) = f(pi-beta)
-        std::vector<double> full_nodes, full_weights;
-        gauss_legendre(2 * n_beta, full_nodes, full_weights);
-        mu_nodes.resize(n_beta);
-        mu_weights.resize(n_beta);
-        int j = 0;
-        for (int i = 0; i < 2 * n_beta; i++) {
-            if (full_nodes[i] > 0) {  // cos(beta) > 0 => beta < 90
-                mu_nodes[j] = full_nodes[i];
-                mu_weights[j] = full_weights[i] * 2.0;  // double weight for symmetry
-                j++;
-            }
-        }
-    } else {
-        gauss_legendre(n_beta, mu_nodes, mu_weights);
-    }
+    gauss_legendre(n_beta, mu_nodes, mu_weights);
 
     double d_alpha = 2.0 * M_PI / n_alpha;
-    // Weight uses full 2pi/n_gamma (symmetry factor already accounted for)
     double d_gamma = 2.0 * M_PI / n_gamma;
-    // Actual gamma range: [0, 2pi/gamma_sym) or halved if gamma_mirror
-    int effective_gamma_sym = gamma_mirror ? gamma_sym * 2 : gamma_sym;
-    double gamma_step = 2.0 * M_PI / (effective_gamma_sym * n_gamma);
 
     std::vector<Orientation> orients;
     orients.reserve(n_alpha * n_beta * n_gamma);
@@ -110,8 +86,7 @@ std::vector<Orientation> generate_orientations(int n_alpha, int n_beta, int n_ga
             double beta = acos(mu_nodes[ib]);
             double w_beta = mu_weights[ib];
             for (int ig = 0; ig < n_gamma; ig++) {
-                // Half-step offset for mirror to avoid self-mirror boundaries
-                double gamma = gamma_mirror ? (ig + 0.5) * gamma_step : ig * gamma_step;
+                double gamma = ig * d_gamma;
 
                 Mat3 R = euler_rotation(alpha, beta, gamma);
                 Orientation o;
@@ -122,42 +97,4 @@ std::vector<Orientation> generate_orientations(int n_alpha, int n_beta, int n_ga
         }
     }
     return orients;
-}
-
-void sort_orientations_nearest(std::vector<Orientation>& orients) {
-    int n = (int)orients.size();
-    if (n <= 2) return;
-
-    std::vector<bool> used(n, false);
-    std::vector<Orientation> sorted;
-    sorted.reserve(n);
-
-    // Start from first orientation
-    sorted.push_back(orients[0]);
-    used[0] = true;
-
-    for (int step = 1; step < n; step++) {
-        const Mat3& Rprev = sorted.back().RT;
-        int best = -1;
-        double best_d = 1e30;
-
-        for (int j = 0; j < n; j++) {
-            if (used[j]) continue;
-            // Frobenius distance between rotation matrices
-            double d = 0;
-            for (int r = 0; r < 3; r++)
-                for (int c = 0; c < 3; c++) {
-                    double diff = Rprev.m[r][c] - orients[j].RT.m[r][c];
-                    d += diff * diff;
-                }
-            if (d < best_d) {
-                best_d = d;
-                best = j;
-            }
-        }
-        sorted.push_back(orients[best]);
-        used[best] = true;
-    }
-
-    orients = sorted;
 }

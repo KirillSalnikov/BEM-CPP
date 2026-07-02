@@ -3,6 +3,7 @@
 
 #include "rwg.h"
 #include "assembly.h"
+#include "operator_config.h"
 #include <complex>
 
 // Assemble full PMCHWT system matrix Z (2N x 2N).
@@ -11,8 +12,12 @@
 //            [K_ext+K_int, L_ext/eta_ext + L_int/eta_int]]
 void assemble_pmchwt(const RWG& rwg, const Mesh& mesh,
                      std::complex<double> k_ext, std::complex<double> k_int,
-                     double eta_ext, double eta_int,
+                     std::complex<double> eta_ext, std::complex<double> eta_int,
                      int quad_order,
+                     double unknown_m_scale,
+                     std::complex<double> row_h_scale,
+                     double int_op_sign,
+                     double k_identity,
                      std::complex<double>* Z,      // (2N x 2N) output
                      std::complex<double>* L_ext,   // (N x N) output, can be NULL
                      std::complex<double>* K_ext);  // (N x N) output, can be NULL

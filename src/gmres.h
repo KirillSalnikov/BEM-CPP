@@ -13,7 +13,7 @@
 // tol: relative tolerance (default 1e-4)
 // maxiter: max number of restart cycles (default 300)
 // verbose: print convergence info
-// precond: optional left preconditioner (ILU solve)
+// precond: optional right block-Jacobi preconditioner
 //
 // Returns: 0 if converged, 1 if not
 int gmres_solve(BemFmmOperator& op, const cdouble* b, cdouble* x,
