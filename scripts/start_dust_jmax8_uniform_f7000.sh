@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Production launcher for the high-size dust/Greek-particle ADDA comparison.
-# Uses the validated f7000_a45 surface profile instead of the MC-derived mesh
-# that was diagnosed as inaccurate at A_x≈30.
+# Production launcher for the high-size dust-particle ADDA comparison.
+# Uses the edge-aware quality mesh: the previous f7000_a45 surface had
+# skinny triangles at A_x≈30 and did not improve under stricter GMRES/FMM.
 
-RUN_ROOT=${RUN_ROOT:-runs/dust_jmax8_uniform10_f7000_ri1p6_20260702}
+RUN_ROOT=${RUN_ROOT:-runs/dust_jmax8_uniform10_quality_conn_ri1p6_20260703}
 GPUS=${GPUS:-0,1}
 
 KA_LIST=${KA_LIST:-"30.25 33.42333333 36.59666667 39.77 42.94333333 46.11666667 49.29 52.46333333 55.63666667 58.81"}
-DUST_MESH=${DUST_MESH:-runs/greek_larger_valid/meshes/shapeafine_res_f4200_closed_gmsh_f7000_a45.obj}
+DUST_MESH=${DUST_MESH:-runs/pass5_followup_20260701/meshes_dpl20/projected_dpl20_quality_conn_a0p75.obj}
 
 mkdir -p "$RUN_ROOT"
 
