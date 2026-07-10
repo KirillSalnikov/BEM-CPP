@@ -129,6 +129,18 @@ def main() -> int:
         assert "--accurate" in log, log
         assert "--quad 4" not in log, log
 
+        proc = run_wrapper(
+            "run_orient_queue.py", tmp, "--chunk-size", "1",
+            "--orient-warm-start", "recycle",
+        )
+        assert proc.returncode == 0, proc.stdout
+        assert "raising chunk size" not in proc.stdout, proc.stdout
+        import json
+        queue_result = json.loads((tmp / "run_orient_queue.json").read_text())
+        assert queue_result["mgpu_queue"]["requested_chunk_size"] == 1
+        assert queue_result["mgpu_queue"]["chunk_size"] == 1
+        assert queue_result["mgpu_queue"]["chunk_size_explicit"] is True
+
         proc = run_wrapper("run_orient_queue.py", tmp, "--chunk-size", "1", "--fast-obj")
         assert proc.returncode == 0, proc.stdout
         log = wrapper_log(tmp, "run_orient_queue.py")

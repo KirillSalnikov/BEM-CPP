@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import time
 
 
@@ -133,6 +134,7 @@ def spatial_order_indices(indices, orient_lines, bg_mode):
 
 
 def main():
+    chunk_size_explicit = "--chunk-size" in sys.argv
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--exe", default="./bin/bem_cuda_fmm")
     p.add_argument("--out", required=True)
@@ -165,7 +167,7 @@ def main():
                    help="Explicit beta gamma [weight] grid in degrees; compatible with --alpha-avg")
     p.add_argument("--active-indices-file", default=None,
                    help="Optional zero-based orientation indices to compute from an orientation file; "
-                        "requires --chunk-size 1 and preserves part_INDEX.json names")
+                        "indices may be grouped by --chunk-size and split back into part_INDEX.json files")
     p.add_argument("--alpha-avg", default="1",
                    help="Average alpha/phi in far-field only; use with --orient 1 NB NG")
     p.add_argument("--oldauto", choices=["2"], default=None)
@@ -204,7 +206,9 @@ def main():
     if args.active_indices_file and not (args.orient_file or args.orient_bg_file):
         raise SystemExit("--active-indices-file requires --orient-file or --orient-bg-file")
     warm_mode = args.orient_warm_start or os.environ.get("BEM_ORIENT_WARM_START", "")
-    if warm_mode == "recycle" and os.environ.get("BEM_ORIENT_KEEP_CHUNK_SIZE", "0") != "1":
+    requested_chunk_size = args.chunk_size
+    if (warm_mode == "recycle" and not chunk_size_explicit and
+            os.environ.get("BEM_ORIENT_KEEP_CHUNK_SIZE", "0") != "1"):
         hist = args.orient_recycle
         if hist is None:
             try:
@@ -527,6 +531,8 @@ def main():
     result["mgpu_queue"] = {
         "gpus": gpus,
         "chunk_size": args.chunk_size,
+        "requested_chunk_size": requested_chunk_size,
+        "chunk_size_explicit": chunk_size_explicit,
         "orient_file": args.orient_file,
         "orient_bg_file": args.orient_bg_file,
         "chunks": [{"index": c["index"], "seq": c.get("seq"), "start": c["start"], "count": c["count"], "active": c["active"]} for c in chunks],
