@@ -170,9 +170,6 @@ def main() -> int:
     assert 'bem_env_double("BEM_SPFFT_CORR_RADIUS_H"' in surface_pfft_cu
     assert 'atof(std::getenv("BEM_SPFFT_CORR_RADIUS_H"))' not in surface_pfft_cu
     assert "Recompute the true" in block_gmres_cu
-    assert 'use_fmm && !use_prec && !krylov_kind_set' in main_cpp
-    assert 'setenv("BEM_GMRES_DEVICE", "1", 0)' in main_cpp
-    assert 'use_gpu_gmres ? "gmres_gpu" : "gmres_cpu"' in main_cpp
     assert "op.matvec_batch2(x1, x2, r1.data(), r2.data())" in block_gmres_cu
     assert "true ||r||/||b||" in gmres_cu
     assert "numerical breakdown while solving Hessenberg" in gmres_cu

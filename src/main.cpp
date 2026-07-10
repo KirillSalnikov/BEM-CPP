@@ -1641,10 +1641,6 @@ int main(int argc, char** argv) {
     prec_in.gmres_tol = gmres_tol;
     PrecondPolicy prec_policy = choose_precond_policy(prec_in);
     use_prec = prec_policy.enabled;
-
-    if (use_fmm && !use_prec && !krylov_kind_set &&
-        !bem_env_flag_present("BEM_GMRES_DEVICE"))
-        setenv("BEM_GMRES_DEVICE", "1", 0);
     const bool use_gpu_gmres =
         use_fmm && !use_bicgstab && !use_cgs_rr && !use_krylov_auto && !use_krylov_hybrid &&
         (force_gpu_gmres || bem_env_flag_enabled("BEM_GMRES_DEVICE"));
@@ -1655,7 +1651,7 @@ int main(int argc, char** argv) {
                                        (use_cgs_rr ? "cgs_rr_gpu" :
                                        (use_bicgstab_rr ? "bicgstab_rr_gpu" :
                                         (use_bicgstab ? "bicgstab_gpu" :
-                                         (use_gpu_gmres ? "gmres_gpu" : "gmres_cpu")))));
+                                         (use_gpu_gmres ? "gmres_gpu_requested" : "gmres")))));
 
     if (use_fmm && use_prec && !bem_env_flag_present("BEM_PREC_BLOCK")) {
         setenv("BEM_PREC_BLOCK", prec_policy.schwarz ? "1" : "0", 0);
