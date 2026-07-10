@@ -53,6 +53,7 @@ def main() -> int:
     assert "BEM_METADATA_SKIP_CLOUDE" in guarded
     assert "BEM_METADATA_SKIP_CLOUDE" in matrix_queue
     assert 'env.setdefault("BEM_NO_AUTO_MGPU", "1")' in orient_queue
+    assert 'env.setdefault("BEM_GMRES_VERBOSE", "1")' in orient_queue
     assert 'env.setdefault("BEM_NO_AUTO_MGPU", "1")' in orient_mgpu
     assert 'env.setdefault("BEM_NO_AUTO_MGPU", "1")' in obj_compare
     assert 'env.setdefault("BEM_NO_AUTO_MGPU", "1")' in hex_compare

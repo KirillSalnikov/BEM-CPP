@@ -434,6 +434,7 @@ def main():
         env = os.environ.copy()
         env["CUDA_VISIBLE_DEVICES"] = gpu
         env.setdefault("BEM_NO_AUTO_MGPU", "1")
+        env.setdefault("BEM_GMRES_VERBOSE", "1")
         if args.omp_threads > 0:
             env.setdefault("OMP_NUM_THREADS", str(args.omp_threads))
             env.setdefault("OMP_PROC_BIND", "close")
