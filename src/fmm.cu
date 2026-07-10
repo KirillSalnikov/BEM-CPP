@@ -1121,6 +1121,16 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
                     cdouble kd = k * d_norm;
                     double d_hat[3] = {d[0]/d_norm, d[1]/d_norm, d[2]/d_norm};
 
+                    // The radial factors depend only on |d| and l. Computing
+                    // spherical Hankel functions inside the angular loop made
+                    // M2L setup O(n_unique * L * p) special-function calls.
+                    std::vector<cdouble> radial_coeff(p + 1);
+                    cdouble i_pow(1.0, 0.0);
+                    for (int l = 0; l <= p; l++) {
+                        if (l > 0)
+                            i_pow *= cdouble(0.0, 1.0);
+                        radial_coeff[l] = (2.0 * l + 1.0) * i_pow * spherical_hankel1(l, kd);
+                    }
                     std::vector<cdouble> T(L);
                     for (int ll = 0; ll < L; ll++) {
                         double cos_angle = squad.dirs[ll*3]*d_hat[0] +
@@ -1128,14 +1138,12 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
                                            squad.dirs[ll*3+2]*d_hat[2];
                         cdouble sum(0, 0);
                         double P_prev = 1.0, P_curr = cos_angle;
-                        sum += 1.0 * spherical_hankel1(0, kd) * P_prev;
+                        sum += radial_coeff[0] * P_prev;
                         if (p >= 1)
-                            sum += 3.0 * cdouble(0, 1) * spherical_hankel1(1, kd) * P_curr;
-                        cdouble i_pow(0, 1);
+                            sum += radial_coeff[1] * P_curr;
                         for (int l = 2; l <= p; l++) {
                             double P_next = ((2*l - 1) * cos_angle * P_curr - (l - 1) * P_prev) / l;
-                            i_pow *= cdouble(0, 1);
-                            sum += (2.0*l + 1.0) * i_pow * spherical_hankel1(l, kd) * P_next;
+                            sum += radial_coeff[l] * P_next;
                             P_prev = P_curr;
                             P_curr = P_next;
                         }
