@@ -29,6 +29,7 @@ int main()
                0, 1, 1, 1.0,
                12, 2, 0, 0, 0, 0, 0, 1e-3,
                4, 96, 200, 1e-3, 80,
+               3, 1e-2, true, true, true,
                "not_applicable", "gpu_geometry_direct",
                "FMM", "hex_guarded", "gmres", "muller2-balanced", "balanced", true,
                7, 1.3116, std::complex<double>(0.7624, -0.001), 1.0, 0.0,
@@ -53,6 +54,9 @@ int main()
     require_contains(text, "\"shape\": \"hex_prism\"");
     require_contains(text, "\"obj_file\": null");
     require_contains(text, "\"prism_aspect\": 1.5");
+    require_contains(text, "\"requested_fmm_digits\": 3");
+    require_contains(text, "\"requested_gmres_tol\": 0.01");
+    require_contains(text, "\"accuracy_policy_adjusted\": true");
     require_contains(text, "\"edge_refine\": 1");
     require_contains(text, "\"solver_backend\": \"FMM\"");
     require_contains(text, "\"solver_profile\": \"hex_guarded\"");

@@ -1525,6 +1525,8 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    const int requested_fmm_digits = fmm_digits;
+    const double requested_gmres_tol = gmres_tol;
     SolverAccuracyInput acc_in;
     acc_in.use_fmm = use_fmm;
     acc_in.fmm_backend = (solver == SOLVER_FMM);
@@ -1566,6 +1568,8 @@ int main(int argc, char** argv) {
         !bem_env_flag_present("BEM_GMRES_REORTH") &&
         bem_env_flag_enabled("BEM_FAST_REORTH_OFF", false))
         setenv("BEM_GMRES_REORTH", "0", 0);
+    const bool accuracy_policy_adjusted =
+        fmm_digits != requested_fmm_digits || gmres_tol != requested_gmres_tol;
     int batch4_max_n = 120000;
     if (bem_env_has_value("BEM_FMM_BATCH4_MAX_N")) {
         batch4_max_n = std::max(0, bem_env_int("BEM_FMM_BATCH4_MAX_N", batch4_max_n));
@@ -2587,6 +2591,8 @@ int main(int argc, char** argv) {
                                        gmres_ws.reached_max_cycles ? 1 : 0,
                                        std::max(gmres_ws.final_relres1, gmres_ws.final_relres2),
                                        fmm_digits, max_leaf, gmres_restart, gmres_tol, gmres_max_cycles,
+                                       requested_fmm_digits, requested_gmres_tol,
+                                       fmm_digits_set, gmres_tol_set, accuracy_policy_adjusted,
                                        "disabled",
                                        output_farfield_mode,
                                        solver_name(solver), acc_policy.profile,
@@ -3393,6 +3399,8 @@ int main(int argc, char** argv) {
                output_gmres_max_cycle_exhaustions,
                output_gmres_max_final_relres,
                fmm_digits, max_leaf, gmres_restart, gmres_tol, gmres_max_cycles,
+               requested_fmm_digits, requested_gmres_tol,
+               fmm_digits_set, gmres_tol_set, accuracy_policy_adjusted,
                random_orientation_projection,
                output_farfield_mode,
                solver_name(solver), acc_policy.profile,

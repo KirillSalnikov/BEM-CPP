@@ -90,6 +90,9 @@ void write_json(const char* filename,
                 double gmres_max_final_relres,
                 int fmm_digits, int max_leaf, int gmres_restart,
                 double gmres_tol, int gmres_max_cycles,
+                int requested_fmm_digits, double requested_gmres_tol,
+                bool fmm_digits_cli_set, bool gmres_tol_cli_set,
+                bool accuracy_policy_adjusted,
                 const char* random_orientation_projection,
                 const char* farfield_mode,
                 const char* solver_backend, const char* solver_profile,
@@ -173,6 +176,11 @@ void write_json(const char* filename,
     fprintf(f, "  \"gmres_restart\": %d,\n", gmres_restart);
     fprintf(f, "  \"gmres_tol\": %.17g,\n", gmres_tol);
     fprintf(f, "  \"gmres_max_cycles\": %d,\n", gmres_max_cycles);
+    fprintf(f, "  \"requested_fmm_digits\": %d,\n", requested_fmm_digits);
+    fprintf(f, "  \"requested_gmres_tol\": %.17g,\n", requested_gmres_tol);
+    fprintf(f, "  \"fmm_digits_cli_set\": %s,\n", fmm_digits_cli_set ? "true" : "false");
+    fprintf(f, "  \"gmres_tol_cli_set\": %s,\n", gmres_tol_cli_set ? "true" : "false");
+    fprintf(f, "  \"accuracy_policy_adjusted\": %s,\n", accuracy_policy_adjusted ? "true" : "false");
     fprintf(f, "  \"solver_backend\": ");
     write_json_string(f, solver_backend ? solver_backend : "unknown");
     fprintf(f, ",\n");
