@@ -1,0 +1,20 @@
+shape,ka,mesh_ref,time_s,backend,source,gmres_matvecs,ntheta,angle_grid
+гексагональная призма,2.0,2,2.72,BEM-CUDA measured run,runs/poster_full181_fix/hex_ka2_ref2_n181.json,71,181,full181
+гексагональная призма,5.0,2,4.33,BEM-CUDA PMCHWT/FMM current,runs/spfft_benchmark/hex_ka5_ref2_fmm_tol1e-3.json,103,181,full181
+гексагональная призма,10.0,3,17.22,BEM-CUDA measured run,runs/current_time_refresh/hex_ka10_ref3_n181.json,67,181,full181
+гексагональная призма,15.0,4,39.69,BEM-CUDA measured run,runs/poster_full181_fix/hex_ka15_ref4_n181.json,89,181,full181
+гексагональная призма,20.0,4,35.04,BEM-CUDA measured run,runs/current_time_refresh/hex_ka20_ref4_n181_current.json,87,181,full181
+гексагональная призма,30.0,5,184.221,BEM-CUDA measured run,runs/current_time_refresh/hex_ka30_ref5_single_n181_batch4auto.json,65,181,full181
+пылевая частица,2.0,800,40.42,BEM-CUDA measured run,runs/current_time_refresh/dust_ka2_f800_pmchwt_n181.json,700,181,full181
+пылевая частица,5.0,800,246.86,BEM-CUDA measured run,runs/current_time_refresh/dust_ka5_f800_pmchwt_n181.json,3865,181,full181
+пылевая частица,5.709,800,112.67,BEM-CUDA muller2-balanced/FMM,runs/poster_muller2_adda_check/dust_ka5p709_f800_a8b6g8_muller2b.json,1135,181,full181
+пылевая частица,7.13628175,800,9.83,BEM-CUDA PMCHWT/FMM no-prec,runs/poster_muller2_adda_check/dust_ka7p136_n13116_f800_single_muller2b_noprec.json,161,181,full181
+пылевая частица,10.0,800,265.553,BEM-CUDA muller2-balanced/FMM,runs/current_time_refresh/dust_ka10_gmsh3400_muller2b_n181.json,699,181,full181
+сфера,2.0,3,10.17,BEM-CUDA measured run,runs/poster_mie_fixed/test_leafp2p_ka2_ref3.json,95,181,full181
+сфера,5.0,4,7.65,BEM-CUDA PMCHWT/Schwarz,runs/fix_check/sphere_ka5_ref4_pmchwt_skip_unused_slots_gpu2.json,41,181,full181
+сфера,10.0,4,17.91,BEM-CUDA measured run,runs/current_time_refresh/sphere_ka10_ref4_n181.json,59,181,full181
+сфера,15.0,4,32.27,BEM-CUDA measured run,runs/current_time_refresh/sphere_ka15_ref4_n181.json,74,181,full181
+сфера,20.0,4,62.35,BEM-CUDA measured run,runs/current_time_refresh/sphere_ka20_ref4_n181_d4.json,93,181,full181
+сфера,25.0,4,283.072,BEM-CUDA measured run,runs/current_time_refresh/sphere_ka25_ref4_n181_d4.json,312,181,full181
+сфера,30.0,5,538.84,BEM-CUDA measured run,runs/poster_mie_fixed/sphere_ka30_n1p3116_ref5_d5_tol3e-3.json,164,181,full181
+сфера,35.0,6,3015.53,BEM-CUDA measured run,runs/poster_mie_fixed/sphere_ka35_ref6_q4_d4_leafp2p_tol1e-2.json,152,181,full181

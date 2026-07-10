@@ -1,0 +1,4 @@
+case,ka,ref,ntheta,plain_solve_s,batch4_solve_s,plain_total_s,batch4_total_s,solve_speedup,max_abs_mueller_diff,plain_source,batch4_source
+ka=2 ref3,2.0,3,19,6.47,3.96,7.23,4.72,1.6338383838383839,1.0000000502143058e-13,runs/auto_batch4_check_gxtmp/sphere_ka2_ref3_nob4.json,runs/auto_batch4_check_gxtmp/sphere_ka2_ref3_auto.json
+ka=10 ref4,10.0,4,19,52.7,17.99,54.73,20.13,2.9294052251250697,0.0,runs/auto_batch4_check_gxtmp/sphere_ka10_ref4_nob4.json,runs/auto_batch4_check_gxtmp/sphere_ka10_ref4_auto.json
+ka=2 balanced auto,2.0,3,19,15.59,9.24,16.44,9.82,1.6872294372294372,1.0000000095567244e-12,runs/auto_batch4_check_gxtmp/sphere_ka2_ref3_bal_nob4.json,runs/auto_batch4_check_gxtmp/sphere_ka2_ref3_bal_auto.json

@@ -1,0 +1,3 @@
+mode,ka,ref,orient,alpha_avg,ntheta,matvecs,farfield_s,solve_s,total_s,source_json,max_abs_mueller_diff,farfield_speedup
+GPU alpha-direct,2.0,2,1x4x1,64,721,196,0.000992204,3.22004,3.72544,runs/alpha_direct_check/new_heavyff_memfix.json,1.0000000502143058e-13,25.238257455120117
+expanded-alpha baseline,2.0,2,1x4x1,64,721,196,0.0250415,3.21171,3.9483,runs/alpha_direct_check/old_heavyff_memfix.json,1.0000000502143058e-13,25.238257455120117

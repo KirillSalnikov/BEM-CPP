@@ -1,0 +1,74 @@
+shape,ka,mesh_label,component,rel_l2,rel_l2_percent,pass10,status,bem_file,reference
+гексагональная призма,5.0,ref2,M11,0.0069160014235543,0.69160014235543,True,PASS,runs/recompute_convergence_meta_20260619/hex_ka5_ref2.json,ADDA-OCL
+гексагональная призма,5.0,ref2,M12,0.0257128705246564,2.57128705246564,True,PASS,runs/recompute_convergence_meta_20260619/hex_ka5_ref2.json,ADDA-OCL
+гексагональная призма,5.0,ref2,M34,0.0105092517217641,1.0509251721764101,True,PASS,runs/recompute_convergence_meta_20260619/hex_ka5_ref2.json,ADDA-OCL
+гексагональная призма,5.0,ref2,gate,0.0257128705246564,2.57128705246564,True,PASS,runs/recompute_convergence_meta_20260619/hex_ka5_ref2.json,ADDA-OCL
+гексагональная призма,5.0,ref2,max main floor,0.0257128705246564,2.57128705246564,True,PASS,runs/recompute_convergence_meta_20260619/hex_ka5_ref2.json,ADDA-OCL
+гексагональная призма,10.0,ref3,M11,0.0577089898228885,5.77089898228885,True,PASS,runs/recompute_convergence_meta_20260619/hex_ka10_ref3.json,ADDA-OCL
+гексагональная призма,10.0,ref3,M12,0.0615835500708416,6.158355007084159,True,PASS,runs/recompute_convergence_meta_20260619/hex_ka10_ref3.json,ADDA-OCL
+гексагональная призма,10.0,ref3,M34,0.0514524215597073,5.14524215597073,True,PASS,runs/recompute_convergence_meta_20260619/hex_ka10_ref3.json,ADDA-OCL
+гексагональная призма,10.0,ref3,gate,0.0617109416867387,6.17109416867387,True,PASS,runs/recompute_convergence_meta_20260619/hex_ka10_ref3.json,ADDA-OCL
+гексагональная призма,10.0,ref3,max main floor,0.0617109416867387,6.17109416867387,True,PASS,runs/recompute_convergence_meta_20260619/hex_ka10_ref3.json,ADDA-OCL
+гексагональная призма,15.0,ref4,M11,0.0330476046717746,3.30476046717746,True,PASS,runs/recompute_convergence_meta_20260619/hex_ka15_ref4.json,ADDA-OCL
+гексагональная призма,15.0,ref4,M12,0.0147134000347121,1.4713400034712099,True,PASS,runs/recompute_convergence_meta_20260619/hex_ka15_ref4.json,ADDA-OCL
+гексагональная призма,15.0,ref4,M34,0.0264372335751414,2.64372335751414,True,PASS,runs/recompute_convergence_meta_20260619/hex_ka15_ref4.json,ADDA-OCL
+гексагональная призма,15.0,ref4,gate,0.0330476046717746,3.30476046717746,True,PASS,runs/recompute_convergence_meta_20260619/hex_ka15_ref4.json,ADDA-OCL
+гексагональная призма,15.0,ref4,max main floor,0.0330476046717746,3.30476046717746,True,PASS,runs/recompute_convergence_meta_20260619/hex_ka15_ref4.json,ADDA-OCL
+гексагональная призма,20.0,ref4-q7d5,M11,0.0217611167305762,2.17611167305762,True,PASS,runs/accuracy_fix_20260619_parallel4/hex20_ref4_accurate_noedge.json,ADDA-OCL
+гексагональная призма,20.0,ref4-q7d5,M12,0.0166932641812636,1.66932641812636,True,PASS,runs/accuracy_fix_20260619_parallel4/hex20_ref4_accurate_noedge.json,ADDA-OCL
+гексагональная призма,20.0,ref4-q7d5,M34,0.0178440065556731,1.78440065556731,True,PASS,runs/accuracy_fix_20260619_parallel4/hex20_ref4_accurate_noedge.json,ADDA-OCL
+гексагональная призма,20.0,ref4-q7d5,gate,0.0224503011965097,2.24503011965097,True,PASS,runs/accuracy_fix_20260619_parallel4/hex20_ref4_accurate_noedge.json,ADDA-OCL
+гексагональная призма,20.0,ref4-q7d5,max main floor,0.0224503011965097,2.24503011965097,True,PASS,runs/accuracy_fix_20260619_parallel4/hex20_ref4_accurate_noedge.json,ADDA-OCL
+гексагональная призма,30.0,ref5,M11,0.0843932741709196,8.43932741709196,True,PASS,runs/recompute_convergence_meta_20260619/hex_ka30_ref5.json,ADDA-OCL
+гексагональная призма,30.0,ref5,M12,0.0191100972238958,1.9110097223895801,True,PASS,runs/recompute_convergence_meta_20260619/hex_ka30_ref5.json,ADDA-OCL
+гексагональная призма,30.0,ref5,M34,0.0170863827063169,1.70863827063169,True,PASS,runs/recompute_convergence_meta_20260619/hex_ka30_ref5.json,ADDA-OCL
+гексагональная призма,30.0,ref5,gate,0.0843932741709196,8.43932741709196,True,PASS,runs/recompute_convergence_meta_20260619/hex_ka30_ref5.json,ADDA-OCL
+гексагональная призма,30.0,ref5,max main floor,0.0843932741709196,8.43932741709196,True,PASS,runs/recompute_convergence_meta_20260619/hex_ka30_ref5.json,ADDA-OCL
+пылевая частица,5.0,gmsh5200/6000,M11,0.0310113607160284,3.10113607160284,True,PASS,runs/production_matrix_15_complexop/dust_ka5_gmsh4200_complexop_balanced_q7_d5_tol1e3.json,ADDA-OCL
+пылевая частица,5.0,gmsh5200/6000,M12,0.0776286450508739,7.76286450508739,True,PASS,runs/production_matrix_15_complexop/dust_ka5_gmsh4200_complexop_balanced_q7_d5_tol1e3.json,ADDA-OCL
+пылевая частица,5.0,gmsh5200/6000,M34,0.0906395899577364,9.063958995773639,True,PASS,runs/production_matrix_15_complexop/dust_ka5_gmsh4200_complexop_balanced_q7_d5_tol1e3.json,ADDA-OCL
+пылевая частица,5.0,gmsh5200/6000,gate,0.0940282295543033,9.40282295543033,True,PASS,runs/production_matrix_15_complexop/dust_ka5_gmsh4200_complexop_balanced_q7_d5_tol1e3.json,ADDA-OCL
+пылевая частица,5.0,gmsh5200/6000,max main floor,0.0940282295543033,9.40282295543033,True,PASS,runs/production_matrix_15_complexop/dust_ka5_gmsh4200_complexop_balanced_q7_d5_tol1e3.json,ADDA-OCL
+пылевая частица,10.0,gmsh5200/6000,M11,0.0270045837531457,2.70045837531457,True,PASS,runs/production_matrix_15_complexop/dust_ka10_gmsh5200_complexop_balanced_q7_d5_tol1e3.json,ADDA-OCL
+пылевая частица,10.0,gmsh5200/6000,M12,0.0881868916932069,8.81868916932069,True,PASS,runs/production_matrix_15_complexop/dust_ka10_gmsh5200_complexop_balanced_q7_d5_tol1e3.json,ADDA-OCL
+пылевая частица,10.0,gmsh5200/6000,M34,0.0962459069520678,9.62459069520678,True,PASS,runs/production_matrix_15_complexop/dust_ka10_gmsh5200_complexop_balanced_q7_d5_tol1e3.json,ADDA-OCL
+пылевая частица,10.0,gmsh5200/6000,gate,0.0963678162048501,9.63678162048501,True,PASS,runs/production_matrix_15_complexop/dust_ka10_gmsh5200_complexop_balanced_q7_d5_tol1e3.json,ADDA-OCL
+пылевая частица,10.0,gmsh5200/6000,max main floor,0.0963678162048501,9.63678162048501,True,PASS,runs/production_matrix_15_complexop/dust_ka10_gmsh5200_complexop_balanced_q7_d5_tol1e3.json,ADDA-OCL
+пылевая частица,15.0,gmsh6000,M11,0.0424472662954077,4.244726629540771,True,PASS,runs/production_matrix_15_complexop/dust_ka15_gmsh6000_complexop_balanced_q7_d5_tol1e3.json,ADDA-OCL
+пылевая частица,15.0,gmsh6000,M12,0.059226268535348,5.9226268535348,True,PASS,runs/production_matrix_15_complexop/dust_ka15_gmsh6000_complexop_balanced_q7_d5_tol1e3.json,ADDA-OCL
+пылевая частица,15.0,gmsh6000,M34,0.0248826742391552,2.48826742391552,True,PASS,runs/production_matrix_15_complexop/dust_ka15_gmsh6000_complexop_balanced_q7_d5_tol1e3.json,ADDA-OCL
+пылевая частица,15.0,gmsh6000,gate,0.0609689463545794,6.096894635457939,True,PASS,runs/production_matrix_15_complexop/dust_ka15_gmsh6000_complexop_balanced_q7_d5_tol1e3.json,ADDA-OCL
+пылевая частица,15.0,gmsh6000,max main floor,0.0609689463545794,6.096894635457939,True,PASS,runs/production_matrix_15_complexop/dust_ka15_gmsh6000_complexop_balanced_q7_d5_tol1e3.json,ADDA-OCL
+пылевая частица,20.0,gmsh4200,M11,0.0557246346696077,5.5724634669607696,True,PASS,runs/production_matrix_15_complexop/dust_ka20_gmsh4200_complexop_balanced_q7_d5_tol1e3.json,ADDA-OCL
+пылевая частица,20.0,gmsh4200,M12,0.0527580186142847,5.27580186142847,True,PASS,runs/production_matrix_15_complexop/dust_ka20_gmsh4200_complexop_balanced_q7_d5_tol1e3.json,ADDA-OCL
+пылевая частица,20.0,gmsh4200,M34,0.0434179735450989,4.3417973545098905,True,PASS,runs/production_matrix_15_complexop/dust_ka20_gmsh4200_complexop_balanced_q7_d5_tol1e3.json,ADDA-OCL
+пылевая частица,20.0,gmsh4200,gate,0.0581888771747254,5.81888771747254,True,PASS,runs/production_matrix_15_complexop/dust_ka20_gmsh4200_complexop_balanced_q7_d5_tol1e3.json,ADDA-OCL
+пылевая частица,20.0,gmsh4200,max main floor,0.0581888771747254,5.81888771747254,True,PASS,runs/production_matrix_15_complexop/dust_ka20_gmsh4200_complexop_balanced_q7_d5_tol1e3.json,ADDA-OCL
+пылевая частица,30.0,gmsh7000,M11,0.0222565848809959,2.22565848809959,True,PASS,runs/production_matrix_15_complexop/dust_ka30_gmsh7000_complexop_balanced_q7_d5_tol1e3.json,ADDA-OCL
+пылевая частица,30.0,gmsh7000,M12,0.0320721209470577,3.20721209470577,True,PASS,runs/production_matrix_15_complexop/dust_ka30_gmsh7000_complexop_balanced_q7_d5_tol1e3.json,ADDA-OCL
+пылевая частица,30.0,gmsh7000,M34,0.0205861778212914,2.05861778212914,True,PASS,runs/production_matrix_15_complexop/dust_ka30_gmsh7000_complexop_balanced_q7_d5_tol1e3.json,ADDA-OCL
+пылевая частица,30.0,gmsh7000,gate,0.0320721209470577,3.20721209470577,True,PASS,runs/production_matrix_15_complexop/dust_ka30_gmsh7000_complexop_balanced_q7_d5_tol1e3.json,ADDA-OCL
+пылевая частица,30.0,gmsh7000,max main floor,0.0320721209470577,3.20721209470577,True,PASS,runs/production_matrix_15_complexop/dust_ka30_gmsh7000_complexop_balanced_q7_d5_tol1e3.json,ADDA-OCL
+сфера,5.0,ref4,M11,0.0060311846917047,0.60311846917047,True,PASS,runs/recompute_convergence_meta_20260619/sphere_ka5_ref4.json,ADDA-OCL
+сфера,5.0,ref4,M12,0.0111247429276639,1.11247429276639,True,PASS,runs/recompute_convergence_meta_20260619/sphere_ka5_ref4.json,ADDA-OCL
+сфера,5.0,ref4,M34,0.0021348339227519,0.21348339227519,True,PASS,runs/recompute_convergence_meta_20260619/sphere_ka5_ref4.json,ADDA-OCL
+сфера,5.0,ref4,gate,0.0111248485920679,1.11248485920679,True,PASS,runs/recompute_convergence_meta_20260619/sphere_ka5_ref4.json,ADDA-OCL
+сфера,5.0,ref4,max main floor,0.0111248485920679,1.11248485920679,True,PASS,runs/recompute_convergence_meta_20260619/sphere_ka5_ref4.json,ADDA-OCL
+сфера,10.0,ref4,M11,0.0130334972654086,1.30334972654086,True,PASS,runs/recompute_convergence_meta_20260619/sphere_ka10_ref4.json,ADDA-OCL
+сфера,10.0,ref4,M12,0.0106097593282378,1.06097593282378,True,PASS,runs/recompute_convergence_meta_20260619/sphere_ka10_ref4.json,ADDA-OCL
+сфера,10.0,ref4,M34,0.0109590308595383,1.09590308595383,True,PASS,runs/recompute_convergence_meta_20260619/sphere_ka10_ref4.json,ADDA-OCL
+сфера,10.0,ref4,gate,0.0130334972654086,1.30334972654086,True,PASS,runs/recompute_convergence_meta_20260619/sphere_ka10_ref4.json,ADDA-OCL
+сфера,10.0,ref4,max main floor,0.0130334972654086,1.30334972654086,True,PASS,runs/recompute_convergence_meta_20260619/sphere_ka10_ref4.json,ADDA-OCL
+сфера,15.0,ref4,M11,0.0131516275100361,1.31516275100361,True,PASS,runs/recompute_convergence_meta_20260619/sphere_ka15_ref4.json,ADDA-OCL
+сфера,15.0,ref4,M12,0.0113229888428141,1.1322988842814101,True,PASS,runs/recompute_convergence_meta_20260619/sphere_ka15_ref4.json,ADDA-OCL
+сфера,15.0,ref4,M34,0.0146933587147618,1.46933587147618,True,PASS,runs/recompute_convergence_meta_20260619/sphere_ka15_ref4.json,ADDA-OCL
+сфера,15.0,ref4,gate,0.0146934972280086,1.46934972280086,True,PASS,runs/recompute_convergence_meta_20260619/sphere_ka15_ref4.json,ADDA-OCL
+сфера,15.0,ref4,max main floor,0.0146934972280086,1.46934972280086,True,PASS,runs/recompute_convergence_meta_20260619/sphere_ka15_ref4.json,ADDA-OCL
+сфера,20.0,ref4,M11,0.0115426369281944,1.15426369281944,True,PASS,runs/recompute_convergence_meta_20260619/sphere_ka20_ref4.json,ADDA-OCL
+сфера,20.0,ref4,M12,0.0082374220209104,0.82374220209104,True,PASS,runs/recompute_convergence_meta_20260619/sphere_ka20_ref4.json,ADDA-OCL
+сфера,20.0,ref4,M34,0.009141969279695,0.9141969279694999,True,PASS,runs/recompute_convergence_meta_20260619/sphere_ka20_ref4.json,ADDA-OCL
+сфера,20.0,ref4,gate,0.0122220488821093,1.22220488821093,True,PASS,runs/recompute_convergence_meta_20260619/sphere_ka20_ref4.json,ADDA-OCL
+сфера,20.0,ref4,max main floor,0.0122220488821093,1.22220488821093,True,PASS,runs/recompute_convergence_meta_20260619/sphere_ka20_ref4.json,ADDA-OCL
+сфера,30.0,ref6,M11,0.0173381322214549,1.7338132221454898,True,PASS,runs/production_matrix_15/sphere_ka30_ref6_q7_d7_tol1e2.json,Mie
+сфера,30.0,ref6,gate,0.0173381322214549,1.7338132221454898,True,PASS,runs/production_matrix_15/sphere_ka30_ref6_q7_d7_tol1e2.json,Mie
+сфера,30.0,ref6,max main floor,0.0173381322214549,1.7338132221454898,True,PASS,runs/production_matrix_15/sphere_ka30_ref6_q7_d7_tol1e2.json,Mie

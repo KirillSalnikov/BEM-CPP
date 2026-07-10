@@ -1,0 +1,2 @@
+case,ka,ref,rwg,plain_solve_s,prec_solve_s,plain_total_s,prec_total_s,plain_matvec_per_orient,prec_matvec_per_orient,solve_speedup,total_speedup,max_abs_mueller_diff,rel_mueller_diff,plain_source,prec_source
+hex ka=10 ref4,10.0,4,-1,40.2192,35.3589,41.4186,37.569,66.3,56.3,1.1374561991464667,1.102467459873832,31.121540000000095,0.005041955107337718,runs/prec_hex_check/no_prec_auto.json,runs/prec_hex_check/auto_prec_after_patch.json

@@ -1,0 +1,18 @@
+shape,ka,mesh_ref,time_s,adda_ocl_s,bem_over_adda_ocl,faster_backend,ntheta,angle_grid,source,source_csv
+гексагональная призма,2.0,2,2.72,0.266461,10.207872821913902,adda_ocl,181,full181,runs/poster_full181_fix/hex_ka2_ref2_n181.json,runs/adda_ocl_benchmark/summary_remote_172_16_1_168.csv
+гексагональная призма,5.0,2,4.33,0.509034,8.506308026575828,adda_ocl,181,full181,runs/spfft_benchmark/hex_ka5_ref2_fmm_tol1e-3.json,runs/adda_ocl_benchmark/summary_remote_172_16_1_168.csv
+гексагональная призма,10.0,3,17.22,4.355662,3.95347481048805,adda_ocl,181,full181,runs/current_time_refresh/hex_ka10_ref3_n181.json,runs/adda_ocl_benchmark/summary_remote_172_16_1_168.csv
+гексагональная призма,15.0,4,39.69,20.974743,1.8922758672180153,adda_ocl,181,full181,runs/poster_full181_fix/hex_ka15_ref4_n181.json,runs/adda_ocl_benchmark_ext/summary_remote_172_16_1_168.csv
+гексагональная призма,20.0,4,35.04,69.849751,0.5016481733771678,BEM-CUDA,181,full181,runs/current_time_refresh/hex_ka20_ref4_n181_current.json,runs/adda_ocl_benchmark_ext/summary_remote_172_16_1_168.csv
+гексагональная призма,30.0,5,184.221,919.20309,0.2004138171467635,BEM-CUDA,181,full181,runs/current_time_refresh/hex_ka30_ref5_single_n181_batch4auto.json,runs/adda_ocl_benchmark_ext/hex_ka30/elapsed_s
+пылевая частица,2.0,800,40.42,0.46323,87.25687023724717,adda_ocl,181,full181,runs/current_time_refresh/dust_ka2_f800_pmchwt_n181.json,runs/adda_ocl_benchmark_ext/dust_ka2_m1p6_dpl20_scaled/elapsed_s
+пылевая частица,5.0,800,246.86,1.149961,214.6681496155087,adda_ocl,181,full181,runs/current_time_refresh/dust_ka5_f800_pmchwt_n181.json,runs/adda_ocl_benchmark_ext/dust_ka5_m1p6_dpl20_scaled/elapsed_s
+пылевая частица,5.709,800,112.67,3.377,33.36393248445366,adda_ocl,181,full181,runs/poster_muller2_adda_check/dust_ka5p709_f800_a8b6g8_muller2b.json,runs/adda_ocl_benchmark_ext/dust_ka5p709_scaled/elapsed_s
+пылевая частица,7.13628175,800,9.83,1.503088,6.539869921122383,adda_ocl,181,full181,runs/poster_muller2_adda_check/dust_ka7p136_n13116_f800_single_muller2b_noprec.json,runs/adda_ocl_benchmark/summary_remote_172_16_1_168.csv
+пылевая частица,10.0,800,265.553,26.029858,10.201861262554717,adda_ocl,181,full181,runs/current_time_refresh/dust_ka10_gmsh3400_muller2b_n181.json,runs/adda_ocl_benchmark_ext/dust_ka10_m1p6_dpl20_scaled/elapsed_s
+сфера,2.0,3,10.17,0.323433,31.4439157414364,adda_ocl,181,full181,runs/poster_mie_fixed/test_leafp2p_ka2_ref3.json,runs/adda_ocl_benchmark/summary_remote_172_16_1_168.csv
+сфера,5.0,4,7.65,0.567351,13.483716429511889,adda_ocl,181,full181,runs/fix_check/sphere_ka5_ref4_pmchwt_skip_unused_slots_gpu2.json,runs/adda_ocl_benchmark/summary_remote_172_16_1_168.csv
+сфера,10.0,4,17.91,3.166786,5.655576347754474,adda_ocl,181,full181,runs/current_time_refresh/sphere_ka10_ref4_n181.json,runs/adda_ocl_benchmark/summary_remote_172_16_1_168.csv
+сфера,15.0,4,32.27,24.207104,1.3330797438636197,adda_ocl,181,full181,runs/current_time_refresh/sphere_ka15_ref4_n181.json,runs/adda_ocl_benchmark_ext/summary_remote_172_16_1_168.csv
+сфера,20.0,4,62.35,91.279108,0.6830697775880983,BEM-CUDA,181,full181,runs/current_time_refresh/sphere_ka20_ref4_n181_d4.json,runs/adda_ocl_benchmark_ext/summary_remote_172_16_1_168.csv
+сфера,25.0,4,283.072,854.755286,0.3311731493638286,BEM-CUDA,181,full181,runs/current_time_refresh/sphere_ka25_ref4_n181_d4.json,runs/adda_ocl_benchmark_ext/sphere_ka25/elapsed_s

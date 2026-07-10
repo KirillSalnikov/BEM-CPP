@@ -1,0 +1,16 @@
+shape,size,ref,vram_gb,status,source_class,source,seconds
+сфера,10.0,4,1.5029296875,ok,measured_mem,runs/poster_fig7_memory/logs/sphere_ka10_ref4.mem,28
+столбик,20.0,4,1.9267578125,ok,measured_mem,runs/poster_fig7_memory/logs/hex_ka20_ref4.mem,91
+столбик,30.0,5,3.4462890625,ok,measured_mem,runs/poster_fig7_memory/logs/hex_ka30_ref5.mem,684
+пыль,10.0,3,1.5654296875,ok,measured_mem,runs/poster_fig7_memory/logs/dust_ka10_gmsh3400.mem,375
+пыль,20.0,4,3.2060546875,timeout/stagnation,timeout_peak,runs/poster_fig7_memory/logs/dust_ka20_gmsh4200.mem,5402
+пыль,30.0,5,3.2509765625,timeout/stagnation,timeout_peak,runs/poster_fig7_memory/logs/dust_ka30_gmsh7000.mem,21
+сфера,20.0,4,1.5927734375,ok,measured_mem,runs/poster_fig7_memory/logs/sphere_ka20_ref4_d4.mem,60
+сфера,25.0,4,1.9033203125,ok,measured_mem,runs/poster_fig7_memory/logs/sphere_ka25_ref4_d4.mem,281
+столбик,10.0,3,1.1455078125,ok,measured_mem,runs/poster_fig7_memory/logs/hex_ka10_ref3_current.mem,18
+столбик,2.0,2,0.8681640625,ok,measured_mem,runs/poster_fig7_memory/logs/hex_ka2_ref2_current.mem,4
+столбик,5.0,2,0.8779296875,ok,measured_mem,runs/poster_fig7_memory/logs/hex_ka5_ref2_current.mem,2
+сфера,2.0,3,0.9111328125,ok,measured_mem,runs/poster_fig7_memory/logs/sphere_ka2_ref3_current.mem,2
+сфера,5.0,4,1.2333984375,ok,measured_mem,runs/poster_fig7_memory/logs/sphere_ka5_ref4_current.mem,11
+пыль,2.0,3,0.8720703125,ok,measured_mem,runs/poster_fig7_memory/logs/dust_ka2_f800_pmchwt_current.mem,39
+пыль,5.0,3,0.9013671875,ok,measured_mem,runs/poster_fig7_memory/logs/dust_ka5_f800_pmchwt_current.mem,257

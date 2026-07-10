@@ -1,0 +1,8 @@
+shape,ka,bem_memory_gb,adda_ocl_memory_gb,bem_time_s,adda_ocl_time_s,bem_over_adda_ocl_time,bem_over_adda_ocl_memory,bem_mem_source,adda_log
+гексагональная призма,20.0,1.9267578125,1.616015625,35.04,69.849751,0.5016481733771678,1.192289098380469,runs/poster_fig7_memory/logs/hex_ka20_ref4.mem,runs/adda_ocl_benchmark_ext/hex_ka20/run.log
+гексагональная призма,30.0,3.4462890625,5.6302734375,184.221,919.20309,0.2004138171467635,0.6120997675790059,runs/poster_fig7_memory/logs/hex_ka30_ref5.mem,runs/adda_ocl_benchmark_ext/hex_ka30/run.log
+пылевая частица,2.0,0.8720703125,0.00830078125,40.42,0.46323,87.25687023724717,105.05882352941177,runs/poster_fig7_memory/logs/dust_ka2_f800_pmchwt_current.mem,runs/adda_ocl_benchmark_ext/dust_ka2_m1p6_dpl20_scaled/run.log
+пылевая частица,5.0,0.9013671875,0.0431640625,246.86,1.149961,214.6681496155087,20.88235294117647,runs/poster_fig7_memory/logs/dust_ka5_f800_pmchwt_current.mem,runs/adda_ocl_benchmark_ext/dust_ka5_m1p6_dpl20_scaled/run.log
+пылевая частица,10.0,1.5654296875,0.24951171875,265.553,26.029858,10.201861262554717,6.273972602739726,runs/poster_fig7_memory/logs/dust_ka10_gmsh3400.mem,runs/adda_ocl_benchmark_ext/dust_ka10_m1p6_dpl20_scaled/run.log
+сфера,20.0,1.5927734375,0.861328125,62.35,91.279108,0.6830697775880983,1.8492063492063493,runs/poster_fig7_memory/logs/sphere_ka20_ref4_d4.mem,runs/adda_ocl_benchmark_ext/sphere_ka20/run.log
+сфера,25.0,1.9033203125,5.47919921875,283.072,854.755286,0.3311731493638286,0.34737198567023725,runs/poster_fig7_memory/logs/sphere_ka25_ref4_d4.mem,runs/adda_ocl_benchmark_ext/sphere_ka25/run.log
