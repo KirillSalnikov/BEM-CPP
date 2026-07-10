@@ -1,4 +1,5 @@
 #include "solver.h"
+#include "gpu_select.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -132,8 +133,7 @@ void zgetrs_(const char* trans, const int* n, const int* nrhs,
 static bool use_lapack_lu()
 {
 #ifdef BEM_USE_LAPACK
-    const char* env = std::getenv("BEM_NO_LAPACK");
-    return !(env && env[0] && env[0] != '0');
+    return !bem_env_flag_enabled("BEM_NO_LAPACK");
 #else
     return false;
 #endif
@@ -241,8 +241,7 @@ static bool use_rowmajor_multi_rhs(int nrhs)
             return true;
     }
     int threshold = 1000000000;
-    if (const char* env = std::getenv("BEM_ROW_SOLVE_MIN_RHS"))
-        threshold = std::max(1, atoi(env));
+    threshold = std::max(1, bem_env_int("BEM_ROW_SOLVE_MIN_RHS", threshold));
     return nrhs >= threshold;
 }
 
@@ -365,7 +364,6 @@ int lu_solve_many_rhs_gpu(const std::complex<double>* Z, const int* ipiv,
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaMemcpy(reinterpret_cast<double2*>(B), d_B,
                           rhs_elems * sizeof(double2), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaDeviceSynchronize());
 
     cudaFree(d_Z);
     cudaFree(d_B);
@@ -379,13 +377,35 @@ int lu_solve_many_rhs_mgpu(const std::complex<double>* Z, const int* ipiv,
                            int n, std::complex<double>* B, int nrhs, int ngpu)
 {
     Timer timer;
+    int original_device = 0;
+    cudaGetDevice(&original_device);
     int device_count = 0;
     cudaError_t dev_err = cudaGetDeviceCount(&device_count);
     if (dev_err != cudaSuccess || device_count <= 1)
         return lu_solve_many_rhs_gpu(Z, ipiv, n, B, nrhs);
-    ngpu = std::max(1, std::min(ngpu, device_count));
-    if (ngpu <= 1)
-        return lu_solve_many_rhs_gpu(Z, ipiv, n, B, nrhs);
+    std::vector<int> devices;
+    if (const char* env = std::getenv("BEM_LU_GPU_LIST")) {
+        devices = bem_parse_gpu_list_env(env);
+        if (!bem_validate_gpu_list(devices, device_count)) {
+            fprintf(stderr, "Warning: invalid BEM_LU_GPU_LIST for %d CUDA devices; disabling LU multi-GPU split\n",
+                    device_count);
+            devices.clear();
+        }
+    }
+    if (devices.empty()) {
+        ngpu = std::max(1, std::min(ngpu, device_count));
+        for (int gd = 0; gd < ngpu; gd++)
+            devices.push_back(gd);
+    } else {
+        ngpu = (int)devices.size();
+    }
+    if (ngpu <= 1) {
+        if (!devices.empty())
+            CUDA_CHECK(cudaSetDevice(devices[0]));
+        int ret = lu_solve_many_rhs_gpu(Z, ipiv, n, B, nrhs);
+        cudaSetDevice(original_device);
+        return ret;
+    }
 
     std::vector<int> info(ngpu, 0);
     #ifdef _OPENMP
@@ -397,10 +417,10 @@ int lu_solve_many_rhs_mgpu(const std::complex<double>* Z, const int* ipiv,
         int count = end - start;
         if (count <= 0)
             continue;
-        cudaSetDevice(gd);
+        cudaSetDevice(devices[(size_t)gd]);
         info[gd] = lu_solve_many_rhs_gpu(Z, ipiv, n, B + (size_t)start * n, count);
     }
-    cudaSetDevice(0);
+    cudaSetDevice(original_device);
     for (int gd = 0; gd < ngpu; gd++) {
         if (info[gd] != 0)
             return info[gd];
@@ -420,7 +440,7 @@ int lu_solve_full_cusolver(std::complex<double>* Z, int n,
     (void)nrhs;
     return -1;
 #else
-    if (std::getenv("BEM_NO_CUSOLVER_LU"))
+    if (bem_env_flag_enabled("BEM_NO_CUSOLVER_LU"))
         return -1;
 
     Timer timer;
@@ -457,7 +477,6 @@ int lu_solve_full_cusolver(std::complex<double>* Z, int n,
     Timer fact_timer;
     CUSOLVER_CHECK(cusolverDnZgetrf(handle, n, n, d_A, n, d_work, d_ipiv, d_info));
     CUDA_CHECK(cudaMemcpy(&info_host, d_info, sizeof(int), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaDeviceSynchronize());
     printf("  LU factorization cuSOLVER zgetrf (%dx%d): %.2fs\n", n, n, fact_timer.elapsed_s());
     if (info_host != 0) {
         fprintf(stderr, "  cuSOLVER zgetrf failed with info=%d; falling back to internal LU\n", info_host);
@@ -468,7 +487,6 @@ int lu_solve_full_cusolver(std::complex<double>* Z, int n,
         Timer solve_timer;
         CUSOLVER_CHECK(cusolverDnZgetrs(handle, CUBLAS_OP_N, n, nrhs, d_A, n, d_ipiv, d_B, n, d_info));
         CUDA_CHECK(cudaMemcpy(&info_host, d_info, sizeof(int), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaDeviceSynchronize());
         printf("  LU solve cuSOLVER zgetrs (%dx%d, %d RHS): %.2fs\n", n, n, nrhs, solve_timer.elapsed_s());
     }
     if (info_host != 0) {
@@ -503,7 +521,7 @@ int lu_solve_full(std::complex<double>* Z, int n,
     const char* lu_threads_env = std::getenv("BEM_LU_THREADS");
     int lu_threads = 0;
     if (lu_threads_env && lu_threads_env[0]) {
-        lu_threads = atoi(lu_threads_env);
+        lu_threads = bem_env_int("BEM_LU_THREADS", lu_threads);
     } else if (!std::getenv("OMP_NUM_THREADS")) {
         lu_threads = std::min(48, omp_get_num_procs());
     }
@@ -564,19 +582,18 @@ int lu_solve_full(std::complex<double>* Z, int n,
         restore_threads();
         return info;
     }
-    bool gpu_lu_solve = (nrhs >= 128) && !std::getenv("BEM_NO_GPU_LU_SOLVE");
-    if (const char* env = std::getenv("BEM_GPU_LU_SOLVE"))
-        gpu_lu_solve = env[0] && env[0] != '0';
+    bool gpu_lu_solve = (nrhs >= 128) && !bem_env_flag_enabled("BEM_NO_GPU_LU_SOLVE");
+    if (bem_env_flag_present("BEM_GPU_LU_SOLVE"))
+        gpu_lu_solve = bem_env_flag_enabled("BEM_GPU_LU_SOLVE");
     int lu_mgpu = 1;
     int mgpu_min_rhs = 512;
-    if (const char* min_env = std::getenv("BEM_LU_MGPU_MIN_RHS"))
-        mgpu_min_rhs = std::max(1, atoi(min_env));
-    if (const char* env = std::getenv("BEM_LU_MGPU"))
-        lu_mgpu = std::max(1, atoi(env));
-    else if (const char* env = std::getenv("BEM_FF_MGPU")) {
+    mgpu_min_rhs = std::max(1, bem_env_int("BEM_LU_MGPU_MIN_RHS", mgpu_min_rhs));
+    if (bem_env_has_value("BEM_LU_MGPU"))
+        lu_mgpu = std::max(1, bem_env_int("BEM_LU_MGPU", lu_mgpu));
+    else if (bem_env_has_value("BEM_FF_MGPU")) {
         if (nrhs >= mgpu_min_rhs)
-            lu_mgpu = std::max(1, atoi(env));
-    } else if (nrhs >= mgpu_min_rhs && !std::getenv("BEM_NO_AUTO_MGPU")) {
+            lu_mgpu = std::max(1, bem_env_int("BEM_FF_MGPU", lu_mgpu));
+    } else if (nrhs >= mgpu_min_rhs && !bem_env_flag_enabled("BEM_NO_AUTO_MGPU")) {
         int device_count = 0;
         cudaError_t dev_err = cudaGetDeviceCount(&device_count);
         if (dev_err == cudaSuccess)

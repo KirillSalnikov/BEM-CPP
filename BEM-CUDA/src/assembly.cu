@@ -1,5 +1,6 @@
 #include "assembly.h"
 #include "graglia.h"
+#include "gpu_select.h"
 #include <cstring>
 #include <cstdio>
 #include <vector>
@@ -388,8 +389,8 @@ void assemble_L_K_cuda(const RWG& rwg, const Mesh& mesh,
     HalfData hm = precompute_half(rwg, mesh, quad, -1);
 
     // Initialize output to zero
-    memset(L, 0, N * N * sizeof(std::complex<double>));
-    memset(K, 0, N * N * sizeof(std::complex<double>));
+    std::fill_n(L, (size_t)N * N, std::complex<double>(0.0, 0.0));
+    std::fill_n(K, (size_t)N * N, std::complex<double>(0.0, 0.0));
 
     double k_re = k.real();
     double k_im = k.imag();
@@ -437,10 +438,10 @@ void assemble_L_K_cuda(const RWG& rwg, const Mesh& mesh,
             // Launch kernel
             int block_x = 16;
             int block_y = 16;
-            if (const char* env = std::getenv("BEM_ASM_BLOCK_X"))
-                block_x = std::max(1, atoi(env));
-            if (const char* env = std::getenv("BEM_ASM_BLOCK_Y"))
-                block_y = std::max(1, atoi(env));
+            if (bem_env_has_value("BEM_ASM_BLOCK_X"))
+                block_x = std::max(1, bem_env_int("BEM_ASM_BLOCK_X", block_x));
+            if (bem_env_has_value("BEM_ASM_BLOCK_Y"))
+                block_y = std::max(1, bem_env_int("BEM_ASM_BLOCK_Y", block_y));
             if (block_x * block_y > 1024)
                 block_y = std::max(1, 1024 / block_x);
             dim3 block(block_x, block_y);

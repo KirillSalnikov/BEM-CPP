@@ -146,6 +146,8 @@ struct HelmholtzFMM {
     int*    d_src_ids_cached;        // (h_src_ids_flat.size())
     int*    d_tgt_id_offsets_cached;  // (n_leaves+1)
     int*    d_tgt_ids_cached;        // (h_tgt_ids_flat.size())
+    int*    d_leaf_near_offsets_cached; // (n_leaves+1), neighbor leaf ordinals
+    int*    d_leaf_near_ids_cached;     // flat neighbor leaf ordinals
 
     // Cached gradient workspace arrays
     double* d_gy_re_cached;          // (Nt) for gradient y component
@@ -176,6 +178,7 @@ struct HelmholtzFMM {
     double2* d_complex_tmp2;
 
     bool initialized;
+    bool batch4_allocated;
 
     HelmholtzFMM() : initialized(false),
         d_tgt_pts(0), d_src_pts(0), d_p2p_offsets(0), d_p2p_indices(0),
@@ -197,6 +200,7 @@ struct HelmholtzFMM {
         d_node_centers_cached(0), d_dirs_cached(0), d_weights_cached(0),
         d_leaf_idx_cached(0), d_src_id_offsets_cached(0), d_src_ids_cached(0),
         d_tgt_id_offsets_cached(0), d_tgt_ids_cached(0),
+        d_leaf_near_offsets_cached(0), d_leaf_near_ids_cached(0),
         d_gy_re_cached(0), d_gy_im_cached(0), d_gz_re_cached(0), d_gz_im_cached(0),
         d_gx_re_tmp_cached(0), d_gx_im_tmp_cached(0),
         d_gy2_re_cached(0), d_gy2_im_cached(0), d_gz2_re_cached(0), d_gz2_im_cached(0),
@@ -205,7 +209,7 @@ struct HelmholtzFMM {
         d_gx3_re_tmp_cached(0), d_gx3_im_tmp_cached(0),
         d_gy4_re_cached(0), d_gy4_im_cached(0), d_gz4_re_cached(0), d_gz4_im_cached(0),
         d_gx4_re_tmp_cached(0), d_gx4_im_tmp_cached(0),
-        d_complex_tmp1(0), d_complex_tmp2(0) {}
+        d_complex_tmp1(0), d_complex_tmp2(0), batch4_allocated(false) {}
 
     // Initialize: build tree, precompute transfers, upload to GPU
     void init(const double* targets, int n_tgt,
@@ -233,6 +237,7 @@ struct HelmholtzFMM {
     void evaluate_pot_grad_batch2(const cdouble* charges1, const cdouble* charges2,
                                    cdouble* pot1, cdouble* grad1,
                                    cdouble* pot2, cdouble* grad2);
+    void evaluate_pot_grad_uploaded();
     void evaluate_pot_grad_batch2_uploaded();
     void evaluate_batch4_uploaded();
     void evaluate_batch4_far_uploaded();

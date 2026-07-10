@@ -2,10 +2,26 @@
 #define BLOCK_GMRES_H
 
 #include <complex>
+#include <vector>
 typedef std::complex<double> cdouble;
 
 class BemFmmOperator;
 class NearFieldPrecond;
+
+struct GmresPairedWorkspace {
+    std::vector<cdouble> r1, r2, w1, w2, z1, z2;
+    std::vector<cdouble> V1, V2, Z1, Z2;
+    std::vector<cdouble> H1, H2, cs1, sn1, s1, cs2, sn2, s2;
+    std::vector<cdouble> ytmp, ytmp2, ztmp, ztmp2;
+    double final_relres1 = 0.0;
+    double final_relres2 = 0.0;
+    bool converged1 = false;
+    bool converged2 = false;
+    bool stopped_stagnant = false;
+    bool numerical_breakdown = false;
+    bool restored_best_iterate = false;
+    bool reached_max_cycles = false;
+};
 
 // Solve Z*x1=b1 and Z*x2=b2 simultaneously using paired GMRES
 // Both systems share the same operator Z, using batched matvec
@@ -15,5 +31,66 @@ int gmres_solve_paired(BemFmmOperator& op,
     cdouble* x1, cdouble* x2,
     int restart = 100, double tol = 1e-4, int maxiter = 300,
     bool verbose = true, NearFieldPrecond* precond = nullptr);
+
+int gmres_solve_paired_ws(BemFmmOperator& op,
+    const cdouble* b1, const cdouble* b2,
+    cdouble* x1, cdouble* x2,
+    int restart, double tol, int maxiter,
+    bool verbose, NearFieldPrecond* precond,
+    GmresPairedWorkspace& ws);
+
+// Experimental short-recurrence GPU solver.  It is intended for large
+// unpreconditioned FMM solves where GMRES orthogonalization and basis storage
+// dominate.  It reuses the same convergence/status fields as GMRES.
+int bicgstab_solve_paired_device_ws(BemFmmOperator& op,
+    const cdouble* b1, const cdouble* b2,
+    cdouble* x1, cdouble* x2,
+    int restart, double tol, int maxiter,
+    bool verbose, GmresPairedWorkspace& ws);
+
+// BiCGSTAB with residual replacement.  This keeps the short GPU recurrence
+// but periodically recomputes the true residual and restarts the shadow
+// residual/search direction from it, limiting residual drift on non-normal BEM
+// systems.
+int bicgstab_rr_solve_paired_device_ws(BemFmmOperator& op,
+    const cdouble* b1, const cdouble* b2,
+    cdouble* x1, cdouble* x2,
+    int restart, double tol, int maxiter,
+    bool verbose, GmresPairedWorkspace& ws);
+
+// Conjugate-gradient-squared with residual replacement.  This is another
+// short-recurrence GPU solver for non-Hermitian PMCHWT systems.  It avoids the
+// long GMRES basis and orthogonalization, but keeps true-residual checks so the
+// reported convergence remains tied to ||b-Ax||.
+int cgs_rr_solve_paired_device_ws(BemFmmOperator& op,
+    const cdouble* b1, const cdouble* b2,
+    cdouble* x1, cdouble* x2,
+    int restart, double tol, int maxiter,
+    bool verbose, GmresPairedWorkspace& ws);
+
+// Transpose-free QMR for a general non-Hermitian operator.  Unlike QMR-CS it
+// does not assume that the approximate FMM operator remains complex symmetric.
+int tfqmr_solve_paired_device_ws(BemFmmOperator& op,
+    const cdouble* b1, const cdouble* b2,
+    cdouble* x1, cdouble* x2,
+    int restart, double tol, int maxiter,
+    bool verbose, GmresPairedWorkspace& ws);
+
+// QMR-CS-2 for a complex-symmetric operator. Uses unconjugated bilinear
+// products and one operator application per iteration.
+int qmr2_solve_paired_device_ws(BemFmmOperator& op,
+    const cdouble* b1, const cdouble* b2,
+    cdouble* x1, cdouble* x2,
+    int restart, double tol, int maxiter,
+    bool verbose, GmresPairedWorkspace& ws);
+
+int cocr_solve_paired_device_ws(BemFmmOperator& op,
+    const cdouble* b1, const cdouble* b2, cdouble* x1, cdouble* x2,
+    int restart, double tol, int maxiter, bool verbose,
+    GmresPairedWorkspace& ws, NearFieldPrecond* sym_precond = nullptr);
+
+int block_cocg_solve_paired_device_ws(BemFmmOperator& op,
+    const cdouble* b1,const cdouble* b2,cdouble* x1,cdouble* x2,
+    int restart,double tol,int maxiter,bool verbose,GmresPairedWorkspace& ws);
 
 #endif

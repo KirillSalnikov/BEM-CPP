@@ -1,9 +1,21 @@
 #include "rhs.h"
 #include "farfield.h"
+#include "gpu_select.h"
 #include "quadrature.h"
 #include <cuda_runtime.h>
 #include <cstring>
 #include <cmath>
+#include <cstdlib>
+#include <algorithm>
+#include <vector>
+
+namespace {
+double rhs_h_sign()
+{
+    double s = bem_env_double("BEM_RHS_H_SIGN", 1.0);
+    return (s < 0.0) ? -1.0 : 1.0;
+}
+}
 
 void compute_rhs_planewave(const RWG& rwg, const Mesh& mesh,
                            std::complex<double> k_ext, double eta_ext,
@@ -16,13 +28,13 @@ void compute_rhs_planewave(const RWG& rwg, const Mesh& mesh,
     int Nq = quad.npts;
 
     // H0 = k_hat x E0 / eta_ext
-    Vec3 H0 = k_hat.cross(E0) * (1.0 / eta_ext);
+    Vec3 H0 = k_hat.cross(E0) * (rhs_h_sign() / eta_ext);
 
     std::vector<double> lam0(Nq);
     for (int q = 0; q < Nq; q++)
         lam0[q] = 1.0 - quad.pts[q][0] - quad.pts[q][1];
 
-    memset(b, 0, 2 * N * sizeof(std::complex<double>));
+    std::fill_n(b, 2 * N, std::complex<double>(0.0, 0.0));
 
     // Two halves: plus (+1) and minus (-1)
     for (int half = 0; half < 2; half++) {
@@ -76,15 +88,16 @@ void compute_rhs_planewave_pair(const RWG& rwg, const Mesh& mesh,
     TriQuad quad = tri_quadrature(quad_order);
     int Nq = quad.npts;
 
-    Vec3 H0_a = k_hat.cross(E0_a) * (1.0 / eta_ext);
-    Vec3 H0_b = k_hat.cross(E0_b) * (1.0 / eta_ext);
+    const double hsign = rhs_h_sign();
+    Vec3 H0_a = k_hat.cross(E0_a) * (hsign / eta_ext);
+    Vec3 H0_b = k_hat.cross(E0_b) * (hsign / eta_ext);
 
     std::vector<double> lam0(Nq);
     for (int q = 0; q < Nq; q++)
         lam0[q] = 1.0 - quad.pts[q][0] - quad.pts[q][1];
 
-    memset(b_a, 0, 2 * N * sizeof(std::complex<double>));
-    memset(b_b, 0, 2 * N * sizeof(std::complex<double>));
+    std::fill_n(b_a, 2 * N, std::complex<double>(0.0, 0.0));
+    std::fill_n(b_b, 2 * N, std::complex<double>(0.0, 0.0));
 
     for (int half = 0; half < 2; half++) {
         int sign = (half == 0) ? +1 : -1;
@@ -137,11 +150,12 @@ void compute_rhs_planewave_pair_cached(const FFCache& cache,
 {
     int N = cache.N;
     int Nq = cache.Nq;
-    Vec3 H0_a = k_hat.cross(E0_a) * (1.0 / eta_ext);
-    Vec3 H0_b = k_hat.cross(E0_b) * (1.0 / eta_ext);
+    const double hsign = rhs_h_sign();
+    Vec3 H0_a = k_hat.cross(E0_a) * (hsign / eta_ext);
+    Vec3 H0_b = k_hat.cross(E0_b) * (hsign / eta_ext);
 
-    memset(b_a, 0, 2 * N * sizeof(std::complex<double>));
-    memset(b_b, 0, 2 * N * sizeof(std::complex<double>));
+    std::fill_n(b_a, 2 * N, std::complex<double>(0.0, 0.0));
+    std::fill_n(b_b, 2 * N, std::complex<double>(0.0, 0.0));
 
     int total = 2 * N * Nq;
     int half_stride = N * Nq;
@@ -173,13 +187,120 @@ void compute_rhs_planewave_pair_cached(const FFCache& cache,
     }
 }
 
+struct RHSOrientDevice {
+    Vec3 E0_a;
+    Vec3 E0_b;
+    Vec3 k_hat;
+};
+
+RHSBatchWorkspace::RHSBatchWorkspace()
+    : h_orient(0), h_B(0), d_orient(0), d_B(0),
+      stream(0),
+      h_orient_pinned(false), h_B_pinned(false),
+      cap_orient(0), cap_host_rhs_elems(0), cap_rhs_elems(0)
+{
+}
+
+static void release_host_workspace(void*& ptr, bool& pinned)
+{
+    if (!ptr)
+        return;
+    if (pinned)
+        cudaFreeHost(ptr);
+    else
+        std::free(ptr);
+    ptr = 0;
+    pinned = false;
+}
+
+static void allocate_host_workspace(void*& ptr, bool& pinned, size_t bytes, const char* label)
+{
+    cudaError_t host_err = cudaHostAlloc(&ptr, bytes, cudaHostAllocDefault);
+    if (host_err == cudaSuccess) {
+        pinned = true;
+        return;
+    }
+
+    cudaGetLastError();
+    ptr = std::malloc(bytes);
+    pinned = false;
+    if (!ptr) {
+        fprintf(stderr, "Error: failed to allocate %s host workspace (%zu bytes)\n",
+                label, bytes);
+        std::exit(1);
+    }
+}
+
+void RHSBatchWorkspace::reserve(int n_orient, size_t rhs_elems, bool need_host_rhs)
+{
+    if (!stream)
+        CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+
+    if (n_orient > cap_orient) {
+        release_host_workspace(h_orient, h_orient_pinned);
+        if (d_orient)
+            cudaFree(d_orient);
+
+        size_t orient_bytes = (size_t)n_orient * sizeof(RHSOrientDevice);
+        allocate_host_workspace(h_orient, h_orient_pinned, orient_bytes, "RHS orientation");
+        CUDA_CHECK(cudaMalloc(&d_orient, (size_t)n_orient * sizeof(RHSOrientDevice)));
+        cap_orient = n_orient;
+    }
+    if (need_host_rhs && rhs_elems > cap_host_rhs_elems) {
+        release_host_workspace(h_B, h_B_pinned);
+        allocate_host_workspace(h_B, h_B_pinned, rhs_elems * sizeof(double2), "RHS output");
+        cap_host_rhs_elems = rhs_elems;
+    }
+    if (rhs_elems > cap_rhs_elems) {
+        if (d_B)
+            cudaFree(d_B);
+        CUDA_CHECK(cudaMalloc(&d_B, rhs_elems * sizeof(double2)));
+        cap_rhs_elems = rhs_elems;
+    }
+}
+
+std::complex<double>* RHSBatchWorkspace::host_B()
+{
+    return reinterpret_cast<std::complex<double>*>(h_B);
+}
+
+const std::complex<double>* RHSBatchWorkspace::host_B() const
+{
+    return reinterpret_cast<const std::complex<double>*>(h_B);
+}
+
+void RHSBatchWorkspace::free()
+{
+    release_host_workspace(h_orient, h_orient_pinned);
+    release_host_workspace(h_B, h_B_pinned);
+    if (d_orient) {
+        cudaFree(d_orient);
+        d_orient = 0;
+    }
+    if (d_B) {
+        cudaFree(d_B);
+        d_B = 0;
+    }
+    if (stream) {
+        cudaStreamDestroy(stream);
+        stream = 0;
+    }
+    cap_orient = 0;
+    cap_host_rhs_elems = 0;
+    cap_rhs_elems = 0;
+}
+
+RHSBatchWorkspace::~RHSBatchWorkspace()
+{
+    free();
+}
+
 __global__ void rhs_pairs_cached_kernel(const double* __restrict__ qpts,
                                         const double* __restrict__ fvals,
                                         const double* __restrict__ jw,
-                                        const Vec3* __restrict__ E0_a,
-                                        const Vec3* __restrict__ E0_b,
-                                        const Vec3* __restrict__ k_hat,
-                                        double k_re, double k_im, double inv_eta,
+                                        const RHSOrientDevice* __restrict__ orient,
+                                        double k_re, double k_im, double inv_eta, double h_sign,
+                                        double row_h_re, double row_h_im,
                                         int N, int Nq, int n_orient,
                                         double2* __restrict__ B)
 {
@@ -188,15 +309,16 @@ __global__ void rhs_pairs_cached_kernel(const double* __restrict__ qpts,
     if (n >= N || oi >= n_orient)
         return;
 
-    Vec3 ka = k_hat[oi];
-    Vec3 ea = E0_a[oi];
-    Vec3 eb = E0_b[oi];
-    double hax = (ka.y * ea.z - ka.z * ea.y) * inv_eta;
-    double hay = (ka.z * ea.x - ka.x * ea.z) * inv_eta;
-    double haz = (ka.x * ea.y - ka.y * ea.x) * inv_eta;
-    double hbx = (ka.y * eb.z - ka.z * eb.y) * inv_eta;
-    double hby = (ka.z * eb.x - ka.x * eb.z) * inv_eta;
-    double hbz = (ka.x * eb.y - ka.y * eb.x) * inv_eta;
+    RHSOrientDevice o = orient[oi];
+    Vec3 ka = o.k_hat;
+    Vec3 ea = o.E0_a;
+    Vec3 eb = o.E0_b;
+    double hax = (ka.y * ea.z - ka.z * ea.y) * inv_eta * h_sign;
+    double hay = (ka.z * ea.x - ka.x * ea.z) * inv_eta * h_sign;
+    double haz = (ka.x * ea.y - ka.y * ea.x) * inv_eta * h_sign;
+    double hbx = (ka.y * eb.z - ka.z * eb.y) * inv_eta * h_sign;
+    double hby = (ka.z * eb.x - ka.x * eb.z) * inv_eta * h_sign;
+    double hbz = (ka.x * eb.y - ka.y * eb.x) * inv_eta * h_sign;
 
     double bEa_re = 0.0, bEa_im = 0.0;
     double bHa_re = 0.0, bHa_im = 0.0;
@@ -238,10 +360,14 @@ __global__ void rhs_pairs_cached_kernel(const double* __restrict__ qpts,
 
     size_t off_a = ((size_t)oi * 2) * (size_t)(2 * N);
     size_t off_b = ((size_t)oi * 2 + 1) * (size_t)(2 * N);
+    double sHa_re = bHa_re * row_h_re - bHa_im * row_h_im;
+    double sHa_im = bHa_re * row_h_im + bHa_im * row_h_re;
+    double sHb_re = bHb_re * row_h_re - bHb_im * row_h_im;
+    double sHb_im = bHb_re * row_h_im + bHb_im * row_h_re;
     B[off_a + n]     = make_double2(bEa_re, bEa_im);
-    B[off_a + N + n] = make_double2(bHa_re, bHa_im);
+    B[off_a + N + n] = make_double2(sHa_re, sHa_im);
     B[off_b + n]     = make_double2(bEb_re, bEb_im);
-    B[off_b + N + n] = make_double2(bHb_re, bHb_im);
+    B[off_b + N + n] = make_double2(sHb_re, sHb_im);
 }
 
 int compute_rhs_planewave_pairs_cached_cuda(const FFCache& cache,
@@ -260,42 +386,122 @@ int compute_rhs_planewave_pairs_cached_cuda(const FFCache& cache,
     int Nq = cache.Nq;
     int total_quad = 2 * N * Nq;
     double *d_qpts = 0, *d_fvals = 0, *d_jw = 0;
-    Vec3 *d_E0_a = 0, *d_E0_b = 0, *d_k_hat = 0;
+    RHSOrientDevice* d_orient = 0;
     double2* d_B = 0;
     size_t rhs_elems = (size_t)n_orient * 2 * 2 * (size_t)N;
+    std::vector<RHSOrientDevice> orient((size_t)n_orient);
+    for (int i = 0; i < n_orient; i++) {
+        orient[(size_t)i].E0_a = E0_a[i];
+        orient[(size_t)i].E0_b = E0_b[i];
+        orient[(size_t)i].k_hat = k_hat[i];
+    }
 
     CUDA_CHECK(cudaMalloc(&d_qpts, total_quad * 3 * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_fvals, total_quad * 3 * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_jw, total_quad * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_E0_a, n_orient * sizeof(Vec3)));
-    CUDA_CHECK(cudaMalloc(&d_E0_b, n_orient * sizeof(Vec3)));
-    CUDA_CHECK(cudaMalloc(&d_k_hat, n_orient * sizeof(Vec3)));
+    CUDA_CHECK(cudaMalloc(&d_orient, n_orient * sizeof(RHSOrientDevice)));
     CUDA_CHECK(cudaMalloc(&d_B, rhs_elems * sizeof(double2)));
 
     CUDA_CHECK(cudaMemcpy(d_qpts, cache.qpts.data(), total_quad * 3 * sizeof(double), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_fvals, cache.fvals.data(), total_quad * 3 * sizeof(double), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_jw, cache.jw.data(), total_quad * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_E0_a, E0_a, n_orient * sizeof(Vec3), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_E0_b, E0_b, n_orient * sizeof(Vec3), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_k_hat, k_hat, n_orient * sizeof(Vec3), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_orient, orient.data(), n_orient * sizeof(RHSOrientDevice), cudaMemcpyHostToDevice));
 
     dim3 block(128);
     dim3 grid((N + (int)block.x - 1) / (int)block.x, n_orient);
+    const double hsign = rhs_h_sign();
     rhs_pairs_cached_kernel<<<grid, block>>>(
-        d_qpts, d_fvals, d_jw, d_E0_a, d_E0_b, d_k_hat,
-        k_ext.real(), k_ext.imag(), 1.0 / eta_ext,
+        d_qpts, d_fvals, d_jw, d_orient,
+        k_ext.real(), k_ext.imag(), 1.0 / eta_ext, hsign,
+        1.0, 0.0,
         N, Nq, n_orient, d_B);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaMemcpy(reinterpret_cast<double2*>(B), d_B,
                           rhs_elems * sizeof(double2), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaDeviceSynchronize());
 
     cudaFree(d_qpts);
     cudaFree(d_fvals);
     cudaFree(d_jw);
-    cudaFree(d_E0_a);
-    cudaFree(d_E0_b);
-    cudaFree(d_k_hat);
+    cudaFree(d_orient);
     cudaFree(d_B);
+    return 0;
+}
+
+int compute_rhs_planewave_pairs_cached_cuda(const FFCacheGPU& gpu_cache,
+                                            std::complex<double> k_ext,
+                                            double eta_ext,
+                                            const Vec3* E0_a,
+                                            const Vec3* E0_b,
+                                            const Vec3* k_hat,
+                                            int n_orient,
+                                            std::complex<double>* B)
+{
+    RHSBatchWorkspace workspace;
+    return compute_rhs_planewave_pairs_cached_cuda_ws(
+        gpu_cache, workspace, k_ext, eta_ext, E0_a, E0_b, k_hat, n_orient, B);
+}
+
+int compute_rhs_planewave_pairs_cached_cuda_ws(const FFCacheGPU& gpu_cache,
+                                               RHSBatchWorkspace& workspace,
+                                               std::complex<double> k_ext,
+                                               double eta_ext,
+                                               const Vec3* E0_a,
+                                               const Vec3* E0_b,
+                                               const Vec3* k_hat,
+                                               int n_orient,
+                                               std::complex<double>* B)
+{
+    return compute_rhs_planewave_pairs_cached_cuda_ws_scaled(
+        gpu_cache, workspace, k_ext, eta_ext, std::complex<double>(1.0, 0.0),
+        E0_a, E0_b, k_hat, n_orient, B);
+}
+
+int compute_rhs_planewave_pairs_cached_cuda_ws_scaled(const FFCacheGPU& gpu_cache,
+                                                      RHSBatchWorkspace& workspace,
+                                                      std::complex<double> k_ext,
+                                                      double eta_ext,
+                                                      std::complex<double> row_h_scale,
+                                                      const Vec3* E0_a,
+                                                      const Vec3* E0_b,
+                                                      const Vec3* k_hat,
+                                                      int n_orient,
+                                                      std::complex<double>* B)
+{
+    if (n_orient <= 0)
+        return 0;
+
+    int N = gpu_cache.N;
+    int Nq = gpu_cache.Nq;
+    size_t rhs_elems = (size_t)n_orient * 2 * 2 * (size_t)N;
+    workspace.reserve(n_orient, rhs_elems, B == nullptr);
+    RHSOrientDevice* orient = reinterpret_cast<RHSOrientDevice*>(workspace.h_orient);
+    for (int i = 0; i < n_orient; i++) {
+        orient[i].E0_a = E0_a[i];
+        orient[i].E0_b = E0_b[i];
+        orient[i].k_hat = k_hat[i];
+    }
+
+    RHSOrientDevice* d_orient = reinterpret_cast<RHSOrientDevice*>(workspace.d_orient);
+    double2* d_B = reinterpret_cast<double2*>(workspace.d_B);
+
+    CUDA_CHECK(cudaMemcpyAsync(d_orient, orient,
+                               n_orient * sizeof(RHSOrientDevice),
+                               cudaMemcpyHostToDevice, workspace.stream));
+
+    dim3 block(128);
+    dim3 grid((N + (int)block.x - 1) / (int)block.x, n_orient);
+    const double hsign = rhs_h_sign();
+    rhs_pairs_cached_kernel<<<grid, block, 0, workspace.stream>>>(
+        gpu_cache.d_qpts, gpu_cache.d_fvals, gpu_cache.d_jw,
+        d_orient,
+        k_ext.real(), k_ext.imag(), 1.0 / eta_ext, hsign,
+        row_h_scale.real(), row_h_scale.imag(),
+        N, Nq, n_orient, d_B);
+    CUDA_CHECK(cudaGetLastError());
+    double2* h_out = B ? reinterpret_cast<double2*>(B) : reinterpret_cast<double2*>(workspace.h_B);
+    CUDA_CHECK(cudaMemcpyAsync(h_out, d_B,
+                               rhs_elems * sizeof(double2),
+                               cudaMemcpyDeviceToHost, workspace.stream));
+    CUDA_CHECK(cudaStreamSynchronize(workspace.stream));
     return 0;
 }

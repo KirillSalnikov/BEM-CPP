@@ -2,6 +2,7 @@
 #define BEM_FARFIELD_H
 
 #include "rwg.h"
+#include <cuda_runtime.h>
 #include <complex>
 #include <vector>
 
@@ -31,13 +32,24 @@ struct FFCacheGPU {
 
 struct FFBatchWorkspace {
     double *d_cJ_re, *d_cJ_im, *d_cM_re, *d_cM_im;
+    void *d_cJ_z, *d_cM_z;
     double *d_r_hats, *d_RT, *d_rhat_lab, *d_etheta_lab, *d_Fv_re, *d_Fv_im;
     double *d_e_par, *d_e_perp, *d_weights, *d_alpha_cos, *d_alpha_sin, *d_M_accum, *d_M_partial;
-    int cap_coeffs, cap_rhat, cap_rt, cap_lab_dirs, cap_fv, cap_evec, cap_weight, cap_alpha, cap_mueller, cap_mueller_partial;
-    std::vector<double> cJ_re, cJ_im, cM_re, cM_im, fv_re, fv_im, M_accum;
+    double *h_cJ_re, *h_cJ_im, *h_cM_re, *h_cM_im, *h_fv_re, *h_fv_im, *h_M_accum;
+    cudaStream_t stream;
+    bool h_cJ_re_pinned, h_cJ_im_pinned, h_cM_re_pinned, h_cM_im_pinned;
+    bool h_fv_re_pinned, h_fv_im_pinned, h_mueller_pinned;
+    int cap_coeffs, cap_coeffs_z, cap_rhat, cap_rt, cap_lab_dirs, cap_fv, cap_evec, cap_weight, cap_alpha, cap_mueller, cap_mueller_partial;
+    int cap_host_coeffs, cap_host_fv, cap_host_mueller;
+    int cached_lab_dirs, cached_alpha;
 
     FFBatchWorkspace();
     void reserve(int total_coeffs, int total_rhat, int total_fv);
+    void reserve_host_coeffs(int total_coeffs);
+    void reserve_host_fv(int total_fv);
+    void reserve_host_mueller(int total_mueller);
+    void reserve_alpha(int n_alpha);
+    void reserve_mueller_accum(int ndir);
     void reserve_mueller(int n_orient, int ndir);
     void reserve_mueller_partials(int groups, int ndir);
     void zero_mueller(int ndir);
@@ -126,7 +138,8 @@ void accumulate_farfield_mueller_alpha_geom_cuda_ws(
     const double* alpha_cos,
     const double* alpha_sin,
     std::complex<double> k_ext, double eta_ext,
-    int n_base_orient, int alpha_avg, int ndir);
+    int n_base_orient, int alpha_avg, int ndir,
+    bool sync_after = true);
 
 // CPU fallback for single-direction computation
 void compute_far_field_vec_batch_cpu(const FFCache& cache,

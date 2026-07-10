@@ -1,10 +1,13 @@
 #include "bem_fmm.h"
 #include "graglia.h"
+#include "gpu_select.h"
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
 #include <map>
+#include <set>
+#include <tuple>
 #include <algorithm>
 
 namespace {
@@ -22,6 +25,45 @@ void unregister_host_vector(std::vector<cdouble>& v)
     }
 }
 
+bool use_pinned_matvec_stage()
+{
+    return bem_env_flag_enabled("BEM_PINNED_MATVEC_STAGE", true);
+}
+
+bool use_full_mvslot_memset(int n_basis)
+{
+    (void)n_basis;
+    return bem_env_flag_enabled("BEM_FMM_MV_MEMSET", false);
+}
+
+void upload_complex_stage(double2* dst_device, double2* stage_host,
+                          const cdouble* src_host, int n, bool pinned)
+{
+    if (pinned && stage_host) {
+        std::memcpy(stage_host, src_host, (size_t)n * sizeof(double2));
+        CUDA_CHECK(cudaMemcpy(dst_device, stage_host,
+                              (size_t)n * sizeof(double2), cudaMemcpyHostToDevice));
+    } else {
+        CUDA_CHECK(cudaMemcpy(dst_device, src_host,
+                              (size_t)n * sizeof(double2), cudaMemcpyHostToDevice));
+    }
+}
+
+void download_complex_stage(cdouble* dst_host, double2* stage_host,
+                            const double2* src_device, int n, bool pinned)
+{
+    if (pinned && stage_host) {
+        CUDA_CHECK(cudaMemcpy(stage_host, src_device,
+                              (size_t)n * sizeof(double2), cudaMemcpyDeviceToHost));
+        std::memcpy(static_cast<void*>(dst_host),
+                    static_cast<const void*>(stage_host),
+                    (size_t)n * sizeof(double2));
+    } else {
+        CUDA_CHECK(cudaMemcpy(dst_host, src_device,
+                              (size_t)n * sizeof(double2), cudaMemcpyDeviceToHost));
+    }
+}
+
 __global__ void bem_split_complex_kernel(const double2* in, double* out_re, double* out_im, int n)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -29,6 +71,29 @@ __global__ void bem_split_complex_kernel(const double2* in, double* out_re, doub
     double2 v = in[i];
     out_re[i] = v.x;
     out_im[i] = v.y;
+}
+
+__global__ void bem_split_complex_batch2_scale_kernel(
+    const double2* in1, const double2* in2,
+    double* out1_re, double* out1_im,
+    double* out2_re, double* out2_im,
+    int system_size, int N, double m_scale, double m_phase_r, double m_phase_i)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= system_size) return;
+    double2 v1 = in1[i];
+    double2 v2 = in2[i];
+    if (i >= N) {
+        out1_re[i] = m_scale * (m_phase_r * v1.x - m_phase_i * v1.y);
+        out1_im[i] = m_scale * (m_phase_r * v1.y + m_phase_i * v1.x);
+        out2_re[i] = m_scale * (m_phase_r * v2.x - m_phase_i * v2.y);
+        out2_im[i] = m_scale * (m_phase_r * v2.y + m_phase_i * v2.x);
+    } else {
+        out1_re[i] = v1.x;
+        out1_im[i] = v1.y;
+        out2_re[i] = v2.x;
+        out2_im[i] = v2.y;
+    }
 }
 
 __global__ void bem_pack_complex_kernel(const double* in_re, const double* in_im, double2* out, int n)
@@ -123,10 +188,21 @@ __global__ void bem_accum_L_vector_kernel(
         a2r += cp * phi2_re[idx] + cm * phi2_re[im];
         a2i += cp * phi2_im[idx] + cm * phi2_im[im];
     }
-    L1_re[m] += ik_re * a1r - ik_im * a1i;
-    L1_im[m] += ik_re * a1i + ik_im * a1r;
-    L2_re[m] += ik_re * a2r - ik_im * a2i;
-    L2_im[m] += ik_re * a2i + ik_im * a2r;
+    double v1r = ik_re * a1r - ik_im * a1i;
+    double v1i = ik_re * a1i + ik_im * a1r;
+    double v2r = ik_re * a2r - ik_im * a2i;
+    double v2i = ik_re * a2i + ik_im * a2r;
+    if (comp == 0) {
+        L1_re[m] = v1r;
+        L1_im[m] = v1i;
+        L2_re[m] = v2r;
+        L2_im[m] = v2i;
+    } else {
+        L1_re[m] += v1r;
+        L1_im[m] += v1i;
+        L2_re[m] += v2r;
+        L2_im[m] += v2i;
+    }
 }
 
 __global__ void bem_accum_L_scalar_kernel(
@@ -210,10 +286,29 @@ __global__ void bem_accum_K_component_kernel(
             a2i += w * c2i;
         }
     }
-    K1_re[m] += a1r;
-    K1_im[m] += a1i;
-    K2_re[m] += a2r;
-    K2_im[m] += a2i;
+    if (comp == 0) {
+        K1_re[m] = a1r;
+        K1_im[m] = a1i;
+        K2_re[m] = a2r;
+        K2_im[m] = a2i;
+    } else {
+        K1_re[m] += a1r;
+        K1_im[m] += a1i;
+        K2_re[m] += a2r;
+        K2_im[m] += a2i;
+    }
+}
+
+__device__ inline double2 cx_mul(double ar, double ai, double br, double bi)
+{
+    return make_double2(ar * br - ai * bi, ar * bi + ai * br);
+}
+
+__device__ inline double2 cx_div(double ar, double ai, double br, double bi)
+{
+    const double den = br * br + bi * bi;
+    return make_double2((ar * br + ai * bi) / den,
+                        (ai * br - ar * bi) / den);
 }
 
 __global__ void bem_apply_corr_assemble_batch2_kernel(
@@ -227,8 +322,10 @@ __global__ void bem_apply_corr_assemble_batch2_kernel(
     const double* cLi_re, const double* cLi_im,
     const double* cKi_re, const double* cKi_im,
     const double* cI,
-    int N, double eta_e, double eta_i, double unknown_m_scale, double row_h_scale,
+    int N, double eta_e_r, double eta_e_i, double eta_i_r, double eta_i_i,
+    double unknown_m_scale, double row_h_scale_r, double row_h_scale_i,
     double int_op_sign, double k_identity, int n_form, double n_form_eps_int,
+    double n_form_m_identity,
     double2* y1, double2* y2)
 {
     int m = blockIdx.x * blockDim.x + threadIdx.x;
@@ -263,11 +360,13 @@ __global__ void bem_apply_corr_assemble_batch2_kernel(
             ar = cLi_re[j] * Mr - cLi_im[j] * Mi; ai = cLi_re[j] * Mi + cLi_im[j] * Mr; r[s5] += ar; im[s5] += ai;
             ar = cKi_re[j] * Jr - cKi_im[j] * Ji; ai = cKi_re[j] * Ji + cKi_im[j] * Jr; r[s6] += ar; im[s6] += ai;
             ar = cKi_re[j] * Mr - cKi_im[j] * Mi; ai = cKi_re[j] * Mi + cKi_im[j] * Mr; r[s7] += ar; im[s7] += ai;
-            double mass = cI[j];
-            r[8 * N + base] += mass * Jr;
-            im[8 * N + base] += mass * Ji;
-            r[9 * N + base] += mass * Mr;
-            im[9 * N + base] += mass * Mi;
+            if (n_form) {
+                double mass = cI[j];
+                r[8 * N + base] += mass * Jr;
+                im[8 * N + base] += mass * Ji;
+                r[9 * N + base] += mass * Mr;
+                im[9 * N + base] += mass * Mi;
+            }
         }
     }
 
@@ -289,24 +388,39 @@ __global__ void bem_apply_corr_assemble_batch2_kernel(
         double IM_i = n_form ? im[s9] : Mvar_i;
         double ytop_r, ytop_i, ybot_r, ybot_i;
         if (n_form) {
+            double2 le_m = cx_div(r[s1], im[s1], eta_e_r, eta_e_i);
+            double2 li_m = cx_div(r[s5], im[s5], eta_i_r, eta_i_i);
             ytop_r = (r[s2] + int_op_sign * r[s6] + k_identity * IJ_r) +
-                     (r[s1] / eta_e + int_op_sign * r[s5] / eta_i);
+                     le_m.x + int_op_sign * li_m.x;
             ytop_i = (im[s2] + int_op_sign * im[s6] + k_identity * IJ_i) +
-                     (im[s1] / eta_e + int_op_sign * im[s5] / eta_i);
-            double kid_bot = -0.5 * (1.0 + n_form_eps_int);
-            ybot_r = row_h_scale * (-(eta_e * r[s0] - n_form_eps_int * eta_i * r[s4]) +
-                                    (r[s3] - n_form_eps_int * r[s7] + kid_bot * IM_r));
-            ybot_i = row_h_scale * (-(eta_e * im[s0] - n_form_eps_int * eta_i * im[s4]) +
-                                    (im[s3] - n_form_eps_int * im[s7] + kid_bot * IM_i));
+                     le_m.y + int_op_sign * li_m.y;
+
+            double2 eta_le_j = cx_mul(eta_e_r, eta_e_i, r[s0], im[s0]);
+            double2 eta_li_j = cx_mul(eta_i_r, eta_i_i, r[s4], im[s4]);
+            double inner_r = -(eta_le_j.x - n_form_eps_int * eta_li_j.x) +
+                             (r[s3] - n_form_eps_int * r[s7] + n_form_m_identity * IM_r);
+            double inner_i = -(eta_le_j.y - n_form_eps_int * eta_li_j.y) +
+                             (im[s3] - n_form_eps_int * im[s7] + n_form_m_identity * IM_i);
+            double2 ybot = cx_mul(row_h_scale_r, row_h_scale_i, inner_r, inner_i);
+            ybot_r = ybot.x;
+            ybot_i = ybot.y;
         } else {
-            ytop_r = eta_e * r[s0] + int_op_sign * eta_i * r[s4] -
-                            (r[s3] + int_op_sign * r[s7] + k_identity * Mvar_r);
-            ytop_i = eta_e * im[s0] + int_op_sign * eta_i * im[s4] -
-                            (im[s3] + int_op_sign * im[s7] + k_identity * Mvar_i);
-            ybot_r = row_h_scale * ((r[s2] + int_op_sign * r[s6] + k_identity * Jvar_r) +
-                                           r[s1] / eta_e + int_op_sign * r[s5] / eta_i);
-            ybot_i = row_h_scale * ((im[s2] + int_op_sign * im[s6] + k_identity * Jvar_i) +
-                                           im[s1] / eta_e + int_op_sign * im[s5] / eta_i);
+            double2 eta_le_j = cx_mul(eta_e_r, eta_e_i, r[s0], im[s0]);
+            double2 eta_li_j = cx_mul(eta_i_r, eta_i_i, r[s4], im[s4]);
+            ytop_r = eta_le_j.x + int_op_sign * eta_li_j.x -
+                     (r[s3] + int_op_sign * r[s7] + k_identity * Mvar_r);
+            ytop_i = eta_le_j.y + int_op_sign * eta_li_j.y -
+                     (im[s3] + int_op_sign * im[s7] + k_identity * Mvar_i);
+
+            double2 le_m = cx_div(r[s1], im[s1], eta_e_r, eta_e_i);
+            double2 li_m = cx_div(r[s5], im[s5], eta_i_r, eta_i_i);
+            double inner_r = (r[s2] + int_op_sign * r[s6] + k_identity * Jvar_r) +
+                             le_m.x + int_op_sign * li_m.x;
+            double inner_i = (im[s2] + int_op_sign * im[s6] + k_identity * Jvar_i) +
+                             le_m.y + int_op_sign * li_m.y;
+            double2 ybot = cx_mul(row_h_scale_r, row_h_scale_i, inner_r, inner_i);
+            ybot_r = ybot.x;
+            ybot_i = ybot.y;
         }
         if (rhs == 0) {
             y1[m] = make_double2(ytop_r, ytop_i);
@@ -318,19 +432,20 @@ __global__ void bem_apply_corr_assemble_batch2_kernel(
     }
     (void)slots;
 }
+
 } // namespace
 
 void BemFmmOperator::init(const RWG& rwg, const Mesh& mesh,
                             cdouble k_ext_, cdouble k_int_,
-                            double eta_ext_, double eta_int_,
+                            cdouble eta_ext_, cdouble eta_int_,
                             int quad_order, int fmm_digits, int max_leaf,
                             bool use_pfft_, bool use_spfft_)
 {
     Timer timer;
     k_ext = k_ext_;
     k_int = k_int_;
-    eta_ext = cdouble(eta_ext_);
-    eta_int = cdouble(eta_int_);
+    eta_ext = eta_ext_;
+    eta_int = eta_int_;
 #ifdef BEM_FMM_ONLY
     use_pfft = false;
     use_spfft = false;
@@ -339,7 +454,7 @@ void BemFmmOperator::init(const RWG& rwg, const Mesh& mesh,
 #else
     use_pfft = use_pfft_;
     use_spfft = use_spfft_;
-    if (use_spfft) {
+    if (use_spfft && !bem_env_flag_enabled("BEM_SPFFT_FORCE")) {
         printf("  [BEM-SurfPFFT] Disabled: direct cross-face P2P is slower than FMM; using FMM backend\n");
         use_spfft = false;
     }
@@ -538,35 +653,6 @@ void BemFmmOperator::init(const RWG& rwg, const Mesh& mesh,
         }
     }
 
-    // Pre-allocate temporary buffers used in matvec (avoid malloc/free per iteration)
-    tmp_src_charges.resize(total_pts);
-    tmp_phi.resize(total_pts);
-    for (int d = 0; d < 3; d++)
-        tmp_grad[d].resize(total_pts * 3);
-    tmp_L_result.resize(N);
-    tmp_K_result.resize(N);
-    mv_L_ext_J.resize(N); mv_L_ext_M.resize(N);
-    mv_K_ext_J.resize(N); mv_K_ext_M.resize(N);
-    mv_L_int_J.resize(N); mv_L_int_M.resize(N);
-    mv_K_int_J.resize(N); mv_K_int_M.resize(N);
-
-    // Batch-2 workspace
-    tmp2_src_charges.resize(total_pts);
-    tmp2_phi.resize(total_pts);
-    for (int d = 0; d < 3; d++)
-        tmp2_grad[d].resize(total_pts * 3);
-    mv2_L_ext_J.resize(N, 0); mv2_L_ext_M.resize(N, 0);
-    mv2_K_ext_J.resize(N, 0); mv2_K_ext_M.resize(N, 0);
-    mv2_L_int_J.resize(N, 0); mv2_L_int_M.resize(N, 0);
-    mv2_K_int_J.resize(N, 0); mv2_K_int_M.resize(N, 0);
-    b4_src2.resize(total_pts);
-    b4_src3.resize(total_pts);
-    b4_pot2.resize(total_pts);
-    b4_pot3.resize(total_pts);
-    tmp_M1_phys.resize(N);
-    tmp_M2_phys.resize(N);
-    register_tmp_host_buffers();
-
     // Precompute singular corrections
     printf("  [BEM-FMM] Computing singular corrections...\n");
     precompute_corrections(rwg, mesh, quad_order);
@@ -601,6 +687,31 @@ void BemFmmOperator::unregister_tmp_host_buffers()
     unregister_host_vector(tmp2_src_charges);
     unregister_host_vector(tmp_src_charges);
     tmp_host_registered = false;
+}
+
+void BemFmmOperator::ensure_host_workspace()
+{
+    if (!tmp_src_charges.empty())
+        return;
+
+    const int total_pts = 2 * N * Nq;
+    tmp_src_charges.resize(total_pts);
+    tmp_phi.resize(total_pts);
+    for (int d = 0; d < 3; d++)
+        tmp_grad[d].resize(total_pts * 3);
+    tmp_L_result.resize(N);
+    tmp_K_result.resize(N);
+    mv_L_ext_J.resize(N);
+    mv_L_ext_M.resize(N);
+    mv_K_ext_J.resize(N);
+    mv_K_ext_M.resize(N);
+    mv_L_int_J.resize(N);
+    mv_L_int_M.resize(N);
+    mv_K_int_J.resize(N);
+    mv_K_int_M.resize(N);
+    tmp_M1_phys.resize(N);
+    tmp_M2_phys.resize(N);
+    register_tmp_host_buffers();
 }
 
 void BemFmmOperator::init_device_workspace()
@@ -641,12 +752,34 @@ void BemFmmOperator::init_device_workspace()
     CUDA_CHECK(cudaMalloc(&d_K2_im, N * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_out1_complex, N * sizeof(double2)));
     CUDA_CHECK(cudaMalloc(&d_out2_complex, N * sizeof(double2)));
-    CUDA_CHECK(cudaMalloc(&d_mv1_re, 10 * N * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_mv1_im, 10 * N * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_mv2_re, 10 * N * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_mv2_im, 10 * N * sizeof(double)));
+    const int mv_slots_alloc = n_form ? 10 : 8;
+    CUDA_CHECK(cudaMalloc(&d_mv1_re, (size_t)mv_slots_alloc * N * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_mv1_im, (size_t)mv_slots_alloc * N * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_mv2_re, (size_t)mv_slots_alloc * N * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_mv2_im, (size_t)mv_slots_alloc * N * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_y1_complex, system_size * sizeof(double2)));
     CUDA_CHECK(cudaMalloc(&d_y2_complex, system_size * sizeof(double2)));
+    pinned_matvec_stage = false;
+    if (use_pinned_matvec_stage()) {
+        cudaError_t e1 = cudaHostAlloc(&h_full_x1_complex, (size_t)system_size * sizeof(double2), cudaHostAllocDefault);
+        cudaError_t e2 = cudaHostAlloc(&h_full_x2_complex, (size_t)system_size * sizeof(double2), cudaHostAllocDefault);
+        cudaError_t e3 = cudaHostAlloc(&h_y1_complex, (size_t)system_size * sizeof(double2), cudaHostAllocDefault);
+        cudaError_t e4 = cudaHostAlloc(&h_y2_complex, (size_t)system_size * sizeof(double2), cudaHostAllocDefault);
+        if (e1 == cudaSuccess && e2 == cudaSuccess && e3 == cudaSuccess && e4 == cudaSuccess) {
+            pinned_matvec_stage = true;
+        } else {
+            fprintf(stderr, "  [BEM-FMM] pinned matvec staging unavailable; using pageable copies\n");
+            if (h_full_x1_complex) cudaFreeHost(h_full_x1_complex);
+            if (h_full_x2_complex) cudaFreeHost(h_full_x2_complex);
+            if (h_y1_complex) cudaFreeHost(h_y1_complex);
+            if (h_y2_complex) cudaFreeHost(h_y2_complex);
+            h_full_x1_complex = nullptr;
+            h_full_x2_complex = nullptr;
+            h_y1_complex = nullptr;
+            h_y2_complex = nullptr;
+            cudaGetLastError();
+        }
+    }
 
     CUDA_CHECK(cudaMalloc(&d_corr_row_ptr, (N + 1) * sizeof(int)));
     CUDA_CHECK(cudaMalloc(&d_corr_col_idx, corr_nnz * sizeof(int)));
@@ -708,6 +841,15 @@ void BemFmmOperator::free_device_workspace()
     cudaFree(d_mv2_im); d_mv2_im = nullptr;
     cudaFree(d_y1_complex); d_y1_complex = nullptr;
     cudaFree(d_y2_complex); d_y2_complex = nullptr;
+    if (h_full_x1_complex) cudaFreeHost(h_full_x1_complex);
+    if (h_full_x2_complex) cudaFreeHost(h_full_x2_complex);
+    if (h_y1_complex) cudaFreeHost(h_y1_complex);
+    if (h_y2_complex) cudaFreeHost(h_y2_complex);
+    h_full_x1_complex = nullptr;
+    h_full_x2_complex = nullptr;
+    h_y1_complex = nullptr;
+    h_y2_complex = nullptr;
+    pinned_matvec_stage = false;
     cudaFree(d_corr_row_ptr); d_corr_row_ptr = nullptr;
     cudaFree(d_corr_col_idx); d_corr_col_idx = nullptr;
     cudaFree(d_corr_L_ext_re); d_corr_L_ext_re = nullptr;
@@ -755,8 +897,169 @@ void BemFmmOperator::precompute_corrections(const RWG& rwg, const Mesh& mesh, in
         }
     }
 
-    // Step 1: Determine sparsity pattern — collect (row, col) pairs with shared triangles
-    // Use a set per row to avoid duplicates (a pair can share 2 triangles)
+    const bool edge_delta_enabled =
+        bem_env_flag_enabled("BEM_EDGE_CORRECTIONS", false);
+    const bool explicit_local_delta =
+        bem_env_flag_enabled("BEM_LOCAL_CORRECTIONS", false);
+    const bool auto_local_delta =
+        !bem_env_flag_enabled("BEM_NO_AUTO_LOCAL_CORRECTIONS", false) &&
+        bem_env_flag_enabled("BEM_AUTO_LOCAL_CORRECTIONS", true);
+    const bool local_delta_enabled = explicit_local_delta || auto_local_delta;
+    const bool local_vertex_enabled =
+        local_delta_enabled &&
+        bem_env_flag_enabled("BEM_LOCAL_CORR_VERTEX", explicit_local_delta);
+
+    std::map<std::pair<int, int>, std::vector<int>> edge_to_triangles;
+    std::vector<std::vector<int>> vertex_to_triangles(mesh.nv());
+    for (int t = 0; t < mesh.nt(); t++) {
+        int a = mesh.tris[3 * t + 0];
+        int b = mesh.tris[3 * t + 1];
+        int c = mesh.tris[3 * t + 2];
+        int tv[3] = {a, b, c};
+        for (int e = 0; e < 3; e++) {
+            if (tv[e] >= 0 && tv[e] < mesh.nv())
+                vertex_to_triangles[tv[e]].push_back(t);
+        }
+        for (int e = 0; e < 3; e++) {
+            int u = tv[e];
+            int v = tv[(e + 1) % 3];
+            if (u > v) std::swap(u, v);
+            edge_to_triangles[std::make_pair(u, v)].push_back(t);
+        }
+    }
+
+    std::set<std::pair<int, int>> local_tri_pairs;
+    int edge_adjacent_tri_pairs = 0;
+    int vertex_adjacent_tri_pairs = 0;
+    int near_disjoint_tri_pairs = 0;
+    for (const auto& edge_pair : edge_to_triangles) {
+        const std::vector<int>& ts = edge_pair.second;
+        if (ts.size() != 2)
+            continue;
+        edge_adjacent_tri_pairs++;
+        if (edge_delta_enabled || local_delta_enabled) {
+            int a = ts[0], b = ts[1];
+            if (a > b) std::swap(a, b);
+            local_tri_pairs.insert(std::make_pair(a, b));
+        }
+    }
+    if (local_vertex_enabled) {
+        for (const std::vector<int>& ts : vertex_to_triangles) {
+            for (size_t i = 0; i < ts.size(); i++) {
+                for (size_t j = i + 1; j < ts.size(); j++) {
+                    int a = ts[i], b = ts[j];
+                    if (a == b)
+                        continue;
+                    if (a > b) std::swap(a, b);
+                    std::pair<int, int> p(a, b);
+                    if (local_tri_pairs.find(p) == local_tri_pairs.end()) {
+                        local_tri_pairs.insert(p);
+                        vertex_adjacent_tri_pairs++;
+                    }
+                }
+            }
+        }
+    }
+    double near_factor = 0.0;
+    if (local_delta_enabled) {
+        near_factor = bem_env_double("BEM_LOCAL_CORR_NEAR_FACTOR",
+                                     0.0);
+    }
+    int near_pair_limit = std::max(0, bem_env_int("BEM_LOCAL_CORR_NEAR_MAX_PAIRS", 64000));
+    if (near_factor > 0.0 && near_pair_limit > 0) {
+        struct TriGeom {
+            Vec3 c;
+            double h;
+            int v[3];
+        };
+        const int nt = mesh.nt();
+        std::vector<TriGeom> tg(nt);
+        double edge_sum = 0.0;
+        int edge_count = 0;
+        for (int t = 0; t < nt; t++) {
+            Vec3 a, b, c;
+            mesh.tri_verts(t, a, b, c);
+            double e0 = (b - a).norm();
+            double e1 = (c - b).norm();
+            double e2 = (a - c).norm();
+            tg[t].c = (a + b + c) * (1.0 / 3.0);
+            tg[t].h = std::max(e0, std::max(e1, e2));
+            tg[t].v[0] = mesh.tris[3 * t + 0];
+            tg[t].v[1] = mesh.tris[3 * t + 1];
+            tg[t].v[2] = mesh.tris[3 * t + 2];
+            edge_sum += e0 + e1 + e2;
+            edge_count += 3;
+        }
+        double mean_edge = edge_count > 0 ? edge_sum / (double)edge_count : 1.0;
+        double cell = std::max(1e-12, near_factor * mean_edge);
+        std::map<std::tuple<int, int, int>, std::vector<int>> cells;
+        auto cell_index = [&](const Vec3& p) {
+            return std::make_tuple((int)std::floor(p.x / cell),
+                                   (int)std::floor(p.y / cell),
+                                   (int)std::floor(p.z / cell));
+        };
+        for (int t = 0; t < nt; t++)
+            cells[cell_index(tg[t].c)].push_back(t);
+
+        auto share_vertex = [&](int a, int b) {
+            for (int i = 0; i < 3; i++)
+                for (int j = 0; j < 3; j++)
+                    if (tg[a].v[i] == tg[b].v[j])
+                        return true;
+            return false;
+        };
+        struct NearCandidate {
+            double metric;
+            int a;
+            int b;
+        };
+        std::vector<NearCandidate> near_candidates;
+        near_candidates.reserve((size_t)near_pair_limit * 2);
+        for (int a = 0; a < nt; a++) {
+            int ix = (int)std::floor(tg[a].c.x / cell);
+            int iy = (int)std::floor(tg[a].c.y / cell);
+            int iz = (int)std::floor(tg[a].c.z / cell);
+            int reach = std::max(1, (int)std::ceil((near_factor * tg[a].h) / cell));
+            for (int dx = -reach; dx <= reach; dx++) {
+                for (int dy = -reach; dy <= reach; dy++) {
+                    for (int dz = -reach; dz <= reach; dz++) {
+                        auto it = cells.find(std::make_tuple(ix + dx, iy + dy, iz + dz));
+                        if (it == cells.end())
+                            continue;
+                        for (int b : it->second) {
+                            if (b <= a)
+                                continue;
+                            if (share_vertex(a, b))
+                                continue;
+                            double thresh = near_factor * std::max(tg[a].h, tg[b].h);
+                            double dist2 = (tg[a].c - tg[b].c).norm2();
+                            if (dist2 > thresh * thresh)
+                                continue;
+                            near_candidates.push_back({dist2 / (thresh * thresh), a, b});
+                        }
+                    }
+                }
+            }
+        }
+        std::sort(near_candidates.begin(), near_candidates.end(),
+                  [](const NearCandidate& x, const NearCandidate& y) {
+                      return x.metric < y.metric;
+                  });
+        for (const NearCandidate& cand : near_candidates) {
+            std::pair<int, int> p(cand.a, cand.b);
+            if (local_tri_pairs.find(p) != local_tri_pairs.end())
+                continue;
+            local_tri_pairs.insert(p);
+            near_disjoint_tri_pairs++;
+            if (near_disjoint_tri_pairs >= near_pair_limit)
+                break;
+        }
+    }
+
+    // Step 1: Determine sparsity pattern.  Self-triangle entries get the
+    // analytic singular correction below.  Extra adjacent entries are inserted
+    // only when a local correction mode is explicitly enabled; otherwise they
+    // would be zero-valued CSR work in every matvec.
     std::vector<std::vector<int>> row_cols(N);
     for (auto& pair : tri_to_rwg) {
         const std::vector<HalfInfo>& rwg_list = pair.second;
@@ -765,6 +1068,15 @@ void BemFmmOperator::precompute_corrections(const RWG& rwg, const Mesh& mesh, in
                 row_cols[mi.n].push_back(ni.n);
             }
         }
+    }
+    for (const auto& tri_pair : local_tri_pairs) {
+        const std::vector<HalfInfo>& a = tri_to_rwg[tri_pair.first];
+        const std::vector<HalfInfo>& b = tri_to_rwg[tri_pair.second];
+        for (const HalfInfo& mi : a)
+            for (const HalfInfo& ni : b) {
+                row_cols[mi.n].push_back(ni.n);
+                row_cols[ni.n].push_back(mi.n);
+            }
     }
     // Sort and deduplicate each row
     for (int m = 0; m < N; m++) {
@@ -796,6 +1108,112 @@ void BemFmmOperator::precompute_corrections(const RWG& rwg, const Mesh& mesh, in
 
     // Step 2: Compute correction values
     double inv4pi = 1.0 / (4.0 * M_PI);
+
+    auto csr_pos = [&](int m, int n_idx) -> int {
+        const int* col_begin = &corr_col_idx[corr_row_ptr[m]];
+        const int* col_end   = &corr_col_idx[corr_row_ptr[m + 1]];
+        const int* it = std::lower_bound(col_begin, col_end, n_idx);
+        return corr_row_ptr[m] + (int)(it - col_begin);
+    };
+
+    auto direct_pair_geom = [&](const HalfInfo& mi,
+                                const Vec3& mv0, const Vec3& mv1, const Vec3& mv2,
+                                double area_m,
+                                const HalfInfo& ni,
+                                const Vec3& nv0, const Vec3& nv1, const Vec3& nv2,
+                                double area_n,
+                           const TriQuad& tq, cdouble kv,
+                           cdouble& L, cdouble& K) {
+        cdouble ik = cdouble(0, 1) * kv;
+        cdouble iok = cdouble(0, 1) / kv;
+        L = cdouble(0);
+        K = cdouble(0);
+        for (int iq = 0; iq < tq.npts; iq++) {
+            double ml0 = 1.0 - tq.pts[iq][0] - tq.pts[iq][1];
+            Vec3 rp = mv0 * ml0 + mv1 * tq.pts[iq][0] + mv2 * tq.pts[iq][1];
+            Vec3 fm = (rp - mi.free_v) * (mi.sign * mi.coeff);
+            double jw_mi = area_m * tq.wts[iq];
+            for (int jq = 0; jq < tq.npts; jq++) {
+                double nl0 = 1.0 - tq.pts[jq][0] - tq.pts[jq][1];
+                Vec3 rq = nv0 * nl0 + nv1 * tq.pts[jq][0] + nv2 * tq.pts[jq][1];
+                Vec3 fn = (rq - ni.free_v) * (ni.sign * ni.coeff);
+                double jw_nj = area_n * tq.wts[jq];
+                Vec3 diff = rp - rq;
+                double R = diff.norm();
+                if (R < 1e-14)
+                    continue;
+                cdouble G = std::exp(ik * R) * inv4pi / R;
+                double jw_prod = jw_mi * jw_nj;
+                double fdot = fm.x * fn.x + fm.y * fn.y + fm.z * fn.z;
+                L += (ik * fdot - iok * mi.div_val * ni.div_val) * G * jw_prod;
+                cdouble grad_scalar = G * (ik - 1.0 / R) / R;
+                Vec3 cross = diff.cross(fn);
+                double kdot = fm.x * cross.x + fm.y * cross.y + fm.z * cross.z;
+                K += grad_scalar * kdot * jw_prod;
+            }
+        }
+    };
+
+    auto direct_pair = [&](const HalfInfo& mi, int tri_m,
+                           const HalfInfo& ni, int tri_n,
+                           const TriQuad& tq, cdouble kv,
+                           cdouble& L, cdouble& K) {
+        Vec3 mv0, mv1, mv2, nv0, nv1, nv2;
+        mesh.tri_verts(tri_m, mv0, mv1, mv2);
+        mesh.tri_verts(tri_n, nv0, nv1, nv2);
+        double area_m = (mi.half == 0) ? rwg.area_p[mi.n] : rwg.area_m[mi.n];
+        double area_n = (ni.half == 0) ? rwg.area_p[ni.n] : rwg.area_m[ni.n];
+        direct_pair_geom(mi, mv0, mv1, mv2, area_m, ni, nv0, nv1, nv2, area_n, tq, kv, L, K);
+    };
+
+    struct LocalTri {
+        Vec3 a, b, c;
+        double area;
+    };
+    auto split_local_tris = [](std::vector<LocalTri>& tris) {
+        std::vector<LocalTri> out;
+        out.reserve(tris.size() * 4);
+        for (const LocalTri& t : tris) {
+            Vec3 ab = (t.a + t.b) * 0.5;
+            Vec3 bc = (t.b + t.c) * 0.5;
+            Vec3 ca = (t.c + t.a) * 0.5;
+            double qarea = t.area * 0.25;
+            out.push_back({t.a, ab, ca, qarea});
+            out.push_back({ab, t.b, bc, qarea});
+            out.push_back({ca, bc, t.c, qarea});
+            out.push_back({ab, bc, ca, qarea});
+        }
+        tris.swap(out);
+    };
+    auto make_local_tris = [&](int tri, int half, int rwg_idx, int levels) {
+        Vec3 v0, v1, v2;
+        mesh.tri_verts(tri, v0, v1, v2);
+        double area = (half == 0) ? rwg.area_p[rwg_idx] : rwg.area_m[rwg_idx];
+        std::vector<LocalTri> tris;
+        tris.push_back({v0, v1, v2, area});
+        for (int l = 0; l < levels; l++)
+            split_local_tris(tris);
+        return tris;
+    };
+    auto direct_pair_subdiv = [&](const HalfInfo& mi, int tri_m,
+                                  const HalfInfo& ni, int tri_n,
+                                  const TriQuad& tq, cdouble kv,
+                                  int levels, cdouble& L, cdouble& K) {
+        L = cdouble(0);
+        K = cdouble(0);
+        std::vector<LocalTri> mt = make_local_tris(tri_m, mi.half, mi.n, levels);
+        std::vector<LocalTri> nt = make_local_tris(tri_n, ni.half, ni.n, levels);
+        for (const LocalTri& a : mt) {
+            for (const LocalTri& b : nt) {
+                cdouble Lt, Kt;
+                direct_pair_geom(mi, a.a, a.b, a.c, a.area,
+                                 ni, b.a, b.b, b.c, b.area,
+                                 tq, kv, Lt, Kt);
+                L += Lt;
+                K += Kt;
+            }
+        }
+    };
 
     for (auto& pair : tri_to_rwg) {
         const std::vector<HalfInfo>& rwg_list = pair.second;
@@ -857,11 +1275,7 @@ void BemFmmOperator::precompute_corrections(const RWG& rwg, const Mesh& mesh, in
                     const double* m_jw = (mi.half == 0) ? &jw_p[mi.jw_offset] : &jw_m[mi.jw_offset];
                     const double* n_jw = (ni.half == 0) ? &jw_p[ni.jw_offset] : &jw_m[ni.jw_offset];
 
-                    // Find position in CSR
-                    const int* col_begin = &corr_col_idx[corr_row_ptr[m]];
-                    const int* col_end   = &corr_col_idx[corr_row_ptr[m + 1]];
-                    const int* it = std::lower_bound(col_begin, col_end, n_idx);
-                    int pos = corr_row_ptr[m] + (int)(it - col_begin);
+                    int pos = csr_pos(m, n_idx);
 
                     // L correction
                     double mass_corr = 0.0;
@@ -908,6 +1322,57 @@ void BemFmmOperator::precompute_corrections(const RWG& rwg, const Mesh& mesh, in
             }
         }
     }
+
+    int local_corr_entries = 0;
+    if (edge_delta_enabled || local_delta_enabled) {
+        TriQuad q_low = tri_quadrature(quad_order);
+        TriQuad q_high = local_delta_enabled ? tri_quadrature(quad_order) : tri_quadrature(13);
+        int subdiv_levels = std::max(0, bem_env_int("BEM_LOCAL_CORR_SUBDIV", 1));
+        subdiv_levels = std::min(subdiv_levels, 3);
+        cdouble k_vals[2] = {k_ext, k_int};
+        cdouble* val_L_ptrs[2] = {corr_L_ext_val.data(), corr_L_int_val.data()};
+        cdouble* val_K_ptrs[2] = {corr_K_ext_val.data(), corr_K_int_val.data()};
+
+        auto add_local_delta = [&](int tri_m, int tri_n) {
+            const std::vector<HalfInfo>& test_list = tri_to_rwg[tri_m];
+            const std::vector<HalfInfo>& src_list = tri_to_rwg[tri_n];
+            for (const HalfInfo& mi : test_list) {
+                for (const HalfInfo& ni : src_list) {
+                    int pos = csr_pos(mi.n, ni.n);
+                    for (int ki = 0; ki < 2; ki++) {
+                        cdouble L_low, K_low, L_high, K_high;
+                        direct_pair(mi, tri_m, ni, tri_n, q_low, k_vals[ki], L_low, K_low);
+                        if (local_delta_enabled)
+                            direct_pair_subdiv(mi, tri_m, ni, tri_n, q_high, k_vals[ki], subdiv_levels, L_high, K_high);
+                        else
+                            direct_pair(mi, tri_m, ni, tri_n, q_high, k_vals[ki], L_high, K_high);
+                        val_L_ptrs[ki][pos] += L_high - L_low;
+                        val_K_ptrs[ki][pos] += K_high - K_low;
+                    }
+                    local_corr_entries++;
+                }
+            }
+        };
+
+        for (const auto& tri_pair : local_tri_pairs) {
+            add_local_delta(tri_pair.first, tri_pair.second);
+            add_local_delta(tri_pair.second, tri_pair.first);
+        }
+        if (local_corr_entries > 0 && local_delta_enabled) {
+            printf("  [BEM-FMM] Local subdivided q%d corrections%s: tri_pairs=%zu (edge=%d vertex_extra=%d), subdiv=%d, half-pair entries=%d\n",
+                   quad_order, auto_local_delta && !explicit_local_delta ? " [auto edge]" : "",
+                   local_tri_pairs.size(), edge_adjacent_tri_pairs,
+                   vertex_adjacent_tri_pairs, subdiv_levels, local_corr_entries);
+            if (near_disjoint_tri_pairs > 0) {
+                printf("  [BEM-FMM] Local near-disjoint corrections: pairs=%d, factor=%.3g, max_pairs=%d\n",
+                       near_disjoint_tri_pairs, near_factor, near_pair_limit);
+            }
+        }
+    }
+    if (local_corr_entries > 0 && edge_delta_enabled && !local_delta_enabled) {
+        printf("  [BEM-FMM] Edge-adjacent q13-q%d corrections: tri_pairs=%d, half-pair entries=%d\n",
+               quad_order, edge_adjacent_tri_pairs, local_corr_entries);
+    }
 }
 
 void BemFmmOperator::L_operator(const cdouble* x, cdouble kv, HelmholtzFMM& fmm, cdouble* result)
@@ -918,11 +1383,11 @@ void BemFmmOperator::L_operator(const cdouble* x, cdouble kv, HelmholtzFMM& fmm,
     int total_pts = 2 * N * Nq;
 
     // Zero result
-    memset(result, 0, N * sizeof(cdouble));
+    std::fill_n(result, N, cdouble(0.0, 0.0));
 
     // --- Vector part: ik * integral(f_m . f_n . G) ---
     for (int d = 0; d < 3; d++) {
-        memset(tmp_src_charges.data(), 0, total_pts * sizeof(cdouble));
+        std::fill_n(tmp_src_charges.data(), total_pts, cdouble(0.0, 0.0));
 
         for (int n = 0; n < N; n++) {
             cdouble xn = x[n];
@@ -948,7 +1413,7 @@ void BemFmmOperator::L_operator(const cdouble* x, cdouble kv, HelmholtzFMM& fmm,
 
     // --- Scalar part: -(i/k) * integral(div_f_m * div_f_n * G) ---
     {
-        memset(tmp_src_charges.data(), 0, total_pts * sizeof(cdouble));
+        std::fill_n(tmp_src_charges.data(), total_pts, cdouble(0.0, 0.0));
 
         for (int n = 0; n < N; n++) {
             cdouble xn = x[n];
@@ -976,12 +1441,12 @@ void BemFmmOperator::L_operator(const cdouble* x, cdouble kv, HelmholtzFMM& fmm,
 void BemFmmOperator::K_operator(const cdouble* x, cdouble kv, HelmholtzFMM& fmm, cdouble* result)
 {
     int total_pts = 2 * N * Nq;
-    memset(result, 0, N * sizeof(cdouble));
+    std::fill_n(result, N, cdouble(0.0, 0.0));
 
     // For each source component k, compute gradient of potential
     for (int kc = 0; kc < 3; kc++) {
         // Source charges = f_n^k * jw * x[n]
-        memset(tmp_src_charges.data(), 0, total_pts * sizeof(cdouble));
+        std::fill_n(tmp_src_charges.data(), total_pts, cdouble(0.0, 0.0));
         for (int n = 0; n < N; n++) {
             cdouble xn = x[n];
             for (int q = 0; q < Nq; q++) {
@@ -1042,12 +1507,12 @@ void BemFmmOperator::LK_combined(const cdouble* x, cdouble kv, HelmholtzFMM& fmm
 
     int total_pts = 2 * N * Nq;
 
-    memset(L_result, 0, N * sizeof(cdouble));
-    memset(K_result, 0, N * sizeof(cdouble));
+    std::fill_n(L_result, N, cdouble(0.0, 0.0));
+    std::fill_n(K_result, N, cdouble(0.0, 0.0));
 
     // --- Vector part: combined potential (for L) + gradient (for K) in one FMM pass ---
     for (int d = 0; d < 3; d++) {
-        memset(tmp_src_charges.data(), 0, total_pts * sizeof(cdouble));
+        std::fill_n(tmp_src_charges.data(), total_pts, cdouble(0.0, 0.0));
 
         for (int n = 0; n < N; n++) {
             cdouble xn = x[n];
@@ -1075,7 +1540,7 @@ void BemFmmOperator::LK_combined(const cdouble* x, cdouble kv, HelmholtzFMM& fmm
 
     // --- L scalar part: potential only (no gradient needed) ---
     {
-        memset(tmp_src_charges.data(), 0, total_pts * sizeof(cdouble));
+        std::fill_n(tmp_src_charges.data(), total_pts, cdouble(0.0, 0.0));
 
         for (int n = 0; n < N; n++) {
             cdouble xn = x[n];
@@ -1144,11 +1609,11 @@ void BemFmmOperator::LK_combined(const cdouble* x, cdouble kv, HelmholtzPFFT& pf
     cdouble iok = cdouble(0, 1) / kv;
     int total_pts = 2 * N * Nq;
 
-    memset(L_result, 0, N * sizeof(cdouble));
-    memset(K_result, 0, N * sizeof(cdouble));
+    std::fill_n(L_result, N, cdouble(0.0, 0.0));
+    std::fill_n(K_result, N, cdouble(0.0, 0.0));
 
     for (int d = 0; d < 3; d++) {
-        memset(tmp_src_charges.data(), 0, total_pts * sizeof(cdouble));
+        std::fill_n(tmp_src_charges.data(), total_pts, cdouble(0.0, 0.0));
         for (int n = 0; n < N; n++) {
             cdouble xn = x[n];
             for (int q = 0; q < Nq; q++) {
@@ -1169,7 +1634,7 @@ void BemFmmOperator::LK_combined(const cdouble* x, cdouble kv, HelmholtzPFFT& pf
         }
     }
 
-    memset(tmp_src_charges.data(), 0, total_pts * sizeof(cdouble));
+    std::fill_n(tmp_src_charges.data(), total_pts, cdouble(0.0, 0.0));
     for (int n = 0; n < N; n++) {
         cdouble xn = x[n];
         for (int q = 0; q < Nq; q++) {
@@ -1218,14 +1683,14 @@ void BemFmmOperator::LK_combined(const cdouble* x, cdouble kv, HelmholtzSurfaceP
     cdouble iok = cdouble(0, 1) / kv;
     int total_pts = 2 * N * Nq;
 
-    memset(L_result, 0, N * sizeof(cdouble));
-    memset(K_result, 0, N * sizeof(cdouble));
+    std::fill_n(L_result, N, cdouble(0.0, 0.0));
+    std::fill_n(K_result, N, cdouble(0.0, 0.0));
 
     cdouble* src[4] = { tmp_src_charges.data(), tmp2_src_charges.data(), b4_src2.data(), b4_src3.data() };
     cdouble* pot[4] = { tmp_phi.data(), tmp2_phi.data(), b4_pot2.data(), b4_pot3.data() };
 
     for (int d = 0; d < 3; d++) {
-        memset(src[d], 0, total_pts * sizeof(cdouble));
+        std::fill_n(src[d], total_pts, cdouble(0.0, 0.0));
         for (int n = 0; n < N; n++) {
             cdouble xn = x[n];
             for (int q = 0; q < Nq; q++) {
@@ -1235,7 +1700,7 @@ void BemFmmOperator::LK_combined(const cdouble* x, cdouble kv, HelmholtzSurfaceP
             }
         }
     }
-    memset(src[3], 0, total_pts * sizeof(cdouble));
+    std::fill_n(src[3], total_pts, cdouble(0.0, 0.0));
     for (int n = 0; n < N; n++) {
         cdouble xn = x[n];
         for (int q = 0; q < Nq; q++) {
@@ -1712,8 +2177,9 @@ void BemFmmOperator::LK_combined_batch4_jm_device_split(
 }
 
 #ifndef BEM_FMM_ONLY
-void BemFmmOperator::LK_combined_batch2_spfft_device(
-    const cdouble* x1, const cdouble* x2,
+void BemFmmOperator::LK_combined_batch2_spfft_device_split(
+    const double* x1_re, const double* x1_im,
+    const double* x2_re, const double* x2_im,
     cdouble kv, HelmholtzSurfacePFFT& spf,
     int L_slot, int K_slot)
 {
@@ -1725,16 +2191,18 @@ void BemFmmOperator::LK_combined_batch2_spfft_device(
     int block = 256;
     int grid_N = (N + block - 1) / block;
     int grid_half = (half_pts + block - 1) / block;
-
-    CUDA_CHECK(cudaMemcpy(d_x1_complex, x1, N * sizeof(double2), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_x2_complex, x2, N * sizeof(double2), cudaMemcpyHostToDevice));
-    bem_split_complex_kernel<<<grid_N, block>>>(d_x1_complex, d_x1_re, d_x1_im, N);
-    bem_split_complex_kernel<<<grid_N, block>>>(d_x2_complex, d_x2_re, d_x2_im, N);
-    CUDA_CHECK(cudaGetLastError());
+    double* L1_re = d_mv1_re + L_slot * N;
+    double* L1_im = d_mv1_im + L_slot * N;
+    double* K1_re = d_mv1_re + K_slot * N;
+    double* K1_im = d_mv1_im + K_slot * N;
+    double* L2_re = d_mv2_re + L_slot * N;
+    double* L2_im = d_mv2_im + L_slot * N;
+    double* K2_re = d_mv2_re + K_slot * N;
+    double* K2_im = d_mv2_im + K_slot * N;
 
     for (int d = 0; d < 3; d++) {
         bem_pack_vector_charges_kernel<<<grid_half, block>>>(
-            d_x1_re, d_x1_im, d_x2_re, d_x2_im,
+            x1_re, x1_im, x2_re, x2_im,
             d_f_p, d_f_m, d_jw_p, d_jw_m, N, Nq, d,
             spf.d_batch8_re + d * total_pts, spf.d_batch8_im + d * total_pts,
             spf.d_batch8_re + (4 + d) * total_pts, spf.d_batch8_im + (4 + d) * total_pts);
@@ -1742,7 +2210,7 @@ void BemFmmOperator::LK_combined_batch2_spfft_device(
     }
 
     bem_pack_scalar_charges_kernel<<<grid_half, block>>>(
-        d_x1_re, d_x1_im, d_x2_re, d_x2_im,
+        x1_re, x1_im, x2_re, x2_im,
         d_div_p, d_div_m, d_jw_p, d_jw_m, N, Nq,
         spf.d_batch8_re + 3 * total_pts, spf.d_batch8_im + 3 * total_pts,
         spf.d_batch8_re + 7 * total_pts, spf.d_batch8_im + 7 * total_pts);
@@ -1750,25 +2218,20 @@ void BemFmmOperator::LK_combined_batch2_spfft_device(
 
     spf.evaluate_batch8_gpu();
 
-    bem_zero_results_kernel<<<grid_N, block>>>(
-        d_L1_re, d_L1_im, d_K1_re, d_K1_im,
-        d_L2_re, d_L2_im, d_K2_re, d_K2_im, N);
-    CUDA_CHECK(cudaGetLastError());
-
     for (int d = 0; d < 3; d++) {
         bem_accum_L_vector_kernel<<<grid_N, block>>>(
             spf.d_bp_res_re[d], spf.d_bp_res_im[d],
             spf.d_bp_res_re[4 + d], spf.d_bp_res_im[4 + d],
             d_f_p, d_f_m, d_jw_p, d_jw_m,
             N, Nq, d, ik.real(), ik.imag(),
-            d_L1_re, d_L1_im, d_L2_re, d_L2_im);
+            L1_re, L1_im, L2_re, L2_im);
         CUDA_CHECK(cudaGetLastError());
 
         bem_accum_K_component_kernel<<<grid_N, block>>>(
             spf.d_bp_grd_re[d], spf.d_bp_grd_im[d],
             spf.d_bp_grd_re[3 + d], spf.d_bp_grd_im[3 + d],
             d_f_p, d_f_m, d_jw_p, d_jw_m, N, Nq, d,
-            d_K1_re, d_K1_im, d_K2_re, d_K2_im);
+            K1_re, K1_im, K2_re, K2_im);
         CUDA_CHECK(cudaGetLastError());
     }
 
@@ -1777,88 +2240,39 @@ void BemFmmOperator::LK_combined_batch2_spfft_device(
         spf.d_bp_res_re[7], spf.d_bp_res_im[7],
         d_div_p, d_div_m, d_jw_p, d_jw_m,
         N, Nq, iok.real(), iok.imag(),
-        d_L1_re, d_L1_im, d_L2_re, d_L2_im);
+        L1_re, L1_im, L2_re, L2_im);
     CUDA_CHECK(cudaGetLastError());
-
-    CUDA_CHECK(cudaMemcpy(d_mv1_re + L_slot * N, d_L1_re, N * sizeof(double), cudaMemcpyDeviceToDevice));
-    CUDA_CHECK(cudaMemcpy(d_mv1_im + L_slot * N, d_L1_im, N * sizeof(double), cudaMemcpyDeviceToDevice));
-    CUDA_CHECK(cudaMemcpy(d_mv2_re + L_slot * N, d_L2_re, N * sizeof(double), cudaMemcpyDeviceToDevice));
-    CUDA_CHECK(cudaMemcpy(d_mv2_im + L_slot * N, d_L2_im, N * sizeof(double), cudaMemcpyDeviceToDevice));
-    CUDA_CHECK(cudaMemcpy(d_mv1_re + K_slot * N, d_K1_re, N * sizeof(double), cudaMemcpyDeviceToDevice));
-    CUDA_CHECK(cudaMemcpy(d_mv1_im + K_slot * N, d_K1_im, N * sizeof(double), cudaMemcpyDeviceToDevice));
-    CUDA_CHECK(cudaMemcpy(d_mv2_re + K_slot * N, d_K2_re, N * sizeof(double), cudaMemcpyDeviceToDevice));
-    CUDA_CHECK(cudaMemcpy(d_mv2_im + K_slot * N, d_K2_im, N * sizeof(double), cudaMemcpyDeviceToDevice));
 }
 #endif
 
-void BemFmmOperator::matvec_batch2(const cdouble* x1_full, const cdouble* x2_full,
-                                    cdouble* y1, cdouble* y2)
+bool BemFmmOperator::device_matvec_available() const
+{
+#ifndef BEM_FMM_ONLY
+    if (use_pfft || use_spfft)
+        return false;
+#endif
+    return true;
+}
+
+void BemFmmOperator::matvec_batch2_device(const double2* d_x1_full_in,
+                                          const double2* d_x2_full_in,
+                                          double2* d_y1_out,
+                                          double2* d_y2_out)
 {
 #ifndef BEM_FMM_ONLY
     if (use_pfft) {
-        matvec(x1_full, y1);
-        matvec(x2_full, y2);
+        fprintf(stderr, "Error: matvec_batch2_device is not implemented for PFFT backend\n");
+        std::exit(1);
         return;
     }
 #endif
-
-    const cdouble* J1 = x1_full;
-    const cdouble* M1 = x1_full + N;
-    const cdouble* J2 = x2_full;
-    const cdouble* M2 = x2_full + N;
-    if (unknown_m_scale != 1.0) {
-        double inv_s = 1.0 / unknown_m_scale;
-        #pragma omp parallel for schedule(static)
-        for (int i = 0; i < N; i++) {
-            tmp_M1_phys[i] = M1[i] * inv_s;
-            tmp_M2_phys[i] = M2[i] * inv_s;
-        }
-        M1 = tmp_M1_phys.data();
-        M2 = tmp_M2_phys.data();
-    }
 
     if (use_spfft) {
 #ifdef BEM_FMM_ONLY
         use_spfft = false;
 #else
-        HelmholtzSurfacePFFT& sp_i = shared_fmm ? spfft_ext : spfft_int;
-
-        int block = 256;
-        int grid_N = (N + block - 1) / block;
-        int grid_sys = (system_size + block - 1) / block;
-
-        CUDA_CHECK(cudaMemcpy(d_full_x1_complex, x1_full, system_size * sizeof(double2), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_full_x2_complex, x2_full, system_size * sizeof(double2), cudaMemcpyHostToDevice));
-        bem_split_complex_kernel<<<grid_sys, block>>>(d_full_x1_complex, d_full_x1_re, d_full_x1_im, system_size);
-        bem_split_complex_kernel<<<grid_sys, block>>>(d_full_x2_complex, d_full_x2_re, d_full_x2_im, system_size);
-        CUDA_CHECK(cudaGetLastError());
-
-        CUDA_CHECK(cudaMemset(d_mv1_re, 0, 10 * N * sizeof(double)));
-        CUDA_CHECK(cudaMemset(d_mv1_im, 0, 10 * N * sizeof(double)));
-        CUDA_CHECK(cudaMemset(d_mv2_re, 0, 10 * N * sizeof(double)));
-        CUDA_CHECK(cudaMemset(d_mv2_im, 0, 10 * N * sizeof(double)));
-
-        LK_combined_batch2_spfft_device(J1, J2, k_ext, spfft_ext, 0, 2);
-        LK_combined_batch2_spfft_device(M1, M2, k_ext, spfft_ext, 1, 3);
-        LK_combined_batch2_spfft_device(J1, J2, k_int, sp_i,      4, 6);
-        LK_combined_batch2_spfft_device(M1, M2, k_int, sp_i,      5, 7);
-
-        bem_apply_corr_assemble_batch2_kernel<<<grid_N, block>>>(
-            d_mv1_re, d_mv1_im, d_mv2_re, d_mv2_im,
-            d_full_x1_re, d_full_x1_im, d_full_x2_re, d_full_x2_im,
-            d_corr_row_ptr, d_corr_col_idx,
-            d_corr_L_ext_re, d_corr_L_ext_im,
-            d_corr_K_ext_re, d_corr_K_ext_im,
-            d_corr_L_int_re, d_corr_L_int_im,
-            d_corr_K_int_re, d_corr_K_int_im,
-            d_corr_I,
-            N, eta_ext.real(), eta_int.real(), unknown_m_scale, row_h_scale, int_op_sign, k_identity,
-            n_form ? 1 : 0, n_form_eps_int,
-            d_y1_complex, d_y2_complex);
-        CUDA_CHECK(cudaGetLastError());
-
-        CUDA_CHECK(cudaMemcpy(y1, d_y1_complex, system_size * sizeof(double2), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(y2, d_y2_complex, system_size * sizeof(double2), cudaMemcpyDeviceToHost));
+        fprintf(stderr, "Error: matvec_batch2_device is not implemented for SurfPFFT backend\n");
+        std::exit(1);
         return;
 #endif
     }
@@ -1869,18 +2283,34 @@ void BemFmmOperator::matvec_batch2(const cdouble* x1_full, const cdouble* x2_ful
     int grid_N = (N + block - 1) / block;
     int grid_sys = (system_size + block - 1) / block;
 
-    CUDA_CHECK(cudaMemcpy(d_full_x1_complex, x1_full, system_size * sizeof(double2), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_full_x2_complex, x2_full, system_size * sizeof(double2), cudaMemcpyHostToDevice));
-    bem_split_complex_kernel<<<grid_sys, block>>>(d_full_x1_complex, d_full_x1_re, d_full_x1_im, system_size);
-    bem_split_complex_kernel<<<grid_sys, block>>>(d_full_x2_complex, d_full_x2_re, d_full_x2_im, system_size);
+    double assembly_unknown_m_scale = unknown_m_scale;
+    double split_m_scale = 1.0;
+    if (unknown_m_scale != 1.0) {
+        split_m_scale = 1.0 / unknown_m_scale;
+        assembly_unknown_m_scale = 1.0;
+    }
+    bem_split_complex_batch2_scale_kernel<<<grid_sys, block>>>(
+        d_x1_full_in, d_x2_full_in,
+        d_full_x1_re, d_full_x1_im,
+        d_full_x2_re, d_full_x2_im,
+        system_size, N, split_m_scale, unknown_m_phase.real(), unknown_m_phase.imag());
     CUDA_CHECK(cudaGetLastError());
 
-    CUDA_CHECK(cudaMemset(d_mv1_re, 0, 10 * N * sizeof(double)));
-    CUDA_CHECK(cudaMemset(d_mv1_im, 0, 10 * N * sizeof(double)));
-    CUDA_CHECK(cudaMemset(d_mv2_re, 0, 10 * N * sizeof(double)));
-    CUDA_CHECK(cudaMemset(d_mv2_im, 0, 10 * N * sizeof(double)));
+    if (use_full_mvslot_memset(N)) {
+        const int mv_slots = n_form ? 10 : 8;
+        CUDA_CHECK(cudaMemset(d_mv1_re, 0, mv_slots * N * sizeof(double)));
+        CUDA_CHECK(cudaMemset(d_mv1_im, 0, mv_slots * N * sizeof(double)));
+        CUDA_CHECK(cudaMemset(d_mv2_re, 0, mv_slots * N * sizeof(double)));
+        CUDA_CHECK(cudaMemset(d_mv2_im, 0, mv_slots * N * sizeof(double)));
+    } else if (n_form) {
+        CUDA_CHECK(cudaMemset(d_mv1_re + 8 * N, 0, 2 * N * sizeof(double)));
+        CUDA_CHECK(cudaMemset(d_mv1_im + 8 * N, 0, 2 * N * sizeof(double)));
+        CUDA_CHECK(cudaMemset(d_mv2_re + 8 * N, 0, 2 * N * sizeof(double)));
+        CUDA_CHECK(cudaMemset(d_mv2_im + 8 * N, 0, 2 * N * sizeof(double)));
+    }
 
-    bool use_batch4 = (unknown_m_scale == 1.0 && std::getenv("BEM_FMM_BATCH4"));
+    bool use_batch4 = (bem_env_flag_enabled("BEM_FMM_BATCH4") &&
+                       fmm_ext.batch4_allocated && fmm_i.batch4_allocated);
     if (use_batch4) {
         LK_combined_batch4_jm_device_split(d_full_x1_re, d_full_x1_im,
                                            d_full_x2_re, d_full_x2_im,
@@ -1892,7 +2322,7 @@ void BemFmmOperator::matvec_batch2(const cdouble* x1_full, const cdouble* x2_ful
                                            d_full_x1_re + N, d_full_x1_im + N,
                                            d_full_x2_re + N, d_full_x2_im + N,
                                            k_int, fmm_i, 4, 6, 5, 7);
-    } else if (unknown_m_scale == 1.0) {
+    } else {
         LK_combined_batch2_device_split(d_full_x1_re, d_full_x1_im,
                                         d_full_x2_re, d_full_x2_im,
                                         k_ext, fmm_ext, 0, 2);
@@ -1905,11 +2335,6 @@ void BemFmmOperator::matvec_batch2(const cdouble* x1_full, const cdouble* x2_ful
         LK_combined_batch2_device_split(d_full_x1_re + N, d_full_x1_im + N,
                                         d_full_x2_re + N, d_full_x2_im + N,
                                         k_int, fmm_i, 5, 7);
-    } else {
-        LK_combined_batch2_device(J1, J2, k_ext, fmm_ext, 0, 2);
-        LK_combined_batch2_device(M1, M2, k_ext, fmm_ext, 1, 3);
-        LK_combined_batch2_device(J1, J2, k_int, fmm_i,   4, 6);
-        LK_combined_batch2_device(M1, M2, k_int, fmm_i,   5, 7);
     }
 
     bem_apply_corr_assemble_batch2_kernel<<<grid_N, block>>>(
@@ -1921,25 +2346,132 @@ void BemFmmOperator::matvec_batch2(const cdouble* x1_full, const cdouble* x2_ful
         d_corr_L_int_re, d_corr_L_int_im,
         d_corr_K_int_re, d_corr_K_int_im,
         d_corr_I,
-        N, eta_ext.real(), eta_int.real(), unknown_m_scale, row_h_scale, int_op_sign, k_identity,
-        n_form ? 1 : 0, n_form_eps_int,
-        d_y1_complex, d_y2_complex);
+        N, eta_ext.real(), eta_ext.imag(), eta_int.real(), eta_int.imag(),
+        assembly_unknown_m_scale, row_h_scale.real(), row_h_scale.imag(),
+        int_op_sign, k_identity,
+        n_form ? 1 : 0, n_form_eps_int, n_form_m_identity,
+        d_y1_out, d_y2_out);
     CUDA_CHECK(cudaGetLastError());
+}
 
-    CUDA_CHECK(cudaMemcpy(y1, d_y1_complex, system_size * sizeof(double2), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(y2, d_y2_complex, system_size * sizeof(double2), cudaMemcpyDeviceToHost));
+void BemFmmOperator::matvec_batch2(const cdouble* x1_full, const cdouble* x2_full,
+                                    cdouble* y1, cdouble* y2)
+{
+#ifndef BEM_FMM_ONLY
+    if (use_pfft) {
+        matvec(x1_full, y1);
+        matvec(x2_full, y2);
+        return;
+    }
+    if (use_spfft) {
+        HelmholtzSurfacePFFT& sp_i = shared_fmm ? spfft_ext : spfft_int;
+
+        int block = 256;
+        int grid_N = (N + block - 1) / block;
+        int grid_sys = (system_size + block - 1) / block;
+
+        upload_complex_stage(d_full_x1_complex, h_full_x1_complex, x1_full,
+                             system_size, pinned_matvec_stage);
+        upload_complex_stage(d_full_x2_complex, h_full_x2_complex, x2_full,
+                             system_size, pinned_matvec_stage);
+        double assembly_unknown_m_scale = unknown_m_scale;
+        double split_m_scale = 1.0;
+        if (unknown_m_scale != 1.0) {
+            split_m_scale = 1.0 / unknown_m_scale;
+            assembly_unknown_m_scale = 1.0;
+        }
+        bem_split_complex_batch2_scale_kernel<<<grid_sys, block>>>(
+            d_full_x1_complex, d_full_x2_complex,
+            d_full_x1_re, d_full_x1_im,
+            d_full_x2_re, d_full_x2_im,
+            system_size, N, split_m_scale, unknown_m_phase.real(), unknown_m_phase.imag());
+        CUDA_CHECK(cudaGetLastError());
+
+        if (use_full_mvslot_memset(N)) {
+            const int mv_slots = n_form ? 10 : 8;
+            CUDA_CHECK(cudaMemset(d_mv1_re, 0, mv_slots * N * sizeof(double)));
+            CUDA_CHECK(cudaMemset(d_mv1_im, 0, mv_slots * N * sizeof(double)));
+            CUDA_CHECK(cudaMemset(d_mv2_re, 0, mv_slots * N * sizeof(double)));
+            CUDA_CHECK(cudaMemset(d_mv2_im, 0, mv_slots * N * sizeof(double)));
+        } else if (n_form) {
+            CUDA_CHECK(cudaMemset(d_mv1_re + 8 * N, 0, 2 * N * sizeof(double)));
+            CUDA_CHECK(cudaMemset(d_mv1_im + 8 * N, 0, 2 * N * sizeof(double)));
+            CUDA_CHECK(cudaMemset(d_mv2_re + 8 * N, 0, 2 * N * sizeof(double)));
+            CUDA_CHECK(cudaMemset(d_mv2_im + 8 * N, 0, 2 * N * sizeof(double)));
+        }
+
+        LK_combined_batch2_spfft_device_split(d_full_x1_re, d_full_x1_im,
+                                              d_full_x2_re, d_full_x2_im,
+                                              k_ext, spfft_ext, 0, 2);
+        LK_combined_batch2_spfft_device_split(d_full_x1_re + N, d_full_x1_im + N,
+                                              d_full_x2_re + N, d_full_x2_im + N,
+                                              k_ext, spfft_ext, 1, 3);
+        LK_combined_batch2_spfft_device_split(d_full_x1_re, d_full_x1_im,
+                                              d_full_x2_re, d_full_x2_im,
+                                              k_int, sp_i,      4, 6);
+        LK_combined_batch2_spfft_device_split(d_full_x1_re + N, d_full_x1_im + N,
+                                              d_full_x2_re + N, d_full_x2_im + N,
+                                              k_int, sp_i,      5, 7);
+
+        bem_apply_corr_assemble_batch2_kernel<<<grid_N, block>>>(
+            d_mv1_re, d_mv1_im, d_mv2_re, d_mv2_im,
+            d_full_x1_re, d_full_x1_im, d_full_x2_re, d_full_x2_im,
+            d_corr_row_ptr, d_corr_col_idx,
+            d_corr_L_ext_re, d_corr_L_ext_im,
+            d_corr_K_ext_re, d_corr_K_ext_im,
+            d_corr_L_int_re, d_corr_L_int_im,
+            d_corr_K_int_re, d_corr_K_int_im,
+            d_corr_I,
+            N, eta_ext.real(), eta_ext.imag(), eta_int.real(), eta_int.imag(),
+            assembly_unknown_m_scale, row_h_scale.real(), row_h_scale.imag(),
+            int_op_sign, k_identity,
+            n_form ? 1 : 0, n_form_eps_int, n_form_m_identity,
+            d_y1_complex, d_y2_complex);
+        CUDA_CHECK(cudaGetLastError());
+
+        download_complex_stage(y1, h_y1_complex, d_y1_complex,
+                               system_size, pinned_matvec_stage);
+        download_complex_stage(y2, h_y2_complex, d_y2_complex,
+                               system_size, pinned_matvec_stage);
+        return;
+    }
+#endif
+
+    upload_complex_stage(d_full_x1_complex, h_full_x1_complex, x1_full,
+                         system_size, pinned_matvec_stage);
+    upload_complex_stage(d_full_x2_complex, h_full_x2_complex, x2_full,
+                         system_size, pinned_matvec_stage);
+    matvec_batch2_device(d_full_x1_complex, d_full_x2_complex, d_y1_complex, d_y2_complex);
+    download_complex_stage(y1, h_y1_complex, d_y1_complex,
+                           system_size, pinned_matvec_stage);
+    download_complex_stage(y2, h_y2_complex, d_y2_complex,
+                           system_size, pinned_matvec_stage);
 }
 
 void BemFmmOperator::matvec(const cdouble* x_full, cdouble* y)
 {
+#ifdef BEM_FMM_ONLY
+    tmp_single_y.resize(system_size);
+    matvec_batch2(x_full, x_full, y, tmp_single_y.data());
+    return;
+#else
+    if (!use_pfft) {
+        tmp_single_y.resize(system_size);
+        matvec_batch2(x_full, x_full, y, tmp_single_y.data());
+        return;
+    }
+#endif
+
+    ensure_host_workspace();
+
     const cdouble* J = x_full;
     const cdouble* M = x_full + N;
-    if (unknown_m_scale != 1.0) {
+    if (unknown_m_scale != 1.0 || unknown_m_phase != cdouble(1.0, 0.0)) {
         double inv_s = 1.0 / unknown_m_scale;
         tmp_M1_phys.resize(N);
         #pragma omp parallel for schedule(static)
         for (int i = 0; i < N; i++)
-            tmp_M1_phys[i] = M[i] * inv_s;
+            tmp_M1_phys[i] = unknown_m_phase * M[i] * inv_s;
         M = tmp_M1_phys.data();
     }
 
@@ -2007,8 +2539,8 @@ void BemFmmOperator::matvec(const cdouble* x_full, cdouble* y)
         if (n_form) {
             y[m] = K_sum_J + (mv_L_ext_M[m] / eta_ext +
                               int_op_sign * mv_L_int_M[m] / eta_int);
-            cdouble K_sum_M_n = mv_K_ext_M[m] - n_form_eps_int * mv_K_int_M[m] -
-                                0.5 * (1.0 + n_form_eps_int) * IM;
+            cdouble K_sum_M_n = mv_K_ext_M[m] - n_form_eps_int * mv_K_int_M[m] +
+                                n_form_m_identity * IM;
             y[N + m] = row_h_scale *
                 (-(eta_ext * mv_L_ext_J[m] - n_form_eps_int * eta_int * mv_L_int_J[m]) +
                  K_sum_M_n);

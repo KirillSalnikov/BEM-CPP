@@ -25,6 +25,7 @@ struct NearFieldPrecond {
     // 2x2 block inverse: z[m] = a*r[m] + b*r[N+m], z[N+m] = c*r[m] + d*r[N+m]
     std::vector<cdouble> blk_inv;   // (N*4): [a,b,c,d] for each m
     std::vector<cdouble> diag_blk;  // (N*4): approximate PMCHWT diagonal block [A,B,C,D]
+    std::vector<cdouble> sym_inv_sqrt; // symmetric 2x2 D^{-1/2} blocks
 
     // Sparse local correction PMCHWT blocks, same CSR pattern as op corrections.
     // Diagonal entries are zero here because diag_blk carries the full diagonal.
@@ -59,6 +60,7 @@ struct NearFieldPrecond {
     double* d_corr_im = nullptr;
     double* d_diag_re = nullptr;
     double* d_diag_im = nullptr;
+    double2* d_sym_inv_sqrt = nullptr;
     double* d_near_re = nullptr;
     double* d_near_im = nullptr;
     int* d_near_row_ptr = nullptr;
@@ -68,12 +70,16 @@ struct NearFieldPrecond {
     int device_ids_count = 0;
     int device_lu_count = 0;
     bool device_ready = false;
+    mutable std::vector<cdouble> tmp_Az;
+    mutable std::vector<cdouble> tmp_err;
+    mutable std::vector<cdouble> tmp_corr;
 
     // Build preconditioner from near-field BEM entries
     void build(BemFmmOperator& op);
 
     // Apply: z = M^{-1} * r
     void apply(const cdouble* r, cdouble* z) const;
+    void apply_pair(const cdouble* r1, const cdouble* r2, cdouble* z1, cdouble* z2) const;
 
     void apply_block_inv(const cdouble* r, cdouble* z) const;
     void apply_near(const cdouble* x, cdouble* y) const;
@@ -81,6 +87,10 @@ struct NearFieldPrecond {
     void apply_block_schwarz_cuda(const cdouble* r, cdouble* z) const;
     void apply_block_schwarz_cuda_device(const double* in_re, const double* in_im,
                                          double* out_re, double* out_im) const;
+    bool device_apply_available() const;
+    void apply_device_complex(const double2* d_r, double2* d_z) const;
+    bool symmetric_device_apply_available() const;
+    void apply_symmetric_device(const double2* d_r, double2* d_z) const;
     void upload_device();
     void cleanup_device();
 

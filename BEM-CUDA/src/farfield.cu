@@ -1,10 +1,64 @@
 #include "farfield.h"
+#include "gpu_select.h"
 #include "quadrature.h"
 #include <cstring>
+#include <cstdio>
 #include <cstdlib>
 #include <cmath>
 #include <algorithm>
+#include <complex>
 #include <cuda_runtime.h>
+
+static void release_host_double_buffer(double*& ptr, bool& pinned)
+{
+    if (!ptr)
+        return;
+    if (pinned)
+        cudaFreeHost(ptr);
+    else
+        std::free(ptr);
+    ptr = nullptr;
+    pinned = false;
+}
+
+static void allocate_host_double_buffer(double*& ptr, bool& pinned, size_t count, const char* label)
+{
+    release_host_double_buffer(ptr, pinned);
+    if (count == 0)
+        return;
+    cudaError_t err = cudaHostAlloc(reinterpret_cast<void**>(&ptr), count * sizeof(double), cudaHostAllocDefault);
+    if (err == cudaSuccess) {
+        pinned = true;
+        return;
+    }
+    cudaGetLastError();
+    ptr = static_cast<double*>(std::malloc(count * sizeof(double)));
+    pinned = false;
+    if (!ptr) {
+        fprintf(stderr, "Error: failed to allocate %s host workspace (%.1f MB)\n",
+                label, (double)(count * sizeof(double)) / (1024.0 * 1024.0));
+        std::abort();
+    }
+    if (bem_env_flag_enabled("BEM_FF_VERBOSE")) {
+        fprintf(stderr, "Warning: cudaHostAlloc failed for %s, using pageable host memory\n",
+                label);
+    }
+}
+
+static double farfield_m_scale()
+{
+    return bem_env_double("BEM_FF_M_SIGN", -1.0);
+}
+
+static double farfield_j_scale()
+{
+    return bem_env_double("BEM_FF_J_SCALE", 1.0);
+}
+
+static double farfield_phase_sign()
+{
+    return bem_env_double("BEM_FF_PHASE_SIGN", -1.0);
+}
 
 // ======== FFCache CPU init (unchanged) ========
 
@@ -99,6 +153,80 @@ FFCacheGPU::~FFCacheGPU() {
 
 #define FF_BLOCK 256
 
+__global__ void unpack_complex_coeffs_kernel(
+    const double2* __restrict__ Jz,
+    const double2* __restrict__ Mz,
+    int total,
+    double* __restrict__ J_re,
+    double* __restrict__ J_im,
+    double* __restrict__ M_re,
+    double* __restrict__ M_im)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= total) return;
+    double2 j = Jz[i];
+    double2 m = Mz[i];
+    J_re[i] = j.x;
+    J_im[i] = j.y;
+    M_re[i] = m.x;
+    M_im[i] = m.y;
+}
+
+static void upload_complex_coeffs(FFBatchWorkspace& workspace,
+                                  const std::complex<double>* coeffs_J,
+                                  const std::complex<double>* coeffs_M,
+                                  int total_coeffs)
+{
+    bool host_pack = bem_env_flag_enabled("BEM_FF_HOST_PACK");
+    int gpu_pack_min = 262144;
+    gpu_pack_min = std::max(0, bem_env_int("BEM_FF_GPU_PACK_MIN", gpu_pack_min));
+    if (!host_pack && total_coeffs >= gpu_pack_min && sizeof(std::complex<double>) == sizeof(double2)) {
+        if (total_coeffs > workspace.cap_coeffs_z) {
+            cudaFree(workspace.d_cJ_z);
+            cudaFree(workspace.d_cM_z);
+            CUDA_CHECK(cudaMalloc(&workspace.d_cJ_z, (size_t)total_coeffs * sizeof(double2)));
+            CUDA_CHECK(cudaMalloc(&workspace.d_cM_z, (size_t)total_coeffs * sizeof(double2)));
+            workspace.cap_coeffs_z = total_coeffs;
+        }
+        CUDA_CHECK(cudaMemcpyAsync(workspace.d_cJ_z, coeffs_J,
+                                   (size_t)total_coeffs * sizeof(double2), cudaMemcpyHostToDevice,
+                                   workspace.stream));
+        CUDA_CHECK(cudaMemcpyAsync(workspace.d_cM_z, coeffs_M,
+                                   (size_t)total_coeffs * sizeof(double2), cudaMemcpyHostToDevice,
+                                   workspace.stream));
+        int block = 256;
+        int grid = (total_coeffs + block - 1) / block;
+        unpack_complex_coeffs_kernel<<<grid, block, 0, workspace.stream>>>(
+            static_cast<const double2*>(workspace.d_cJ_z),
+            static_cast<const double2*>(workspace.d_cM_z),
+            total_coeffs,
+            workspace.d_cJ_re, workspace.d_cJ_im,
+            workspace.d_cM_re, workspace.d_cM_im);
+        CUDA_CHECK(cudaGetLastError());
+        return;
+    }
+
+    workspace.reserve_host_coeffs(total_coeffs);
+    for (int i = 0; i < total_coeffs; i++) {
+        workspace.h_cJ_re[i] = coeffs_J[i].real();
+        workspace.h_cJ_im[i] = coeffs_J[i].imag();
+        workspace.h_cM_re[i] = coeffs_M[i].real();
+        workspace.h_cM_im[i] = coeffs_M[i].imag();
+    }
+    CUDA_CHECK(cudaMemcpyAsync(workspace.d_cJ_re, workspace.h_cJ_re,
+                               (size_t)total_coeffs * sizeof(double), cudaMemcpyHostToDevice,
+                               workspace.stream));
+    CUDA_CHECK(cudaMemcpyAsync(workspace.d_cJ_im, workspace.h_cJ_im,
+                               (size_t)total_coeffs * sizeof(double), cudaMemcpyHostToDevice,
+                               workspace.stream));
+    CUDA_CHECK(cudaMemcpyAsync(workspace.d_cM_re, workspace.h_cM_re,
+                               (size_t)total_coeffs * sizeof(double), cudaMemcpyHostToDevice,
+                               workspace.stream));
+    CUDA_CHECK(cudaMemcpyAsync(workspace.d_cM_im, workspace.h_cM_im,
+                               (size_t)total_coeffs * sizeof(double), cudaMemcpyHostToDevice,
+                               workspace.stream));
+}
+
 __global__ void farfield_batch_kernel(
     const double* __restrict__ qpts,    // (total, 3)
     const double* __restrict__ fvals,   // (total, 3)
@@ -108,7 +236,7 @@ __global__ void farfield_batch_kernel(
     const double* __restrict__ coeffs_M_re, // (n_calls, N) re
     const double* __restrict__ coeffs_M_im, // (n_calls, N) im
     const double* __restrict__ r_hats,      // (n_orient, ndir, 3)
-    double k_re, double k_im, double eta_ext,
+    double k_re, double k_im, double eta_ext, double j_scale, double m_sign, double phase_sign,
     int N, int Nq, int n_calls, int n_orient, int ndir,
     double* __restrict__ Fv_re,  // (n_calls, ndir, 3)
     double* __restrict__ Fv_im)  // (n_calls, ndir, 3)
@@ -149,14 +277,14 @@ __global__ void farfield_batch_kernel(
         double fz = fvals[i * 3 + 2];
         double w  = jw[i];
 
-        // Phase: exp(-ik * r_hat . r')
+        // Phase: exp(i * phase_sign * k * r_hat . r'), default phase_sign=-1.
         double rdot = rx * px + ry * py + rz * pz;
-        double arg = k_re * rdot;
+        double arg = phase_sign * k_re * rdot;
         double sn, cs;
         sincos(arg, &sn, &cs);
-        double ea = (k_im == 0.0) ? 1.0 : exp(k_im * rdot);
+        double ea = (k_im == 0.0) ? 1.0 : exp(-phase_sign * k_im * rdot);
         double c = cs * ea;       // Re(phase)
-        double s = -sn * ea;      // Im(phase)
+        double s = sn * ea;       // Im(phase)
 
         // phase * w * f
         double pw_re = c * w;
@@ -237,22 +365,23 @@ __global__ void farfield_batch_kernel(
         double mc_re1 = rz * mr0 - rx * mr2, mc_im1 = rz * mi0 - rx * mi2;
         double mc_re2 = rx * mr1 - ry * mr0, mc_im2 = rx * mi1 - ry * mi0;
 
-        // F = prefac * (eta * Jp + sM * Mc)
+        // F = prefac * (sJ * eta * Jp + sM * Mc)
         // prefac = -ik/(4pi), sM = -1
         // prefac = (-i) * (k_re + i*k_im) / (4pi)
         //        = (k_im - i*k_re) / (4pi)
         double inv4pi = 1.0 / (4.0 * M_PI);
         double pf_re = k_im * inv4pi;
         double pf_im = -k_re * inv4pi;
-        double sM = -1.0;
+        double sM = m_sign;
 
         // v = eta*Jp + sM*Mc for each component
-        double v_re0 = eta_ext * jp_re0 + sM * mc_re0;
-        double v_im0 = eta_ext * jp_im0 + sM * mc_im0;
-        double v_re1 = eta_ext * jp_re1 + sM * mc_re1;
-        double v_im1 = eta_ext * jp_im1 + sM * mc_im1;
-        double v_re2 = eta_ext * jp_re2 + sM * mc_re2;
-        double v_im2 = eta_ext * jp_im2 + sM * mc_im2;
+        double eJ = j_scale * eta_ext;
+        double v_re0 = eJ * jp_re0 + sM * mc_re0;
+        double v_im0 = eJ * jp_im0 + sM * mc_im0;
+        double v_re1 = eJ * jp_re1 + sM * mc_re1;
+        double v_im1 = eJ * jp_im1 + sM * mc_im1;
+        double v_re2 = eJ * jp_re2 + sM * mc_re2;
+        double v_im2 = eJ * jp_im2 + sM * mc_im2;
 
         // F = prefac * v (complex multiply)
         int out_base = (call_idx * ndir + dir_idx) * 3;
@@ -370,7 +499,7 @@ __global__ void farfield_mueller_direct_kernel(
     const double* __restrict__ e_par,
     const double* __restrict__ e_perp,
     const double* __restrict__ weights,
-    double k_re, double k_im, double eta_ext,
+    double k_re, double k_im, double eta_ext, double j_scale, double m_sign, double phase_sign,
     double ik_re, double ik_im, double inv_k2,
     int N, int Nq, int n_orient, int ndir,
     double* __restrict__ M_accum)
@@ -406,12 +535,12 @@ __global__ void farfield_mueller_direct_kernel(
         double w  = jw[i];
 
         double rdot = rx * px + ry * py + rz * pz;
-        double arg = k_re * rdot;
+        double arg = phase_sign * k_re * rdot;
         double sn, cs;
         sincos(arg, &sn, &cs);
-        double ea = (k_im == 0.0) ? 1.0 : exp(k_im * rdot);
+        double ea = (k_im == 0.0) ? 1.0 : exp(-phase_sign * k_im * rdot);
         double pw_re = cs * ea * w;
-        double pw_im = -sn * ea * w;
+        double pw_im = sn * ea * w;
 
         double ifx_re = fx * pw_re, ifx_im = fx * pw_im;
         double ify_re = fy * pw_re, ify_im = fy * pw_im;
@@ -498,12 +627,13 @@ __global__ void farfield_mueller_direct_kernel(
         double mc_re1 = rz * mr0[c] - rx * mr2[c], mc_im1 = rz * mi0[c] - rx * mi2[c];
         double mc_re2 = rx * mr1[c] - ry * mr0[c], mc_im2 = rx * mi1[c] - ry * mi0[c];
 
-        double v_re0 = eta_ext * jp_re0 - mc_re0;
-        double v_im0 = eta_ext * jp_im0 - mc_im0;
-        double v_re1 = eta_ext * jp_re1 - mc_re1;
-        double v_im1 = eta_ext * jp_im1 - mc_im1;
-        double v_re2 = eta_ext * jp_re2 - mc_re2;
-        double v_im2 = eta_ext * jp_im2 - mc_im2;
+        double eJ = j_scale * eta_ext;
+        double v_re0 = eJ * jp_re0 + m_sign * mc_re0;
+        double v_im0 = eJ * jp_im0 + m_sign * mc_im0;
+        double v_re1 = eJ * jp_re1 + m_sign * mc_re1;
+        double v_im1 = eJ * jp_im1 + m_sign * mc_im1;
+        double v_re2 = eJ * jp_re2 + m_sign * mc_re2;
+        double v_im2 = eJ * jp_im2 + m_sign * mc_im2;
 
         int o = 3 * c;
         fre[o]     = pf_re * v_re0 - pf_im * v_im0;
@@ -587,9 +717,9 @@ __global__ void farfield_mueller_alpha_kernel(
     const double* __restrict__ weights,
     const double* __restrict__ alpha_cos,
     const double* __restrict__ alpha_sin,
-    double k_re, double k_im, double eta_ext,
+    double k_re, double k_im, double eta_ext, double j_scale, double m_sign, double phase_sign,
     double ik_re, double ik_im, double inv_k2,
-    int N, int Nq, int n_samples, int alpha_avg, int ndir, int geom_mode,
+    int N, int Nq, int n_samples, int alpha_avg, int ndir, int geom_mode, int weights_by_base,
     int partial_groups,
     double* __restrict__ M_accum)
 {
@@ -664,12 +794,12 @@ __global__ void farfield_mueller_alpha_kernel(
         double w  = jw[i];
 
         double rdot = rx * px + ry * py + rz * pz;
-        double arg = k_re * rdot;
+        double arg = phase_sign * k_re * rdot;
         double sn, cs;
         sincos(arg, &sn, &cs);
-        double ea = (k_im == 0.0) ? 1.0 : exp(k_im * rdot);
+        double ea = (k_im == 0.0) ? 1.0 : exp(-phase_sign * k_im * rdot);
         double pw_re = cs * ea * w;
-        double pw_im = -sn * ea * w;
+        double pw_im = sn * ea * w;
 
         double ifx_re = fx * pw_re, ifx_im = fx * pw_im;
         double ify_re = fy * pw_re, ify_im = fy * pw_im;
@@ -684,14 +814,28 @@ __global__ void farfield_mueller_alpha_kernel(
         double mu_re = coeffs_M_re[coeff_base_perp + n];
         double mu_im = coeffs_M_im[coeff_base_perp + n];
 
-        double cJ0_re = ca * jp_re - sa * ju_re;
-        double cJ0_im = ca * jp_im - sa * ju_im;
-        double cM0_re = ca * mp_re - sa * mu_re;
-        double cM0_im = ca * mp_im - sa * mu_im;
-        double cJ1_re = sa * jp_re + ca * ju_re;
-        double cJ1_im = sa * jp_im + ca * ju_im;
-        double cM1_re = sa * mp_re + ca * mu_re;
-        double cM1_im = sa * mp_im + ca * mu_im;
+        bool yz_plane = fabs(ephi_x) > 0.5;
+        double cJ0_re, cJ0_im, cM0_re, cM0_im;
+        double cJ1_re, cJ1_im, cM1_re, cM1_im;
+        if (yz_plane) {
+            cJ0_re = ca * jp_re + sa * ju_re;
+            cJ0_im = ca * jp_im + sa * ju_im;
+            cM0_re = ca * mp_re + sa * mu_re;
+            cM0_im = ca * mp_im + sa * mu_im;
+            cJ1_re = -sa * jp_re + ca * ju_re;
+            cJ1_im = -sa * jp_im + ca * ju_im;
+            cM1_re = -sa * mp_re + ca * mu_re;
+            cM1_im = -sa * mp_im + ca * mu_im;
+        } else {
+            cJ0_re = ca * jp_re - sa * ju_re;
+            cJ0_im = ca * jp_im - sa * ju_im;
+            cM0_re = ca * mp_re - sa * mu_re;
+            cM0_im = ca * mp_im - sa * mu_im;
+            cJ1_re = -sa * jp_re - ca * ju_re;
+            cJ1_im = -sa * jp_im - ca * ju_im;
+            cM1_re = -sa * mp_re - ca * mu_re;
+            cM1_im = -sa * mp_im - ca * mu_im;
+        }
 
         a[0]  += cJ0_re * ifx_re - cJ0_im * ifx_im;
         a[1]  += cJ0_re * ifx_im + cJ0_im * ifx_re;
@@ -765,12 +909,13 @@ __global__ void farfield_mueller_alpha_kernel(
         double mc_re1 = rz * mr0[c] - rx * mr2[c], mc_im1 = rz * mi0[c] - rx * mi2[c];
         double mc_re2 = rx * mr1[c] - ry * mr0[c], mc_im2 = rx * mi1[c] - ry * mi0[c];
 
-        double v_re0 = eta_ext * jp_re0 - mc_re0;
-        double v_im0 = eta_ext * jp_im0 - mc_im0;
-        double v_re1 = eta_ext * jp_re1 - mc_re1;
-        double v_im1 = eta_ext * jp_im1 - mc_im1;
-        double v_re2 = eta_ext * jp_re2 - mc_re2;
-        double v_im2 = eta_ext * jp_im2 - mc_im2;
+        double eJ = j_scale * eta_ext;
+        double v_re0 = eJ * jp_re0 + m_sign * mc_re0;
+        double v_im0 = eJ * jp_im0 + m_sign * mc_im0;
+        double v_re1 = eJ * jp_re1 + m_sign * mc_re1;
+        double v_im1 = eJ * jp_im1 + m_sign * mc_im1;
+        double v_re2 = eJ * jp_re2 + m_sign * mc_re2;
+        double v_im2 = eJ * jp_im2 + m_sign * mc_im2;
 
         int o = 3 * c;
         fre[o]     = pf_re * v_re0 - pf_im * v_im0;
@@ -810,7 +955,7 @@ __global__ void farfield_mueller_alpha_kernel(
     c_mul_conj(S4r, S4i, S2r, S2i, s42r, s42i);
     c_mul_conj(S4r, S4i, S3r, S3i, s43r, s43i);
 
-    double scale = weights[sample_idx] * inv_k2;
+    double scale = (weights_by_base ? weights[base_idx] / (double)alpha_avg : weights[sample_idx]) * inv_k2;
     int t = dir_idx;
     int group = (partial_groups > 1) ? (sample_idx % partial_groups) : 0;
     double* M_base = M_accum + (size_t)group * 16 * ndir;
@@ -901,12 +1046,20 @@ __global__ void alpha_geometry_kernel(
 
 FFBatchWorkspace::FFBatchWorkspace()
     : d_cJ_re(0), d_cJ_im(0), d_cM_re(0), d_cM_im(0),
+      d_cJ_z(0), d_cM_z(0),
       d_r_hats(0), d_RT(0), d_rhat_lab(0), d_etheta_lab(0), d_Fv_re(0), d_Fv_im(0),
       d_e_par(0), d_e_perp(0), d_weights(0),
       d_alpha_cos(0), d_alpha_sin(0), d_M_accum(0), d_M_partial(0),
-      cap_coeffs(0), cap_rhat(0), cap_rt(0), cap_lab_dirs(0), cap_fv(0),
-      cap_evec(0), cap_weight(0), cap_alpha(0), cap_mueller(0), cap_mueller_partial(0)
+      h_cJ_re(0), h_cJ_im(0), h_cM_re(0), h_cM_im(0), h_fv_re(0), h_fv_im(0), h_M_accum(0),
+      stream(0),
+      h_cJ_re_pinned(false), h_cJ_im_pinned(false), h_cM_re_pinned(false), h_cM_im_pinned(false),
+      h_fv_re_pinned(false), h_fv_im_pinned(false), h_mueller_pinned(false),
+      cap_coeffs(0), cap_coeffs_z(0), cap_rhat(0), cap_rt(0), cap_lab_dirs(0), cap_fv(0),
+      cap_evec(0), cap_weight(0), cap_alpha(0), cap_mueller(0), cap_mueller_partial(0),
+      cap_host_coeffs(0), cap_host_fv(0), cap_host_mueller(0),
+      cached_lab_dirs(0), cached_alpha(0)
 {
+    CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
 }
 
 void FFBatchWorkspace::reserve(int total_coeffs, int total_rhat, int total_fv)
@@ -931,18 +1084,70 @@ void FFBatchWorkspace::reserve(int total_coeffs, int total_rhat, int total_fv)
         CUDA_CHECK(cudaMalloc(&d_Fv_im, total_fv * sizeof(double)));
         cap_fv = total_fv;
     }
-    cJ_re.resize(total_coeffs);
-    cJ_im.resize(total_coeffs);
-    cM_re.resize(total_coeffs);
-    cM_im.resize(total_coeffs);
-    fv_re.resize(total_fv);
-    fv_im.resize(total_fv);
+}
+
+void FFBatchWorkspace::reserve_host_coeffs(int total_coeffs)
+{
+    if (total_coeffs <= cap_host_coeffs)
+        return;
+    release_host_double_buffer(h_cJ_re, h_cJ_re_pinned);
+    release_host_double_buffer(h_cJ_im, h_cJ_im_pinned);
+    release_host_double_buffer(h_cM_re, h_cM_re_pinned);
+    release_host_double_buffer(h_cM_im, h_cM_im_pinned);
+    allocate_host_double_buffer(h_cJ_re, h_cJ_re_pinned, total_coeffs, "far-field J real pack");
+    allocate_host_double_buffer(h_cJ_im, h_cJ_im_pinned, total_coeffs, "far-field J imag pack");
+    allocate_host_double_buffer(h_cM_re, h_cM_re_pinned, total_coeffs, "far-field M real pack");
+    allocate_host_double_buffer(h_cM_im, h_cM_im_pinned, total_coeffs, "far-field M imag pack");
+    cap_host_coeffs = total_coeffs;
+}
+
+void FFBatchWorkspace::reserve_host_fv(int total_fv)
+{
+    if (total_fv <= cap_host_fv)
+        return;
+    release_host_double_buffer(h_fv_re, h_fv_re_pinned);
+    release_host_double_buffer(h_fv_im, h_fv_im_pinned);
+    allocate_host_double_buffer(h_fv_re, h_fv_re_pinned, total_fv, "far-field real output");
+    allocate_host_double_buffer(h_fv_im, h_fv_im_pinned, total_fv, "far-field imag output");
+    cap_host_fv = total_fv;
+}
+
+void FFBatchWorkspace::reserve_host_mueller(int total_mueller)
+{
+    if (total_mueller <= cap_host_mueller)
+        return;
+    release_host_double_buffer(h_M_accum, h_mueller_pinned);
+    bool pinned = false;
+    allocate_host_double_buffer(h_M_accum, pinned, total_mueller, "far-field Mueller output");
+    h_mueller_pinned = pinned;
+    cap_host_mueller = total_mueller;
+}
+
+void FFBatchWorkspace::reserve_alpha(int n_alpha)
+{
+    if (n_alpha <= cap_alpha)
+        return;
+    cudaFree(d_alpha_cos);
+    cudaFree(d_alpha_sin);
+    CUDA_CHECK(cudaMalloc(&d_alpha_cos, (size_t)n_alpha * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_alpha_sin, (size_t)n_alpha * sizeof(double)));
+    cap_alpha = n_alpha;
+    cached_alpha = 0;
+}
+
+void FFBatchWorkspace::reserve_mueller_accum(int ndir)
+{
+    int total_mueller = 16 * ndir;
+    if (total_mueller > cap_mueller) {
+        cudaFree(d_M_accum);
+        CUDA_CHECK(cudaMalloc(&d_M_accum, (size_t)total_mueller * sizeof(double)));
+        cap_mueller = total_mueller;
+    }
 }
 
 void FFBatchWorkspace::reserve_mueller(int n_orient, int ndir)
 {
     int total_evec = n_orient * ndir * 3;
-    int total_mueller = 16 * ndir;
     if (total_evec > cap_evec) {
         cudaFree(d_e_par);
         cudaFree(d_e_perp);
@@ -955,19 +1160,7 @@ void FFBatchWorkspace::reserve_mueller(int n_orient, int ndir)
         CUDA_CHECK(cudaMalloc(&d_weights, n_orient * sizeof(double)));
         cap_weight = n_orient;
     }
-    if (n_orient > cap_alpha) {
-        cudaFree(d_alpha_cos);
-        cudaFree(d_alpha_sin);
-        CUDA_CHECK(cudaMalloc(&d_alpha_cos, n_orient * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_alpha_sin, n_orient * sizeof(double)));
-        cap_alpha = n_orient;
-    }
-    if (total_mueller > cap_mueller) {
-        cudaFree(d_M_accum);
-        CUDA_CHECK(cudaMalloc(&d_M_accum, total_mueller * sizeof(double)));
-        cap_mueller = total_mueller;
-    }
-    M_accum.resize(total_mueller);
+    reserve_mueller_accum(ndir);
 }
 
 void FFBatchWorkspace::reserve_mueller_partials(int groups, int ndir)
@@ -983,30 +1176,35 @@ void FFBatchWorkspace::reserve_mueller_partials(int groups, int ndir)
 
 void FFBatchWorkspace::zero_mueller(int ndir)
 {
-    reserve_mueller(1, ndir);
-    CUDA_CHECK(cudaMemset(d_M_accum, 0, 16 * ndir * sizeof(double)));
+    reserve_mueller_accum(ndir);
+    CUDA_CHECK(cudaMemsetAsync(d_M_accum, 0, 16 * ndir * sizeof(double), stream));
 }
 
 void FFBatchWorkspace::zero_mueller_partials(int groups, int ndir)
 {
     reserve_mueller_partials(groups, ndir);
-    CUDA_CHECK(cudaMemset(d_M_partial, 0, (size_t)std::max(1, groups) * 16 * ndir * sizeof(double)));
+    CUDA_CHECK(cudaMemsetAsync(d_M_partial, 0, (size_t)std::max(1, groups) * 16 * ndir * sizeof(double), stream));
 }
 
 void FFBatchWorkspace::download_mueller(double* M_out, int ndir)
 {
     int total_mueller = 16 * ndir;
-    M_accum.resize(total_mueller);
-    CUDA_CHECK(cudaMemcpy(M_accum.data(), d_M_accum,
-                          total_mueller * sizeof(double), cudaMemcpyDeviceToHost));
+    reserve_host_mueller(total_mueller);
+    CUDA_CHECK(cudaMemcpyAsync(h_M_accum, d_M_accum,
+                               total_mueller * sizeof(double), cudaMemcpyDeviceToHost,
+                               stream));
+    CUDA_CHECK(cudaStreamSynchronize(stream));
     for (int i = 0; i < total_mueller; i++)
-        M_out[i] = M_accum[i];
+        M_out[i] = h_M_accum[i];
 }
 
 void FFBatchWorkspace::free()
 {
+    if (stream)
+        cudaStreamSynchronize(stream);
     cudaFree(d_cJ_re); cudaFree(d_cJ_im);
     cudaFree(d_cM_re); cudaFree(d_cM_im);
+    cudaFree(d_cJ_z); cudaFree(d_cM_z);
     cudaFree(d_r_hats);
     cudaFree(d_RT); cudaFree(d_rhat_lab); cudaFree(d_etheta_lab);
     cudaFree(d_Fv_re); cudaFree(d_Fv_im);
@@ -1015,14 +1213,26 @@ void FFBatchWorkspace::free()
     cudaFree(d_alpha_cos); cudaFree(d_alpha_sin);
     cudaFree(d_M_accum);
     cudaFree(d_M_partial);
+    release_host_double_buffer(h_cJ_re, h_cJ_re_pinned);
+    release_host_double_buffer(h_cJ_im, h_cJ_im_pinned);
+    release_host_double_buffer(h_cM_re, h_cM_re_pinned);
+    release_host_double_buffer(h_cM_im, h_cM_im_pinned);
+    release_host_double_buffer(h_fv_re, h_fv_re_pinned);
+    release_host_double_buffer(h_fv_im, h_fv_im_pinned);
+    release_host_double_buffer(h_M_accum, h_mueller_pinned);
+    if (stream) {
+        cudaStreamDestroy(stream);
+        stream = 0;
+    }
     d_cJ_re = d_cJ_im = d_cM_re = d_cM_im = 0;
+    d_cJ_z = d_cM_z = 0;
     d_r_hats = d_RT = d_rhat_lab = d_etheta_lab = d_Fv_re = d_Fv_im = 0;
     d_e_par = d_e_perp = d_weights = d_alpha_cos = d_alpha_sin = d_M_accum = d_M_partial = 0;
-    cap_coeffs = cap_rhat = cap_rt = cap_lab_dirs = cap_fv = 0;
+    h_cJ_re = h_cJ_im = h_cM_re = h_cM_im = h_fv_re = h_fv_im = h_M_accum = 0;
+    cap_coeffs = cap_coeffs_z = cap_rhat = cap_rt = cap_lab_dirs = cap_fv = 0;
     cap_evec = cap_weight = cap_alpha = cap_mueller = cap_mueller_partial = 0;
-    cJ_re.clear(); cJ_im.clear(); cM_re.clear(); cM_im.clear();
-    fv_re.clear(); fv_im.clear();
-    M_accum.clear();
+    cap_host_coeffs = cap_host_fv = cap_host_mueller = 0;
+    cached_lab_dirs = cached_alpha = 0;
 }
 
 FFBatchWorkspace::~FFBatchWorkspace()
@@ -1049,21 +1259,11 @@ void compute_farfield_batch_cuda_ws(
     int total_rhat = n_orient * ndir * 3;
     int total_fv = n_calls * ndir * 3;
     workspace.reserve(total_coeffs, total_rhat, total_fv);
+    workspace.reserve_host_fv(total_fv);
 
-    // Split complex coefficients into separate re/im arrays for GPU
-    for (int i = 0; i < total_coeffs; i++) {
-        workspace.cJ_re[i] = coeffs_J[i].real();
-        workspace.cJ_im[i] = coeffs_J[i].imag();
-        workspace.cM_re[i] = coeffs_M[i].real();
-        workspace.cM_im[i] = coeffs_M[i].imag();
-    }
-
-    // Upload
-    CUDA_CHECK(cudaMemcpy(workspace.d_cJ_re, workspace.cJ_re.data(), total_coeffs * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_cJ_im, workspace.cJ_im.data(), total_coeffs * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_cM_re, workspace.cM_re.data(), total_coeffs * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_cM_im, workspace.cM_im.data(), total_coeffs * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_r_hats, r_hats, total_rhat * sizeof(double), cudaMemcpyHostToDevice));
+    upload_complex_coeffs(workspace, coeffs_J, coeffs_M, total_coeffs);
+    CUDA_CHECK(cudaMemcpyAsync(workspace.d_r_hats, r_hats, total_rhat * sizeof(double),
+                               cudaMemcpyHostToDevice, workspace.stream));
 
     // Launch kernel
     dim3 grid(n_calls, ndir);
@@ -1071,26 +1271,32 @@ void compute_farfield_batch_cuda_ws(
 
     // Shared memory: 12 * FF_BLOCK doubles
     size_t smem_size = 12 * FF_BLOCK * sizeof(double);
+    const double m_sign = farfield_m_scale();
+    const double j_scale = farfield_j_scale();
+    const double phase_sign = farfield_phase_sign();
 
-    farfield_batch_kernel<<<grid, block, smem_size>>>(
+    farfield_batch_kernel<<<grid, block, smem_size, workspace.stream>>>(
         gpu_cache.d_qpts, gpu_cache.d_fvals, gpu_cache.d_jw,
         workspace.d_cJ_re, workspace.d_cJ_im, workspace.d_cM_re, workspace.d_cM_im,
         workspace.d_r_hats,
-        k_ext.real(), k_ext.imag(), eta_ext,
+        k_ext.real(), k_ext.imag(), eta_ext, j_scale, m_sign, phase_sign,
         N, gpu_cache.Nq, n_calls, n_orient, ndir,
         workspace.d_Fv_re, workspace.d_Fv_im);
 
     CUDA_CHECK(cudaGetLastError());
 
     // Download results
-    CUDA_CHECK(cudaMemcpy(workspace.fv_re.data(), workspace.d_Fv_re, total_fv * sizeof(double), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(workspace.fv_im.data(), workspace.d_Fv_im, total_fv * sizeof(double), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpyAsync(workspace.h_fv_re, workspace.d_Fv_re, total_fv * sizeof(double),
+                               cudaMemcpyDeviceToHost, workspace.stream));
+    CUDA_CHECK(cudaMemcpyAsync(workspace.h_fv_im, workspace.d_Fv_im, total_fv * sizeof(double),
+                               cudaMemcpyDeviceToHost, workspace.stream));
+    CUDA_CHECK(cudaStreamSynchronize(workspace.stream));
 
     // Pack into complex output
     for (int i = 0; i < total_fv; i++)
-        Fv_out[i] = std::complex<double>(workspace.fv_re[i], workspace.fv_im[i]);
+        Fv_out[i] = std::complex<double>(workspace.h_fv_re[i], workspace.h_fv_im[i]);
 
-    if (std::getenv("BEM_FF_VERBOSE"))
+    if (bem_env_flag_enabled("BEM_FF_VERBOSE"))
         printf("  GPU far-field (%d calls x %d dirs): %.2fs\n",
                n_calls, ndir, timer.elapsed_s());
 }
@@ -1116,31 +1322,28 @@ void accumulate_farfield_mueller_batch_cuda_ws(
     workspace.reserve(total_coeffs, total_rhat, total_fv);
     workspace.reserve_mueller(n_orient, ndir);
 
-    for (int i = 0; i < total_coeffs; i++) {
-        workspace.cJ_re[i] = coeffs_J[i].real();
-        workspace.cJ_im[i] = coeffs_J[i].imag();
-        workspace.cM_re[i] = coeffs_M[i].real();
-        workspace.cM_im[i] = coeffs_M[i].imag();
-    }
-
-    CUDA_CHECK(cudaMemcpy(workspace.d_cJ_re, workspace.cJ_re.data(), total_coeffs * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_cJ_im, workspace.cJ_im.data(), total_coeffs * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_cM_re, workspace.cM_re.data(), total_coeffs * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_cM_im, workspace.cM_im.data(), total_coeffs * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_r_hats, r_hats, total_rhat * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_e_par, e_par, total_evec * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_e_perp, e_perp, total_evec * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_weights, weights, n_orient * sizeof(double), cudaMemcpyHostToDevice));
+    upload_complex_coeffs(workspace, coeffs_J, coeffs_M, total_coeffs);
+    CUDA_CHECK(cudaMemcpyAsync(workspace.d_r_hats, r_hats, total_rhat * sizeof(double),
+                               cudaMemcpyHostToDevice, workspace.stream));
+    CUDA_CHECK(cudaMemcpyAsync(workspace.d_e_par, e_par, total_evec * sizeof(double),
+                               cudaMemcpyHostToDevice, workspace.stream));
+    CUDA_CHECK(cudaMemcpyAsync(workspace.d_e_perp, e_perp, total_evec * sizeof(double),
+                               cudaMemcpyHostToDevice, workspace.stream));
+    CUDA_CHECK(cudaMemcpyAsync(workspace.d_weights, weights, n_orient * sizeof(double),
+                               cudaMemcpyHostToDevice, workspace.stream));
 
     dim3 grid(n_calls, ndir);
     dim3 block(FF_BLOCK);
     size_t smem_size = 12 * FF_BLOCK * sizeof(double);
+    const double m_sign = farfield_m_scale();
+    const double j_scale = farfield_j_scale();
+    const double phase_sign = farfield_phase_sign();
 
-    farfield_batch_kernel<<<grid, block, smem_size>>>(
+    farfield_batch_kernel<<<grid, block, smem_size, workspace.stream>>>(
         gpu_cache.d_qpts, gpu_cache.d_fvals, gpu_cache.d_jw,
         workspace.d_cJ_re, workspace.d_cJ_im, workspace.d_cM_re, workspace.d_cM_im,
         workspace.d_r_hats,
-        k_ext.real(), k_ext.imag(), eta_ext,
+        k_ext.real(), k_ext.imag(), eta_ext, j_scale, m_sign, phase_sign,
         N, gpu_cache.Nq, n_calls, n_orient, ndir,
         workspace.d_Fv_re, workspace.d_Fv_im);
     CUDA_CHECK(cudaGetLastError());
@@ -1148,15 +1351,16 @@ void accumulate_farfield_mueller_batch_cuda_ws(
     dim3 mblock(128);
     dim3 mgrid(n_orient, (ndir + (int)mblock.x - 1) / (int)mblock.x);
     std::complex<double> ik_val = std::complex<double>(0, -1) * k_ext;
-    double inv_k2 = 1.0 / std::norm(k_ext);
-    mueller_accum_kernel<<<mgrid, mblock>>>(
+    double inv_k2 = 1.0;
+    mueller_accum_kernel<<<mgrid, mblock, 0, workspace.stream>>>(
         workspace.d_Fv_re, workspace.d_Fv_im,
         workspace.d_e_par, workspace.d_e_perp, workspace.d_weights,
         ik_val.real(), ik_val.imag(), inv_k2,
         n_orient, ndir, workspace.d_M_accum);
     CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaStreamSynchronize(workspace.stream));
 
-    if (std::getenv("BEM_FF_VERBOSE"))
+    if (bem_env_flag_enabled("BEM_FF_VERBOSE"))
         printf("  GPU far-field+Mueller (%d calls x %d dirs): %.2fs\n",
                n_calls, ndir, timer.elapsed_s());
 }
@@ -1186,40 +1390,38 @@ void accumulate_farfield_mueller_direct_cuda_ws(
     int total_coeffs = n_calls * N;
     int total_rhat = n_orient * ndir * 3;
     int total_evec = n_orient * ndir * 3;
-    workspace.reserve(total_coeffs, total_rhat, 1);
+    workspace.reserve(total_coeffs, total_rhat, 0);
     workspace.reserve_mueller(n_orient, ndir);
 
-    for (int i = 0; i < total_coeffs; i++) {
-        workspace.cJ_re[i] = coeffs_J[i].real();
-        workspace.cJ_im[i] = coeffs_J[i].imag();
-        workspace.cM_re[i] = coeffs_M[i].real();
-        workspace.cM_im[i] = coeffs_M[i].imag();
-    }
-
-    CUDA_CHECK(cudaMemcpy(workspace.d_cJ_re, workspace.cJ_re.data(), total_coeffs * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_cJ_im, workspace.cJ_im.data(), total_coeffs * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_cM_re, workspace.cM_re.data(), total_coeffs * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_cM_im, workspace.cM_im.data(), total_coeffs * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_r_hats, r_hats, total_rhat * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_e_par, e_par, total_evec * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_e_perp, e_perp, total_evec * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_weights, weights, n_orient * sizeof(double), cudaMemcpyHostToDevice));
+    upload_complex_coeffs(workspace, coeffs_J, coeffs_M, total_coeffs);
+    CUDA_CHECK(cudaMemcpyAsync(workspace.d_r_hats, r_hats, total_rhat * sizeof(double),
+                               cudaMemcpyHostToDevice, workspace.stream));
+    CUDA_CHECK(cudaMemcpyAsync(workspace.d_e_par, e_par, total_evec * sizeof(double),
+                               cudaMemcpyHostToDevice, workspace.stream));
+    CUDA_CHECK(cudaMemcpyAsync(workspace.d_e_perp, e_perp, total_evec * sizeof(double),
+                               cudaMemcpyHostToDevice, workspace.stream));
+    CUDA_CHECK(cudaMemcpyAsync(workspace.d_weights, weights, n_orient * sizeof(double),
+                               cudaMemcpyHostToDevice, workspace.stream));
 
     dim3 grid(n_orient, ndir);
     dim3 block(FF_DIRECT_BLOCK);
     std::complex<double> ik_val = std::complex<double>(0, -1) * k_ext;
-    double inv_k2 = 1.0 / std::norm(k_ext);
-    farfield_mueller_direct_kernel<<<grid, block>>>(
+    double inv_k2 = 1.0;
+    const double m_sign = farfield_m_scale();
+    const double j_scale = farfield_j_scale();
+    const double phase_sign = farfield_phase_sign();
+    farfield_mueller_direct_kernel<<<grid, block, 0, workspace.stream>>>(
         gpu_cache.d_qpts, gpu_cache.d_fvals, gpu_cache.d_jw,
         workspace.d_cJ_re, workspace.d_cJ_im, workspace.d_cM_re, workspace.d_cM_im,
         workspace.d_r_hats, workspace.d_e_par, workspace.d_e_perp, workspace.d_weights,
-        k_ext.real(), k_ext.imag(), eta_ext,
+        k_ext.real(), k_ext.imag(), eta_ext, j_scale, m_sign, phase_sign,
         ik_val.real(), ik_val.imag(), inv_k2,
         N, gpu_cache.Nq, n_orient, ndir,
         workspace.d_M_accum);
     CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaStreamSynchronize(workspace.stream));
 
-    if (std::getenv("BEM_FF_VERBOSE"))
+    if (bem_env_flag_enabled("BEM_FF_VERBOSE"))
         printf("  GPU direct far-field+Mueller (%d samples x %d dirs): %.2fs\n",
                n_orient, ndir, timer.elapsed_s());
 }
@@ -1254,11 +1456,11 @@ void accumulate_farfield_mueller_alpha_cuda_ws(
     int total_coeffs = 2 * n_base_orient * N;
     int total_rhat = n_samples * ndir * 3;
     int total_evec = n_samples * ndir * 3;
-    workspace.reserve(total_coeffs, total_rhat, 1);
+    workspace.reserve(total_coeffs, total_rhat, 0);
     workspace.reserve_mueller(n_samples, ndir);
+    workspace.reserve_alpha(alpha_avg);
     int partial_groups = 16;
-    if (const char* env = std::getenv("BEM_FF_PARTIAL_GROUPS"))
-        partial_groups = std::max(1, atoi(env));
+    partial_groups = std::max(1, bem_env_int("BEM_FF_PARTIAL_GROUPS", partial_groups));
     partial_groups = std::max(1, std::min(partial_groups, n_samples));
     double* M_target = workspace.d_M_accum;
     if (partial_groups > 1) {
@@ -1266,49 +1468,52 @@ void accumulate_farfield_mueller_alpha_cuda_ws(
         M_target = workspace.d_M_partial;
     }
 
-    for (int i = 0; i < total_coeffs; i++) {
-        workspace.cJ_re[i] = coeffs_J[i].real();
-        workspace.cJ_im[i] = coeffs_J[i].imag();
-        workspace.cM_re[i] = coeffs_M[i].real();
-        workspace.cM_im[i] = coeffs_M[i].imag();
+    upload_complex_coeffs(workspace, coeffs_J, coeffs_M, total_coeffs);
+    CUDA_CHECK(cudaMemcpyAsync(workspace.d_r_hats, r_hats, total_rhat * sizeof(double),
+                               cudaMemcpyHostToDevice, workspace.stream));
+    CUDA_CHECK(cudaMemcpyAsync(workspace.d_e_par, e_par, total_evec * sizeof(double),
+                               cudaMemcpyHostToDevice, workspace.stream));
+    CUDA_CHECK(cudaMemcpyAsync(workspace.d_e_perp, e_perp, total_evec * sizeof(double),
+                               cudaMemcpyHostToDevice, workspace.stream));
+    CUDA_CHECK(cudaMemcpyAsync(workspace.d_weights, weights, n_samples * sizeof(double),
+                               cudaMemcpyHostToDevice, workspace.stream));
+    if (workspace.cached_alpha != alpha_avg) {
+        CUDA_CHECK(cudaMemcpyAsync(workspace.d_alpha_cos, alpha_cos, alpha_avg * sizeof(double),
+                                   cudaMemcpyHostToDevice, workspace.stream));
+        CUDA_CHECK(cudaMemcpyAsync(workspace.d_alpha_sin, alpha_sin, alpha_avg * sizeof(double),
+                                   cudaMemcpyHostToDevice, workspace.stream));
+        workspace.cached_alpha = alpha_avg;
     }
-
-    CUDA_CHECK(cudaMemcpy(workspace.d_cJ_re, workspace.cJ_re.data(), total_coeffs * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_cJ_im, workspace.cJ_im.data(), total_coeffs * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_cM_re, workspace.cM_re.data(), total_coeffs * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_cM_im, workspace.cM_im.data(), total_coeffs * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_r_hats, r_hats, total_rhat * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_e_par, e_par, total_evec * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_e_perp, e_perp, total_evec * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_weights, weights, n_samples * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_alpha_cos, alpha_cos, alpha_avg * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_alpha_sin, alpha_sin, alpha_avg * sizeof(double), cudaMemcpyHostToDevice));
 
     dim3 grid(n_samples, ndir);
     dim3 block(FF_DIRECT_BLOCK);
     std::complex<double> ik_val = std::complex<double>(0, -1) * k_ext;
-    double inv_k2 = 1.0 / std::norm(k_ext);
-    farfield_mueller_alpha_kernel<<<grid, block>>>(
+    double inv_k2 = 1.0;
+    const double m_sign = farfield_m_scale();
+    const double j_scale = farfield_j_scale();
+    const double phase_sign = farfield_phase_sign();
+    farfield_mueller_alpha_kernel<<<grid, block, 0, workspace.stream>>>(
         gpu_cache.d_qpts, gpu_cache.d_fvals, gpu_cache.d_jw,
         workspace.d_cJ_re, workspace.d_cJ_im, workspace.d_cM_re, workspace.d_cM_im,
         workspace.d_r_hats, workspace.d_e_par, workspace.d_e_perp,
         0, 0, 0, 0.0, 0.0, 0.0, workspace.d_weights,
         workspace.d_alpha_cos, workspace.d_alpha_sin,
-        k_ext.real(), k_ext.imag(), eta_ext,
+        k_ext.real(), k_ext.imag(), eta_ext, j_scale, m_sign, phase_sign,
         ik_val.real(), ik_val.imag(), inv_k2,
-        N, gpu_cache.Nq, n_samples, alpha_avg, ndir, 0,
+        N, gpu_cache.Nq, n_samples, alpha_avg, ndir, 0, 0,
         partial_groups, M_target);
     CUDA_CHECK(cudaGetLastError());
     if (partial_groups > 1) {
         int total_mueller = 16 * ndir;
         int block_reduce = 256;
         int grid_reduce = (total_mueller + block_reduce - 1) / block_reduce;
-        reduce_mueller_partials_kernel<<<grid_reduce, block_reduce>>>(
+        reduce_mueller_partials_kernel<<<grid_reduce, block_reduce, 0, workspace.stream>>>(
             workspace.d_M_partial, partial_groups, ndir, workspace.d_M_accum);
         CUDA_CHECK(cudaGetLastError());
     }
+    CUDA_CHECK(cudaStreamSynchronize(workspace.stream));
 
-    if (std::getenv("BEM_FF_VERBOSE"))
+    if (bem_env_flag_enabled("BEM_FF_VERBOSE"))
         printf("  GPU alpha direct far-field+Mueller (%d base x %d alpha x %d dirs): %.2fs\n",
                n_base_orient, alpha_avg, ndir, timer.elapsed_s());
 }
@@ -1326,7 +1531,8 @@ void accumulate_farfield_mueller_alpha_geom_cuda_ws(
     const double* alpha_cos,
     const double* alpha_sin,
     std::complex<double> k_ext, double eta_ext,
-    int n_base_orient, int alpha_avg, int ndir)
+    int n_base_orient, int alpha_avg, int ndir,
+    bool sync_after)
 {
     Timer timer;
     int N = gpu_cache.N;
@@ -1337,23 +1543,16 @@ void accumulate_farfield_mueller_alpha_geom_cuda_ws(
     int total_coeffs = 2 * n_base_orient * N;
     int total_rt = n_base_orient * 9;
     int total_lab = ndir * 3;
-    workspace.reserve(total_coeffs, 0, 1);
-    workspace.reserve_mueller(1, ndir);
-    if (n_samples > workspace.cap_weight) {
+    workspace.reserve(total_coeffs, 0, 0);
+    workspace.reserve_mueller_accum(ndir);
+    if (n_base_orient > workspace.cap_weight) {
         cudaFree(workspace.d_weights);
-        CUDA_CHECK(cudaMalloc(&workspace.d_weights, (size_t)n_samples * sizeof(double)));
-        workspace.cap_weight = n_samples;
+        CUDA_CHECK(cudaMalloc(&workspace.d_weights, (size_t)n_base_orient * sizeof(double)));
+        workspace.cap_weight = n_base_orient;
     }
-    if (alpha_avg > workspace.cap_alpha) {
-        cudaFree(workspace.d_alpha_cos);
-        cudaFree(workspace.d_alpha_sin);
-        CUDA_CHECK(cudaMalloc(&workspace.d_alpha_cos, (size_t)alpha_avg * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&workspace.d_alpha_sin, (size_t)alpha_avg * sizeof(double)));
-        workspace.cap_alpha = alpha_avg;
-    }
+    workspace.reserve_alpha(alpha_avg);
     int partial_groups = 16;
-    if (const char* env = std::getenv("BEM_FF_PARTIAL_GROUPS"))
-        partial_groups = std::max(1, atoi(env));
+    partial_groups = std::max(1, bem_env_int("BEM_FF_PARTIAL_GROUPS", partial_groups));
     partial_groups = std::max(1, std::min(partial_groups, n_samples));
     double* M_target = workspace.d_M_accum;
     if (partial_groups > 1) {
@@ -1372,31 +1571,37 @@ void accumulate_farfield_mueller_alpha_geom_cuda_ws(
         CUDA_CHECK(cudaMalloc(&workspace.d_rhat_lab, total_lab * sizeof(double)));
         CUDA_CHECK(cudaMalloc(&workspace.d_etheta_lab, total_lab * sizeof(double)));
         workspace.cap_lab_dirs = total_lab;
+        workspace.cached_lab_dirs = 0;
     }
 
-    for (int i = 0; i < total_coeffs; i++) {
-        workspace.cJ_re[i] = coeffs_J[i].real();
-        workspace.cJ_im[i] = coeffs_J[i].imag();
-        workspace.cM_re[i] = coeffs_M[i].real();
-        workspace.cM_im[i] = coeffs_M[i].imag();
+    upload_complex_coeffs(workspace, coeffs_J, coeffs_M, total_coeffs);
+    CUDA_CHECK(cudaMemcpyAsync(workspace.d_RT, RT_mats, total_rt * sizeof(double),
+                               cudaMemcpyHostToDevice, workspace.stream));
+    if (workspace.cached_lab_dirs != ndir) {
+        CUDA_CHECK(cudaMemcpyAsync(workspace.d_rhat_lab, rhat_lab, total_lab * sizeof(double),
+                                   cudaMemcpyHostToDevice, workspace.stream));
+        CUDA_CHECK(cudaMemcpyAsync(workspace.d_etheta_lab, etheta_lab, total_lab * sizeof(double),
+                                   cudaMemcpyHostToDevice, workspace.stream));
+        workspace.cached_lab_dirs = ndir;
     }
-
-    CUDA_CHECK(cudaMemcpy(workspace.d_cJ_re, workspace.cJ_re.data(), total_coeffs * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_cJ_im, workspace.cJ_im.data(), total_coeffs * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_cM_re, workspace.cM_re.data(), total_coeffs * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_cM_im, workspace.cM_im.data(), total_coeffs * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_RT, RT_mats, total_rt * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_rhat_lab, rhat_lab, total_lab * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_etheta_lab, etheta_lab, total_lab * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_weights, weights, n_samples * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_alpha_cos, alpha_cos, alpha_avg * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(workspace.d_alpha_sin, alpha_sin, alpha_avg * sizeof(double), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpyAsync(workspace.d_weights, weights, n_base_orient * sizeof(double),
+                               cudaMemcpyHostToDevice, workspace.stream));
+    if (workspace.cached_alpha != alpha_avg) {
+        CUDA_CHECK(cudaMemcpyAsync(workspace.d_alpha_cos, alpha_cos, alpha_avg * sizeof(double),
+                                   cudaMemcpyHostToDevice, workspace.stream));
+        CUDA_CHECK(cudaMemcpyAsync(workspace.d_alpha_sin, alpha_sin, alpha_avg * sizeof(double),
+                                   cudaMemcpyHostToDevice, workspace.stream));
+        workspace.cached_alpha = alpha_avg;
+    }
 
     dim3 grid(n_samples, ndir);
     dim3 block(FF_DIRECT_BLOCK);
     std::complex<double> ik_val = std::complex<double>(0, -1) * k_ext;
-    double inv_k2 = 1.0 / std::norm(k_ext);
-    farfield_mueller_alpha_kernel<<<grid, block>>>(
+    double inv_k2 = 1.0;
+    const double m_sign = farfield_m_scale();
+    const double j_scale = farfield_j_scale();
+    const double phase_sign = farfield_phase_sign();
+    farfield_mueller_alpha_kernel<<<grid, block, 0, workspace.stream>>>(
         gpu_cache.d_qpts, gpu_cache.d_fvals, gpu_cache.d_jw,
         workspace.d_cJ_re, workspace.d_cJ_im, workspace.d_cM_re, workspace.d_cM_im,
         0, 0, 0,
@@ -1404,21 +1609,23 @@ void accumulate_farfield_mueller_alpha_geom_cuda_ws(
         ephi_lab[0], ephi_lab[1], ephi_lab[2],
         workspace.d_weights,
         workspace.d_alpha_cos, workspace.d_alpha_sin,
-        k_ext.real(), k_ext.imag(), eta_ext,
+        k_ext.real(), k_ext.imag(), eta_ext, j_scale, m_sign, phase_sign,
         ik_val.real(), ik_val.imag(), inv_k2,
-        N, gpu_cache.Nq, n_samples, alpha_avg, ndir, 1,
+        N, gpu_cache.Nq, n_samples, alpha_avg, ndir, 1, 1,
         partial_groups, M_target);
     CUDA_CHECK(cudaGetLastError());
     if (partial_groups > 1) {
         int total_mueller = 16 * ndir;
         int block_reduce = 256;
         int grid_reduce = (total_mueller + block_reduce - 1) / block_reduce;
-        reduce_mueller_partials_kernel<<<grid_reduce, block_reduce>>>(
+        reduce_mueller_partials_kernel<<<grid_reduce, block_reduce, 0, workspace.stream>>>(
             workspace.d_M_partial, partial_groups, ndir, workspace.d_M_accum);
         CUDA_CHECK(cudaGetLastError());
     }
+    if (sync_after)
+        CUDA_CHECK(cudaStreamSynchronize(workspace.stream));
 
-    if (std::getenv("BEM_FF_VERBOSE"))
+    if (bem_env_flag_enabled("BEM_FF_VERBOSE"))
         printf("  GPU alpha geom+direct far-field+Mueller (%d base x %d alpha x %d dirs): %.2fs\n",
                n_base_orient, alpha_avg, ndir, timer.elapsed_s());
 }
@@ -1451,6 +1658,7 @@ void compute_far_field_vec_batch_cpu(const FFCache& cache,
     int N = cache.N;
     int Nq = cache.Nq;
     double k_re = k_ext.real(), k_im = k_ext.imag();
+    double phase_sign = farfield_phase_sign();
 
     std::vector<std::complex<double>> Jt(ndir * 3, 0);
     std::vector<std::complex<double>> Mt(ndir * 3, 0);
@@ -1474,10 +1682,10 @@ void compute_far_field_vec_batch_cpu(const FFCache& cache,
 
                 for (int d = 0; d < ndir; d++) {
                     double rdot = r_hats[d].x * rx + r_hats[d].y * ry + r_hats[d].z * rz;
-                    double arg = k_re * rdot;
-                    double ea = exp(k_im * rdot);
+                    double arg = phase_sign * k_re * rdot;
+                    double ea = exp(-phase_sign * k_im * rdot);
                     double c = cos(arg) * ea;
-                    double s = -sin(arg) * ea;
+                    double s = sin(arg) * ea;
                     double pw_re = c * w;
                     double pw_im = s * w;
 
@@ -1501,7 +1709,8 @@ void compute_far_field_vec_batch_cpu(const FFCache& cache,
     }
 
     std::complex<double> prefac = std::complex<double>(0, -1) * k_ext / (4.0 * M_PI);
-    double sM = -1.0;
+    double sM = farfield_m_scale();
+    double sJ = farfield_j_scale();
 
     for (int d = 0; d < ndir; d++) {
         std::complex<double> jx = Jt[d*3], jy = Jt[d*3+1], jz = Jt[d*3+2];
@@ -1517,9 +1726,9 @@ void compute_far_field_vec_batch_cpu(const FFCache& cache,
         std::complex<double> mcy = rrz * mx - rrx * mz;
         std::complex<double> mcz = rrx * my - rry * mx;
 
-        Fv_out[d*3]   = prefac * (eta_ext * jpx + sM * mcx);
-        Fv_out[d*3+1] = prefac * (eta_ext * jpy + sM * mcy);
-        Fv_out[d*3+2] = prefac * (eta_ext * jpz + sM * mcz);
+        Fv_out[d*3]   = prefac * (sJ * eta_ext * jpx + sM * mcx);
+        Fv_out[d*3+1] = prefac * (sJ * eta_ext * jpy + sM * mcy);
+        Fv_out[d*3+2] = prefac * (sJ * eta_ext * jpz + sM * mcz);
     }
 }
 

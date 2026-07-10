@@ -1,4 +1,5 @@
 #include "gmres.h"
+#include "gpu_select.h"
 #include <algorithm>
 #include <cmath>
 #include <complex>
@@ -21,17 +22,38 @@ static double norm2(const cdouble* a, int n) {
     return std::sqrt(s);
 }
 
+static bool finite_complex(cdouble z) {
+    return std::isfinite(z.real()) && std::isfinite(z.imag());
+}
+
+static bool solve_gmres_y(int restart, int m,
+                          const std::vector<cdouble>& H,
+                          const std::vector<cdouble>& s,
+                          std::vector<cdouble>& y)
+{
+    for (int i = m - 1; i >= 0; i--) {
+        y[i] = s[i];
+        for (int k = i + 1; k < m; k++)
+            y[i] -= H[i * restart + k] * y[k];
+        cdouble diag = H[i * restart + i];
+        if (!finite_complex(diag) || std::abs(diag) <= 1e-300)
+            return false;
+        y[i] /= diag;
+        if (!finite_complex(y[i]))
+            return false;
+    }
+    return true;
+}
+
 int gmres_solve(BemFmmOperator& op, const cdouble* b, cdouble* x,
                 int restart, double tol, int maxiter, bool verbose,
                 NearFieldPrecond* precond)
 {
     int n = op.system_size;
-    const char* env_reorth = std::getenv("BEM_GMRES_REORTH");
-    bool reorth = !(env_reorth && std::atoi(env_reorth) == 0);
+    bool reorth = bem_env_flag_enabled("BEM_GMRES_REORTH", true);
     bool store_z = false;
     if (precond) {
-        const char* env_store_z = std::getenv("BEM_GMRES_STORE_Z");
-        store_z = (env_store_z && std::atoi(env_store_z) != 0);
+        store_z = bem_env_flag_enabled("BEM_GMRES_STORE_Z");
     }
 
     std::vector<cdouble> r(n), w(n), z(n), xh(n, cdouble(0));
@@ -53,6 +75,7 @@ int gmres_solve(BemFmmOperator& op, const cdouble* b, cdouble* x,
 
     int total_iters = 0;
     bool converged = false;
+    bool numerical_breakdown = false;
 
     for (int cycle = 0; cycle < maxiter && !converged; cycle++) {
         double inv_rnorm = 1.0 / rnorm;
@@ -129,8 +152,10 @@ int gmres_solve(BemFmmOperator& op, const cdouble* b, cdouble* x,
             s[j + 1] = -sn[j] * s0;
 
             double rel_res = std::abs(s[j + 1]) / bnorm;
-            if (verbose && (total_iters <= 3 || total_iters % 10 == 0))
+            if (verbose && (total_iters <= 3 || total_iters % 10 == 0)) {
                 printf("    GMRES iter %d: rel=%.2e\n", total_iters, rel_res);
+                fflush(stdout);
+            }
 
             if (rel_res < tol) {
                 j++;
@@ -140,11 +165,13 @@ int gmres_solve(BemFmmOperator& op, const cdouble* b, cdouble* x,
         }
 
         int m = j;
-        for (int i = m - 1; i >= 0; i--) {
-            y[i] = s[i];
-            for (int k = i + 1; k < m; k++)
-                y[i] -= H[i * restart + k] * y[k];
-            y[i] /= H[i * restart + i];
+        if (!solve_gmres_y(restart, m, H, s, y)) {
+            numerical_breakdown = true;
+            if (verbose) {
+                printf("  [GMRES] numerical breakdown while solving Hessenberg least-squares update\n");
+                fflush(stdout);
+            }
+            break;
         }
 
         if (precond) {
@@ -171,19 +198,15 @@ int gmres_solve(BemFmmOperator& op, const cdouble* b, cdouble* x,
             }
         }
 
-        if (converged)
-            break;
-
         op.matvec(xh.data(), r.data());
         for (int i = 0; i < n; i++)
             r[i] = b[i] - r[i];
         rnorm = norm2(r.data(), n);
 
         if (verbose)
-            printf("  [GMRES] restart %d: ||r||/||b|| = %.2e\n", cycle + 1, rnorm / bnorm);
+            printf("  [GMRES] restart %d: true ||r||/||b|| = %.2e\n", cycle + 1, rnorm / bnorm);
 
-        if (rnorm / bnorm < tol)
-            converged = true;
+        converged = (rnorm / bnorm < tol);
     }
 
     memcpy(x, xh.data(), n * sizeof(cdouble));
@@ -191,6 +214,9 @@ int gmres_solve(BemFmmOperator& op, const cdouble* b, cdouble* x,
     if (verbose) {
         if (converged)
             printf("  [GMRES] Converged in %d iterations\n", total_iters);
+        else if (numerical_breakdown)
+            printf("  [GMRES] NOT converged: numerical breakdown after %d iterations, res=%.2e\n",
+                   total_iters, rnorm / bnorm);
         else
             printf("  [GMRES] NOT converged after %d iterations, res=%.2e\n",
                    total_iters, rnorm / bnorm);

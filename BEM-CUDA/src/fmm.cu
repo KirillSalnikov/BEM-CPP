@@ -1,4 +1,5 @@
 #include "fmm.h"
+#include "gpu_select.h"
 #include <cuda_runtime.h>
 #include <cstdio>
 #include <cstring>
@@ -453,10 +454,10 @@ __global__ void l2l_kernel(
     const int*    __restrict__ child_idx,
     const double* __restrict__ shift_re,
     const double* __restrict__ shift_im,
-    const double* __restrict__ local_re_in,
-    const double* __restrict__ local_im_in,
-    double* __restrict__ local_re,
-    double* __restrict__ local_im,
+    const double* local_re_in,
+    const double* local_im_in,
+    double* local_re,
+    double* local_im,
     int L, int n_pairs, int offset)
 {
     int pair = blockIdx.x + offset;
@@ -483,14 +484,14 @@ __global__ void l2l_kernel_batch2(
     const int*    __restrict__ child_idx,
     const double* __restrict__ shift_re,
     const double* __restrict__ shift_im,
-    const double* __restrict__ local1_re_in,
-    const double* __restrict__ local1_im_in,
-    double* __restrict__ local1_re,
-    double* __restrict__ local1_im,
-    const double* __restrict__ local2_re_in,
-    const double* __restrict__ local2_im_in,
-    double* __restrict__ local2_re,
-    double* __restrict__ local2_im,
+    const double* local1_re_in,
+    const double* local1_im_in,
+    double* local1_re,
+    double* local1_im,
+    const double* local2_re_in,
+    const double* local2_im_in,
+    double* local2_re,
+    double* local2_im,
     int L, int n_pairs, int offset)
 {
     int pair = blockIdx.x + offset;
@@ -516,14 +517,14 @@ __global__ void l2l_kernel_batch2(
 __global__ void l2l_kernel_batch4(
     const int* __restrict__ parent_idx, const int* __restrict__ child_idx,
     const double* __restrict__ shift_re, const double* __restrict__ shift_im,
-    const double* __restrict__ l1_re_in, const double* __restrict__ l1_im_in,
-    double* __restrict__ l1_re, double* __restrict__ l1_im,
-    const double* __restrict__ l2_re_in, const double* __restrict__ l2_im_in,
-    double* __restrict__ l2_re, double* __restrict__ l2_im,
-    const double* __restrict__ l3_re_in, const double* __restrict__ l3_im_in,
-    double* __restrict__ l3_re, double* __restrict__ l3_im,
-    const double* __restrict__ l4_re_in, const double* __restrict__ l4_im_in,
-    double* __restrict__ l4_re, double* __restrict__ l4_im,
+    const double* l1_re_in, const double* l1_im_in,
+    double* l1_re, double* l1_im,
+    const double* l2_re_in, const double* l2_im_in,
+    double* l2_re, double* l2_im,
+    const double* l3_re_in, const double* l3_im_in,
+    double* l3_re, double* l3_im,
+    const double* l4_re_in, const double* l4_im_in,
+    double* l4_re, double* l4_im,
     int L, int n_pairs, int offset)
 {
     int pair = blockIdx.x + offset;
@@ -1080,50 +1081,12 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
     tgt_id_offsets_h[n_leaves] = (int)tgt_ids_flat.size();
     src_id_offsets_h[n_leaves] = (int)src_ids_flat.size();
 
-    // Build P2P CSR with ORIGINAL indices (two-pass to ensure correct ordering)
-    // Pass 1: collect source lists per target
-    std::vector<std::vector<int>> tgt_src_lists(Nt);
-
-    for (int li_idx = 0; li_idx < n_leaves; li_idx++) {
-        int node_idx = leaf_info[li_idx].node_idx;
-        const OctreeNode& leaf = tree.nodes[node_idx];
-
-        // Collect all source original IDs from self and neighbors
-        std::vector<int> all_src_orig;
-        // Self sources
-        for (int i = leaf.pt_start; i < leaf.pt_start + leaf.pt_count; i++) {
-            int orig = tree.sorted_idx[i];
-            if (orig >= Nt)
-                all_src_orig.push_back(orig - Nt);
-        }
-        // Neighbor sources
-        for (int ni = leaf.near_start; ni < leaf.near_start + leaf.near_count; ni++) {
-            int nb_node = tree.near_list[ni];
-            const OctreeNode& nb = tree.nodes[nb_node];
-            for (int i = nb.pt_start; i < nb.pt_start + nb.pt_count; i++) {
-                int orig = tree.sorted_idx[i];
-                if (orig >= Nt)
-                    all_src_orig.push_back(orig - Nt);
-            }
-        }
-
-        // Assign to each target in this leaf
-        for (int i = leaf.pt_start; i < leaf.pt_start + leaf.pt_count; i++) {
-            int orig = tree.sorted_idx[i];
-            if (orig < Nt)
-                tgt_src_lists[orig] = all_src_orig;
-        }
-    }
-
-    // Pass 2: build CSR arrays in target ID order
-    p2p_offsets.resize(Nt + 1, 0);
+    // Near-field P2P is evaluated from compressed leaf-neighbor lists.
+    // Do not materialize per-target source CSR: for ref6 this scales as
+    // O(N_targets * sources_per_neighbor_leaf) and can exceed host memory.
+    p2p_offsets.clear();
     p2p_indices.clear();
-    for (int t = 0; t < Nt; t++) {
-        p2p_offsets[t + 1] = p2p_offsets[t] + (int)tgt_src_lists[t].size();
-        for (int si : tgt_src_lists[t])
-            p2p_indices.push_back(si);
-    }
-    p2p_nnz = (int)p2p_indices.size();
+    p2p_nnz = 0;
 
     // Precompute M2L transfer functions
     printf("  [FMM] Precomputing M2L transfers...\n");
@@ -1158,6 +1121,16 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
                     cdouble kd = k * d_norm;
                     double d_hat[3] = {d[0]/d_norm, d[1]/d_norm, d[2]/d_norm};
 
+                    // The radial factors depend only on |d| and l. Computing
+                    // spherical Hankel functions inside the angular loop made
+                    // M2L setup O(n_unique * L * p) special-function calls.
+                    std::vector<cdouble> radial_coeff(p + 1);
+                    cdouble i_pow(1.0, 0.0);
+                    for (int l = 0; l <= p; l++) {
+                        if (l > 0)
+                            i_pow *= cdouble(0.0, 1.0);
+                        radial_coeff[l] = (2.0 * l + 1.0) * i_pow * spherical_hankel1(l, kd);
+                    }
                     std::vector<cdouble> T(L);
                     for (int ll = 0; ll < L; ll++) {
                         double cos_angle = squad.dirs[ll*3]*d_hat[0] +
@@ -1165,14 +1138,12 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
                                            squad.dirs[ll*3+2]*d_hat[2];
                         cdouble sum(0, 0);
                         double P_prev = 1.0, P_curr = cos_angle;
-                        sum += 1.0 * spherical_hankel1(0, kd) * P_prev;
+                        sum += radial_coeff[0] * P_prev;
                         if (p >= 1)
-                            sum += 3.0 * cdouble(0, 1) * spherical_hankel1(1, kd) * P_curr;
-                        cdouble i_pow(0, 1);
+                            sum += radial_coeff[1] * P_curr;
                         for (int l = 2; l <= p; l++) {
                             double P_next = ((2*l - 1) * cos_angle * P_curr - (l - 1) * P_prev) / l;
-                            i_pow *= cdouble(0, 1);
-                            sum += (2.0*l + 1.0) * i_pow * spherical_hankel1(l, kd) * P_next;
+                            sum += radial_coeff[l] * P_next;
                             P_prev = P_curr;
                             P_curr = P_next;
                         }
@@ -1243,13 +1214,8 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
     CUDA_CHECK(cudaMemcpy(d_tgt_pts, targets, Nt * 3 * sizeof(double), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_src_pts, sources, Ns * 3 * sizeof(double), cudaMemcpyHostToDevice));
 
-    // P2P CSR
-    CUDA_CHECK(cudaMalloc(&d_p2p_offsets, (Nt + 1) * sizeof(int)));
-    CUDA_CHECK(cudaMemcpy(d_p2p_offsets, p2p_offsets.data(), (Nt + 1) * sizeof(int), cudaMemcpyHostToDevice));
-    if (p2p_nnz > 0) {
-        CUDA_CHECK(cudaMalloc(&d_p2p_indices, p2p_nnz * sizeof(int)));
-        CUDA_CHECK(cudaMemcpy(d_p2p_indices, p2p_indices.data(), p2p_nnz * sizeof(int), cudaMemcpyHostToDevice));
-    }
+    d_p2p_offsets = nullptr;
+    d_p2p_indices = nullptr;
 
     // FMM arrays
     CUDA_CHECK(cudaMalloc(&d_multi_re, n_nodes * L * sizeof(double)));
@@ -1368,28 +1334,79 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
     CUDA_CHECK(cudaMalloc(&d_multi2_im, n_nodes * L * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_local2_re, n_nodes * L * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_local2_im, n_nodes * L * sizeof(double)));
-    bool alloc_batch4 = (std::getenv("BEM_FMM_ALLOC_BATCH4") != nullptr);
+    bool request_batch4 = bem_env_flag_enabled("BEM_FMM_ALLOC_BATCH4") ||
+                          bem_env_flag_enabled("BEM_FMM_BATCH4");
+    bool alloc_batch4 = request_batch4;
+    batch4_allocated = false;
+    auto free_batch4_workspace = [&]() {
+        cudaFree(d_charges3_re); d_charges3_re = nullptr;
+        cudaFree(d_charges3_im); d_charges3_im = nullptr;
+        cudaFree(d_charges4_re); d_charges4_re = nullptr;
+        cudaFree(d_charges4_im); d_charges4_im = nullptr;
+        cudaFree(d_result3_re); d_result3_re = nullptr;
+        cudaFree(d_result3_im); d_result3_im = nullptr;
+        cudaFree(d_result4_re); d_result4_re = nullptr;
+        cudaFree(d_result4_im); d_result4_im = nullptr;
+        cudaFree(d_grad3_re); d_grad3_re = nullptr;
+        cudaFree(d_grad3_im); d_grad3_im = nullptr;
+        cudaFree(d_grad4_re); d_grad4_re = nullptr;
+        cudaFree(d_grad4_im); d_grad4_im = nullptr;
+        cudaFree(d_multi3_re); d_multi3_re = nullptr;
+        cudaFree(d_multi3_im); d_multi3_im = nullptr;
+        cudaFree(d_multi4_re); d_multi4_re = nullptr;
+        cudaFree(d_multi4_im); d_multi4_im = nullptr;
+        cudaFree(d_local3_re); d_local3_re = nullptr;
+        cudaFree(d_local3_im); d_local3_im = nullptr;
+        cudaFree(d_local4_re); d_local4_re = nullptr;
+        cudaFree(d_local4_im); d_local4_im = nullptr;
+        cudaFree(d_gy3_re_cached); d_gy3_re_cached = nullptr;
+        cudaFree(d_gy3_im_cached); d_gy3_im_cached = nullptr;
+        cudaFree(d_gz3_re_cached); d_gz3_re_cached = nullptr;
+        cudaFree(d_gz3_im_cached); d_gz3_im_cached = nullptr;
+        cudaFree(d_gx3_re_tmp_cached); d_gx3_re_tmp_cached = nullptr;
+        cudaFree(d_gx3_im_tmp_cached); d_gx3_im_tmp_cached = nullptr;
+        cudaFree(d_gy4_re_cached); d_gy4_re_cached = nullptr;
+        cudaFree(d_gy4_im_cached); d_gy4_im_cached = nullptr;
+        cudaFree(d_gz4_re_cached); d_gz4_re_cached = nullptr;
+        cudaFree(d_gz4_im_cached); d_gz4_im_cached = nullptr;
+        cudaFree(d_gx4_re_tmp_cached); d_gx4_re_tmp_cached = nullptr;
+        cudaFree(d_gx4_im_tmp_cached); d_gx4_im_tmp_cached = nullptr;
+        cudaGetLastError();
+    };
+    auto try_malloc_double = [&](double** ptr, size_t count, const char* name) {
+        cudaError_t err = cudaMalloc(ptr, count * sizeof(double));
+        if (err != cudaSuccess) {
+            fprintf(stderr, "  [FMM] batch4 workspace unavailable at %s (%s); falling back to batch2\n",
+                    name, cudaGetErrorString(err));
+            *ptr = nullptr;
+            cudaGetLastError();
+            return false;
+        }
+        return true;
+    };
     if (alloc_batch4) {
-        CUDA_CHECK(cudaMalloc(&d_charges3_re, Ns * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_charges3_im, Ns * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_charges4_re, Ns * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_charges4_im, Ns * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_result3_re, Nt * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_result3_im, Nt * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_result4_re, Nt * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_result4_im, Nt * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_grad3_re, Nt * 3 * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_grad3_im, Nt * 3 * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_grad4_re, Nt * 3 * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_grad4_im, Nt * 3 * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_multi3_re, n_nodes * L * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_multi3_im, n_nodes * L * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_multi4_re, n_nodes * L * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_multi4_im, n_nodes * L * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_local3_re, n_nodes * L * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_local3_im, n_nodes * L * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_local4_re, n_nodes * L * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_local4_im, n_nodes * L * sizeof(double)));
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_charges3_re, Ns, "charges3_re");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_charges3_im, Ns, "charges3_im");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_charges4_re, Ns, "charges4_re");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_charges4_im, Ns, "charges4_im");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_result3_re, Nt, "result3_re");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_result3_im, Nt, "result3_im");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_result4_re, Nt, "result4_re");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_result4_im, Nt, "result4_im");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_grad3_re, (size_t)Nt * 3, "grad3_re");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_grad3_im, (size_t)Nt * 3, "grad3_im");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_grad4_re, (size_t)Nt * 3, "grad4_re");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_grad4_im, (size_t)Nt * 3, "grad4_im");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_multi3_re, (size_t)n_nodes * L, "multi3_re");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_multi3_im, (size_t)n_nodes * L, "multi3_im");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_multi4_re, (size_t)n_nodes * L, "multi4_re");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_multi4_im, (size_t)n_nodes * L, "multi4_im");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_local3_re, (size_t)n_nodes * L, "local3_re");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_local3_im, (size_t)n_nodes * L, "local3_im");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_local4_re, (size_t)n_nodes * L, "local4_re");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_local4_im, (size_t)n_nodes * L, "local4_im");
+        if (!alloc_batch4)
+            free_batch4_workspace();
     }
 
     // Store leaf ID arrays on host
@@ -1417,6 +1434,23 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
     CUDA_CHECK(cudaMalloc(&d_src_ids_cached, std::max((int)h_src_ids_flat.size(), 1) * sizeof(int)));
     CUDA_CHECK(cudaMalloc(&d_tgt_id_offsets_cached, (n_leaves + 1) * sizeof(int)));
     CUDA_CHECK(cudaMalloc(&d_tgt_ids_cached, std::max((int)h_tgt_ids_flat.size(), 1) * sizeof(int)));
+    std::vector<int> node_to_leaf(n_nodes, -1);
+    for (int i = 0; i < n_leaves; i++) node_to_leaf[h_leaf_indices[i]] = i;
+    std::vector<int> leaf_near_offsets(n_leaves + 1, 0);
+    std::vector<int> leaf_near_ids;
+    for (int li_idx = 0; li_idx < n_leaves; li_idx++) {
+        int node_idx = h_leaf_indices[li_idx];
+        const OctreeNode& leaf = tree.nodes[node_idx];
+        leaf_near_offsets[li_idx] = (int)leaf_near_ids.size();
+        for (int ni = leaf.near_start; ni < leaf.near_start + leaf.near_count; ni++) {
+            int nb_leaf = node_to_leaf[tree.near_list[ni]];
+            if (nb_leaf >= 0)
+                leaf_near_ids.push_back(nb_leaf);
+        }
+    }
+    leaf_near_offsets[n_leaves] = (int)leaf_near_ids.size();
+    CUDA_CHECK(cudaMalloc(&d_leaf_near_offsets_cached, (n_leaves + 1) * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_leaf_near_ids_cached, std::max((int)leaf_near_ids.size(), 1) * sizeof(int)));
 
     CUDA_CHECK(cudaMemcpy(d_node_centers_cached, h_node_centers.data(), n_nodes * 3 * sizeof(double), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_dirs_cached, squad.dirs.data(), L * 3 * sizeof(double), cudaMemcpyHostToDevice));
@@ -1428,6 +1462,9 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
     CUDA_CHECK(cudaMemcpy(d_tgt_id_offsets_cached, h_tgt_id_offsets.data(), (n_leaves + 1) * sizeof(int), cudaMemcpyHostToDevice));
     if (!h_tgt_ids_flat.empty())
         CUDA_CHECK(cudaMemcpy(d_tgt_ids_cached, h_tgt_ids_flat.data(), h_tgt_ids_flat.size() * sizeof(int), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_leaf_near_offsets_cached, leaf_near_offsets.data(), (n_leaves + 1) * sizeof(int), cudaMemcpyHostToDevice));
+    if (!leaf_near_ids.empty())
+        CUDA_CHECK(cudaMemcpy(d_leaf_near_ids_cached, leaf_near_ids.data(), leaf_near_ids.size() * sizeof(int), cudaMemcpyHostToDevice));
 
     // Cached gradient workspace arrays
     CUDA_CHECK(cudaMalloc(&d_gy_re_cached, Nt * sizeof(double)));
@@ -1443,19 +1480,22 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
     CUDA_CHECK(cudaMalloc(&d_gx2_re_tmp_cached, Nt * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_gx2_im_tmp_cached, Nt * sizeof(double)));
     if (alloc_batch4) {
-        CUDA_CHECK(cudaMalloc(&d_gy3_re_cached, Nt * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_gy3_im_cached, Nt * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_gz3_re_cached, Nt * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_gz3_im_cached, Nt * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_gx3_re_tmp_cached, Nt * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_gx3_im_tmp_cached, Nt * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_gy4_re_cached, Nt * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_gy4_im_cached, Nt * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_gz4_re_cached, Nt * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_gz4_im_cached, Nt * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_gx4_re_tmp_cached, Nt * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_gx4_im_tmp_cached, Nt * sizeof(double)));
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_gy3_re_cached, Nt, "gy3_re");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_gy3_im_cached, Nt, "gy3_im");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_gz3_re_cached, Nt, "gz3_re");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_gz3_im_cached, Nt, "gz3_im");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_gx3_re_tmp_cached, Nt, "gx3_re");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_gx3_im_tmp_cached, Nt, "gx3_im");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_gy4_re_cached, Nt, "gy4_re");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_gy4_im_cached, Nt, "gy4_im");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_gz4_re_cached, Nt, "gz4_re");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_gz4_im_cached, Nt, "gz4_im");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_gx4_re_tmp_cached, Nt, "gx4_re");
+        alloc_batch4 = alloc_batch4 && try_malloc_double(&d_gx4_im_tmp_cached, Nt, "gx4_im");
+        if (!alloc_batch4)
+            free_batch4_workspace();
     }
+    batch4_allocated = alloc_batch4;
 
     int complex_tmp_n = std::max(Ns, 3 * Nt);
     CUDA_CHECK(cudaMalloc(&d_complex_tmp1, complex_tmp_n * sizeof(double2)));
@@ -1562,11 +1602,13 @@ void HelmholtzFMM::run_tree_uploaded(bool need_grad)
         }
 
         // === P2P (potential) ===
-        launch_p2p_potential(d_tgt_pts, d_src_pts,
+        launch_p2p_potential_leaf(d_tgt_pts, d_src_pts,
             d_charges_re, d_charges_im,
-            d_p2p_offsets, d_p2p_indices,
-            k.real(), k.imag(),
-            d_result_re, d_result_im, Nt);
+            d_tgt_id_offsets_cached, d_tgt_ids_cached,
+            d_src_id_offsets_cached, d_src_ids_cached,
+            d_leaf_near_offsets_cached, d_leaf_near_ids_cached,
+            n_leaves, k.real(), k.imag(),
+            d_result_re, d_result_im);
         CUDA_CHECK(cudaGetLastError());
     } else {
         // === L2P (gradient) ===
@@ -1596,11 +1638,13 @@ void HelmholtzFMM::run_tree_uploaded(bool need_grad)
         }
 
         // P2P gradient
-        launch_p2p_gradient(d_tgt_pts, d_src_pts,
+        launch_p2p_gradient_leaf(d_tgt_pts, d_src_pts,
             d_charges_re, d_charges_im,
-            d_p2p_offsets, d_p2p_indices,
-            k.real(), k.imag(),
-            d_gx_re, d_gx_im, d_gy_re, d_gy_im, d_gz_re, d_gz_im, Nt);
+            d_tgt_id_offsets_cached, d_tgt_ids_cached,
+            d_src_id_offsets_cached, d_src_ids_cached,
+            d_leaf_near_offsets_cached, d_leaf_near_ids_cached,
+            n_leaves, k.real(), k.imag(),
+            d_gx_re, d_gx_im, d_gy_re, d_gy_im, d_gz_re, d_gz_im);
         CUDA_CHECK(cudaGetLastError());
 
         // Repack gradient on GPU: 6 separate arrays -> interleaved [x0,y0,z0,x1,...]
@@ -1658,21 +1702,35 @@ void HelmholtzFMM::evaluate_pot_grad(const cdouble* charges,
                                       cdouble* pot_result,
                                       cdouble* grad_result)
 {
-    int n_leaves = (int)leaf_info.size();
-
     int block = 256;
     int grid_src = (Ns + block - 1) / block;
     CUDA_CHECK(cudaMemcpy(d_complex_tmp1, charges, Ns * sizeof(double2), cudaMemcpyHostToDevice));
     split_complex_kernel<<<grid_src, block>>>(d_complex_tmp1, d_charges_re, d_charges_im, Ns);
     CUDA_CHECK(cudaGetLastError());
 
-    // Clear multipole/local arrays
+    evaluate_pot_grad_uploaded();
+
+    int grid_tgt = (Nt + block - 1) / block;
+    pack_complex_kernel<<<grid_tgt, block>>>(d_result_re, d_result_im, d_complex_tmp1, Nt);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaMemcpy(pot_result, d_complex_tmp1, Nt * sizeof(double2), cudaMemcpyDeviceToHost));
+
+    int ngrad = Nt * 3;
+    int grid_grad = (ngrad + block - 1) / block;
+    pack_complex_kernel<<<grid_grad, block>>>(d_grad_re, d_grad_im, d_complex_tmp1, ngrad);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaMemcpy(grad_result, d_complex_tmp1, ngrad * sizeof(double2), cudaMemcpyDeviceToHost));
+}
+
+void HelmholtzFMM::evaluate_pot_grad_uploaded()
+{
+    int n_leaves = (int)leaf_info.size();
+
     CUDA_CHECK(cudaMemset(d_multi_re, 0, n_nodes * L * sizeof(double)));
     CUDA_CHECK(cudaMemset(d_multi_im, 0, n_nodes * L * sizeof(double)));
     CUDA_CHECK(cudaMemset(d_local_re, 0, n_nodes * L * sizeof(double)));
     CUDA_CHECK(cudaMemset(d_local_im, 0, n_nodes * L * sizeof(double)));
 
-    // Cached GPU array aliases
     double *d_node_centers = d_node_centers_cached;
     double *d_dirs = d_dirs_cached;
     double *d_weights = d_weights_cached;
@@ -1684,7 +1742,6 @@ void HelmholtzFMM::evaluate_pot_grad(const cdouble* charges,
 
     int block_L = std::min(L, 256);
 
-    // === P2M ===
     if (n_leaves > 0) {
         p2m_kernel<<<n_leaves, block_L>>>(
             d_src_pts, d_charges_re, d_charges_im,
@@ -1695,7 +1752,6 @@ void HelmholtzFMM::evaluate_pot_grad(const cdouble* charges,
         CUDA_CHECK(cudaGetLastError());
     }
 
-    // === M2M (bottom-up) ===
     for (int level = tree.max_level - 1; level >= 1; level--) {
         if (level < (int)m2m_level_info.size() && m2m_level_info[level].count > 0) {
             int off = m2m_level_info[level].offset;
@@ -1706,7 +1762,6 @@ void HelmholtzFMM::evaluate_pot_grad(const cdouble* charges,
         }
     }
 
-    // === M2L ===
     for (int level = 1; level <= tree.max_level; level++) {
         if (level < (int)m2l_level_info.size() && m2l_level_info[level].count > 0) {
             int off = m2l_level_info[level].offset;
@@ -1718,7 +1773,6 @@ void HelmholtzFMM::evaluate_pot_grad(const cdouble* charges,
         }
     }
 
-    // === L2L (top-down) ===
     for (int level = 2; level <= tree.max_level; level++) {
         if (level < (int)l2l_level_info.size() && l2l_level_info[level].count > 0) {
             int off = l2l_level_info[level].offset;
@@ -1733,9 +1787,15 @@ void HelmholtzFMM::evaluate_pot_grad(const cdouble* charges,
     cdouble ik_val = cdouble(0, 1) * k;
     cdouble prefactor = ik_val / (16.0 * M_PI * M_PI);
 
-    // === L2P potential ===
     CUDA_CHECK(cudaMemset(d_result_re, 0, Nt * sizeof(double)));
     CUDA_CHECK(cudaMemset(d_result_im, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gx_re_tmp_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gx_im_tmp_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gy_re_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gy_im_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gz_re_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gz_im_cached, 0, Nt * sizeof(double)));
+
     if (n_leaves > 0) {
         l2p_kernel<<<n_leaves, 256>>>(
             d_tgt_pts, d_dirs, d_weights,
@@ -1745,67 +1805,41 @@ void HelmholtzFMM::evaluate_pot_grad(const cdouble* charges,
             d_leaf_idx, d_tgt_id_offsets, d_tgt_ids,
             d_node_centers, L, n_leaves);
         CUDA_CHECK(cudaGetLastError());
-    }
 
-    // === L2P gradient ===
-    // grad uses 6 separate arrays; gx aliases d_grad_re/im
-    double *d_gx_re = d_grad_re, *d_gx_im = d_grad_im;
-    double *d_gy_re = d_gy_re_cached, *d_gy_im = d_gy_im_cached;
-    double *d_gz_re = d_gz_re_cached, *d_gz_im = d_gz_im_cached;
-    CUDA_CHECK(cudaMemset(d_gx_re, 0, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMemset(d_gx_im, 0, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMemset(d_gy_re, 0, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMemset(d_gy_im, 0, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMemset(d_gz_re, 0, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMemset(d_gz_im, 0, Nt * sizeof(double)));
-
-    if (n_leaves > 0) {
         l2p_gradient_kernel<<<n_leaves, 256>>>(
             d_tgt_pts, d_dirs, d_weights,
             d_local_re, d_local_im,
             k.real(), k.imag(), prefactor.real(), prefactor.imag(),
             ik_val.real(), ik_val.imag(),
-            d_gx_re, d_gx_im, d_gy_re, d_gy_im, d_gz_re, d_gz_im,
+            d_gx_re_tmp_cached, d_gx_im_tmp_cached,
+            d_gy_re_cached, d_gy_im_cached,
+            d_gz_re_cached, d_gz_im_cached,
             d_leaf_idx, d_tgt_id_offsets, d_tgt_ids,
             d_node_centers, L, n_leaves);
         CUDA_CHECK(cudaGetLastError());
     }
 
-    // === P2P combined potential + gradient ===
-    launch_p2p_pot_grad(Nt,
+    launch_p2p_pot_grad_leaf(
         d_tgt_pts, d_src_pts,
         d_charges_re, d_charges_im,
-        d_p2p_offsets, d_p2p_indices,
-        k.real(), k.imag(),
+        d_tgt_id_offsets_cached, d_tgt_ids_cached,
+        d_src_id_offsets_cached, d_src_ids_cached,
+        d_leaf_near_offsets_cached, d_leaf_near_ids_cached,
+        n_leaves, k.real(), k.imag(),
         d_result_re, d_result_im,
-        d_gx_re, d_gx_im, d_gy_re, d_gy_im, d_gz_re, d_gz_im);
+        d_gx_re_tmp_cached, d_gx_im_tmp_cached,
+        d_gy_re_cached, d_gy_im_cached,
+        d_gz_re_cached, d_gz_im_cached);
     CUDA_CHECK(cudaGetLastError());
 
-    int grid_tgt = (Nt + block - 1) / block;
-    pack_complex_kernel<<<grid_tgt, block>>>(d_result_re, d_result_im, d_complex_tmp1, Nt);
+    int repack_block = 256;
+    int repack_grid = (Nt + repack_block - 1) / repack_block;
+    repack_gradient_kernel<<<repack_grid, repack_block>>>(
+        d_gx_re_tmp_cached, d_gx_im_tmp_cached,
+        d_gy_re_cached, d_gy_im_cached,
+        d_gz_re_cached, d_gz_im_cached,
+        d_grad_re, d_grad_im, Nt);
     CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaMemcpy(pot_result, d_complex_tmp1, Nt * sizeof(double2), cudaMemcpyDeviceToHost));
-
-    // === Repack gradient: 6 separate arrays -> interleaved [x0,y0,z0,x1,...] ===
-    {
-        double *d_gx_re_tmp = d_gx_re_tmp_cached;
-        double *d_gx_im_tmp = d_gx_im_tmp_cached;
-        CUDA_CHECK(cudaMemcpy(d_gx_re_tmp, d_gx_re, Nt * sizeof(double), cudaMemcpyDeviceToDevice));
-        CUDA_CHECK(cudaMemcpy(d_gx_im_tmp, d_gx_im, Nt * sizeof(double), cudaMemcpyDeviceToDevice));
-
-        int repack_block = 256;
-        int repack_grid = (Nt + repack_block - 1) / repack_block;
-        repack_gradient_kernel<<<repack_grid, repack_block>>>(
-            d_gx_re_tmp, d_gx_im_tmp, d_gy_re, d_gy_im, d_gz_re, d_gz_im,
-            d_grad_re, d_grad_im, Nt);
-        CUDA_CHECK(cudaGetLastError());
-
-        int ngrad = Nt * 3;
-        int grid_grad = (ngrad + block - 1) / block;
-        pack_complex_kernel<<<grid_grad, block>>>(d_grad_re, d_grad_im, d_complex_tmp1, ngrad);
-        CUDA_CHECK(cudaGetLastError());
-        CUDA_CHECK(cudaMemcpy(grad_result, d_complex_tmp1, ngrad * sizeof(double2), cudaMemcpyDeviceToHost));
-    }
 }
 
 void HelmholtzFMM::evaluate_batch2(
@@ -1907,10 +1941,14 @@ void HelmholtzFMM::evaluate_batch2_uploaded()
         CUDA_CHECK(cudaGetLastError());
     }
 
-    launch_p2p_potential_batch2(d_tgt_pts, d_src_pts,
+    launch_p2p_potential_batch2_leaf(
+        d_tgt_pts, d_src_pts,
         d_charges_re, d_charges_im, d_charges2_re, d_charges2_im,
-        d_p2p_offsets, d_p2p_indices, k.real(), k.imag(),
-        d_result_re, d_result_im, d_result2_re, d_result2_im, Nt);
+        d_tgt_id_offsets_cached, d_tgt_ids_cached,
+        d_src_id_offsets_cached, d_src_ids_cached,
+        d_leaf_near_offsets_cached, d_leaf_near_ids_cached,
+        n_leaves, k.real(), k.imag(),
+        d_result_re, d_result_im, d_result2_re, d_result2_im);
     CUDA_CHECK(cudaGetLastError());
 }
 
@@ -2018,12 +2056,17 @@ void HelmholtzFMM::evaluate_batch4_far_uploaded()
 void HelmholtzFMM::evaluate_batch4_uploaded()
 {
     evaluate_batch4_far_uploaded();
-    launch_p2p_potential_batch4(d_tgt_pts, d_src_pts,
+    int n_leaves = (int)leaf_info.size();
+    launch_p2p_potential_batch4_leaf(
+        d_tgt_pts, d_src_pts,
         d_charges_re, d_charges_im, d_charges2_re, d_charges2_im,
         d_charges3_re, d_charges3_im, d_charges4_re, d_charges4_im,
-        d_p2p_offsets, d_p2p_indices, k.real(), k.imag(),
+        d_tgt_id_offsets_cached, d_tgt_ids_cached,
+        d_src_id_offsets_cached, d_src_ids_cached,
+        d_leaf_near_offsets_cached, d_leaf_near_ids_cached,
+        n_leaves, k.real(), k.imag(),
         d_result_re, d_result_im, d_result2_re, d_result2_im,
-        d_result3_re, d_result3_im, d_result4_re, d_result4_im, Nt);
+        d_result3_re, d_result3_im, d_result4_re, d_result4_im);
     CUDA_CHECK(cudaGetLastError());
 }
 
@@ -2124,14 +2167,14 @@ void HelmholtzFMM::evaluate_pot_grad_batch2_uploaded()
     CUDA_CHECK(cudaMemset(d_result_im, 0, Nt * sizeof(double)));
     CUDA_CHECK(cudaMemset(d_result2_re, 0, Nt * sizeof(double)));
     CUDA_CHECK(cudaMemset(d_result2_im, 0, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMemset(d_grad_re, 0, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMemset(d_grad_im, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gx_re_tmp_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gx_im_tmp_cached, 0, Nt * sizeof(double)));
     CUDA_CHECK(cudaMemset(d_gy_re_cached, 0, Nt * sizeof(double)));
     CUDA_CHECK(cudaMemset(d_gy_im_cached, 0, Nt * sizeof(double)));
     CUDA_CHECK(cudaMemset(d_gz_re_cached, 0, Nt * sizeof(double)));
     CUDA_CHECK(cudaMemset(d_gz_im_cached, 0, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMemset(d_grad2_re, 0, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMemset(d_grad2_im, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gx2_re_tmp_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gx2_im_tmp_cached, 0, Nt * sizeof(double)));
     CUDA_CHECK(cudaMemset(d_gy2_re_cached, 0, Nt * sizeof(double)));
     CUDA_CHECK(cudaMemset(d_gy2_im_cached, 0, Nt * sizeof(double)));
     CUDA_CHECK(cudaMemset(d_gz2_re_cached, 0, Nt * sizeof(double)));
@@ -2152,28 +2195,25 @@ void HelmholtzFMM::evaluate_pot_grad_batch2_uploaded()
             d_local_re, d_local_im, d_local2_re, d_local2_im,
             k.real(), k.imag(), prefactor.real(), prefactor.imag(),
             ik_val.real(), ik_val.imag(),
-            d_grad_re, d_grad_im, d_gy_re_cached, d_gy_im_cached, d_gz_re_cached, d_gz_im_cached,
-            d_grad2_re, d_grad2_im, d_gy2_re_cached, d_gy2_im_cached, d_gz2_re_cached, d_gz2_im_cached,
+            d_gx_re_tmp_cached, d_gx_im_tmp_cached, d_gy_re_cached, d_gy_im_cached, d_gz_re_cached, d_gz_im_cached,
+            d_gx2_re_tmp_cached, d_gx2_im_tmp_cached, d_gy2_re_cached, d_gy2_im_cached, d_gz2_re_cached, d_gz2_im_cached,
             d_leaf_idx_cached, d_tgt_id_offsets_cached, d_tgt_ids_cached,
             d_node_centers_cached, L, n_leaves);
         CUDA_CHECK(cudaGetLastError());
     }
 
-    launch_p2p_pot_grad_batch2(Nt,
+    launch_p2p_pot_grad_batch2_leaf(
         d_tgt_pts, d_src_pts,
         d_charges_re, d_charges_im, d_charges2_re, d_charges2_im,
-        d_p2p_offsets, d_p2p_indices,
-        k.real(), k.imag(),
+        d_tgt_id_offsets_cached, d_tgt_ids_cached,
+        d_src_id_offsets_cached, d_src_ids_cached,
+        d_leaf_near_offsets_cached, d_leaf_near_ids_cached,
+        n_leaves, k.real(), k.imag(),
         d_result_re, d_result_im,
-        d_grad_re, d_grad_im, d_gy_re_cached, d_gy_im_cached, d_gz_re_cached, d_gz_im_cached,
+        d_gx_re_tmp_cached, d_gx_im_tmp_cached, d_gy_re_cached, d_gy_im_cached, d_gz_re_cached, d_gz_im_cached,
         d_result2_re, d_result2_im,
-        d_grad2_re, d_grad2_im, d_gy2_re_cached, d_gy2_im_cached, d_gz2_re_cached, d_gz2_im_cached);
+        d_gx2_re_tmp_cached, d_gx2_im_tmp_cached, d_gy2_re_cached, d_gy2_im_cached, d_gz2_re_cached, d_gz2_im_cached);
     CUDA_CHECK(cudaGetLastError());
-
-    CUDA_CHECK(cudaMemcpy(d_gx_re_tmp_cached, d_grad_re, Nt * sizeof(double), cudaMemcpyDeviceToDevice));
-    CUDA_CHECK(cudaMemcpy(d_gx_im_tmp_cached, d_grad_im, Nt * sizeof(double), cudaMemcpyDeviceToDevice));
-    CUDA_CHECK(cudaMemcpy(d_gx2_re_tmp_cached, d_grad2_re, Nt * sizeof(double), cudaMemcpyDeviceToDevice));
-    CUDA_CHECK(cudaMemcpy(d_gx2_im_tmp_cached, d_grad2_im, Nt * sizeof(double), cudaMemcpyDeviceToDevice));
 
     int repack_block = 256;
     int repack_grid = (Nt + repack_block - 1) / repack_block;
@@ -2197,26 +2237,26 @@ void HelmholtzFMM::evaluate_pot_grad_batch4_uploaded()
     cdouble ik_val = cdouble(0, 1) * k;
     cdouble prefactor = ik_val / (16.0 * M_PI * M_PI);
 
-    CUDA_CHECK(cudaMemset(d_grad_re, 0, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMemset(d_grad_im, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gx_re_tmp_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gx_im_tmp_cached, 0, Nt * sizeof(double)));
     CUDA_CHECK(cudaMemset(d_gy_re_cached, 0, Nt * sizeof(double)));
     CUDA_CHECK(cudaMemset(d_gy_im_cached, 0, Nt * sizeof(double)));
     CUDA_CHECK(cudaMemset(d_gz_re_cached, 0, Nt * sizeof(double)));
     CUDA_CHECK(cudaMemset(d_gz_im_cached, 0, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMemset(d_grad2_re, 0, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMemset(d_grad2_im, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gx2_re_tmp_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gx2_im_tmp_cached, 0, Nt * sizeof(double)));
     CUDA_CHECK(cudaMemset(d_gy2_re_cached, 0, Nt * sizeof(double)));
     CUDA_CHECK(cudaMemset(d_gy2_im_cached, 0, Nt * sizeof(double)));
     CUDA_CHECK(cudaMemset(d_gz2_re_cached, 0, Nt * sizeof(double)));
     CUDA_CHECK(cudaMemset(d_gz2_im_cached, 0, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMemset(d_grad3_re, 0, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMemset(d_grad3_im, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gx3_re_tmp_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gx3_im_tmp_cached, 0, Nt * sizeof(double)));
     CUDA_CHECK(cudaMemset(d_gy3_re_cached, 0, Nt * sizeof(double)));
     CUDA_CHECK(cudaMemset(d_gy3_im_cached, 0, Nt * sizeof(double)));
     CUDA_CHECK(cudaMemset(d_gz3_re_cached, 0, Nt * sizeof(double)));
     CUDA_CHECK(cudaMemset(d_gz3_im_cached, 0, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMemset(d_grad4_re, 0, Nt * sizeof(double)));
-    CUDA_CHECK(cudaMemset(d_grad4_im, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gx4_re_tmp_cached, 0, Nt * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_gx4_im_tmp_cached, 0, Nt * sizeof(double)));
     CUDA_CHECK(cudaMemset(d_gy4_re_cached, 0, Nt * sizeof(double)));
     CUDA_CHECK(cudaMemset(d_gy4_im_cached, 0, Nt * sizeof(double)));
     CUDA_CHECK(cudaMemset(d_gz4_re_cached, 0, Nt * sizeof(double)));
@@ -2229,39 +2269,32 @@ void HelmholtzFMM::evaluate_pot_grad_batch4_uploaded()
             d_local3_re, d_local3_im, d_local4_re, d_local4_im,
             k.real(), k.imag(), prefactor.real(), prefactor.imag(),
             ik_val.real(), ik_val.imag(),
-            d_grad_re, d_grad_im, d_gy_re_cached, d_gy_im_cached, d_gz_re_cached, d_gz_im_cached,
-            d_grad2_re, d_grad2_im, d_gy2_re_cached, d_gy2_im_cached, d_gz2_re_cached, d_gz2_im_cached,
-            d_grad3_re, d_grad3_im, d_gy3_re_cached, d_gy3_im_cached, d_gz3_re_cached, d_gz3_im_cached,
-            d_grad4_re, d_grad4_im, d_gy4_re_cached, d_gy4_im_cached, d_gz4_re_cached, d_gz4_im_cached,
+            d_gx_re_tmp_cached, d_gx_im_tmp_cached, d_gy_re_cached, d_gy_im_cached, d_gz_re_cached, d_gz_im_cached,
+            d_gx2_re_tmp_cached, d_gx2_im_tmp_cached, d_gy2_re_cached, d_gy2_im_cached, d_gz2_re_cached, d_gz2_im_cached,
+            d_gx3_re_tmp_cached, d_gx3_im_tmp_cached, d_gy3_re_cached, d_gy3_im_cached, d_gz3_re_cached, d_gz3_im_cached,
+            d_gx4_re_tmp_cached, d_gx4_im_tmp_cached, d_gy4_re_cached, d_gy4_im_cached, d_gz4_re_cached, d_gz4_im_cached,
             d_leaf_idx_cached, d_tgt_id_offsets_cached, d_tgt_ids_cached,
             d_node_centers_cached, L, n_leaves);
         CUDA_CHECK(cudaGetLastError());
     }
 
-    launch_p2p_pot_grad_batch4(Nt,
+    launch_p2p_pot_grad_batch4_leaf(
         d_tgt_pts, d_src_pts,
         d_charges_re, d_charges_im, d_charges2_re, d_charges2_im,
         d_charges3_re, d_charges3_im, d_charges4_re, d_charges4_im,
-        d_p2p_offsets, d_p2p_indices,
-        k.real(), k.imag(),
+        d_tgt_id_offsets_cached, d_tgt_ids_cached,
+        d_src_id_offsets_cached, d_src_ids_cached,
+        d_leaf_near_offsets_cached, d_leaf_near_ids_cached,
+        n_leaves, k.real(), k.imag(),
         d_result_re, d_result_im,
-        d_grad_re, d_grad_im, d_gy_re_cached, d_gy_im_cached, d_gz_re_cached, d_gz_im_cached,
+        d_gx_re_tmp_cached, d_gx_im_tmp_cached, d_gy_re_cached, d_gy_im_cached, d_gz_re_cached, d_gz_im_cached,
         d_result2_re, d_result2_im,
-        d_grad2_re, d_grad2_im, d_gy2_re_cached, d_gy2_im_cached, d_gz2_re_cached, d_gz2_im_cached,
+        d_gx2_re_tmp_cached, d_gx2_im_tmp_cached, d_gy2_re_cached, d_gy2_im_cached, d_gz2_re_cached, d_gz2_im_cached,
         d_result3_re, d_result3_im,
-        d_grad3_re, d_grad3_im, d_gy3_re_cached, d_gy3_im_cached, d_gz3_re_cached, d_gz3_im_cached,
+        d_gx3_re_tmp_cached, d_gx3_im_tmp_cached, d_gy3_re_cached, d_gy3_im_cached, d_gz3_re_cached, d_gz3_im_cached,
         d_result4_re, d_result4_im,
-        d_grad4_re, d_grad4_im, d_gy4_re_cached, d_gy4_im_cached, d_gz4_re_cached, d_gz4_im_cached);
+        d_gx4_re_tmp_cached, d_gx4_im_tmp_cached, d_gy4_re_cached, d_gy4_im_cached, d_gz4_re_cached, d_gz4_im_cached);
     CUDA_CHECK(cudaGetLastError());
-
-    CUDA_CHECK(cudaMemcpy(d_gx_re_tmp_cached, d_grad_re, Nt * sizeof(double), cudaMemcpyDeviceToDevice));
-    CUDA_CHECK(cudaMemcpy(d_gx_im_tmp_cached, d_grad_im, Nt * sizeof(double), cudaMemcpyDeviceToDevice));
-    CUDA_CHECK(cudaMemcpy(d_gx2_re_tmp_cached, d_grad2_re, Nt * sizeof(double), cudaMemcpyDeviceToDevice));
-    CUDA_CHECK(cudaMemcpy(d_gx2_im_tmp_cached, d_grad2_im, Nt * sizeof(double), cudaMemcpyDeviceToDevice));
-    CUDA_CHECK(cudaMemcpy(d_gx3_re_tmp_cached, d_grad3_re, Nt * sizeof(double), cudaMemcpyDeviceToDevice));
-    CUDA_CHECK(cudaMemcpy(d_gx3_im_tmp_cached, d_grad3_im, Nt * sizeof(double), cudaMemcpyDeviceToDevice));
-    CUDA_CHECK(cudaMemcpy(d_gx4_re_tmp_cached, d_grad4_re, Nt * sizeof(double), cudaMemcpyDeviceToDevice));
-    CUDA_CHECK(cudaMemcpy(d_gx4_im_tmp_cached, d_grad4_im, Nt * sizeof(double), cudaMemcpyDeviceToDevice));
 
     int block = 256;
     int grid = (Nt + block - 1) / block;
@@ -2326,6 +2359,7 @@ void HelmholtzFMM::cleanup()
     cudaFree(d_leaf_idx_cached);
     cudaFree(d_src_id_offsets_cached); cudaFree(d_src_ids_cached);
     cudaFree(d_tgt_id_offsets_cached); cudaFree(d_tgt_ids_cached);
+    cudaFree(d_leaf_near_offsets_cached); cudaFree(d_leaf_near_ids_cached);
     cudaFree(d_gy_re_cached); cudaFree(d_gy_im_cached);
     cudaFree(d_gz_re_cached); cudaFree(d_gz_im_cached);
     cudaFree(d_gx_re_tmp_cached); cudaFree(d_gx_im_tmp_cached);
@@ -2340,4 +2374,5 @@ void HelmholtzFMM::cleanup()
     cudaFree(d_gx4_re_tmp_cached); cudaFree(d_gx4_im_tmp_cached);
     cudaFree(d_complex_tmp1); cudaFree(d_complex_tmp2);
     initialized = false;
+    batch4_allocated = false;
 }

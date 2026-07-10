@@ -629,3 +629,395 @@ void launch_p2p_pot_grad_batch4(
         d_pot3_re, d_pot3_im, d_gx3_re, d_gx3_im, d_gy3_re, d_gy3_im, d_gz3_re, d_gz3_im,
         d_pot4_re, d_pot4_im, d_gx4_re, d_gx4_im, d_gy4_re, d_gy4_im, d_gz4_re, d_gz4_im);
 }
+
+template <int BATCH, bool NEED_GRAD>
+__global__ void p2p_leaf_kernel(
+    const double* __restrict__ tgt_xyz,
+    const double* __restrict__ src_xyz,
+    const double* __restrict__ q1_re, const double* __restrict__ q1_im,
+    const double* __restrict__ q2_re, const double* __restrict__ q2_im,
+    const int* __restrict__ tgt_offsets,
+    const int* __restrict__ tgt_ids,
+    const int* __restrict__ src_offsets,
+    const int* __restrict__ src_ids,
+    const int* __restrict__ near_offsets,
+    const int* __restrict__ near_leaf_ids,
+    int n_leaves, double k_re, double k_im,
+    double* __restrict__ pot1_re, double* __restrict__ pot1_im,
+    double* __restrict__ gx1_re, double* __restrict__ gx1_im,
+    double* __restrict__ gy1_re, double* __restrict__ gy1_im,
+    double* __restrict__ gz1_re, double* __restrict__ gz1_im,
+    double* __restrict__ pot2_re, double* __restrict__ pot2_im,
+    double* __restrict__ gx2_re, double* __restrict__ gx2_im,
+    double* __restrict__ gy2_re, double* __restrict__ gy2_im,
+    double* __restrict__ gz2_re, double* __restrict__ gz2_im)
+{
+    int leaf = blockIdx.x;
+    if (leaf >= n_leaves) return;
+
+    int t0 = tgt_offsets[leaf];
+    int t1 = tgt_offsets[leaf + 1];
+    for (int ti = t0 + threadIdx.x; ti < t1; ti += blockDim.x) {
+        int tid = tgt_ids[ti];
+        double tx = tgt_xyz[tid * 3];
+        double ty = tgt_xyz[tid * 3 + 1];
+        double tz = tgt_xyz[tid * 3 + 2];
+
+        double p1r = 0.0, p1i = 0.0, p2r = 0.0, p2i = 0.0;
+        double ax1r = 0.0, ax1i = 0.0, ay1r = 0.0, ay1i = 0.0, az1r = 0.0, az1i = 0.0;
+        double ax2r = 0.0, ax2i = 0.0, ay2r = 0.0, ay2i = 0.0, az2r = 0.0, az2i = 0.0;
+        const double inv4pi = 0.07957747154594767;
+
+        int n0 = near_offsets[leaf];
+        int n1 = near_offsets[leaf + 1];
+        for (int pass = -1; pass < n1 - n0; pass++) {
+            int src_leaf = (pass < 0) ? leaf : near_leaf_ids[n0 + pass];
+            int s0 = src_offsets[src_leaf];
+            int s1 = src_offsets[src_leaf + 1];
+            for (int si = s0; si < s1; si++) {
+                int sid = src_ids[si];
+                double dx = tx - src_xyz[sid * 3];
+                double dy = ty - src_xyz[sid * 3 + 1];
+                double dz = tz - src_xyz[sid * 3 + 2];
+                double R = sqrt(dx*dx + dy*dy + dz*dz);
+                if (R < 1e-12) continue;
+
+                double inv_R = 1.0 / R;
+                double eR = exp(-k_im * R);
+                double phase = k_re * R;
+                double cp = cos(phase), sp = sin(phase);
+                double G_re = eR * cp * inv4pi * inv_R;
+                double G_im = eR * sp * inv4pi * inv_R;
+
+                double q1r = q1_re[sid], q1i = q1_im[sid];
+                p1r += G_re * q1r - G_im * q1i;
+                p1i += G_re * q1i + G_im * q1r;
+
+                double gG_re = 0.0, gG_im = 0.0;
+                if (NEED_GRAD) {
+                    double fac_re = (-k_im - inv_R) * inv_R;
+                    double fac_im = k_re * inv_R;
+                    gG_re = G_re * fac_re - G_im * fac_im;
+                    gG_im = G_re * fac_im + G_im * fac_re;
+                    double gq_re = gG_re * q1r - gG_im * q1i;
+                    double gq_im = gG_re * q1i + gG_im * q1r;
+                    ax1r += gq_re * dx; ax1i += gq_im * dx;
+                    ay1r += gq_re * dy; ay1i += gq_im * dy;
+                    az1r += gq_re * dz; az1i += gq_im * dz;
+                }
+
+                if (BATCH >= 2) {
+                    double q2r = q2_re[sid], q2i = q2_im[sid];
+                    p2r += G_re * q2r - G_im * q2i;
+                    p2i += G_re * q2i + G_im * q2r;
+                    if (NEED_GRAD) {
+                        double gq_re = gG_re * q2r - gG_im * q2i;
+                        double gq_im = gG_re * q2i + gG_im * q2r;
+                        ax2r += gq_re * dx; ax2i += gq_im * dx;
+                        ay2r += gq_re * dy; ay2i += gq_im * dy;
+                        az2r += gq_re * dz; az2i += gq_im * dz;
+                    }
+                }
+            }
+        }
+
+        if (pot1_re) { pot1_re[tid] += p1r; pot1_im[tid] += p1i; }
+        if (NEED_GRAD) {
+            gx1_re[tid] += ax1r; gx1_im[tid] += ax1i;
+            gy1_re[tid] += ay1r; gy1_im[tid] += ay1i;
+            gz1_re[tid] += az1r; gz1_im[tid] += az1i;
+        }
+        if (BATCH >= 2) {
+            if (pot2_re) { pot2_re[tid] += p2r; pot2_im[tid] += p2i; }
+            if (NEED_GRAD) {
+                gx2_re[tid] += ax2r; gx2_im[tid] += ax2i;
+                gy2_re[tid] += ay2r; gy2_im[tid] += ay2i;
+                gz2_re[tid] += az2r; gz2_im[tid] += az2i;
+            }
+        }
+    }
+}
+
+void launch_p2p_potential_leaf(
+    const double* d_tgt, const double* d_src,
+    const double* d_q_re, const double* d_q_im,
+    const int* d_tgt_offsets, const int* d_tgt_ids,
+    const int* d_src_offsets, const int* d_src_ids,
+    const int* d_near_offsets, const int* d_near_leaf_ids,
+    int n_leaves, double k_re, double k_im,
+    double* d_out_re, double* d_out_im)
+{
+    p2p_leaf_kernel<1, false><<<n_leaves, 128>>>(
+        d_tgt, d_src, d_q_re, d_q_im, nullptr, nullptr,
+        d_tgt_offsets, d_tgt_ids, d_src_offsets, d_src_ids,
+        d_near_offsets, d_near_leaf_ids, n_leaves, k_re, k_im,
+        d_out_re, d_out_im, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+}
+
+void launch_p2p_potential_batch2_leaf(
+    const double* d_tgt, const double* d_src,
+    const double* d_q1_re, const double* d_q1_im,
+    const double* d_q2_re, const double* d_q2_im,
+    const int* d_tgt_offsets, const int* d_tgt_ids,
+    const int* d_src_offsets, const int* d_src_ids,
+    const int* d_near_offsets, const int* d_near_leaf_ids,
+    int n_leaves, double k_re, double k_im,
+    double* d_out1_re, double* d_out1_im,
+    double* d_out2_re, double* d_out2_im)
+{
+    p2p_leaf_kernel<2, false><<<n_leaves, 128>>>(
+        d_tgt, d_src, d_q1_re, d_q1_im, d_q2_re, d_q2_im,
+        d_tgt_offsets, d_tgt_ids, d_src_offsets, d_src_ids,
+        d_near_offsets, d_near_leaf_ids, n_leaves, k_re, k_im,
+        d_out1_re, d_out1_im, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+        d_out2_re, d_out2_im, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+}
+
+template <bool NEED_GRAD>
+__global__ void p2p_leaf_batch4_kernel(
+    const double* __restrict__ tgt_xyz,
+    const double* __restrict__ src_xyz,
+    const double* __restrict__ q1_re, const double* __restrict__ q1_im,
+    const double* __restrict__ q2_re, const double* __restrict__ q2_im,
+    const double* __restrict__ q3_re, const double* __restrict__ q3_im,
+    const double* __restrict__ q4_re, const double* __restrict__ q4_im,
+    const int* __restrict__ tgt_offsets,
+    const int* __restrict__ tgt_ids,
+    const int* __restrict__ src_offsets,
+    const int* __restrict__ src_ids,
+    const int* __restrict__ near_offsets,
+    const int* __restrict__ near_leaf_ids,
+    int n_leaves, double k_re, double k_im,
+    double* __restrict__ pot1_re, double* __restrict__ pot1_im,
+    double* __restrict__ gx1_re, double* __restrict__ gx1_im,
+    double* __restrict__ gy1_re, double* __restrict__ gy1_im,
+    double* __restrict__ gz1_re, double* __restrict__ gz1_im,
+    double* __restrict__ pot2_re, double* __restrict__ pot2_im,
+    double* __restrict__ gx2_re, double* __restrict__ gx2_im,
+    double* __restrict__ gy2_re, double* __restrict__ gy2_im,
+    double* __restrict__ gz2_re, double* __restrict__ gz2_im,
+    double* __restrict__ pot3_re, double* __restrict__ pot3_im,
+    double* __restrict__ gx3_re, double* __restrict__ gx3_im,
+    double* __restrict__ gy3_re, double* __restrict__ gy3_im,
+    double* __restrict__ gz3_re, double* __restrict__ gz3_im,
+    double* __restrict__ pot4_re, double* __restrict__ pot4_im,
+    double* __restrict__ gx4_re, double* __restrict__ gx4_im,
+    double* __restrict__ gy4_re, double* __restrict__ gy4_im,
+    double* __restrict__ gz4_re, double* __restrict__ gz4_im)
+{
+    int leaf = blockIdx.x;
+    if (leaf >= n_leaves) return;
+
+    int t0 = tgt_offsets[leaf];
+    int t1 = tgt_offsets[leaf + 1];
+    for (int ti = t0 + threadIdx.x; ti < t1; ti += blockDim.x) {
+        int tid = tgt_ids[ti];
+        double tx = tgt_xyz[tid * 3];
+        double ty = tgt_xyz[tid * 3 + 1];
+        double tz = tgt_xyz[tid * 3 + 2];
+
+        double p1r = 0.0, p1i = 0.0, p2r = 0.0, p2i = 0.0;
+        double p3r = 0.0, p3i = 0.0, p4r = 0.0, p4i = 0.0;
+        double ax1r = 0.0, ax1i = 0.0, ay1r = 0.0, ay1i = 0.0, az1r = 0.0, az1i = 0.0;
+        double ax2r = 0.0, ax2i = 0.0, ay2r = 0.0, ay2i = 0.0, az2r = 0.0, az2i = 0.0;
+        double ax3r = 0.0, ax3i = 0.0, ay3r = 0.0, ay3i = 0.0, az3r = 0.0, az3i = 0.0;
+        double ax4r = 0.0, ax4i = 0.0, ay4r = 0.0, ay4i = 0.0, az4r = 0.0, az4i = 0.0;
+        const double inv4pi = 0.07957747154594767;
+
+        int n0 = near_offsets[leaf];
+        int n1 = near_offsets[leaf + 1];
+        for (int pass = -1; pass < n1 - n0; pass++) {
+            int src_leaf = (pass < 0) ? leaf : near_leaf_ids[n0 + pass];
+            int s0 = src_offsets[src_leaf];
+            int s1 = src_offsets[src_leaf + 1];
+            for (int si = s0; si < s1; si++) {
+                int sid = src_ids[si];
+                double dx = tx - src_xyz[sid * 3];
+                double dy = ty - src_xyz[sid * 3 + 1];
+                double dz = tz - src_xyz[sid * 3 + 2];
+                double R = sqrt(dx*dx + dy*dy + dz*dz);
+                if (R < 1e-12) continue;
+
+                double inv_R = 1.0 / R;
+                double eR = exp(-k_im * R);
+                double phase = k_re * R;
+                double cp = cos(phase), sp = sin(phase);
+                double G_re = eR * cp * inv4pi * inv_R;
+                double G_im = eR * sp * inv4pi * inv_R;
+                double gG_re = 0.0, gG_im = 0.0;
+                if (NEED_GRAD) {
+                    double fac_re = (-k_im - inv_R) * inv_R;
+                    double fac_im = k_re * inv_R;
+                    gG_re = G_re * fac_re - G_im * fac_im;
+                    gG_im = G_re * fac_im + G_im * fac_re;
+                }
+#define ACC4(QR, QI, PR, PI, AXR, AXI, AYR, AYI, AZR, AZI) \
+                do { \
+                    double qr = (QR), qi = (QI); \
+                    PR += G_re * qr - G_im * qi; \
+                    PI += G_re * qi + G_im * qr; \
+                    if (NEED_GRAD) { \
+                        double gr = gG_re * qr - gG_im * qi; \
+                        double gi = gG_re * qi + gG_im * qr; \
+                        AXR += gr * dx; AXI += gi * dx; \
+                        AYR += gr * dy; AYI += gi * dy; \
+                        AZR += gr * dz; AZI += gi * dz; \
+                    } \
+                } while (0)
+                ACC4(q1_re[sid], q1_im[sid], p1r, p1i, ax1r, ax1i, ay1r, ay1i, az1r, az1i);
+                ACC4(q2_re[sid], q2_im[sid], p2r, p2i, ax2r, ax2i, ay2r, ay2i, az2r, az2i);
+                ACC4(q3_re[sid], q3_im[sid], p3r, p3i, ax3r, ax3i, ay3r, ay3i, az3r, az3i);
+                ACC4(q4_re[sid], q4_im[sid], p4r, p4i, ax4r, ax4i, ay4r, ay4i, az4r, az4i);
+#undef ACC4
+            }
+        }
+
+#define STORE4(PR, PI, GXR, GXI, GYR, GYI, GZR, GZI, PV_R, PV_I, AXR, AXI, AYR, AYI, AZR, AZI) \
+        do { \
+            if (PR) { PR[tid] += PV_R; PI[tid] += PV_I; } \
+            if (NEED_GRAD) { \
+                GXR[tid] += AXR; GXI[tid] += AXI; \
+                GYR[tid] += AYR; GYI[tid] += AYI; \
+                GZR[tid] += AZR; GZI[tid] += AZI; \
+            } \
+        } while (0)
+        STORE4(pot1_re, pot1_im, gx1_re, gx1_im, gy1_re, gy1_im, gz1_re, gz1_im,
+               p1r, p1i, ax1r, ax1i, ay1r, ay1i, az1r, az1i);
+        STORE4(pot2_re, pot2_im, gx2_re, gx2_im, gy2_re, gy2_im, gz2_re, gz2_im,
+               p2r, p2i, ax2r, ax2i, ay2r, ay2i, az2r, az2i);
+        STORE4(pot3_re, pot3_im, gx3_re, gx3_im, gy3_re, gy3_im, gz3_re, gz3_im,
+               p3r, p3i, ax3r, ax3i, ay3r, ay3i, az3r, az3i);
+        STORE4(pot4_re, pot4_im, gx4_re, gx4_im, gy4_re, gy4_im, gz4_re, gz4_im,
+               p4r, p4i, ax4r, ax4i, ay4r, ay4i, az4r, az4i);
+#undef STORE4
+    }
+}
+
+void launch_p2p_potential_batch4_leaf(
+    const double* d_tgt, const double* d_src,
+    const double* d_q1_re, const double* d_q1_im,
+    const double* d_q2_re, const double* d_q2_im,
+    const double* d_q3_re, const double* d_q3_im,
+    const double* d_q4_re, const double* d_q4_im,
+    const int* d_tgt_offsets, const int* d_tgt_ids,
+    const int* d_src_offsets, const int* d_src_ids,
+    const int* d_near_offsets, const int* d_near_leaf_ids,
+    int n_leaves, double k_re, double k_im,
+    double* d_out1_re, double* d_out1_im,
+    double* d_out2_re, double* d_out2_im,
+    double* d_out3_re, double* d_out3_im,
+    double* d_out4_re, double* d_out4_im)
+{
+    p2p_leaf_batch4_kernel<false><<<n_leaves, 128>>>(
+        d_tgt, d_src,
+        d_q1_re, d_q1_im, d_q2_re, d_q2_im, d_q3_re, d_q3_im, d_q4_re, d_q4_im,
+        d_tgt_offsets, d_tgt_ids, d_src_offsets, d_src_ids,
+        d_near_offsets, d_near_leaf_ids, n_leaves, k_re, k_im,
+        d_out1_re, d_out1_im, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+        d_out2_re, d_out2_im, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+        d_out3_re, d_out3_im, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+        d_out4_re, d_out4_im, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+}
+
+void launch_p2p_gradient_leaf(
+    const double* d_tgt, const double* d_src,
+    const double* d_q_re, const double* d_q_im,
+    const int* d_tgt_offsets, const int* d_tgt_ids,
+    const int* d_src_offsets, const int* d_src_ids,
+    const int* d_near_offsets, const int* d_near_leaf_ids,
+    int n_leaves, double k_re, double k_im,
+    double* d_gx_re, double* d_gx_im,
+    double* d_gy_re, double* d_gy_im,
+    double* d_gz_re, double* d_gz_im)
+{
+    p2p_leaf_kernel<1, true><<<n_leaves, 128>>>(
+        d_tgt, d_src, d_q_re, d_q_im, nullptr, nullptr,
+        d_tgt_offsets, d_tgt_ids, d_src_offsets, d_src_ids,
+        d_near_offsets, d_near_leaf_ids, n_leaves, k_re, k_im,
+        nullptr, nullptr, d_gx_re, d_gx_im, d_gy_re, d_gy_im, d_gz_re, d_gz_im,
+        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+}
+
+void launch_p2p_pot_grad_batch2_leaf(
+    const double* d_tgt, const double* d_src,
+    const double* d_q1_re, const double* d_q1_im,
+    const double* d_q2_re, const double* d_q2_im,
+    const int* d_tgt_offsets, const int* d_tgt_ids,
+    const int* d_src_offsets, const int* d_src_ids,
+    const int* d_near_offsets, const int* d_near_leaf_ids,
+    int n_leaves, double k_re, double k_im,
+    double* d_pot1_re, double* d_pot1_im,
+    double* d_gx1_re, double* d_gx1_im,
+    double* d_gy1_re, double* d_gy1_im,
+    double* d_gz1_re, double* d_gz1_im,
+    double* d_pot2_re, double* d_pot2_im,
+    double* d_gx2_re, double* d_gx2_im,
+    double* d_gy2_re, double* d_gy2_im,
+    double* d_gz2_re, double* d_gz2_im)
+{
+    p2p_leaf_kernel<2, true><<<n_leaves, 128>>>(
+        d_tgt, d_src, d_q1_re, d_q1_im, d_q2_re, d_q2_im,
+        d_tgt_offsets, d_tgt_ids, d_src_offsets, d_src_ids,
+        d_near_offsets, d_near_leaf_ids, n_leaves, k_re, k_im,
+        d_pot1_re, d_pot1_im, d_gx1_re, d_gx1_im, d_gy1_re, d_gy1_im, d_gz1_re, d_gz1_im,
+        d_pot2_re, d_pot2_im, d_gx2_re, d_gx2_im, d_gy2_re, d_gy2_im, d_gz2_re, d_gz2_im);
+}
+
+void launch_p2p_pot_grad_batch4_leaf(
+    const double* d_tgt, const double* d_src,
+    const double* d_q1_re, const double* d_q1_im,
+    const double* d_q2_re, const double* d_q2_im,
+    const double* d_q3_re, const double* d_q3_im,
+    const double* d_q4_re, const double* d_q4_im,
+    const int* d_tgt_offsets, const int* d_tgt_ids,
+    const int* d_src_offsets, const int* d_src_ids,
+    const int* d_near_offsets, const int* d_near_leaf_ids,
+    int n_leaves, double k_re, double k_im,
+    double* d_pot1_re, double* d_pot1_im,
+    double* d_gx1_re, double* d_gx1_im,
+    double* d_gy1_re, double* d_gy1_im,
+    double* d_gz1_re, double* d_gz1_im,
+    double* d_pot2_re, double* d_pot2_im,
+    double* d_gx2_re, double* d_gx2_im,
+    double* d_gy2_re, double* d_gy2_im,
+    double* d_gz2_re, double* d_gz2_im,
+    double* d_pot3_re, double* d_pot3_im,
+    double* d_gx3_re, double* d_gx3_im,
+    double* d_gy3_re, double* d_gy3_im,
+    double* d_gz3_re, double* d_gz3_im,
+    double* d_pot4_re, double* d_pot4_im,
+    double* d_gx4_re, double* d_gx4_im,
+    double* d_gy4_re, double* d_gy4_im,
+    double* d_gz4_re, double* d_gz4_im)
+{
+    p2p_leaf_batch4_kernel<true><<<n_leaves, 128>>>(
+        d_tgt, d_src,
+        d_q1_re, d_q1_im, d_q2_re, d_q2_im, d_q3_re, d_q3_im, d_q4_re, d_q4_im,
+        d_tgt_offsets, d_tgt_ids, d_src_offsets, d_src_ids,
+        d_near_offsets, d_near_leaf_ids, n_leaves, k_re, k_im,
+        d_pot1_re, d_pot1_im, d_gx1_re, d_gx1_im, d_gy1_re, d_gy1_im, d_gz1_re, d_gz1_im,
+        d_pot2_re, d_pot2_im, d_gx2_re, d_gx2_im, d_gy2_re, d_gy2_im, d_gz2_re, d_gz2_im,
+        d_pot3_re, d_pot3_im, d_gx3_re, d_gx3_im, d_gy3_re, d_gy3_im, d_gz3_re, d_gz3_im,
+        d_pot4_re, d_pot4_im, d_gx4_re, d_gx4_im, d_gy4_re, d_gy4_im, d_gz4_re, d_gz4_im);
+}
+
+void launch_p2p_pot_grad_leaf(
+    const double* d_tgt, const double* d_src,
+    const double* d_q_re, const double* d_q_im,
+    const int* d_tgt_offsets, const int* d_tgt_ids,
+    const int* d_src_offsets, const int* d_src_ids,
+    const int* d_near_offsets, const int* d_near_leaf_ids,
+    int n_leaves, double k_re, double k_im,
+    double* d_pot_re, double* d_pot_im,
+    double* d_gx_re, double* d_gx_im,
+    double* d_gy_re, double* d_gy_im,
+    double* d_gz_re, double* d_gz_im)
+{
+    p2p_leaf_kernel<1, true><<<n_leaves, 128>>>(
+        d_tgt, d_src, d_q_re, d_q_im, nullptr, nullptr,
+        d_tgt_offsets, d_tgt_ids, d_src_offsets, d_src_ids,
+        d_near_offsets, d_near_leaf_ids, n_leaves, k_re, k_im,
+        d_pot_re, d_pot_im, d_gx_re, d_gx_im, d_gy_re, d_gy_im, d_gz_re, d_gz_im,
+        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+}

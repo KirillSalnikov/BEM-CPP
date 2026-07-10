@@ -24,11 +24,14 @@ struct BemFmmOperator {
     bool use_pfft = false;
     bool use_spfft = false;
     double unknown_m_scale = 1.0;
-    double row_h_scale = 1.0;
+    // Physical M = unknown_m_phase * M_internal / unknown_m_scale.
+    cdouble unknown_m_phase = cdouble(1.0, 0.0);
+    cdouble row_h_scale = cdouble(1.0, 0.0);
     double int_op_sign = 1.0;
     double k_identity = 0.0;
     bool n_form = false;
     double n_form_eps_int = 1.0;
+    double n_form_m_identity = 0.0;
 
     // FMM engines (one per wavenumber)
     HelmholtzFMM fmm_ext;
@@ -91,6 +94,7 @@ struct BemFmmOperator {
     std::vector<cdouble> b4_src2, b4_src3;
     std::vector<cdouble> b4_pot2, b4_pot3;
     std::vector<cdouble> tmp_M1_phys, tmp_M2_phys;
+    std::vector<cdouble> tmp_single_y;
     bool tmp_host_registered = false;
 
     double* d_f_p = nullptr;
@@ -127,6 +131,11 @@ struct BemFmmOperator {
     double* d_mv2_im = nullptr;
     double2* d_y1_complex = nullptr;
     double2* d_y2_complex = nullptr;
+    double2* h_full_x1_complex = nullptr;
+    double2* h_full_x2_complex = nullptr;
+    double2* h_y1_complex = nullptr;
+    double2* h_y2_complex = nullptr;
+    bool pinned_matvec_stage = false;
     int* d_corr_row_ptr = nullptr;
     int* d_corr_col_idx = nullptr;
     double* d_corr_L_ext_re = nullptr;
@@ -142,7 +151,7 @@ struct BemFmmOperator {
     // Initialize operator
     void init(const RWG& rwg, const Mesh& mesh,
               cdouble k_ext, cdouble k_int,
-              double eta_ext, double eta_int,
+              cdouble eta_ext, cdouble eta_int,
               int quad_order = 7, int fmm_digits = 3, int max_leaf = 64,
               bool use_pfft_ = false, bool use_spfft_ = false);
 
@@ -151,6 +160,12 @@ struct BemFmmOperator {
 
     // Batched matvec: y1 = Z*x1, y2 = Z*x2
     void matvec_batch2(const cdouble* x1, const cdouble* x2, cdouble* y1, cdouble* y2);
+
+    // Device-resident batched matvec for GPU GMRES.
+    // Inputs and outputs are full PMCHWT vectors of length system_size on the active CUDA device.
+    void matvec_batch2_device(const double2* d_x1, const double2* d_x2,
+                              double2* d_y1, double2* d_y2);
+    bool device_matvec_available() const;
 
     // Cleanup FMM resources
     void cleanup();
@@ -201,9 +216,10 @@ private:
                                             int LJ_slot, int KJ_slot,
                                             int LM_slot, int KM_slot);
 #ifndef BEM_FMM_ONLY
-    void LK_combined_batch2_spfft_device(const cdouble* x1, const cdouble* x2,
-                                         cdouble kv, HelmholtzSurfacePFFT& spf,
-                                         int L_slot, int K_slot);
+    void LK_combined_batch2_spfft_device_split(const double* x1_re, const double* x1_im,
+                                               const double* x2_re, const double* x2_im,
+                                               cdouble kv, HelmholtzSurfacePFFT& spf,
+                                               int L_slot, int K_slot);
 #endif
 
     // Precompute singular corrections
@@ -211,6 +227,7 @@ private:
 
     void register_tmp_host_buffers();
     void unregister_tmp_host_buffers();
+    void ensure_host_workspace();
     void init_device_workspace();
     void free_device_workspace();
 };

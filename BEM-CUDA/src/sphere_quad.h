@@ -10,11 +10,15 @@ inline int fmm_truncation_order(double k_abs, double box_size, int digits = 3) {
     double ka = k_abs * box_size;
     double c;
     switch (digits) {
+        case 1: c = 2.0; break;
         case 2: c = 3.0; break;
         case 3: c = 5.0; break;
         case 4: c = 7.0; break;
         case 5: c = 9.0; break;
-        default: c = 5.0; break;
+        case 6: c = 11.0; break;
+        case 7: c = 13.0; break;
+        case 8: c = 15.0; break;
+        default: c = 15.0 + 2.0 * (double)(digits - 8); break;
     }
     int p = (int)std::ceil(ka + c * std::pow(std::max(ka, 1.0), 1.0/3.0));
     if (p < 3) p = 3;

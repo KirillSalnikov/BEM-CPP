@@ -4,6 +4,7 @@
 // Inter-face: direct P2P on GPU (FP32 for throughput)
 
 #include "surface_pfft.h"
+#include "gpu_select.h"
 #include <cufft.h>
 #include <algorithm>
 #include <cstring>
@@ -1275,8 +1276,8 @@ void HelmholtzSurfacePFFT::init(const double* points, int n_pts,
         // Each nnz entry uses 6 doubles (G_re/im, dGdu_re/im, dGdv_re/im) = 48 bytes
         // Budget: at most ~2GB for corrections across all faces (both engines)
         double corr_radius_h = std::max(2.5, 0.75 * (double)interp_p);
-        if (const char* env_r = std::getenv("BEM_SPFFT_CORR_RADIUS_H")) {
-            double v = atof(env_r);
+        if (bem_env_has_value("BEM_SPFFT_CORR_RADIUS_H")) {
+            double v = bem_env_double("BEM_SPFFT_CORR_RADIUS_H", corr_radius_h);
             if (v > 0.0)
                 corr_radius_h = v;
         }

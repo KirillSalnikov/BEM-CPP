@@ -1,5 +1,6 @@
 #include "precond.h"
 #include "bem_fmm.h"
+#include "gpu_select.h"
 #include <cstdio>
 #include <cmath>
 #include <complex>
@@ -36,6 +37,18 @@ __device__ inline void c_div(double ar, double ai, double br, double bi, double&
     double den = br * br + bi * bi;
     cr = (ar * br + ai * bi) / den;
     ci = (ai * br - ar * bi) / den;
+}
+
+__global__ void precond_sym_block_kernel(int N, const double2* S,
+                                         const double2* x, double2* y)
+{
+    int m=blockIdx.x*blockDim.x+threadIdx.x; if(m>=N) return;
+    double2 a=S[4*m], b=S[4*m+1], c=S[4*m+2], d=S[4*m+3];
+    double2 x0=x[m], x1=x[N+m];
+    double r0,i0,r1,i1,t0,t1;
+    c_mul(a.x,a.y,x0.x,x0.y,r0,i0); c_mul(b.x,b.y,x1.x,x1.y,t0,t1); r0+=t0;i0+=t1;
+    c_mul(c.x,c.y,x0.x,x0.y,r1,i1); c_mul(d.x,d.y,x1.x,x1.y,t0,t1); r1+=t0;i1+=t1;
+    y[m]=make_double2(r0,i0); y[N+m]=make_double2(r1,i1);
 }
 
 __global__ void precond_schwarz_kernel(
@@ -167,6 +180,7 @@ __global__ void precond_axpy_kernel(double* z_re, double* z_im,
     z_re[i] += omega * corr_re[i];
     z_im[i] += omega * corr_im[i];
 }
+
 } // namespace
 
 static bool lu_factor_small(std::vector<cdouble>& A, std::vector<int>& piv, int n)
@@ -249,27 +263,24 @@ void NearFieldPrecond::build(BemFmmOperator& op)
     cdouble k_vals[2] = {op.k_ext, op.k_int};
     cdouble eta_e = op.eta_ext, eta_i = op.eta_int;
 
-    const char* env_sweeps = std::getenv("BEM_PREC_SWEEPS");
-    if (env_sweeps)
-        richardson_sweeps = std::max(0, std::atoi(env_sweeps));
-    const char* env_omega = std::getenv("BEM_PREC_OMEGA");
-    if (env_omega)
-        richardson_omega = std::atof(env_omega);
+    richardson_sweeps = std::max(0, bem_env_int("BEM_PREC_SWEEPS", richardson_sweeps));
+    richardson_omega = bem_env_double("BEM_PREC_OMEGA", richardson_omega);
 
-    const char* env_block = std::getenv("BEM_PREC_BLOCK");
-    block_schwarz = (env_block && std::atoi(env_block) != 0);
-    const char* env_block_size = std::getenv("BEM_PREC_BLOCK_SIZE");
-    if (env_block_size)
-        max_block_basis = std::max(2, std::atoi(env_block_size));
+    block_schwarz = bem_env_flag_enabled("BEM_PREC_BLOCK");
+    max_block_basis = std::max(2, bem_env_int("BEM_PREC_BLOCK_SIZE", max_block_basis));
     max_block_basis = std::min(max_block_basis, 16);
 
     int near_degree = block_schwarz ? max_block_basis : 0;
-    if (const char* env_near = std::getenv("BEM_PREC_NEAR"))
-        near_degree = std::max(0, std::atoi(env_near));
+    near_degree = std::max(0, bem_env_int("BEM_PREC_NEAR", near_degree));
+    int geom_near_max_n = std::max(0, bem_env_int("BEM_PREC_GEOM_NEAR_MAX_N", 12000));
+    bool use_geometric_near =
+        block_schwarz && near_degree > 0 &&
+        !bem_env_flag_enabled("BEM_PREC_TOPO_NEAR") &&
+        (geom_near_max_n == 0 || N <= geom_near_max_n);
 
     blk_inv.resize(4 * N);
     diag_blk.resize(4 * N);
-    if (block_schwarz && near_degree > 0) {
+    if (use_geometric_near) {
         std::vector<double> centers((size_t)N * 3, 0.0);
         #pragma omp parallel for schedule(static)
         for (int m = 0; m < N; m++) {
@@ -339,6 +350,11 @@ void NearFieldPrecond::build(BemFmmOperator& op)
         printf("  [Precond] Expanded near graph: degree=%d nnz=%zu (%.1f per row)\n",
                near_degree, near_col_idx.size(), near_col_idx.empty() ? 0.0 : (double)near_col_idx.size() / (double)N);
     } else {
+        if (block_schwarz && near_degree > 0) {
+            printf("  [Precond] Using topological near graph: N=%d exceeds BEM_PREC_GEOM_NEAR_MAX_N=%d; "
+                   "set BEM_PREC_GEOM_NEAR_MAX_N=0 to force geometric nearest neighbors\n",
+                   N, geom_near_max_n);
+        }
         near_row_ptr = op.corr_row_ptr;
         near_col_idx = op.corr_col_idx;
     }
@@ -416,11 +432,11 @@ void NearFieldPrecond::build(BemFmmOperator& op)
         // Assemble 2x2 PMCHWT block
         cdouble Ksum_mm = K_vals_k[0] + op.int_op_sign * K_vals_k[1] + op.k_identity;
         cdouble A_mm = eta_e * L_vals_k[0] + op.int_op_sign * eta_i * L_vals_k[1]; // eta*L
-        cdouble B_mm = -Ksum_mm / op.unknown_m_scale;                 // -K/sM
+        cdouble B_mm = -Ksum_mm * op.unknown_m_phase / op.unknown_m_scale;
         cdouble C_mm = op.row_h_scale * Ksum_mm;                      // rH*K
         cdouble D_mm = op.row_h_scale *
                        (L_vals_k[0] / eta_e + op.int_op_sign * L_vals_k[1] / eta_i) /
-                       op.unknown_m_scale;                            // rH*L/(eta*sM)
+                       op.unknown_m_scale * op.unknown_m_phase;
 
         diag_blk[4*m + 0] = A_mm;
         diag_blk[4*m + 1] = B_mm;
@@ -437,6 +453,26 @@ void NearFieldPrecond::build(BemFmmOperator& op)
         blk_inv[4*m + 2] = -C_mm * inv_det;
         blk_inv[4*m + 3] =  A_mm * inv_det;
     }
+
+    sym_inv_sqrt.resize(4 * N);
+    double worst_sym_residual = 0.0;
+    for (int m = 0; m < N; ++m) {
+        cdouble a=diag_blk[4*m], b=0.5*(diag_blk[4*m+1]+diag_blk[4*m+2]);
+        cdouble d=diag_blk[4*m+3];
+        cdouble det=a*d-b*b, s=std::sqrt(det);
+        cdouble den=std::sqrt(a+d+2.0*s);
+        cdouble ra=(a+s)/den, rb=b/den, rd=(d+s)/den;
+        cdouble rdet=ra*rd-rb*rb;
+        if(std::abs(rdet)<1e-24){ ra=std::sqrt(a);rb=0.0;rd=std::sqrt(d);rdet=ra*rd; }
+        cdouble sa=rd/rdet,sb=-rb/rdet,sd=ra/rdet;
+        sym_inv_sqrt[4*m]=sa;sym_inv_sqrt[4*m+1]=sb;
+        sym_inv_sqrt[4*m+2]=sb;sym_inv_sqrt[4*m+3]=sd;
+        cdouble e00=sa*(a*sa+b*sb)+sb*(b*sa+d*sb)-1.0;
+        cdouble e01=sa*(a*sb+b*sd)+sb*(b*sb+d*sd);
+        cdouble e11=sb*(a*sb+b*sd)+sd*(b*sb+d*sd)-1.0;
+        worst_sym_residual=std::max(worst_sym_residual,std::max(std::abs(e00),std::max(std::abs(e01),std::abs(e11))));
+    }
+    printf("  [Precond] symmetric block inverse-sqrt residual max=%.3e\n",worst_sym_residual);
 
     #pragma omp parallel for schedule(dynamic, 8)
     for (int m = 0; m < N; m++) {
@@ -510,11 +546,11 @@ void NearFieldPrecond::build(BemFmmOperator& op)
             cdouble Ksum = K_vals_k[0] + op.int_op_sign * K_vals_k[1];
 
             near_blk[4*jc + 0] = eta_e * Lext + op.int_op_sign * eta_i * Lint;
-            near_blk[4*jc + 1] = -Ksum / op.unknown_m_scale;
+            near_blk[4*jc + 1] = -Ksum * op.unknown_m_phase / op.unknown_m_scale;
             near_blk[4*jc + 2] = op.row_h_scale * Ksum;
             near_blk[4*jc + 3] = op.row_h_scale *
                                  (Lext / eta_e + op.int_op_sign * Lint / eta_i) /
-                                 op.unknown_m_scale;
+                                 op.unknown_m_scale * op.unknown_m_phase;
         }
     }
 
@@ -579,8 +615,7 @@ void NearFieldPrecond::build(BemFmmOperator& op)
         for (double& w : block_weight)
             if (w == 0.0) w = 1.0;
         report_block_count = blocks.size();
-        const char* env_gpu = std::getenv("BEM_PREC_GPU");
-        if (!env_gpu || std::atoi(env_gpu) != 0)
+        if (bem_env_flag_enabled("BEM_PREC_GPU", true))
             upload_device();
     }
 
@@ -642,18 +677,44 @@ void NearFieldPrecond::apply(const cdouble* r, cdouble* z) const
     if (richardson_sweeps <= 0)
         return;
 
-    std::vector<cdouble> Az(N2), err(N2), corr(N2);
+    bool reuse_workspace = bem_env_flag_enabled("BEM_PREC_REUSE_WORKSPACE", true);
+    std::vector<cdouble> local_Az, local_err, local_corr;
+    cdouble* Az;
+    cdouble* err;
+    cdouble* corr;
+    if (reuse_workspace) {
+        tmp_Az.resize(N2);
+        tmp_err.resize(N2);
+        tmp_corr.resize(N2);
+        Az = tmp_Az.data();
+        err = tmp_err.data();
+        corr = tmp_corr.data();
+    } else {
+        local_Az.resize(N2);
+        local_err.resize(N2);
+        local_corr.resize(N2);
+        Az = local_Az.data();
+        err = local_err.data();
+        corr = local_corr.data();
+    }
     for (int sweep = 0; sweep < richardson_sweeps; sweep++) {
-        apply_near(z, Az.data());
+        apply_near(z, Az);
         #pragma omp parallel for schedule(static)
         for (int i = 0; i < N2; i++)
             err[i] = r[i] - Az[i];
-        apply_block_inv(err.data(), corr.data());
+        apply_block_inv(err, corr);
         cdouble omega(richardson_omega, 0.0);
         #pragma omp parallel for schedule(static)
         for (int i = 0; i < N2; i++)
             z[i] += omega * corr[i];
     }
+}
+
+void NearFieldPrecond::apply_pair(const cdouble* r1, const cdouble* r2,
+                                  cdouble* z1, cdouble* z2) const
+{
+    apply(r1, z1);
+    apply(r2, z2);
 }
 
 void NearFieldPrecond::apply_block_schwarz(const cdouble* r, cdouble* z) const
@@ -730,7 +791,6 @@ void NearFieldPrecond::upload_device()
     CUDA_CHECK(cudaMalloc(&d_err_im, N2 * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_corr_re, N2 * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_corr_im, N2 * sizeof(double)));
-
     CUDA_CHECK(cudaMemcpy(d_block_offsets, offsets.data(), (device_block_count + 1) * sizeof(int), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_block_ids, flat_ids.data(), device_ids_count * sizeof(int), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_block_piv, flat_piv.data(), device_block_count * 32 * sizeof(int), cudaMemcpyHostToDevice));
@@ -751,12 +811,14 @@ void NearFieldPrecond::upload_device()
     }
     CUDA_CHECK(cudaMalloc(&d_diag_re, 4 * N * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_diag_im, 4 * N * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_sym_inv_sqrt, 4 * N * sizeof(double2)));
     CUDA_CHECK(cudaMalloc(&d_near_re, 4 * device_near_nnz * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_near_im, 4 * device_near_nnz * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_near_row_ptr, (N + 1) * sizeof(int)));
     CUDA_CHECK(cudaMalloc(&d_near_col_idx, device_near_nnz * sizeof(int)));
     CUDA_CHECK(cudaMemcpy(d_diag_re, diag_re.data(), 4 * N * sizeof(double), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_diag_im, diag_im.data(), 4 * N * sizeof(double), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_sym_inv_sqrt, sym_inv_sqrt.data(), 4 * N * sizeof(double2), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_near_re, near_re.data(), 4 * device_near_nnz * sizeof(double), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_near_im, near_im.data(), 4 * device_near_nnz * sizeof(double), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_near_row_ptr, near_row_ptr.data(), (N + 1) * sizeof(int), cudaMemcpyHostToDevice));
@@ -767,9 +829,10 @@ void NearFieldPrecond::upload_device()
     // After a successful GPU upload the Schwarz preconditioner is applied
     // entirely from device memory. Drop host mirrors so long orientation runs
     // do not carry duplicate LU blocks and near-field CSR data.
-    if (!std::getenv("BEM_PREC_KEEP_HOST")) {
+    if (!bem_env_flag_enabled("BEM_PREC_KEEP_HOST")) {
         std::vector<cdouble>().swap(blk_inv);
         std::vector<cdouble>().swap(diag_blk);
+        std::vector<cdouble>().swap(sym_inv_sqrt);
         std::vector<int>().swap(near_row_ptr);
         std::vector<int>().swap(near_col_idx);
         std::vector<cdouble>().swap(near_blk);
@@ -800,6 +863,7 @@ void NearFieldPrecond::cleanup_device()
     cudaFree(d_corr_im); d_corr_im = nullptr;
     cudaFree(d_diag_re); d_diag_re = nullptr;
     cudaFree(d_diag_im); d_diag_im = nullptr;
+    cudaFree(d_sym_inv_sqrt); d_sym_inv_sqrt = nullptr;
     cudaFree(d_near_re); d_near_re = nullptr;
     cudaFree(d_near_im); d_near_im = nullptr;
     cudaFree(d_near_row_ptr); d_near_row_ptr = nullptr;
@@ -841,6 +905,59 @@ void NearFieldPrecond::apply_block_schwarz_cuda(const cdouble* r, cdouble* z) co
     precond_pack_complex_kernel<<<grid_vec, block>>>(d_z_re, d_z_im, d_z_complex, N2);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaMemcpy(z, d_z_complex, N2 * sizeof(double2), cudaMemcpyDeviceToHost));
+}
+
+bool NearFieldPrecond::device_apply_available() const
+{
+    return device_ready && block_schwarz;
+}
+
+void NearFieldPrecond::apply_device_complex(const double2* d_r, double2* d_z) const
+{
+    if (!device_apply_available()) {
+        fprintf(stderr, "Error: GPU preconditioner requested before device upload\n");
+        std::abort();
+    }
+
+    int block = 256;
+    int grid_vec = (N2 + block - 1) / block;
+    precond_split_complex_kernel<<<grid_vec, block>>>(d_r, d_r_re, d_r_im, N2);
+    CUDA_CHECK(cudaGetLastError());
+    apply_block_schwarz_cuda_device(d_r_re, d_r_im, d_z_re, d_z_im);
+
+    if (richardson_sweeps > 0) {
+        int grid_N = (N + block - 1) / block;
+        for (int sweep = 0; sweep < richardson_sweeps; sweep++) {
+            precond_near_matvec_kernel<<<grid_N, block>>>(
+                N, d_near_row_ptr, d_near_col_idx,
+                d_diag_re, d_diag_im, d_near_re, d_near_im,
+                d_z_re, d_z_im, d_Az_re, d_Az_im);
+            CUDA_CHECK(cudaGetLastError());
+            precond_residual_kernel<<<grid_vec, block>>>(
+                d_r_re, d_r_im, d_Az_re, d_Az_im, d_err_re, d_err_im, N2);
+            CUDA_CHECK(cudaGetLastError());
+            apply_block_schwarz_cuda_device(d_err_re, d_err_im, d_corr_re, d_corr_im);
+            precond_axpy_kernel<<<grid_vec, block>>>(
+                d_z_re, d_z_im, d_corr_re, d_corr_im, richardson_omega, N2);
+            CUDA_CHECK(cudaGetLastError());
+        }
+    }
+
+    precond_pack_complex_kernel<<<grid_vec, block>>>(d_z_re, d_z_im, d_z, N2);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+bool NearFieldPrecond::symmetric_device_apply_available() const
+{
+    return device_ready && d_sym_inv_sqrt != nullptr;
+}
+
+void NearFieldPrecond::apply_symmetric_device(const double2* d_r, double2* d_z) const
+{
+    if(!symmetric_device_apply_available()) { fprintf(stderr,"Error: symmetric GPU preconditioner unavailable\n"); std::abort(); }
+    int block=256,grid=(N+block-1)/block;
+    precond_sym_block_kernel<<<grid,block>>>(N,d_sym_inv_sqrt,d_r,d_z);
+    CUDA_CHECK(cudaGetLastError());
 }
 
 void NearFieldPrecond::apply_block_schwarz_cuda_device(const double* in_re, const double* in_im,
