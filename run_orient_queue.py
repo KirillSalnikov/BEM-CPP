@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import time
+from math import ceil
 
 
 def compute_apps(gpu, nvidia_smi="nvidia-smi"):
@@ -140,7 +141,8 @@ def main():
     p.add_argument("--out", required=True)
     p.add_argument("--work-dir", required=True)
     p.add_argument("--gpus", default=os.environ.get("BEM_ORIENT_GPUS", "0,1,2"))
-    p.add_argument("--chunk-size", type=int, default=5000)
+    p.add_argument("--chunk-size", type=int, default=0,
+                   help="Orientations per GPU process; 0 (default) balances one chunk per selected GPU")
     p.add_argument("--omp-threads", type=int, default=8,
                    help="CPU OpenMP threads per GPU worker; 0 leaves the environment unchanged")
     p.add_argument("--orient-warm-start", choices=["zero", "previous", "recycle"], default=None,
@@ -205,26 +207,9 @@ def main():
         raise SystemExit("use either --orient-file or --orient-bg-file, not both")
     if args.active_indices_file and not (args.orient_file or args.orient_bg_file):
         raise SystemExit("--active-indices-file requires --orient-file or --orient-bg-file")
-    warm_mode = args.orient_warm_start or os.environ.get("BEM_ORIENT_WARM_START", "")
+    if args.chunk_size < 0:
+        raise SystemExit("--chunk-size must be positive, or 0 for automatic balancing")
     requested_chunk_size = args.chunk_size
-    if (warm_mode == "recycle" and not chunk_size_explicit and
-            os.environ.get("BEM_ORIENT_KEEP_CHUNK_SIZE", "0") != "1"):
-        hist = args.orient_recycle
-        if hist is None:
-            try:
-                hist = int(os.environ.get("BEM_ORIENT_RECYCLE", "4"))
-            except ValueError:
-                hist = 4
-        default_min_chunk = max(32, 4 * max(1, hist))
-        min_chunk = max(1, int(os.environ.get("BEM_ORIENT_RECYCLE_MIN_CHUNK", str(default_min_chunk))))
-        if args.chunk_size < min_chunk:
-            print(
-                "BEM recycle warm-start: raising chunk size from %d to %d "
-                "(set BEM_ORIENT_KEEP_CHUNK_SIZE=1 to keep the requested value)" %
-                (args.chunk_size, min_chunk),
-                flush=True,
-            )
-            args.chunk_size = min_chunk
 
     gpus = parse_gpus(args.gpus)
     if not gpus:
@@ -265,6 +250,7 @@ def main():
     chunks = []
     skipped = []
     all_active_indices = None
+    effective_chunk_size = None
     if args.active_indices_file:
         with open(args.active_indices_file, "r") as f:
             active_indices = []
@@ -294,7 +280,10 @@ def main():
                     "active": [idx],
                     "out": os.path.join(args.work_dir, "part_%04d.json" % idx),
                 })
-        chunk_size = args.chunk_size
+        chunk_size = args.chunk_size or max(1, int(ceil(len(missing_active) / float(len(gpus)))))
+        if not chunk_size_explicit:
+            print("BEM orientation auto-balance: %d active orientations, %d GPUs, chunk size %d" %
+                  (len(missing_active), len(gpus), chunk_size), flush=True)
         tail_chunk_env = os.environ.get("BEM_ORIENT_TAIL_CHUNK_SIZE", "")
         if tail_chunk_env:
             try:
@@ -312,12 +301,18 @@ def main():
                     flush=True,
                 )
                 chunk_size = tail_chunk_size
+        effective_chunk_size = chunk_size
         for seq, first in enumerate(range(0, len(missing_active), chunk_size)):
             group = missing_active[first:first + chunk_size]
             chunks.append({"index": group[0], "seq": seq, "start": 0, "count": len(group), "active": group})
     else:
-        for seq, start in enumerate(range(0, n_orient, args.chunk_size)):
-            chunks.append({"index": seq, "seq": seq, "start": start, "count": min(args.chunk_size, n_orient - start), "active": None})
+        effective_chunk_size = args.chunk_size or max(1, int(ceil(n_orient / float(len(gpus)))))
+        if not chunk_size_explicit:
+            print("BEM orientation auto-balance: %d orientations, %d GPUs, chunk size %d" %
+                  (n_orient, len(gpus), effective_chunk_size), flush=True)
+        for seq, start in enumerate(range(0, n_orient, effective_chunk_size)):
+            chunks.append({"index": seq, "seq": seq, "start": start,
+                           "count": min(effective_chunk_size, n_orient - start), "active": None})
 
     running = []
     finished = []
@@ -530,7 +525,7 @@ def main():
     }
     result["mgpu_queue"] = {
         "gpus": gpus,
-        "chunk_size": args.chunk_size,
+        "chunk_size": effective_chunk_size,
         "requested_chunk_size": requested_chunk_size,
         "chunk_size_explicit": chunk_size_explicit,
         "orient_file": args.orient_file,

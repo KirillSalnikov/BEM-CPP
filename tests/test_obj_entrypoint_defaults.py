@@ -141,6 +141,27 @@ def main() -> int:
         assert queue_result["mgpu_queue"]["chunk_size"] == 1
         assert queue_result["mgpu_queue"]["chunk_size_explicit"] is True
 
+        fake_bem = tmp / "fake_bem.sh"
+        auto_out = tmp / "run_orient_queue_auto.json"
+        auto_parts = tmp / "run_orient_queue_auto_parts"
+        proc = subprocess.run(
+            [
+                "python3", str(ROOT / "run_orient_queue.py"),
+                "--exe", str(fake_bem), "--out", str(auto_out),
+                "--work-dir", str(auto_parts), "--gpus", "0,1",
+                "--ka", "20", "--shape", "obj", "--obj", "dust.obj",
+                "--orient", "8", "1", "1", "--ntheta", "1",
+            ],
+            cwd=str(ROOT), text=True, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, check=False,
+        )
+        assert proc.returncode == 0, proc.stdout
+        assert "auto-balance: 8 orientations, 2 GPUs, chunk size 4" in proc.stdout
+        auto_result = json.loads(auto_out.read_text())
+        assert auto_result["mgpu_queue"]["requested_chunk_size"] == 0
+        assert auto_result["mgpu_queue"]["chunk_size"] == 4
+        assert auto_result["mgpu_queue"]["chunk_size_explicit"] is False
+
         proc = run_wrapper("run_orient_queue.py", tmp, "--chunk-size", "1", "--fast-obj")
         assert proc.returncode == 0, proc.stdout
         log = wrapper_log(tmp, "run_orient_queue.py")
