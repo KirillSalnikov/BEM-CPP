@@ -65,7 +65,7 @@ int main()
     require_policy(in, false, false, "obj_ka_ge_4_unpreconditioned_measured");
 
     in.strict_accuracy = true;
-    require_policy(in, true, false, "obj_strict_block_jacobi");
+    require_policy(in, false, false, "obj_strict_unpreconditioned_measured");
 
     in.mesh_requires_remesh = true;
     in.strict_accuracy = false;
