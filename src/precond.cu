@@ -260,10 +260,15 @@ void NearFieldPrecond::build(BemFmmOperator& op)
 
     int near_degree = block_schwarz ? max_block_basis : 0;
     near_degree = std::max(0, bem_env_int("BEM_PREC_NEAR", near_degree));
+    int geom_near_max_n = std::max(0, bem_env_int("BEM_PREC_GEOM_NEAR_MAX_N", 12000));
+    bool use_geometric_near =
+        block_schwarz && near_degree > 0 &&
+        !bem_env_flag_enabled("BEM_PREC_TOPO_NEAR") &&
+        (geom_near_max_n == 0 || N <= geom_near_max_n);
 
     blk_inv.resize(4 * N);
     diag_blk.resize(4 * N);
-    if (block_schwarz && near_degree > 0) {
+    if (use_geometric_near) {
         std::vector<double> centers((size_t)N * 3, 0.0);
         #pragma omp parallel for schedule(static)
         for (int m = 0; m < N; m++) {
@@ -333,6 +338,11 @@ void NearFieldPrecond::build(BemFmmOperator& op)
         printf("  [Precond] Expanded near graph: degree=%d nnz=%zu (%.1f per row)\n",
                near_degree, near_col_idx.size(), near_col_idx.empty() ? 0.0 : (double)near_col_idx.size() / (double)N);
     } else {
+        if (block_schwarz && near_degree > 0) {
+            printf("  [Precond] Using topological near graph: N=%d exceeds BEM_PREC_GEOM_NEAR_MAX_N=%d; "
+                   "set BEM_PREC_GEOM_NEAR_MAX_N=0 to force geometric nearest neighbors\n",
+                   N, geom_near_max_n);
+        }
         near_row_ptr = op.corr_row_ptr;
         near_col_idx = op.corr_col_idx;
     }
@@ -859,6 +869,46 @@ void NearFieldPrecond::apply_block_schwarz_cuda(const cdouble* r, cdouble* z) co
     precond_pack_complex_kernel<<<grid_vec, block>>>(d_z_re, d_z_im, d_z_complex, N2);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaMemcpy(z, d_z_complex, N2 * sizeof(double2), cudaMemcpyDeviceToHost));
+}
+
+bool NearFieldPrecond::device_apply_available() const
+{
+    return device_ready && block_schwarz;
+}
+
+void NearFieldPrecond::apply_device_complex(const double2* d_r, double2* d_z) const
+{
+    if (!device_apply_available()) {
+        fprintf(stderr, "Error: GPU preconditioner requested before device upload\n");
+        std::abort();
+    }
+
+    int block = 256;
+    int grid_vec = (N2 + block - 1) / block;
+    precond_split_complex_kernel<<<grid_vec, block>>>(d_r, d_r_re, d_r_im, N2);
+    CUDA_CHECK(cudaGetLastError());
+    apply_block_schwarz_cuda_device(d_r_re, d_r_im, d_z_re, d_z_im);
+
+    if (richardson_sweeps > 0) {
+        int grid_N = (N + block - 1) / block;
+        for (int sweep = 0; sweep < richardson_sweeps; sweep++) {
+            precond_near_matvec_kernel<<<grid_N, block>>>(
+                N, d_near_row_ptr, d_near_col_idx,
+                d_diag_re, d_diag_im, d_near_re, d_near_im,
+                d_z_re, d_z_im, d_Az_re, d_Az_im);
+            CUDA_CHECK(cudaGetLastError());
+            precond_residual_kernel<<<grid_vec, block>>>(
+                d_r_re, d_r_im, d_Az_re, d_Az_im, d_err_re, d_err_im, N2);
+            CUDA_CHECK(cudaGetLastError());
+            apply_block_schwarz_cuda_device(d_err_re, d_err_im, d_corr_re, d_corr_im);
+            precond_axpy_kernel<<<grid_vec, block>>>(
+                d_z_re, d_z_im, d_corr_re, d_corr_im, richardson_omega, N2);
+            CUDA_CHECK(cudaGetLastError());
+        }
+    }
+
+    precond_pack_complex_kernel<<<grid_vec, block>>>(d_z_re, d_z_im, d_z, N2);
+    CUDA_CHECK(cudaGetLastError());
 }
 
 void NearFieldPrecond::apply_block_schwarz_cuda_device(const double* in_re, const double* in_im,

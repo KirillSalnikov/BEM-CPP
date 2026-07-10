@@ -46,11 +46,14 @@ def load_bem(path):
 
 def load_adda_average(path, beta_order):
     files = sorted(glob.glob(str(Path(path) / "*" / "mueller")))
-    if Path(path).is_file():
+    single_file = Path(path).is_file()
+    if single_file:
         files = [str(path)]
     if not files:
         raise FileNotFoundError(f"no ADDA mueller files under {path}")
-    missing_logs = [name for name in files if not (Path(name).parent / "log").exists()]
+    missing_logs = [] if single_file else [
+        name for name in files if not (Path(name).parent / "log").exists()
+    ]
     if missing_logs:
         sample = ", ".join(missing_logs[:3])
         raise FileNotFoundError(
@@ -198,7 +201,9 @@ def main():
     else:
         ref = load_named_table(args.adda_table)
         ref_kind = "ADDA table"
-        ref_value = lambda name, th: np.interp(th, ref["theta"], ref[name])
+        ref_names = {field.lower(): field for field in ref.dtype.names}
+        ref_value = lambda name, th: np.interp(
+            th, ref[ref_names["theta"]], ref[ref_names[name.lower()]])
 
     bem_s11 = bem_component(bem_mueller, theta, 0, 0)
     ref_s11 = ref_value("S11", theta)

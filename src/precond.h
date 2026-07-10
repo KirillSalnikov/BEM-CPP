@@ -85,6 +85,8 @@ struct NearFieldPrecond {
     void apply_block_schwarz_cuda(const cdouble* r, cdouble* z) const;
     void apply_block_schwarz_cuda_device(const double* in_re, const double* in_im,
                                          double* out_re, double* out_im) const;
+    bool device_apply_available() const;
+    void apply_device_complex(const double2* d_r, double2* d_z) const;
     void upload_device();
     void cleanup_device();
 

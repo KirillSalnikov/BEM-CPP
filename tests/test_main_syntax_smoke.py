@@ -17,7 +17,7 @@ def main() -> int:
         proc = subprocess.run(
             ["python3", "scripts/detect_cuda_toolchain.py", "--json-out", str(detect_json)],
             cwd=str(ROOT),
-            text=True,
+            universal_newlines=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             check=False,
@@ -44,12 +44,25 @@ def main() -> int:
         proc = subprocess.run(
             cmd,
             cwd=str(ROOT),
-            text=True,
+            universal_newlines=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             check=False,
         )
         assert proc.returncode == 0, proc.stdout
+
+        main_cpp = (ROOT / "src/main.cpp").read_text()
+        assert "gpu-gmres, bicgstab" in main_cpp
+        assert 'strcmp(krylov_kind, "gpu-gmres")' in main_cpp
+        assert 'strcmp(krylov_kind, "hybrid")' in main_cpp
+        assert 'strcmp(krylov_kind, "gpu-hybrid")' in main_cpp
+        assert 'strcmp(krylov_kind, "gpu-adaptive")' in main_cpp
+        assert 'strcmp(krylov_kind, "gpu-native")' in main_cpp
+        assert "auto_best_short_recurrence_gmres_gpu" in main_cpp
+        assert "Auto-best-GPU-Krylov" in main_cpp
+        assert "gpu_adaptive_short_recurrence_gmres" in main_cpp
+        assert "GPU-adaptive Krylov" in main_cpp
+        assert "GPU-native Krylov" in main_cpp
 
     print("main syntax smoke: ok")
     return 0

@@ -30,6 +30,7 @@
 #include <fstream>
 #include <sstream>
 #include <iomanip>
+#include <string>
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -131,11 +132,15 @@ static void print_usage(const char* prog) {
     printf("  --prism-aspect F  Hex prism h/Dx, ADDA convention (default: 1)\n");
     printf("  --edge-refine N   Prism local edge-refinement passes (default: 0; experimental)\n");
     printf("  --ref N         Icosphere refinement level (default: 3)\n");
-    printf("  --orient NA NB NG  Orientation quadrature (default: 8 8 1)\n");
+    printf("  --orient NA NB NG  Orientation quadrature; solves all NA*NB*NG Euler angles (default: 8 8 1)\n");
     printf("  --orient-file FILE  Read explicit alpha beta gamma [weight] orientations in degrees\n");
-    printf("  --alpha-avg N  Average alpha/phi in far-field only; use with --orient 1 NB NG\n");
+    printf("  --orient-bg-file FILE  Read explicit beta gamma [weight] orientations in degrees; compatible with --alpha-avg\n");
+    printf("  --alpha-avg N  Fast alpha/phi far-field average only; use with --orient 1 NB NG\n");
     printf("  --orient-start I    First orientation index for chunked averaging (default: 0)\n");
     printf("  --orient-count N    Number of orientations in chunk (default: all)\n");
+    printf("  --orient-split-dir DIR  Write one JSON per solved orientation in a chunk\n");
+    printf("  --orient-split-indices FILE  Master indices for --orient-split-dir outputs\n");
+    printf("  --orient-split-total N  Master orientation count for split JSON metadata\n");
     printf("  --ntheta N      Number of scattering angles (default: 181)\n");
     printf("  --scat-plane P  Single-orient scattering plane: yz or xz (default: yz, ADDA convention)\n");
     printf("  --quad N        Quadrature order: 4, 7, 13 (default: 7; hex_prism guarded auto)\n");
@@ -154,6 +159,7 @@ static void print_usage(const char* prog) {
     printf("  --gmres-tol F   GMRES relative tolerance (default: 1e-4; hex_prism auto uses 1e-3)\n");
     printf("  --gmres-restart N  GMRES restart (default: 150; hex_prism auto uses 300)\n");
     printf("  --gmres-max-cycles N  Maximum restarted GMRES cycles (default: profile policy)\n");
+    printf("  --krylov TYPE   FMM iterative method: gmres, gpu-gmres, bicgstab, bicgstab-rr, cgs-rr, gpu-adaptive, gpu-native, hybrid, or auto (default: gmres; GPU modes fall back to GMRES when needed)\n");
     printf("  --max-leaf N    FMM max particles per leaf (default: 128)\n");
     printf("  --no-prec       Disable automatic FMM preconditioner (auto skips small non-sphere cases)\n");
     printf("  --export-currents FILE  Write equivalent surface currents for the single orientation to VTK\n");
@@ -251,6 +257,107 @@ static bool export_currents_vtk(const char* path, const Mesh& mesh, const RWG& r
     write_vec_array(os, "J_perp_vector", perp, &CellCurrent::J_re, &CellCurrent::J_im);
     write_vec_array(os, "M_perp_vector", perp, &CellCurrent::M_re, &CellCurrent::M_im);
     return true;
+}
+
+static bool export_coefficients_json(const char* path, int N,
+                                     const cdouble* x_par,
+                                     const cdouble* x_perp)
+{
+    if (!path || !*path)
+        return false;
+    std::ofstream os(path);
+    if (!os) {
+        fprintf(stderr, "Error: cannot write coefficient JSON: %s\n", path);
+        return false;
+    }
+    os << std::setprecision(17);
+    os << "{\n";
+    os << "  \"basis_count\": " << N << ",\n";
+    auto write_vec = [&](const char* name, const cdouble* x) {
+        os << "  \"" << name << "\": [";
+        for (int i = 0; i < 2 * N; i++) {
+            if (i) os << ", ";
+            os << "[" << x[i].real() << ", " << x[i].imag() << "]";
+        }
+        os << "]";
+    };
+    write_vec("x_par", x_par);
+    os << ",\n";
+    write_vec("x_perp", x_perp);
+    os << "\n}\n";
+    if (!os) {
+        fprintf(stderr, "Error: failed while writing coefficient JSON: %s\n", path);
+        return false;
+    }
+    printf("  Exported solve coefficients: %s\n", path);
+    return true;
+}
+
+static double complex_vec_norm(const cdouble* x, int n)
+{
+    double s = 0.0;
+    for (int i = 0; i < n; i++)
+        s += std::norm(x[i]);
+    return std::sqrt(s);
+}
+
+static bool load_coefficients_json(const char* path, int N,
+                                   std::vector<cdouble>& x_par,
+                                   std::vector<cdouble>& x_perp)
+{
+    if (!path || !*path)
+        return false;
+    std::ifstream is(path);
+    if (!is) {
+        fprintf(stderr, "Error: cannot read coefficient JSON: %s\n", path);
+        return false;
+    }
+    std::string text((std::istreambuf_iterator<char>(is)),
+                     std::istreambuf_iterator<char>());
+    std::vector<double> values;
+    const char* p = text.c_str();
+    char* end = nullptr;
+    while (*p) {
+        double v = std::strtod(p, &end);
+        if (end != p) {
+            values.push_back(v);
+            p = end;
+        } else {
+            ++p;
+        }
+    }
+    const size_t need = 1 + (size_t)8 * (size_t)N;
+    if (values.size() < need) {
+        fprintf(stderr, "Error: coefficient JSON %s has %zu numeric values, need at least %zu\n",
+                path, values.size(), need);
+        return false;
+    }
+    int file_N = (int)std::llround(values[0]);
+    if (file_N != N) {
+        fprintf(stderr, "Error: coefficient JSON basis_count=%d but current N=%d\n", file_N, N);
+        return false;
+    }
+    x_par.assign(2 * N, cdouble(0));
+    x_perp.assign(2 * N, cdouble(0));
+    size_t k = 1;
+    for (int i = 0; i < 2 * N; i++, k += 2)
+        x_par[i] = cdouble(values[k], values[k + 1]);
+    for (int i = 0; i < 2 * N; i++, k += 2)
+        x_perp[i] = cdouble(values[k], values[k + 1]);
+    return true;
+}
+
+static double relative_residual(BemFmmOperator& op, const cdouble* x, const cdouble* b)
+{
+    const int n = op.system_size;
+    std::vector<cdouble> y(n);
+    op.matvec(x, y.data());
+    for (int i = 0; i < n; i++)
+        y[i] = b[i] - y[i];
+    double bn = complex_vec_norm(b, n);
+    if (bn < 1e-300)
+        bn = 1.0;
+    return complex_vec_norm(y.data(), n) / bn;
 }
 
 static bool solve_small_linear(std::vector<cdouble>& A, std::vector<cdouble>& b, int n) {
@@ -621,6 +728,106 @@ static bool load_orientation_file(const char* filename, std::vector<Orientation>
     return true;
 }
 
+static bool load_beta_gamma_orientation_file(const char* filename, std::vector<Orientation>& orients)
+{
+    std::ifstream in(filename);
+    if (!in) {
+        fprintf(stderr, "Error: cannot open beta/gamma orientation file %s\n", filename);
+        return false;
+    }
+
+    struct Row {
+        double beta;
+        double gamma;
+        double weight;
+    };
+    std::vector<Row> rows;
+    std::string line;
+    int lineno = 0;
+    while (std::getline(in, line)) {
+        lineno++;
+        size_t hash = line.find('#');
+        if (hash != std::string::npos)
+            line.erase(hash);
+        std::istringstream iss(line);
+        Row row;
+        row.weight = 1.0;
+        if (!(iss >> row.beta >> row.gamma))
+            continue;
+        if (iss >> row.weight) {
+            if (row.weight < 0.0) {
+                fprintf(stderr, "Error: negative beta/gamma orientation weight at %s:%d\n", filename, lineno);
+                return false;
+            }
+        }
+        rows.push_back(row);
+    }
+    if (rows.empty()) {
+        fprintf(stderr, "Error: no beta/gamma orientations found in %s\n", filename);
+        return false;
+    }
+
+    double wsum = 0.0;
+    for (const Row& row : rows)
+        wsum += row.weight;
+    if (wsum <= 0.0) {
+        fprintf(stderr, "Error: beta/gamma orientation weights sum to zero in %s\n", filename);
+        return false;
+    }
+
+    orients.clear();
+    orients.reserve(rows.size());
+    for (const Row& row : rows) {
+        double beta = row.beta * M_PI / 180.0;
+        double gamma = row.gamma * M_PI / 180.0;
+        Mat3 R = euler_rotation(0.0, beta, gamma);
+        Orientation o;
+        o.RT = R.T();
+        o.weight = row.weight / wsum;
+        orients.push_back(o);
+    }
+    return true;
+}
+
+static bool load_int_index_file(const char* filename, std::vector<int>& indices)
+{
+    std::ifstream in(filename);
+    if (!in) {
+        fprintf(stderr, "Error: cannot open index file %s\n", filename);
+        return false;
+    }
+    indices.clear();
+    std::string line;
+    int line_no = 0;
+    while (std::getline(in, line)) {
+        line_no++;
+        size_t hash = line.find('#');
+        if (hash != std::string::npos)
+            line.resize(hash);
+        std::istringstream iss(line);
+        int idx = -1;
+        if (!(iss >> idx))
+            continue;
+        if (idx < 0) {
+            fprintf(stderr, "Error: negative index in %s:%d\n", filename, line_no);
+            return false;
+        }
+        indices.push_back(idx);
+    }
+    if (indices.empty()) {
+        fprintf(stderr, "Error: index file %s is empty\n", filename);
+        return false;
+    }
+    return true;
+}
+
+static std::string orient_part_path(const char* dir, int index)
+{
+    char buf[4096];
+    std::snprintf(buf, sizeof(buf), "%s/part_%04d.json", dir, index);
+    return std::string(buf);
+}
+
 int main(int argc, char** argv) {
     setbuf(stdout, NULL);
     setbuf(stderr, NULL);
@@ -644,6 +851,10 @@ int main(int argc, char** argv) {
     bool refinements_set = false;
     int n_alpha = 8, n_beta = 8, n_gamma = 1;
     const char* orient_file = nullptr;
+    const char* orient_bg_file = nullptr;
+    const char* orient_split_dir = nullptr;
+    const char* orient_split_indices_file = nullptr;
+    int orient_split_total = -1;
     int alpha_avg = 1;
     int orient_start = 0, orient_count = -1;
     int ntheta = 181;
@@ -672,6 +883,10 @@ int main(int argc, char** argv) {
     bool gmres_restart_set = false;
     int gmres_max_cycles_cli = 0;
     bool gmres_max_cycles_set = false;
+    const char* krylov_kind = "gmres";
+    bool krylov_kind_set = false;
+    bool force_gpu_gmres = false;
+    bool requested_gpu_adaptive = false;
     int max_leaf = 128;
     bool max_leaf_set = false;
     const char* system_kind = "pmchwt";
@@ -726,6 +941,18 @@ int main(int argc, char** argv) {
                 return 1;
         } else if (strcmp(argv[i], "--orient-file") == 0) {
             if (!parse_cli_string_arg(argc, argv, i, "--orient-file", orient_file))
+                return 1;
+        } else if (strcmp(argv[i], "--orient-bg-file") == 0) {
+            if (!parse_cli_string_arg(argc, argv, i, "--orient-bg-file", orient_bg_file))
+                return 1;
+        } else if (strcmp(argv[i], "--orient-split-dir") == 0) {
+            if (!parse_cli_string_arg(argc, argv, i, "--orient-split-dir", orient_split_dir))
+                return 1;
+        } else if (strcmp(argv[i], "--orient-split-indices") == 0) {
+            if (!parse_cli_string_arg(argc, argv, i, "--orient-split-indices", orient_split_indices_file))
+                return 1;
+        } else if (strcmp(argv[i], "--orient-split-total") == 0) {
+            if (i + 1 >= argc || !parse_cli_int_arg("--orient-split-total", argv[++i], orient_split_total))
                 return 1;
         } else if (strcmp(argv[i], "--alpha-avg") == 0) {
             if (i + 1 >= argc || !parse_cli_int_arg("--alpha-avg", argv[++i], alpha_avg))
@@ -812,6 +1039,33 @@ int main(int argc, char** argv) {
             if (i + 1 >= argc || !parse_cli_int_arg("--gmres-max-cycles", argv[++i], gmres_max_cycles_cli))
                 return 1;
             gmres_max_cycles_set = true;
+        } else if (strcmp(argv[i], "--krylov") == 0) {
+            if (!parse_cli_string_arg(argc, argv, i, "--krylov", krylov_kind))
+                return 1;
+            krylov_kind_set = true;
+            if (strcmp(krylov_kind, "gmres") != 0 &&
+                strcmp(krylov_kind, "bicgstab") != 0 &&
+                strcmp(krylov_kind, "bcgstab") != 0 &&
+                strcmp(krylov_kind, "bicgstab-rr") != 0 &&
+                strcmp(krylov_kind, "bicgstab_rr") != 0 &&
+                strcmp(krylov_kind, "bcgstab-rr") != 0 &&
+                strcmp(krylov_kind, "bcgstab_rr") != 0 &&
+                strcmp(krylov_kind, "cgs") != 0 &&
+                strcmp(krylov_kind, "cgs-rr") != 0 &&
+                strcmp(krylov_kind, "cgs_rr") != 0 &&
+                strcmp(krylov_kind, "gpu-gmres") != 0 &&
+                strcmp(krylov_kind, "gpu_gmres") != 0 &&
+                strcmp(krylov_kind, "hybrid") != 0 &&
+                strcmp(krylov_kind, "gpu-hybrid") != 0 &&
+                strcmp(krylov_kind, "gpu_hybrid") != 0 &&
+                strcmp(krylov_kind, "gpu-adaptive") != 0 &&
+                strcmp(krylov_kind, "gpu_adaptive") != 0 &&
+                strcmp(krylov_kind, "gpu-native") != 0 &&
+                strcmp(krylov_kind, "gpu_native") != 0 &&
+                strcmp(krylov_kind, "auto") != 0) {
+                fprintf(stderr, "Error: --krylov must be gmres, gpu-gmres, bicgstab, bicgstab-rr, cgs-rr, gpu-adaptive, gpu-native, hybrid, or auto\n");
+                return 1;
+            }
         } else if (strcmp(argv[i], "--max-leaf") == 0) {
             if (i + 1 >= argc || !parse_cli_int_arg("--max-leaf", argv[++i], max_leaf))
                 return 1;
@@ -895,24 +1149,56 @@ int main(int argc, char** argv) {
         fprintf(stderr, "Error: --max-leaf must be positive\n");
         return 1;
     }
-    bool auto_alpha_avg = false;
-    int requested_n_alpha = n_alpha;
-    if (!orient_file && !single_orient && alpha_avg == 1 && n_alpha > 1 &&
-        !bem_env_flag_enabled("BEM_NO_AUTO_ALPHA_AVG")) {
-        alpha_avg = n_alpha;
-        n_alpha = 1;
-        auto_alpha_avg = true;
+    if (strcmp(krylov_kind, "bcgstab") == 0)
+        krylov_kind = "bicgstab";
+    if (strcmp(krylov_kind, "bcgstab-rr") == 0 ||
+        strcmp(krylov_kind, "bcgstab_rr") == 0 ||
+        strcmp(krylov_kind, "bicgstab_rr") == 0)
+        krylov_kind = "bicgstab-rr";
+    if (strcmp(krylov_kind, "cgs") == 0 ||
+        strcmp(krylov_kind, "cgs_rr") == 0)
+        krylov_kind = "cgs-rr";
+    if (strcmp(krylov_kind, "gpu-gmres") == 0 ||
+        strcmp(krylov_kind, "gpu_gmres") == 0) {
+        krylov_kind = "gmres";
+        force_gpu_gmres = true;
+    }
+    if (strcmp(krylov_kind, "gpu-hybrid") == 0 ||
+        strcmp(krylov_kind, "gpu_hybrid") == 0)
+        krylov_kind = "hybrid";
+    if (strcmp(krylov_kind, "gpu-adaptive") == 0 ||
+        strcmp(krylov_kind, "gpu_adaptive") == 0) {
+        krylov_kind = "hybrid";
+        requested_gpu_adaptive = true;
+    }
+    if (strcmp(krylov_kind, "gpu-native") == 0 ||
+        strcmp(krylov_kind, "gpu_native") == 0)
+        krylov_kind = "hybrid";
+    if (orient_file && orient_bg_file) {
+        fprintf(stderr, "Error: use either --orient-file or --orient-bg-file, not both\n");
+        return 1;
     }
     if (orient_file && alpha_avg != 1) {
         fprintf(stderr, "Error: --orient-file contains explicit alpha/gamma; do not combine it with --alpha-avg\n");
         return 1;
     }
+    if (orient_bg_file) {
+        n_alpha = 1;
+    }
     if (alpha_avg < 1) {
         fprintf(stderr, "Error: --alpha-avg must be positive\n");
         return 1;
     }
-    if (alpha_avg > 1 && n_alpha != 1) {
-        fprintf(stderr, "Error: --alpha-avg N averages alpha in far-field only; run with --orient 1 NB NG\n");
+    if (alpha_avg > 1 && !orient_bg_file && n_alpha != 1) {
+        fprintf(stderr, "Error: --alpha-avg N averages alpha in far-field only; run with --orient 1 NB NG or --orient-bg-file FILE\n");
+        return 1;
+    }
+    if ((orient_split_dir == nullptr) != (orient_split_indices_file == nullptr)) {
+        fprintf(stderr, "Error: use --orient-split-dir and --orient-split-indices together\n");
+        return 1;
+    }
+    if (orient_split_total == 0 || orient_split_total < -1) {
+        fprintf(stderr, "Error: --orient-split-total must be positive when provided\n");
         return 1;
     }
     bool scattering_plane_yz = true;
@@ -1142,12 +1428,11 @@ int main(int argc, char** argv) {
     else {
         if (orient_file)
             printf("  Orientations: explicit file %s\n", orient_file);
+        else if (orient_bg_file)
+            printf("  Orientations: explicit beta/gamma file %s\n", orient_bg_file);
         else
             printf("  Orientations: %d x %d x %d = %d\n",
                    n_alpha, n_beta, n_gamma, n_alpha * n_beta * n_gamma);
-        if (auto_alpha_avg)
-            printf("  Auto alpha far-field average: converted requested alpha=%d to --alpha-avg %d\n",
-                   requested_n_alpha, alpha_avg);
         if (alpha_avg > 1)
             printf("  Alpha far-field average: %d samples (no extra GMRES solves)\n", alpha_avg);
     }
@@ -1175,14 +1460,14 @@ int main(int argc, char** argv) {
            mesh.nv(), mesh.nt(), mesh_timer.elapsed_ms());
     MeshQualityReport mesh_quality = analyze_mesh_quality(mesh);
     print_mesh_quality_report(mesh_quality);
-    if (is_obj && accurate_mode && !quad_order_set &&
+    if (is_obj && !fast_obj_mode && !quad_order_set &&
         mesh_quality.recommended_min_quad_order > quad_order) {
         if (mesh_quality.recommended_min_quad_order <= 7)
             quad_order = 7;
         else
             quad_order = 13;
-        printf("  OBJ mesh guard: raised quadrature to quad%d from mesh-quality recommendation\n",
-               quad_order);
+        printf("  OBJ mesh guard: raised quadrature to quad%d from mesh-quality recommendation (%s)\n",
+               quad_order, mesh_quality.recommended_mesh_strategy.c_str());
     }
     if (mesh_quality_report_file) {
         if (!write_mesh_quality_json(mesh_quality_report_file, mesh_quality, shape, ka,
@@ -1269,6 +1554,14 @@ int main(int argc, char** argv) {
     max_leaf = acc_policy.max_leaf;
     gmres_restart = acc_policy.gmres_restart;
     gmres_tol = acc_policy.gmres_tol;
+    if (use_fmm && is_obj && accurate_mode && !fast_obj_mode &&
+        gmres_tol_set && gmres_tol > 5e-5 &&
+        !bem_env_flag_enabled("BEM_ALLOW_LOOSE_OBJ_GMRES")) {
+        printf("  [Accuracy guard] OBJ --accurate with loose --gmres-tol %.1e is not reliable "
+               "for Mueller amplitudes; using 5e-5. Set --fast-obj or "
+               "BEM_ALLOW_LOOSE_OBJ_GMRES=1 for diagnostics.\n", gmres_tol);
+        gmres_tol = 5e-5;
+    }
     if (use_fmm && (is_hex_prism || is_obj) &&
         !bem_env_flag_present("BEM_GMRES_REORTH") &&
         bem_env_flag_enabled("BEM_FAST_REORTH_OFF", false))
@@ -1296,6 +1589,49 @@ int main(int argc, char** argv) {
         setenv("BEM_FMM_BATCH4", "1", 0);
     if (use_fmm && bem_env_flag_enabled("BEM_FMM_BATCH4"))
         setenv("BEM_FMM_ALLOC_BATCH4", "1", 0);
+
+    if (use_fmm && force_gpu_gmres)
+        setenv("BEM_GMRES_DEVICE", "1", 1);
+    if (use_fmm && krylov_kind_set && !force_gpu_gmres)
+        setenv("BEM_KRYLOV", krylov_kind, 1);
+    const char* krylov_env = std::getenv("BEM_KRYLOV");
+    const bool use_bicgstab =
+        use_fmm && krylov_env &&
+        (strcmp(krylov_env, "bicgstab") == 0 ||
+         strcmp(krylov_env, "bcgstab") == 0 ||
+         strcmp(krylov_env, "bicgstab-rr") == 0 ||
+         strcmp(krylov_env, "bicgstab_rr") == 0 ||
+         strcmp(krylov_env, "bcgstab-rr") == 0 ||
+         strcmp(krylov_env, "bcgstab_rr") == 0 ||
+         strcmp(krylov_env, "BiCGSTAB") == 0);
+    const bool use_bicgstab_rr =
+        use_fmm && krylov_env &&
+        (strcmp(krylov_env, "bicgstab-rr") == 0 ||
+         strcmp(krylov_env, "bicgstab_rr") == 0 ||
+         strcmp(krylov_env, "bcgstab-rr") == 0 ||
+         strcmp(krylov_env, "bcgstab_rr") == 0);
+    const bool use_krylov_auto =
+        use_fmm && krylov_env && strcmp(krylov_env, "auto") == 0;
+    const bool use_krylov_hybrid =
+        use_fmm && krylov_env && strcmp(krylov_env, "hybrid") == 0;
+    const bool use_cgs_rr =
+        use_fmm && krylov_env &&
+        (strcmp(krylov_env, "cgs-rr") == 0 ||
+         strcmp(krylov_env, "cgs_rr") == 0 ||
+         strcmp(krylov_env, "cgs") == 0);
+    if (use_bicgstab || use_cgs_rr || use_krylov_auto || use_krylov_hybrid)
+        no_prec = true;
+    const bool use_gpu_gmres =
+        use_fmm && !use_bicgstab && !use_cgs_rr && !use_krylov_auto && !use_krylov_hybrid &&
+        (force_gpu_gmres || bem_env_flag_enabled("BEM_GMRES_DEVICE"));
+    const char* output_krylov_solver = use_krylov_auto ? "auto_best_short_recurrence_gmres_gpu" :
+                                       (use_krylov_hybrid ?
+                                        (requested_gpu_adaptive ? "gpu_adaptive_short_recurrence_gmres" :
+                                         "gpu_native_short_recurrence_gmres") :
+                                       (use_cgs_rr ? "cgs_rr_gpu" :
+                                       (use_bicgstab_rr ? "bicgstab_rr_gpu" :
+                                        (use_bicgstab ? "bicgstab_gpu" :
+                                         (use_gpu_gmres ? "gmres_gpu_requested" : "gmres")))));
 
     PrecondPolicyInput prec_in;
     prec_in.use_fmm = use_fmm;
@@ -1370,6 +1706,9 @@ int main(int argc, char** argv) {
         std::snprintf(buf, sizeof(buf), "%d", acc_policy.gmres_inner_stagnation_min_iter);
         setenv("BEM_GMRES_INNER_STAGNATION_MIN_ITER", buf, 0);
     }
+    const bool coeffs_farfield_only =
+        use_fmm && bem_env_has_value("BEM_LOAD_COEFFS_FARFIELD_JSON");
+
     if (use_fmm) {
         const bool schwarz_prec = use_prec && bem_env_flag_enabled("BEM_PREC_BLOCK");
         const bool batch4_active = bem_env_flag_enabled("BEM_FMM_BATCH4");
@@ -1377,8 +1716,16 @@ int main(int argc, char** argv) {
         const char* prec_name = use_prec ? (schwarz_prec ? ", Schwarz prec" : ", block-Jacobi prec") : "";
         const char* batch4_name = batch4_active ? ", batch4" : "";
         const char* store_z_name = store_z_active ? ", store-Z" : "";
-        printf("  Mode: %s+GMRES (profile=%s, digits=%d, tol=%.0e, restart=%d, cycles=%d, max_leaf=%d%s%s%s)\n",
-               solver_name(solver), acc_policy.profile, fmm_digits, gmres_tol, gmres_restart, gmres_max_cycles, max_leaf,
+        const char* krylov_name = use_krylov_auto ? "Auto-best-GPU-Krylov" :
+                                  (use_krylov_hybrid ?
+                                   (requested_gpu_adaptive ? "GPU-adaptive Krylov" :
+                                    "GPU-native Krylov") :
+                                  (use_cgs_rr ? "CGS-RR-GPU" :
+                                  (use_bicgstab_rr ? "BiCGSTAB-RR-GPU" :
+                                   (use_bicgstab ? "BiCGSTAB-GPU" :
+                                    (use_gpu_gmres ? "GMRES (GPU requested)" : "GMRES")))));
+        printf("  Mode: %s+%s (profile=%s, digits=%d, tol=%.0e, restart=%d, cycles=%d, max_leaf=%d%s%s%s)\n",
+               solver_name(solver), krylov_name, acc_policy.profile, fmm_digits, gmres_tol, gmres_restart, gmres_max_cycles, max_leaf,
                prec_name, batch4_name, store_z_name);
     } else {
         printf("  Mode: Dense LU\n");
@@ -1436,13 +1783,18 @@ int main(int argc, char** argv) {
 	    fmm_op.n_form = n_form;
 	    fmm_op.n_form_eps_int = n_form_eps_int;
 	    fmm_op.n_form_m_identity = n_form_m_identity;
-	    fmm_op.init(rwg, mesh, k_ext, k_int, eta_ext_c, eta_int_c,
-	                 quad_order, fmm_digits, max_leaf, use_pfft, use_spfft);
+        if (coeffs_farfield_only) {
+            printf("  [CoeffFarfield] Skipping FMM assembly/residual check; "
+                   "using saved coefficients for far-field only.\n");
+        } else {
+	        fmm_op.init(rwg, mesh, k_ext, k_int, eta_ext_c, eta_int_c,
+	                     quad_order, fmm_digits, max_leaf, use_pfft, use_spfft);
+        }
 
 	    // Build preconditioner if requested
         NearFieldPrecond* precond_ptr = nullptr;
         NearFieldPrecond precond;
-        if (use_prec) {
+        if (use_prec && !coeffs_farfield_only) {
             precond.build(fmm_op);
             precond_ptr = &precond;
         }
@@ -1492,27 +1844,51 @@ int main(int argc, char** argv) {
 
             // Solve for both polarizations
             std::vector<cdouble> b_par(N2), b_perp(N2);
-            compute_rhs_planewave_pair_cached(ff_cache, k_ext, eta_ext, E_par, E_perp,
-                                             k_hat, b_par.data(), b_perp.data());
-            if (n_form) {
-                transform_rhs_to_n_form(b_par.data(), N, nform_rhs_mode);
-                transform_rhs_to_n_form(b_perp.data(), N, nform_rhs_mode);
-            }
-            if (std::abs(row_h_scale - std::complex<double>(1.0, 0.0)) > 0.0) {
-                for (int i = 0; i < N; i++) {
-                    b_par[N + i] *= row_h_scale;
-                    b_perp[N + i] *= row_h_scale;
+            if (!coeffs_farfield_only) {
+                compute_rhs_planewave_pair_cached(ff_cache, k_ext, eta_ext, E_par, E_perp,
+                                                 k_hat, b_par.data(), b_perp.data());
+                if (n_form) {
+                    transform_rhs_to_n_form(b_par.data(), N, nform_rhs_mode);
+                    transform_rhs_to_n_form(b_perp.data(), N, nform_rhs_mode);
+                }
+                if (std::abs(row_h_scale - std::complex<double>(1.0, 0.0)) > 0.0) {
+                    for (int i = 0; i < N; i++) {
+                        b_par[N + i] *= row_h_scale;
+                        b_perp[N + i] *= row_h_scale;
+                    }
                 }
             }
 
             std::vector<cdouble> x_par(N2, cdouble(0)), x_perp(N2, cdouble(0));
-            printf("\n  Solving both polarizations (paired GMRES)...\n");
-            fflush(stdout);
+            if (use_fmm && bem_env_has_value("BEM_CHECK_COEFFS_JSON")) {
+                const char* coeff_path = std::getenv("BEM_CHECK_COEFFS_JSON");
+                if (!load_coefficients_json(coeff_path, N, x_par, x_perp))
+                    return 1;
+                double rel_par = relative_residual(fmm_op, x_par.data(), b_par.data());
+                double rel_perp = relative_residual(fmm_op, x_perp.data(), b_perp.data());
+                printf("  [CoeffCheck] %s: relres_par=%.6e relres_perp=%.6e max=%.6e\n",
+                       coeff_path, rel_par, rel_perp, std::max(rel_par, rel_perp));
+                fflush(stdout);
+                if (bem_env_flag_enabled("BEM_CHECK_COEFFS_EXIT"))
+                    return 0;
+            }
             GmresPairedWorkspace single_gmres_ws;
-            output_gmres_matvecs = solve_pair_with_prec_fallback(
-                b_par.data(), b_perp.data(),
-                x_par.data(), x_perp.data(),
-                single_gmres_ws);
+            if (coeffs_farfield_only) {
+                const char* coeff_path = std::getenv("BEM_LOAD_COEFFS_FARFIELD_JSON");
+                if (!load_coefficients_json(coeff_path, N, x_par, x_perp))
+                    return 1;
+                single_gmres_ws.converged1 = true;
+                single_gmres_ws.converged2 = true;
+                printf("  [CoeffFarfield] single %s: residual check skipped\n", coeff_path);
+                fflush(stdout);
+            } else {
+                printf("\n  Solving both polarizations (paired %s)...\n", output_krylov_solver);
+                fflush(stdout);
+                output_gmres_matvecs = solve_pair_with_prec_fallback(
+                    b_par.data(), b_perp.data(),
+                    x_par.data(), x_perp.data(),
+                    single_gmres_ws);
+            }
             output_gmres_converged_systems = (single_gmres_ws.converged1 ? 1 : 0) +
                                              (single_gmres_ws.converged2 ? 1 : 0);
             output_gmres_nonconverged_systems = 2 - output_gmres_converged_systems;
@@ -1522,8 +1898,29 @@ int main(int argc, char** argv) {
             output_gmres_max_cycle_exhaustions = single_gmres_ws.reached_max_cycles ? 1 : 0;
             output_gmres_max_final_relres = std::max(single_gmres_ws.final_relres1,
                                                      single_gmres_ws.final_relres2);
+            if (!coeffs_farfield_only && use_gpu_gmres &&
+                !bem_env_flag_enabled("BEM_SKIP_HOST_RESIDUAL_CHECK")) {
+                double host_rel_par = relative_residual(fmm_op, x_par.data(), b_par.data());
+                double host_rel_perp = relative_residual(fmm_op, x_perp.data(), b_perp.data());
+                double host_rel = std::max(host_rel_par, host_rel_perp);
+                printf("  [PostSolveResidualCheck] relres_par=%.6e relres_perp=%.6e max=%.6e\n",
+                       host_rel_par, host_rel_perp, host_rel);
+                fflush(stdout);
+                output_gmres_max_final_relres = std::max(output_gmres_max_final_relres, host_rel);
+                if (host_rel > 2.0 * gmres_tol) {
+                    output_gmres_converged_systems = 0;
+                    output_gmres_nonconverged_systems = 2;
+                    printf("  [PostSolveResidualCheck] device GMRES result rejected: residual exceeds %.3e\n",
+                           2.0 * gmres_tol);
+                    fflush(stdout);
+                }
+            }
 
             time_solve = solve_timer.elapsed_s();
+
+            if (bem_env_has_value("BEM_EXPORT_COEFFS_JSON"))
+                export_coefficients_json(std::getenv("BEM_EXPORT_COEFFS_JSON"),
+                                         N, x_par.data(), x_perp.data());
 
             // Far-field
             Timer ff_timer;
@@ -1597,6 +1994,9 @@ int main(int argc, char** argv) {
             if (orient_file) {
                 if (!load_orientation_file(orient_file, orients))
                     return 1;
+            } else if (orient_bg_file) {
+                if (!load_beta_gamma_orientation_file(orient_bg_file, orients))
+                    return 1;
             } else {
                 orients = generate_orientations(n_alpha, n_beta, n_gamma);
                 reorder_orientations_nearest(orients);
@@ -1618,6 +2018,30 @@ int main(int argc, char** argv) {
             output_orientation_weight_sum = 0.0;
             for (const auto& o : orients)
                 output_orientation_weight_sum += o.weight;
+            std::vector<int> split_indices;
+            const bool split_orientation_outputs = orient_split_dir != nullptr;
+            int split_output_total = n_all;
+            if (split_orientation_outputs) {
+                if (!load_int_index_file(orient_split_indices_file, split_indices))
+                    return 1;
+                if ((int)split_indices.size() != n_total) {
+                    fprintf(stderr, "Error: --orient-split-indices has %zu entries, but chunk has %d orientations\n",
+                            split_indices.size(), n_total);
+                    return 1;
+                }
+                if (orient_split_total > 0) {
+                    split_output_total = orient_split_total;
+                } else {
+                    for (int idx : split_indices)
+                        split_output_total = std::max(split_output_total, idx + 1);
+                }
+                if (split_output_total < n_all) {
+                    fprintf(stderr, "Error: --orient-split-total=%d is smaller than chunk orientation count %d\n",
+                            split_output_total, n_all);
+                    return 1;
+                }
+                output_orient_total = split_output_total;
+            }
 
             // Far-field GPU cache
             FFCacheGPU ff_gpu;
@@ -1741,6 +2165,16 @@ int main(int argc, char** argv) {
                 ff_workspace.zero_mueller(ntheta);
                 printf("  GPU Mueller accumulation enabled (set BEM_FF_CPU_ACCUM=1 for CPU fallback)\n");
             }
+            if (split_orientation_outputs && !ff_alpha_direct) {
+                fprintf(stderr, "Error: --orient-split-dir currently requires GPU alpha-direct far-field accumulation\n");
+                return 1;
+            }
+            std::vector<double> M_split;
+            if (split_orientation_outputs) {
+                M_split.assign(16 * ntheta, 0.0);
+                std::fill(M_avg.begin(), M_avg.end(), 0.0);
+                printf("  Split orientation output enabled: %s\n", orient_split_dir);
+            }
             cdouble ik_val = cdouble(0, -1) * k_ext;
             auto flush_farfield_batch = [&]() {
                 if (batch_count == 0)
@@ -1851,10 +2285,17 @@ int main(int argc, char** argv) {
                             break;
                         }
                     }
-                    J0[i] = ca * jp - sa * ju;
-                    M0[i] = ca * mp - sa * mu;
-                    J1[i] = sa * jp + ca * ju;
-                    M1[i] = sa * mp + ca * mu;
+                    if (scattering_plane_yz) {
+                        J0[i] = ca * jp + sa * ju;
+                        M0[i] = ca * mp + sa * mu;
+                        J1[i] = -sa * jp + ca * ju;
+                        M1[i] = -sa * mp + ca * mu;
+                    } else {
+                        J0[i] = ca * jp - sa * ju;
+                        M0[i] = ca * mp - sa * mu;
+                        J1[i] = -sa * jp - ca * ju;
+                        M1[i] = -sa * mp - ca * mu;
+                    }
                 }
 
 	                for (int it = 0; it < ntheta; it++) {
@@ -1961,8 +2402,14 @@ int main(int argc, char** argv) {
                     for (int bi = 0; bi < rhs_count; bi++) {
                         Mat3& RT = orients[rhs_start + bi].RT;
                         rhs_batch_k[bi] = RT * Vec3(0, 0, 1);
-                        rhs_batch_par[bi] = RT * Vec3(1, 0, 0);
-                        rhs_batch_perp[bi] = RT * Vec3(0, 1, 0);
+                        if (scattering_plane_yz) {
+                            // ADDA yz-plane convention: alpha=0 has par=Y and per=X.
+                            rhs_batch_par[bi] = RT * Vec3(0, 1, 0);
+                            rhs_batch_perp[bi] = RT * Vec3(1, 0, 0);
+                        } else {
+                            rhs_batch_par[bi] = RT * Vec3(1, 0, 0);
+                            rhs_batch_perp[bi] = RT * Vec3(0, -1, 0);
+                        }
                     }
                     compute_rhs_planewave_pairs_cached_cuda_ws_scaled(
                         ff_gpu, rhs_workspace, k_ext, eta_ext,
@@ -1989,8 +2436,8 @@ int main(int argc, char** argv) {
                         }
                     } else {
                         Vec3 k_hat = RT * Vec3(0, 0, 1);
-                        Vec3 e_par = RT * Vec3(1, 0, 0);
-                        Vec3 e_perp = RT * Vec3(0, 1, 0);
+                        Vec3 e_par = scattering_plane_yz ? (RT * Vec3(0, 1, 0)) : (RT * Vec3(1, 0, 0));
+                        Vec3 e_perp = scattering_plane_yz ? (RT * Vec3(1, 0, 0)) : (RT * Vec3(0, -1, 0));
                         compute_rhs_planewave_pair_cached(ff_cache, k_ext, eta_ext, e_par, e_perp,
                                                          k_hat, b_par.data(), b_perp.data());
                     }
@@ -2007,26 +2454,83 @@ int main(int argc, char** argv) {
                         }
                     }
 
-                    if (warm_start == OrientWarmStart::Zero) {
-                        #pragma omp parallel for schedule(static) if(N2 > 4096)
-                        for (int i = 0; i < N2; i++) {
-                            x_par[i] = cdouble(0);
-                            x_perp[i] = cdouble(0);
-                        }
-                    } else if (warm_start == OrientWarmStart::Recycle) {
-                        recycle_initial_guess_pair(hist_b, hist_x,
-                                                   solve_b_par, solve_b_perp, N2,
-                                                   x_par.data(), x_perp.data());
+                    if (bem_env_has_value("BEM_CHECK_COEFFS_JSON")) {
+                        const char* coeff_path = std::getenv("BEM_CHECK_COEFFS_JSON");
+                        if (!load_coefficients_json(coeff_path, N, x_par, x_perp))
+                            return 1;
+                        double rel_par = relative_residual(fmm_op, x_par.data(), solve_b_par);
+                        double rel_perp = relative_residual(fmm_op, x_perp.data(), solve_b_perp);
+                        printf("  [CoeffCheck] orient %d %s: relres_par=%.6e relres_perp=%.6e max=%.6e\n",
+                               oi + 1, coeff_path, rel_par, rel_perp, std::max(rel_par, rel_perp));
+                        fflush(stdout);
+                        if (bem_env_flag_enabled("BEM_CHECK_COEFFS_EXIT"))
+                            return 0;
                     }
 
-                    Timer orient_solve_timer;
-                    int mv = solve_pair_with_prec_fallback(
-                        solve_b_par, solve_b_perp,
-                        x_par.data(), x_perp.data(),
-                        gmres_ws);
-                    time_solve += orient_solve_timer.elapsed_s();
+                    bool loaded_coeffs_for_farfield = false;
+                    int mv = 0;
+                    double one_solve_s = 0.0;
+                    if (bem_env_has_value("BEM_LOAD_COEFFS_FARFIELD_JSON")) {
+                        const char* coeff_path = std::getenv("BEM_LOAD_COEFFS_FARFIELD_JSON");
+                        if (!load_coefficients_json(coeff_path, N, x_par, x_perp))
+                            return 1;
+                        double rel_par = 0.0;
+                        double rel_perp = 0.0;
+                        if (!coeffs_farfield_only) {
+                            rel_par = relative_residual(fmm_op, x_par.data(), solve_b_par);
+                            rel_perp = relative_residual(fmm_op, x_perp.data(), solve_b_perp);
+                        }
+                        gmres_ws.final_relres1 = rel_par;
+                        gmres_ws.final_relres2 = rel_perp;
+                        gmres_ws.converged1 = true;
+                        gmres_ws.converged2 = true;
+                        loaded_coeffs_for_farfield = true;
+                        if (coeffs_farfield_only) {
+                            printf("  [CoeffFarfield] orient %d %s: residual check skipped\n",
+                                   oi + 1, coeff_path);
+                        } else {
+                            printf("  [CoeffFarfield] orient %d %s: relres_par=%.6e relres_perp=%.6e max=%.6e\n",
+                                   oi + 1, coeff_path, rel_par, rel_perp, std::max(rel_par, rel_perp));
+                        }
+                        fflush(stdout);
+                    } else {
+                        if (warm_start == OrientWarmStart::Zero) {
+                            #pragma omp parallel for schedule(static) if(N2 > 4096)
+                            for (int i = 0; i < N2; i++) {
+                                x_par[i] = cdouble(0);
+                                x_perp[i] = cdouble(0);
+                            }
+                        } else if (warm_start == OrientWarmStart::Recycle) {
+                            recycle_initial_guess_pair(hist_b, hist_x,
+                                                       solve_b_par, solve_b_perp, N2,
+                                                       x_par.data(), x_perp.data());
+                        }
+
+                        Timer orient_solve_timer;
+                        mv = solve_pair_with_prec_fallback(
+                            solve_b_par, solve_b_perp,
+                            x_par.data(), x_perp.data(),
+                            gmres_ws);
+                        one_solve_s = orient_solve_timer.elapsed_s();
+                    }
+                    time_solve += one_solve_s;
                     orient_matvecs += mv;
                     output_gmres_matvecs = orient_matvecs;
+                    if (!loaded_coeffs_for_farfield &&
+                        use_gpu_gmres && !bem_env_flag_enabled("BEM_SKIP_HOST_RESIDUAL_CHECK")) {
+                        double host_rel_par = relative_residual(fmm_op, x_par.data(), solve_b_par);
+                        double host_rel_perp = relative_residual(fmm_op, x_perp.data(), solve_b_perp);
+                        double host_rel = std::max(host_rel_par, host_rel_perp);
+                        if (host_rel > 2.0 * gmres_tol) {
+                            printf("  [PostSolveResidualCheck] orient %d rejected: relres_par=%.6e relres_perp=%.6e max=%.6e > %.3e\n",
+                                   oi + 1, host_rel_par, host_rel_perp, host_rel, 2.0 * gmres_tol);
+                            fflush(stdout);
+                            gmres_ws.converged1 = false;
+                            gmres_ws.converged2 = false;
+                        }
+                        gmres_ws.final_relres1 = std::max(gmres_ws.final_relres1, host_rel_par);
+                        gmres_ws.final_relres2 = std::max(gmres_ws.final_relres2, host_rel_perp);
+                    }
                     output_gmres_converged_systems += (gmres_ws.converged1 ? 1 : 0) +
                                                       (gmres_ws.converged2 ? 1 : 0);
                     output_gmres_nonconverged_systems += (gmres_ws.converged1 ? 0 : 1) +
@@ -2047,8 +2551,85 @@ int main(int argc, char** argv) {
                         push_history(hist_b, hist_x, solve_b_perp, x_perp.data(), N2, max_recycle);
                     }
 
+                    if (bem_env_has_value("BEM_EXPORT_COEFFS_JSON")) {
+                        if (n_total != 1) {
+                            fprintf(stderr,
+                                    "Error: BEM_EXPORT_COEFFS_JSON in FMM orientation-loop currently requires exactly one orientation, got %d\n",
+                                    n_total);
+                            return 1;
+                        }
+                        export_coefficients_json(std::getenv("BEM_EXPORT_COEFFS_JSON"),
+                                                 N, x_par.data(), x_perp.data());
+                    }
+
                     if (ff_alpha_direct) {
-                        append_alpha_direct_orientation(oi, RT, orients[oi].weight);
+                        if (split_orientation_outputs) {
+                            Timer ff_one_timer;
+                            ff_workspace.zero_mueller(ntheta);
+                            append_alpha_direct_orientation(oi, RT, orients[oi].weight);
+                            flush_alpha_direct_batch();
+                            ff_workspace.download_mueller(M_split.data(), ntheta);
+                            double one_farfield_s = ff_one_timer.elapsed_s();
+                            for (int mi = 0; mi < 16 * ntheta; mi++)
+                                M_avg[mi] += M_split[mi];
+                            std::string split_path = orient_part_path(orient_split_dir, split_indices[(size_t)oi]);
+                            write_json(split_path.c_str(), M_split.data(), theta_arr.data(), ntheta,
+                                       ka, n_re, n_im, refinements,
+                                       shape, obj_file, prism_aspect, edge_refine,
+                                       n_alpha, n_beta, n_gamma, alpha_avg,
+                                       split_indices[(size_t)oi], 1, split_output_total,
+                                       orients[oi].weight, mv,
+                                       (gmres_ws.converged1 ? 1 : 0) + (gmres_ws.converged2 ? 1 : 0),
+                                       (gmres_ws.converged1 ? 0 : 1) + (gmres_ws.converged2 ? 0 : 1),
+                                       gmres_ws.stopped_stagnant ? 1 : 0,
+                                       gmres_ws.numerical_breakdown ? 1 : 0,
+                                       gmres_ws.restored_best_iterate ? 1 : 0,
+                                       gmres_ws.reached_max_cycles ? 1 : 0,
+                                       std::max(gmres_ws.final_relres1, gmres_ws.final_relres2),
+                                       fmm_digits, max_leaf, gmres_restart, gmres_tol, gmres_max_cycles,
+                                       "disabled",
+                                       output_farfield_mode,
+                                       solver_name(solver), acc_policy.profile,
+                                       output_krylov_solver,
+                                       requested_system_kind, system_kind,
+                                       std::strcmp(requested_system_kind, system_kind) != 0,
+                                       quad_order, unknown_m_scale,
+                                       row_h_scale, int_op_sign, k_identity,
+                                       use_prec,
+                                       use_prec && bem_env_flag_enabled("BEM_PREC_BLOCK"),
+                                       !use_prec && (bem_env_flag_enabled("BEM_GMRES_DEVICE") || use_bicgstab || use_cgs_rr || use_krylov_auto || use_krylov_hybrid),
+                                       prec_policy.reason,
+                                       mesh_quality.vertices, mesh_quality.triangles,
+                                       mesh_quality.skinny_triangles,
+                                       mesh_quality.min_angle_deg, mesh_quality.max_aspect_ratio,
+                                       mesh_quality.feature_edges_30deg,
+                                       mesh_quality.feature_edge_fraction,
+                                       mesh_quality.max_dihedral_deg,
+                                       mesh_quality.mean_feature_dihedral_deg,
+                                       mesh_quality.max_adjacent_area_ratio,
+                                       mesh_quality.near_touch_checked,
+                                       mesh_quality.near_touch_ratio,
+                                       mesh_quality.near_touch_pairs,
+                                       mesh_quality.self_panel_count,
+                                       mesh_quality.edge_adjacent_pair_count,
+                                       mesh_quality.vertex_adjacent_pair_count,
+                                       mesh_quality.near_disjoint_pair_count,
+                                       mesh_quality.taylor_duffy_candidate_count,
+                                       mesh_quality.recommended_min_quad_order,
+                                       mesh_quality.recommended_mesh_strategy.c_str(),
+                                       mesh_quality.recommended_mesh_action.c_str(),
+                                       mesh_quality.voxel_surface_like,
+                                       mesh_quality.requires_remesh,
+                                       mesh_quality.edge_refine_requested, mesh_quality.edge_refine_applied,
+                                       mesh_quality.edge_refine_uniform_fallback,
+                                       mesh_quality.pass_default_gate,
+                                       time_assembly / std::max(1, n_total),
+                                       one_solve_s,
+                                       one_farfield_s,
+                                       time_assembly / std::max(1, n_total) + one_solve_s + one_farfield_s);
+                        } else {
+                            append_alpha_direct_orientation(oi, RT, orients[oi].weight);
+                        }
                     } else if (alpha_avg == 1) {
                         append_farfield_sample(oi, RT, 1.0, 0.0, orients[oi].weight);
                     } else {
@@ -2063,19 +2644,22 @@ int main(int argc, char** argv) {
                                oi + 1, n_total, (double)orient_matvecs / (oi + 1));
                 }
             }
-	            if (ff_alpha_direct)
-	                flush_alpha_direct_batch();
-	            else
-	                flush_farfield_batch();
-	            if (ff_gpu_accum)
-	                ff_workspace.download_mueller(M_avg.data(), ntheta);
+		            if (!split_orientation_outputs) {
+		                if (ff_alpha_direct)
+		                    flush_alpha_direct_batch();
+		                else
+		                    flush_farfield_batch();
+		                if (ff_gpu_accum)
+		                    ff_workspace.download_mueller(M_avg.data(), ntheta);
+		            }
             if (alpha_avg > 1)
                 printf("  Averaged over %d solved orientations x %d alpha samples.\n", n_total, alpha_avg);
             else
                 printf("  Averaged over %d orientations.\n", n_total);
         }
 
-        fmm_op.cleanup();
+        if (!coeffs_farfield_only)
+            fmm_op.cleanup();
 
     } else {
         // ============================================================
@@ -2114,6 +2698,10 @@ int main(int argc, char** argv) {
 
 	            lu_solve_cuda(Z.data(), ipiv.data(), N2, B.data(), 2);
 	            time_solve = solve_timer.elapsed_s();
+
+            if (bem_env_has_value("BEM_EXPORT_COEFFS_JSON"))
+                export_coefficients_json(std::getenv("BEM_EXPORT_COEFFS_JSON"),
+                                         N, &B[0], &B[N2]);
 
             Timer ff_timer;
             std::complex<double>* J_par  = &B[0];
@@ -2186,6 +2774,9 @@ int main(int argc, char** argv) {
             if (orient_file) {
                 if (!load_orientation_file(orient_file, orients))
                     return 1;
+            } else if (orient_bg_file) {
+                if (!load_beta_gamma_orientation_file(orient_bg_file, orients))
+                    return 1;
             } else {
                 orients = generate_orientations(n_alpha, n_beta, n_gamma);
                 reorder_orientations_nearest(orients);
@@ -2220,8 +2811,13 @@ int main(int argc, char** argv) {
 	            for (int oi = 0; oi < n_total; oi++) {
 	                Mat3& RT = orients[oi].RT;
 	                rhs_k_hat[oi] = RT * Vec3(0, 0, 1);
+	                if (scattering_plane_yz) {
+		                rhs_e_par[oi] = RT * Vec3(0, 1, 0);
+		                rhs_e_perp[oi] = RT * Vec3(1, 0, 0);
+                    } else {
 		                rhs_e_par[oi] = RT * Vec3(1, 0, 0);
-		                rhs_e_perp[oi] = RT * Vec3(0, 1, 0);
+		                rhs_e_perp[oi] = RT * Vec3(0, -1, 0);
+                    }
 	            }
 	            bool use_gpu_rhs = !bem_env_flag_enabled("BEM_NO_GPU_RHS");
 	            if (use_gpu_rhs) {
@@ -2264,6 +2860,16 @@ int main(int argc, char** argv) {
 	            printf("  Solving %d RHS with LU...\n", n_total * 2);
 	            lu_solve_full(Z.data(), N2, B, n_total * 2);
 	            time_solve = solve_timer.elapsed_s();
+
+            if (bem_env_has_value("BEM_EXPORT_COEFFS_JSON")) {
+                if (n_total != 1) {
+                    fprintf(stderr, "Error: BEM_EXPORT_COEFFS_JSON in orientation-loop currently requires exactly one orientation, got %d\n",
+                            n_total);
+                    return 1;
+                }
+                export_coefficients_json(std::getenv("BEM_EXPORT_COEFFS_JSON"),
+                                         N, &B[0], &B[N2]);
+            }
 
             // Phase 3: Far-field + Mueller accumulation (GPU batched)
             Timer ff_timer;
@@ -2558,28 +3164,36 @@ int main(int argc, char** argv) {
                 batch_count = 0;
             };
 
-            auto append_dense_farfield_sample = [&](int oi, const Mat3& RT, double ca, double sa, double weight) {
-                if (batch_count == ff_batch_orient)
-                    flush_mueller_batch();
-                std::complex<double>* X_par  = &B[oi * 2 * N2];
-                std::complex<double>* X_perp = &B[(oi * 2 + 1) * N2];
-                int bi = batch_count++;
-                batch_weights[bi] = weight;
+	            auto append_dense_farfield_sample = [&](int oi, const Mat3& RT, double ca, double sa, double weight) {
+	                if (batch_count == ff_batch_orient)
+	                    flush_mueller_batch();
+	                std::complex<double>* X_par  = &B[oi * 2 * N2];
+	                std::complex<double>* X_perp = &B[(oi * 2 + 1) * N2];
+	                double inv_s = (unknown_m_scale == 1.0) ? 1.0 : (1.0 / unknown_m_scale);
+	                int bi = batch_count++;
+	                batch_weights[bi] = weight;
 
-                cdouble* J0 = &batch_coeffs_J[(2*bi) * N];
-                cdouble* M0 = &batch_coeffs_M[(2*bi) * N];
+	                cdouble* J0 = &batch_coeffs_J[(2*bi) * N];
+	                cdouble* M0 = &batch_coeffs_M[(2*bi) * N];
                 cdouble* J1 = &batch_coeffs_J[(2*bi+1) * N];
                 cdouble* M1 = &batch_coeffs_M[(2*bi+1) * N];
-                #pragma omp parallel for schedule(static) if(orient_pack_omp && N > 2048)
-                for (int i = 0; i < N; i++) {
-                    cdouble jp = X_par[i];
-                    cdouble mp = X_par[N + i];
-                    cdouble ju = X_perp[i];
-                    cdouble mu = X_perp[N + i];
-                    J0[i] = ca * jp - sa * ju;
-                    M0[i] = ca * mp - sa * mu;
-                    J1[i] = sa * jp + ca * ju;
-                    M1[i] = sa * mp + ca * mu;
+	                #pragma omp parallel for schedule(static) if(orient_pack_omp && N > 2048)
+	                for (int i = 0; i < N; i++) {
+	                    cdouble jp = X_par[i];
+	                    cdouble mp = X_par[N + i] * inv_s;
+	                    cdouble ju = X_perp[i];
+	                    cdouble mu = X_perp[N + i] * inv_s;
+	                    if (scattering_plane_yz) {
+	                        J0[i] = ca * jp + sa * ju;
+	                        M0[i] = ca * mp + sa * mu;
+                        J1[i] = -sa * jp + ca * ju;
+                        M1[i] = -sa * mp + ca * mu;
+                    } else {
+                        J0[i] = ca * jp - sa * ju;
+                        M0[i] = ca * mp - sa * mu;
+                        J1[i] = -sa * jp - ca * ju;
+                        M1[i] = -sa * mp - ca * mu;
+                    }
                 }
 
                 for (int it = 0; it < ntheta; it++) {
@@ -2657,6 +3271,7 @@ int main(int argc, char** argv) {
 	                    flush_alpha_direct_batch();
 	                std::complex<double>* X_par  = &B[oi * 2 * N2];
 	                std::complex<double>* X_perp = &B[(oi * 2 + 1) * N2];
+	                double inv_s = (unknown_m_scale == 1.0) ? 1.0 : (1.0 / unknown_m_scale);
 	                int bi = base_batch_count++;
 	                double* RT_out = &batch_RT[(size_t)bi * 9];
 	                for (int r = 0; r < 3; r++)
@@ -2670,9 +3285,9 @@ int main(int argc, char** argv) {
 	                #pragma omp parallel for schedule(static) if(orient_pack_omp && N > 2048)
 	                for (int i = 0; i < N; i++) {
 	                    J0[i] = X_par[i];
-	                    M0[i] = X_par[N + i];
+	                    M0[i] = X_par[N + i] * inv_s;
 	                    J1[i] = X_perp[i];
-	                    M1[i] = X_perp[N + i];
+	                    M1[i] = X_perp[N + i] * inv_s;
 	                }
 
 	                double sample_weight = weight / (double)alpha_avg;
@@ -2781,17 +3396,20 @@ int main(int argc, char** argv) {
                random_orientation_projection,
                output_farfield_mode,
                solver_name(solver), acc_policy.profile,
+               output_krylov_solver,
                requested_system_kind, system_kind,
                std::strcmp(requested_system_kind, system_kind) != 0,
                quad_order,
                unknown_m_scale, row_h_scale, int_op_sign, k_identity,
                use_prec,
                use_prec && bem_env_flag_enabled("BEM_PREC_BLOCK"),
+               !use_prec && (bem_env_flag_enabled("BEM_GMRES_DEVICE") || use_bicgstab || use_cgs_rr || use_krylov_auto || use_krylov_hybrid),
                prec_policy.reason,
                mesh_quality.vertices, mesh_quality.triangles,
                mesh_quality.skinny_triangles, mesh_quality.min_angle_deg,
                mesh_quality.max_aspect_ratio,
                mesh_quality.feature_edges_30deg,
+               mesh_quality.feature_edge_fraction,
                mesh_quality.max_dihedral_deg,
                mesh_quality.mean_feature_dihedral_deg,
                mesh_quality.max_adjacent_area_ratio,
@@ -2805,6 +3423,7 @@ int main(int argc, char** argv) {
                mesh_quality.recommended_min_quad_order,
                mesh_quality.recommended_mesh_strategy.c_str(),
                mesh_quality.recommended_mesh_action.c_str(),
+               mesh_quality.voxel_surface_like,
                mesh_quality.requires_remesh,
                mesh_quality.edge_refine_requested, mesh_quality.edge_refine_applied,
                mesh_quality.edge_refine_uniform_fallback,

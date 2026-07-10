@@ -39,4 +39,33 @@ int gmres_solve_paired_ws(BemFmmOperator& op,
     bool verbose, NearFieldPrecond* precond,
     GmresPairedWorkspace& ws);
 
+// Experimental short-recurrence GPU solver.  It is intended for large
+// unpreconditioned FMM solves where GMRES orthogonalization and basis storage
+// dominate.  It reuses the same convergence/status fields as GMRES.
+int bicgstab_solve_paired_device_ws(BemFmmOperator& op,
+    const cdouble* b1, const cdouble* b2,
+    cdouble* x1, cdouble* x2,
+    int restart, double tol, int maxiter,
+    bool verbose, GmresPairedWorkspace& ws);
+
+// BiCGSTAB with residual replacement.  This keeps the short GPU recurrence
+// but periodically recomputes the true residual and restarts the shadow
+// residual/search direction from it, limiting residual drift on non-normal BEM
+// systems.
+int bicgstab_rr_solve_paired_device_ws(BemFmmOperator& op,
+    const cdouble* b1, const cdouble* b2,
+    cdouble* x1, cdouble* x2,
+    int restart, double tol, int maxiter,
+    bool verbose, GmresPairedWorkspace& ws);
+
+// Conjugate-gradient-squared with residual replacement.  This is another
+// short-recurrence GPU solver for non-Hermitian PMCHWT systems.  It avoids the
+// long GMRES basis and orthogonalization, but keeps true-residual checks so the
+// reported convergence remains tied to ||b-Ax||.
+int cgs_rr_solve_paired_device_ws(BemFmmOperator& op,
+    const cdouble* b1, const cdouble* b2,
+    cdouble* x1, cdouble* x2,
+    int restart, double tol, int maxiter,
+    bool verbose, GmresPairedWorkspace& ws);
+
 #endif

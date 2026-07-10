@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cerrno>
 #include <cstring>
+#include <cstdlib>
 #include <sys/stat.h>
 #include <sys/types.h>
 
@@ -92,16 +93,19 @@ void write_json(const char* filename,
                 const char* random_orientation_projection,
                 const char* farfield_mode,
                 const char* solver_backend, const char* solver_profile,
+                const char* krylov_solver,
                 const char* requested_system_kind, const char* system_kind,
                 bool system_canonicalized,
                 int quad_order, double unknown_m_scale,
                 std::complex<double> row_h_scale,
                 double int_op_sign, double k_identity,
                 bool preconditioner_enabled, bool schwarz_preconditioner,
+                bool device_gmres,
                 const char* preconditioner_reason,
                 int mesh_vertices, int mesh_triangles, int mesh_skinny_triangles,
                 double mesh_min_angle_deg, double mesh_max_aspect_ratio,
                 int mesh_feature_edges_30deg,
+                double mesh_feature_edge_fraction,
                 double mesh_max_dihedral_deg,
                 double mesh_mean_feature_dihedral_deg,
                 double mesh_max_adjacent_area_ratio,
@@ -116,6 +120,7 @@ void write_json(const char* filename,
                 int mesh_recommended_min_quad_order,
                 const char* mesh_recommended_strategy,
                 const char* mesh_recommended_action,
+                bool mesh_voxel_surface_like,
                 bool mesh_requires_remesh,
                 int edge_refine_requested, int edge_refine_applied,
                 bool edge_refine_uniform_fallback,
@@ -168,9 +173,27 @@ void write_json(const char* filename,
     fprintf(f, "  \"gmres_restart\": %d,\n", gmres_restart);
     fprintf(f, "  \"gmres_tol\": %.17g,\n", gmres_tol);
     fprintf(f, "  \"gmres_max_cycles\": %d,\n", gmres_max_cycles);
+    fprintf(f, "  \"solver_backend\": ");
+    write_json_string(f, solver_backend ? solver_backend : "unknown");
+    fprintf(f, ",\n");
+    fprintf(f, "  \"solver_profile\": ");
+    write_json_string(f, solver_profile ? solver_profile : "unknown");
+    fprintf(f, ",\n");
+    fprintf(f, "  \"krylov_solver\": ");
+    write_json_string(f, krylov_solver ? krylov_solver : "gmres");
+    fprintf(f, ",\n");
+    fprintf(f, "  \"requested_system\": ");
+    write_json_string(f, requested_system_kind ? requested_system_kind : "unknown");
+    fprintf(f, ",\n");
+    fprintf(f, "  \"system\": ");
+    write_json_string(f, system_kind ? system_kind : "unknown");
+    fprintf(f, ",\n");
+    fprintf(f, "  \"device_gmres\": %s,\n", device_gmres ? "true" : "false");
+    fprintf(f, "  \"preconditioner_enabled\": %s,\n", preconditioner_enabled ? "true" : "false");
     fprintf(f, "  \"method\": {\n");
     write_json_key_string(f, "solver_backend", solver_backend ? solver_backend : "unknown", true);
     write_json_key_string(f, "solver_profile", solver_profile ? solver_profile : "unknown", true);
+    write_json_key_string(f, "krylov_solver", krylov_solver ? krylov_solver : "gmres", true);
     write_json_key_string(f, "requested_system", requested_system_kind ? requested_system_kind : "unknown", true);
     write_json_key_string(f, "system", system_kind ? system_kind : "unknown", true);
     fprintf(f, "    \"system_canonicalized\": %s,\n",
@@ -185,10 +208,18 @@ void write_json(const char* filename,
             row_h_scale.real(), row_h_scale.imag());
     fprintf(f, "    \"interior_operator_sign\": %.17g,\n", int_op_sign);
     fprintf(f, "    \"k_identity_jump\": %.17g,\n", k_identity);
+    fprintf(f, "    \"farfield_phase_sign\": %.17g,\n",
+            std::getenv("BEM_FF_PHASE_SIGN") ? std::atof(std::getenv("BEM_FF_PHASE_SIGN")) : -1.0);
+    fprintf(f, "    \"farfield_j_scale\": %.17g,\n",
+            std::getenv("BEM_FF_J_SCALE") ? std::atof(std::getenv("BEM_FF_J_SCALE")) : 1.0);
+    fprintf(f, "    \"farfield_m_sign\": %.17g,\n",
+            std::getenv("BEM_FF_M_SIGN") ? std::atof(std::getenv("BEM_FF_M_SIGN")) : -1.0);
     fprintf(f, "    \"preconditioner_enabled\": %s,\n",
             preconditioner_enabled ? "true" : "false");
     fprintf(f, "    \"schwarz_preconditioner\": %s,\n",
             schwarz_preconditioner ? "true" : "false");
+    fprintf(f, "    \"device_gmres\": %s,\n",
+            device_gmres ? "true" : "false");
     write_json_key_string(f, "preconditioner_reason", preconditioner_reason ? preconditioner_reason : "unknown", true);
     write_json_key_string(f, "farfield_mode", farfield_mode ? farfield_mode : "unknown", false);
     fprintf(f, "  },\n");
@@ -199,6 +230,7 @@ void write_json(const char* filename,
     fprintf(f, "    \"min_angle_deg\": %.17g,\n", mesh_min_angle_deg);
     fprintf(f, "    \"max_aspect_ratio\": %.17g,\n", mesh_max_aspect_ratio);
     fprintf(f, "    \"feature_edges_30deg\": %d,\n", mesh_feature_edges_30deg);
+    fprintf(f, "    \"feature_edge_fraction\": %.17g,\n", mesh_feature_edge_fraction);
     fprintf(f, "    \"max_dihedral_deg\": %.17g,\n", mesh_max_dihedral_deg);
     fprintf(f, "    \"mean_feature_dihedral_deg\": %.17g,\n", mesh_mean_feature_dihedral_deg);
     fprintf(f, "    \"max_adjacent_area_ratio\": %.17g,\n", mesh_max_adjacent_area_ratio);
@@ -214,6 +246,8 @@ void write_json(const char* filename,
     fprintf(f, "    \"recommended_min_quad_order\": %d,\n", mesh_recommended_min_quad_order);
     write_json_key_string(f, "recommended_mesh_strategy", mesh_recommended_strategy, true);
     write_json_key_string(f, "recommended_mesh_action", mesh_recommended_action, true);
+    fprintf(f, "    \"voxel_surface_like\": %s,\n",
+            mesh_voxel_surface_like ? "true" : "false");
     fprintf(f, "    \"requires_remesh\": %s,\n", mesh_requires_remesh ? "true" : "false");
     fprintf(f, "    \"edge_refine_requested\": %d,\n", edge_refine_requested);
     fprintf(f, "    \"edge_refine_applied\": %d,\n", edge_refine_applied);

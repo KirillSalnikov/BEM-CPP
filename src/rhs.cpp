@@ -1,5 +1,6 @@
 #include "rhs.h"
 #include "farfield.h"
+#include "gpu_select.h"
 #include "quadrature.h"
 #include <cuda_runtime.h>
 #include <cstring>
@@ -7,6 +8,14 @@
 #include <cstdlib>
 #include <algorithm>
 #include <vector>
+
+namespace {
+double rhs_h_sign()
+{
+    double s = bem_env_double("BEM_RHS_H_SIGN", 1.0);
+    return (s < 0.0) ? -1.0 : 1.0;
+}
+}
 
 void compute_rhs_planewave(const RWG& rwg, const Mesh& mesh,
                            std::complex<double> k_ext, double eta_ext,
@@ -19,7 +28,7 @@ void compute_rhs_planewave(const RWG& rwg, const Mesh& mesh,
     int Nq = quad.npts;
 
     // H0 = k_hat x E0 / eta_ext
-    Vec3 H0 = k_hat.cross(E0) * (1.0 / eta_ext);
+    Vec3 H0 = k_hat.cross(E0) * (rhs_h_sign() / eta_ext);
 
     std::vector<double> lam0(Nq);
     for (int q = 0; q < Nq; q++)
@@ -79,8 +88,9 @@ void compute_rhs_planewave_pair(const RWG& rwg, const Mesh& mesh,
     TriQuad quad = tri_quadrature(quad_order);
     int Nq = quad.npts;
 
-    Vec3 H0_a = k_hat.cross(E0_a) * (1.0 / eta_ext);
-    Vec3 H0_b = k_hat.cross(E0_b) * (1.0 / eta_ext);
+    const double hsign = rhs_h_sign();
+    Vec3 H0_a = k_hat.cross(E0_a) * (hsign / eta_ext);
+    Vec3 H0_b = k_hat.cross(E0_b) * (hsign / eta_ext);
 
     std::vector<double> lam0(Nq);
     for (int q = 0; q < Nq; q++)
@@ -140,8 +150,9 @@ void compute_rhs_planewave_pair_cached(const FFCache& cache,
 {
     int N = cache.N;
     int Nq = cache.Nq;
-    Vec3 H0_a = k_hat.cross(E0_a) * (1.0 / eta_ext);
-    Vec3 H0_b = k_hat.cross(E0_b) * (1.0 / eta_ext);
+    const double hsign = rhs_h_sign();
+    Vec3 H0_a = k_hat.cross(E0_a) * (hsign / eta_ext);
+    Vec3 H0_b = k_hat.cross(E0_b) * (hsign / eta_ext);
 
     std::fill_n(b_a, 2 * N, std::complex<double>(0.0, 0.0));
     std::fill_n(b_b, 2 * N, std::complex<double>(0.0, 0.0));
@@ -288,7 +299,7 @@ __global__ void rhs_pairs_cached_kernel(const double* __restrict__ qpts,
                                         const double* __restrict__ fvals,
                                         const double* __restrict__ jw,
                                         const RHSOrientDevice* __restrict__ orient,
-                                        double k_re, double k_im, double inv_eta,
+                                        double k_re, double k_im, double inv_eta, double h_sign,
                                         double row_h_re, double row_h_im,
                                         int N, int Nq, int n_orient,
                                         double2* __restrict__ B)
@@ -302,12 +313,12 @@ __global__ void rhs_pairs_cached_kernel(const double* __restrict__ qpts,
     Vec3 ka = o.k_hat;
     Vec3 ea = o.E0_a;
     Vec3 eb = o.E0_b;
-    double hax = (ka.y * ea.z - ka.z * ea.y) * inv_eta;
-    double hay = (ka.z * ea.x - ka.x * ea.z) * inv_eta;
-    double haz = (ka.x * ea.y - ka.y * ea.x) * inv_eta;
-    double hbx = (ka.y * eb.z - ka.z * eb.y) * inv_eta;
-    double hby = (ka.z * eb.x - ka.x * eb.z) * inv_eta;
-    double hbz = (ka.x * eb.y - ka.y * eb.x) * inv_eta;
+    double hax = (ka.y * ea.z - ka.z * ea.y) * inv_eta * h_sign;
+    double hay = (ka.z * ea.x - ka.x * ea.z) * inv_eta * h_sign;
+    double haz = (ka.x * ea.y - ka.y * ea.x) * inv_eta * h_sign;
+    double hbx = (ka.y * eb.z - ka.z * eb.y) * inv_eta * h_sign;
+    double hby = (ka.z * eb.x - ka.x * eb.z) * inv_eta * h_sign;
+    double hbz = (ka.x * eb.y - ka.y * eb.x) * inv_eta * h_sign;
 
     double bEa_re = 0.0, bEa_im = 0.0;
     double bHa_re = 0.0, bHa_im = 0.0;
@@ -398,9 +409,10 @@ int compute_rhs_planewave_pairs_cached_cuda(const FFCache& cache,
 
     dim3 block(128);
     dim3 grid((N + (int)block.x - 1) / (int)block.x, n_orient);
+    const double hsign = rhs_h_sign();
     rhs_pairs_cached_kernel<<<grid, block>>>(
         d_qpts, d_fvals, d_jw, d_orient,
-        k_ext.real(), k_ext.imag(), 1.0 / eta_ext,
+        k_ext.real(), k_ext.imag(), 1.0 / eta_ext, hsign,
         1.0, 0.0,
         N, Nq, n_orient, d_B);
     CUDA_CHECK(cudaGetLastError());
@@ -478,10 +490,11 @@ int compute_rhs_planewave_pairs_cached_cuda_ws_scaled(const FFCacheGPU& gpu_cach
 
     dim3 block(128);
     dim3 grid((N + (int)block.x - 1) / (int)block.x, n_orient);
+    const double hsign = rhs_h_sign();
     rhs_pairs_cached_kernel<<<grid, block, 0, workspace.stream>>>(
         gpu_cache.d_qpts, gpu_cache.d_fvals, gpu_cache.d_jw,
         d_orient,
-        k_ext.real(), k_ext.imag(), 1.0 / eta_ext,
+        k_ext.real(), k_ext.imag(), 1.0 / eta_ext, hsign,
         row_h_scale.real(), row_h_scale.imag(),
         N, Nq, n_orient, d_B);
     CUDA_CHECK(cudaGetLastError());

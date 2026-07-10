@@ -125,6 +125,10 @@ def main():
     p.add_argument("--ntheta", default="181")
     p.add_argument("--scat-plane", choices=["yz", "xz"], default="yz")
     p.add_argument("--orient", nargs=3, default=["8", "8", "1"])
+    p.add_argument("--orient-file", default=None,
+                   help="Explicit alpha beta gamma [weight] orientation file")
+    p.add_argument("--orient-bg-file", default=None,
+                   help="Explicit beta gamma [weight] file; compatible with --alpha-avg")
     p.add_argument("--alpha-avg", default="1",
                    help="Average alpha/phi in far-field only; use with --orient 1 NB NG")
     p.add_argument("--oldauto", choices=["2"], default=None,
@@ -139,9 +143,13 @@ def main():
     p.add_argument("--gmres-restart", default=None)
     p.add_argument("--max-leaf", default=None)
     p.add_argument("--no-prec", action="store_true")
+    p.add_argument("--force-prec", action="store_true",
+                   help="force the automatic FMM preconditioner policy")
     p.add_argument("--cuda-lib", default="")
     p.add_argument("--allow-compute-share", action="store_true",
                    help="allow using GPUs that already have CUDA compute processes")
+    p.add_argument("--gmres-verbose", action="store_true",
+                   help="print GMRES residual progress from each worker")
     args = p.parse_args()
 
     if args.oldauto == "2":
@@ -149,7 +157,19 @@ def main():
         args.ntheta = "181"
 
     gpus = parse_gpus(args.gpus)
-    n_orient = int(args.orient[0]) * int(args.orient[1]) * int(args.orient[2])
+    if args.orient_file and args.orient_bg_file:
+        raise SystemExit("use either --orient-file or --orient-bg-file, not both")
+    if args.orient_file or args.orient_bg_file:
+        orient_path = args.orient_file or args.orient_bg_file
+        with open(orient_path, "r") as f:
+            n_orient = sum(
+                1 for line in f
+                if line.strip() and not line.lstrip().startswith("#")
+            )
+        if n_orient <= 0:
+            raise SystemExit("orientation file is empty: %s" % orient_path)
+    else:
+        n_orient = int(args.orient[0]) * int(args.orient[1]) * int(args.orient[2])
     if args.min_orient_per_gpu > 0 and gpus:
         useful = max(1, n_orient // args.min_orient_per_gpu)
         gpus = gpus[:max(1, min(len(gpus), useful))]
@@ -188,6 +208,10 @@ def main():
             cmd += ["--obj", args.obj, "--subdiv", args.subdiv]
         if int(args.alpha_avg) > 1:
             cmd += ["--alpha-avg", args.alpha_avg]
+        if args.orient_file:
+            cmd += ["--orient-file", args.orient_file]
+        if args.orient_bg_file:
+            cmd += ["--orient-bg-file", args.orient_bg_file]
         if args.quad is not None:
             cmd += ["--quad", args.quad]
         if args.fmm_digits is not None:
@@ -211,6 +235,10 @@ def main():
         env = os.environ.copy()
         env["CUDA_VISIBLE_DEVICES"] = gpus[idx % len(gpus)]
         env.setdefault("BEM_NO_AUTO_MGPU", "1")
+        if args.force_prec:
+            env["BEM_PREC_FORCE"] = "1"
+        if args.gmres_verbose:
+            env["BEM_GMRES_VERBOSE"] = "1"
         if args.omp_threads > 0:
             env.setdefault("OMP_NUM_THREADS", str(args.omp_threads))
             env.setdefault("OMP_PROC_BIND", "close")
@@ -232,6 +260,20 @@ def main():
     result = parts[0]
     for part in parts[1:]:
         add_mueller(result["mueller"], part["mueller"])
+
+    result["orient_start"] = min(int(p.get("orient_start", 0) or 0) for p in parts)
+    result["orient_count"] = sum(int(p.get("orient_count", 0) or 0) for p in parts)
+    result["orientation_weight_sum"] = sum(float(p.get("orientation_weight_sum", 0.0) or 0.0) for p in parts)
+    result["gmres_matvecs"] = sum(int(p.get("gmres_matvecs", 0) or 0) for p in parts)
+    result["gmres_converged_systems"] = sum(int(p.get("gmres_converged_systems", 0) or 0) for p in parts)
+    result["gmres_nonconverged_systems"] = sum(int(p.get("gmres_nonconverged_systems", 0) or 0) for p in parts)
+    result["gmres_stagnation_stops"] = sum(int(p.get("gmres_stagnation_stops", 0) or 0) for p in parts)
+    result["gmres_numerical_breakdowns"] = sum(int(p.get("gmres_numerical_breakdowns", 0) or 0) for p in parts)
+    result["gmres_restored_best_iterates"] = sum(int(p.get("gmres_restored_best_iterates", 0) or 0) for p in parts)
+    result["gmres_max_cycle_exhaustions"] = sum(int(p.get("gmres_max_cycle_exhaustions", 0) or 0) for p in parts)
+    result["gmres_max_final_relres"] = max(float(p.get("gmres_max_final_relres", 0.0) or 0.0) for p in parts)
+    if result["orient_count"] > 0:
+        result["gmres_matvecs_per_orientation"] = result["gmres_matvecs"] / float(result["orient_count"])
 
     result["timing"] = {
         "assembly_s": max(p["timing"]["assembly_s"] for p in parts),

@@ -30,15 +30,16 @@ int main()
                12, 2, 0, 0, 0, 0, 0, 1e-3,
                4, 96, 200, 1e-3, 80,
                "not_applicable", "gpu_geometry_direct",
-               "FMM", "hex_guarded", "muller2-balanced", "balanced", true,
+               "FMM", "hex_guarded", "gmres", "muller2-balanced", "balanced", true,
                7, 1.3116, std::complex<double>(0.7624, -0.001), 1.0, 0.0,
-               false, false, "small_nonsphere",
+               false, false, false, "small_nonsphere",
                1058, 2112, 0, 44.70465569859524, 1.39,
-               72, 90.0, 90.0, 1.25,
+               72, 0.022727272727272728, 90.0, 90.0, 1.25,
                true, 1.11, 0,
                2112, 3168, 0, 0, 5280,
                7, "edge_aware_refinement",
                "keep conforming edge-aware refinement near sharp dihedral edges",
+               false,
                false,
                1, 0, true,
                true,
@@ -72,6 +73,7 @@ int main()
     require_contains(text, "\"triangles\": 2112");
     require_contains(text, "\"skinny_triangles\": 0");
     require_contains(text, "\"feature_edges_30deg\": 72");
+    require_contains(text, "\"feature_edge_fraction\": 0.022727272727272728");
     require_contains(text, "\"max_dihedral_deg\": 90");
     require_contains(text, "\"mean_feature_dihedral_deg\": 90");
     require_contains(text, "\"max_adjacent_area_ratio\": 1.25");
@@ -85,6 +87,7 @@ int main()
     require_contains(text, "\"recommended_min_quad_order\": 7");
     require_contains(text, "\"recommended_mesh_strategy\": \"edge_aware_refinement\"");
     require_contains(text, "\"recommended_mesh_action\": \"keep conforming edge-aware refinement near sharp dihedral edges\"");
+    require_contains(text, "\"voxel_surface_like\": false");
     require_contains(text, "\"requires_remesh\": false");
     require_contains(text, "\"edge_refine_requested\": 1");
     require_contains(text, "\"edge_refine_applied\": 0");

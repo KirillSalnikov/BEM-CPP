@@ -75,9 +75,7 @@ inline PrecondPolicy choose_precond_policy(const PrecondPolicyInput& in)
         }
         if (in.obj_mesh && in.ka >= 4.0) {
             if (in.strict_accuracy) {
-                out.enabled = true;
-                out.schwarz = false;
-                out.reason = "obj_strict_block_jacobi";
+                out.reason = "obj_strict_unpreconditioned_measured";
                 return out;
             }
             out.reason = "obj_ka_ge_4_unpreconditioned_measured";

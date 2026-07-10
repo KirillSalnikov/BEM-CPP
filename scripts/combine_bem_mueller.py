@@ -43,13 +43,28 @@ def main():
     parser.add_argument("--out", required=True)
     parser.add_argument("--project-random", action="store_true",
                         help="Apply random-orientation Mueller projection after all inputs are combined")
+    parser.add_argument("--timing-mode", choices=("sum", "max"), default="sum",
+                        help="Combine timing by sum for serial chunks or max for chunks run in parallel")
     args = parser.parse_args()
 
     total_weight = 0.0
     combined = None
     theta = None
     first = None
-    timing = {"assembly_s": 0.0, "solve_s": 0.0, "farfield_s": 0.0, "total_s": 0.0}
+    timing_values = {"assembly_s": [], "solve_s": [], "farfield_s": [], "total_s": []}
+    summed_counters = {
+        "orient_count": 0,
+        "gmres_matvecs": 0,
+        "gmres_converged_systems": 0,
+        "gmres_nonconverged_systems": 0,
+        "gmres_stagnation_stops": 0,
+        "gmres_numerical_breakdowns": 0,
+        "gmres_restored_best_iterates": 0,
+        "gmres_max_cycle_exhaustions": 0,
+    }
+    max_counters = {
+        "gmres_max_final_relres": 0.0,
+    }
     sources = []
     orientation_weight_sum = 0.0
     normalize_by_total_weight = False
@@ -81,8 +96,16 @@ def main():
             raise ValueError(f"theta grid mismatch in {path}")
         combined += weight * mueller
         total_weight += orient_weight if weight_s == "orient" else weight
-        for key in timing:
-            timing[key] += float(data.get("timing", {}).get(key, 0.0))
+        for key in timing_values:
+            timing_values[key].append(float(data.get("timing", {}).get(key, 0.0)))
+        for key in summed_counters:
+            value = data.get(key)
+            if value is not None:
+                summed_counters[key] += int(value)
+        for key in max_counters:
+            value = data.get(key)
+            if value is not None:
+                max_counters[key] = max(max_counters[key], float(value))
         orientation_weight_sum += orient_weight if weight_s == "orient" else weight * orient_weight
         projection_state = data.get("random_orientation_projection", "unknown")
         projection_states.append(projection_state)
@@ -107,7 +130,41 @@ def main():
         combined = project_random_orientation_mueller(combined)
         output_projection = "applied_after_combine"
 
-    out = {
+    if args.timing_mode == "max":
+        timing = {key: max(values) if values else 0.0 for key, values in timing_values.items()}
+    else:
+        timing = {key: sum(values) for key, values in timing_values.items()}
+
+    passthrough_keys = (
+        "ka",
+        "ri",
+        "refinements",
+        "shape",
+        "obj_file",
+        "prism_aspect",
+        "edge_refine",
+        "orient",
+        "alpha_avg",
+        "orient_total",
+        "fmm_digits",
+        "max_leaf",
+        "gmres_restart",
+        "gmres_tol",
+        "gmres_max_cycles",
+        "solver_backend",
+        "solver_profile",
+        "krylov_solver",
+        "requested_system",
+        "system",
+        "device_gmres",
+        "preconditioner_enabled",
+        "method",
+        "mesh",
+        "ntheta",
+        "mgpu",
+    )
+    out = {key: first.get(key) for key in passthrough_keys if key in first}
+    out.update({
         "ka": first.get("ka"),
         "ri": first.get("ri"),
         "refinements": first.get("refinements"),
@@ -118,10 +175,13 @@ def main():
         "theta": theta.tolist(),
         "mueller": combined.tolist(),
         "combined_sources": sources,
+        "combined_timing_mode": args.timing_mode,
         "combined_input_weight_sum": total_weight,
         "orientation_weight_sum": orientation_weight_sum,
         "random_orientation_projection": output_projection,
-    }
+    })
+    out.update({key: value for key, value in summed_counters.items() if value})
+    out.update(max_counters)
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w") as f:

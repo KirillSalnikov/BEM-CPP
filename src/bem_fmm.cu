@@ -6,6 +6,8 @@
 #include <cstdlib>
 #include <cmath>
 #include <map>
+#include <set>
+#include <tuple>
 #include <algorithm>
 
 namespace {
@@ -889,8 +891,169 @@ void BemFmmOperator::precompute_corrections(const RWG& rwg, const Mesh& mesh, in
         }
     }
 
-    // Step 1: Determine sparsity pattern — collect (row, col) pairs with shared triangles
-    // Use a set per row to avoid duplicates (a pair can share 2 triangles)
+    const bool edge_delta_enabled =
+        bem_env_flag_enabled("BEM_EDGE_CORRECTIONS", false);
+    const bool explicit_local_delta =
+        bem_env_flag_enabled("BEM_LOCAL_CORRECTIONS", false);
+    const bool auto_local_delta =
+        !bem_env_flag_enabled("BEM_NO_AUTO_LOCAL_CORRECTIONS", false) &&
+        bem_env_flag_enabled("BEM_AUTO_LOCAL_CORRECTIONS", true);
+    const bool local_delta_enabled = explicit_local_delta || auto_local_delta;
+    const bool local_vertex_enabled =
+        local_delta_enabled &&
+        bem_env_flag_enabled("BEM_LOCAL_CORR_VERTEX", explicit_local_delta);
+
+    std::map<std::pair<int, int>, std::vector<int>> edge_to_triangles;
+    std::vector<std::vector<int>> vertex_to_triangles(mesh.nv());
+    for (int t = 0; t < mesh.nt(); t++) {
+        int a = mesh.tris[3 * t + 0];
+        int b = mesh.tris[3 * t + 1];
+        int c = mesh.tris[3 * t + 2];
+        int tv[3] = {a, b, c};
+        for (int e = 0; e < 3; e++) {
+            if (tv[e] >= 0 && tv[e] < mesh.nv())
+                vertex_to_triangles[tv[e]].push_back(t);
+        }
+        for (int e = 0; e < 3; e++) {
+            int u = tv[e];
+            int v = tv[(e + 1) % 3];
+            if (u > v) std::swap(u, v);
+            edge_to_triangles[std::make_pair(u, v)].push_back(t);
+        }
+    }
+
+    std::set<std::pair<int, int>> local_tri_pairs;
+    int edge_adjacent_tri_pairs = 0;
+    int vertex_adjacent_tri_pairs = 0;
+    int near_disjoint_tri_pairs = 0;
+    for (const auto& edge_pair : edge_to_triangles) {
+        const std::vector<int>& ts = edge_pair.second;
+        if (ts.size() != 2)
+            continue;
+        edge_adjacent_tri_pairs++;
+        if (edge_delta_enabled || local_delta_enabled) {
+            int a = ts[0], b = ts[1];
+            if (a > b) std::swap(a, b);
+            local_tri_pairs.insert(std::make_pair(a, b));
+        }
+    }
+    if (local_vertex_enabled) {
+        for (const std::vector<int>& ts : vertex_to_triangles) {
+            for (size_t i = 0; i < ts.size(); i++) {
+                for (size_t j = i + 1; j < ts.size(); j++) {
+                    int a = ts[i], b = ts[j];
+                    if (a == b)
+                        continue;
+                    if (a > b) std::swap(a, b);
+                    std::pair<int, int> p(a, b);
+                    if (local_tri_pairs.find(p) == local_tri_pairs.end()) {
+                        local_tri_pairs.insert(p);
+                        vertex_adjacent_tri_pairs++;
+                    }
+                }
+            }
+        }
+    }
+    double near_factor = 0.0;
+    if (local_delta_enabled) {
+        near_factor = bem_env_double("BEM_LOCAL_CORR_NEAR_FACTOR",
+                                     0.0);
+    }
+    int near_pair_limit = std::max(0, bem_env_int("BEM_LOCAL_CORR_NEAR_MAX_PAIRS", 64000));
+    if (near_factor > 0.0 && near_pair_limit > 0) {
+        struct TriGeom {
+            Vec3 c;
+            double h;
+            int v[3];
+        };
+        const int nt = mesh.nt();
+        std::vector<TriGeom> tg(nt);
+        double edge_sum = 0.0;
+        int edge_count = 0;
+        for (int t = 0; t < nt; t++) {
+            Vec3 a, b, c;
+            mesh.tri_verts(t, a, b, c);
+            double e0 = (b - a).norm();
+            double e1 = (c - b).norm();
+            double e2 = (a - c).norm();
+            tg[t].c = (a + b + c) * (1.0 / 3.0);
+            tg[t].h = std::max(e0, std::max(e1, e2));
+            tg[t].v[0] = mesh.tris[3 * t + 0];
+            tg[t].v[1] = mesh.tris[3 * t + 1];
+            tg[t].v[2] = mesh.tris[3 * t + 2];
+            edge_sum += e0 + e1 + e2;
+            edge_count += 3;
+        }
+        double mean_edge = edge_count > 0 ? edge_sum / (double)edge_count : 1.0;
+        double cell = std::max(1e-12, near_factor * mean_edge);
+        std::map<std::tuple<int, int, int>, std::vector<int>> cells;
+        auto cell_index = [&](const Vec3& p) {
+            return std::make_tuple((int)std::floor(p.x / cell),
+                                   (int)std::floor(p.y / cell),
+                                   (int)std::floor(p.z / cell));
+        };
+        for (int t = 0; t < nt; t++)
+            cells[cell_index(tg[t].c)].push_back(t);
+
+        auto share_vertex = [&](int a, int b) {
+            for (int i = 0; i < 3; i++)
+                for (int j = 0; j < 3; j++)
+                    if (tg[a].v[i] == tg[b].v[j])
+                        return true;
+            return false;
+        };
+        struct NearCandidate {
+            double metric;
+            int a;
+            int b;
+        };
+        std::vector<NearCandidate> near_candidates;
+        near_candidates.reserve((size_t)near_pair_limit * 2);
+        for (int a = 0; a < nt; a++) {
+            int ix = (int)std::floor(tg[a].c.x / cell);
+            int iy = (int)std::floor(tg[a].c.y / cell);
+            int iz = (int)std::floor(tg[a].c.z / cell);
+            int reach = std::max(1, (int)std::ceil((near_factor * tg[a].h) / cell));
+            for (int dx = -reach; dx <= reach; dx++) {
+                for (int dy = -reach; dy <= reach; dy++) {
+                    for (int dz = -reach; dz <= reach; dz++) {
+                        auto it = cells.find(std::make_tuple(ix + dx, iy + dy, iz + dz));
+                        if (it == cells.end())
+                            continue;
+                        for (int b : it->second) {
+                            if (b <= a)
+                                continue;
+                            if (share_vertex(a, b))
+                                continue;
+                            double thresh = near_factor * std::max(tg[a].h, tg[b].h);
+                            double dist2 = (tg[a].c - tg[b].c).norm2();
+                            if (dist2 > thresh * thresh)
+                                continue;
+                            near_candidates.push_back({dist2 / (thresh * thresh), a, b});
+                        }
+                    }
+                }
+            }
+        }
+        std::sort(near_candidates.begin(), near_candidates.end(),
+                  [](const NearCandidate& x, const NearCandidate& y) {
+                      return x.metric < y.metric;
+                  });
+        for (const NearCandidate& cand : near_candidates) {
+            std::pair<int, int> p(cand.a, cand.b);
+            if (local_tri_pairs.find(p) != local_tri_pairs.end())
+                continue;
+            local_tri_pairs.insert(p);
+            near_disjoint_tri_pairs++;
+            if (near_disjoint_tri_pairs >= near_pair_limit)
+                break;
+        }
+    }
+
+    // Step 1: Determine sparsity pattern.  Self-triangle entries get the
+    // analytic singular correction below.  Extra adjacent entries are inserted
+    // only when a local correction mode is explicitly enabled; otherwise they
+    // would be zero-valued CSR work in every matvec.
     std::vector<std::vector<int>> row_cols(N);
     for (auto& pair : tri_to_rwg) {
         const std::vector<HalfInfo>& rwg_list = pair.second;
@@ -899,6 +1062,15 @@ void BemFmmOperator::precompute_corrections(const RWG& rwg, const Mesh& mesh, in
                 row_cols[mi.n].push_back(ni.n);
             }
         }
+    }
+    for (const auto& tri_pair : local_tri_pairs) {
+        const std::vector<HalfInfo>& a = tri_to_rwg[tri_pair.first];
+        const std::vector<HalfInfo>& b = tri_to_rwg[tri_pair.second];
+        for (const HalfInfo& mi : a)
+            for (const HalfInfo& ni : b) {
+                row_cols[mi.n].push_back(ni.n);
+                row_cols[ni.n].push_back(mi.n);
+            }
     }
     // Sort and deduplicate each row
     for (int m = 0; m < N; m++) {
@@ -930,6 +1102,112 @@ void BemFmmOperator::precompute_corrections(const RWG& rwg, const Mesh& mesh, in
 
     // Step 2: Compute correction values
     double inv4pi = 1.0 / (4.0 * M_PI);
+
+    auto csr_pos = [&](int m, int n_idx) -> int {
+        const int* col_begin = &corr_col_idx[corr_row_ptr[m]];
+        const int* col_end   = &corr_col_idx[corr_row_ptr[m + 1]];
+        const int* it = std::lower_bound(col_begin, col_end, n_idx);
+        return corr_row_ptr[m] + (int)(it - col_begin);
+    };
+
+    auto direct_pair_geom = [&](const HalfInfo& mi,
+                                const Vec3& mv0, const Vec3& mv1, const Vec3& mv2,
+                                double area_m,
+                                const HalfInfo& ni,
+                                const Vec3& nv0, const Vec3& nv1, const Vec3& nv2,
+                                double area_n,
+                           const TriQuad& tq, cdouble kv,
+                           cdouble& L, cdouble& K) {
+        cdouble ik = cdouble(0, 1) * kv;
+        cdouble iok = cdouble(0, 1) / kv;
+        L = cdouble(0);
+        K = cdouble(0);
+        for (int iq = 0; iq < tq.npts; iq++) {
+            double ml0 = 1.0 - tq.pts[iq][0] - tq.pts[iq][1];
+            Vec3 rp = mv0 * ml0 + mv1 * tq.pts[iq][0] + mv2 * tq.pts[iq][1];
+            Vec3 fm = (rp - mi.free_v) * (mi.sign * mi.coeff);
+            double jw_mi = area_m * tq.wts[iq];
+            for (int jq = 0; jq < tq.npts; jq++) {
+                double nl0 = 1.0 - tq.pts[jq][0] - tq.pts[jq][1];
+                Vec3 rq = nv0 * nl0 + nv1 * tq.pts[jq][0] + nv2 * tq.pts[jq][1];
+                Vec3 fn = (rq - ni.free_v) * (ni.sign * ni.coeff);
+                double jw_nj = area_n * tq.wts[jq];
+                Vec3 diff = rp - rq;
+                double R = diff.norm();
+                if (R < 1e-14)
+                    continue;
+                cdouble G = std::exp(ik * R) * inv4pi / R;
+                double jw_prod = jw_mi * jw_nj;
+                double fdot = fm.x * fn.x + fm.y * fn.y + fm.z * fn.z;
+                L += (ik * fdot - iok * mi.div_val * ni.div_val) * G * jw_prod;
+                cdouble grad_scalar = G * (ik - 1.0 / R) / R;
+                Vec3 cross = diff.cross(fn);
+                double kdot = fm.x * cross.x + fm.y * cross.y + fm.z * cross.z;
+                K += grad_scalar * kdot * jw_prod;
+            }
+        }
+    };
+
+    auto direct_pair = [&](const HalfInfo& mi, int tri_m,
+                           const HalfInfo& ni, int tri_n,
+                           const TriQuad& tq, cdouble kv,
+                           cdouble& L, cdouble& K) {
+        Vec3 mv0, mv1, mv2, nv0, nv1, nv2;
+        mesh.tri_verts(tri_m, mv0, mv1, mv2);
+        mesh.tri_verts(tri_n, nv0, nv1, nv2);
+        double area_m = (mi.half == 0) ? rwg.area_p[mi.n] : rwg.area_m[mi.n];
+        double area_n = (ni.half == 0) ? rwg.area_p[ni.n] : rwg.area_m[ni.n];
+        direct_pair_geom(mi, mv0, mv1, mv2, area_m, ni, nv0, nv1, nv2, area_n, tq, kv, L, K);
+    };
+
+    struct LocalTri {
+        Vec3 a, b, c;
+        double area;
+    };
+    auto split_local_tris = [](std::vector<LocalTri>& tris) {
+        std::vector<LocalTri> out;
+        out.reserve(tris.size() * 4);
+        for (const LocalTri& t : tris) {
+            Vec3 ab = (t.a + t.b) * 0.5;
+            Vec3 bc = (t.b + t.c) * 0.5;
+            Vec3 ca = (t.c + t.a) * 0.5;
+            double qarea = t.area * 0.25;
+            out.push_back({t.a, ab, ca, qarea});
+            out.push_back({ab, t.b, bc, qarea});
+            out.push_back({ca, bc, t.c, qarea});
+            out.push_back({ab, bc, ca, qarea});
+        }
+        tris.swap(out);
+    };
+    auto make_local_tris = [&](int tri, int half, int rwg_idx, int levels) {
+        Vec3 v0, v1, v2;
+        mesh.tri_verts(tri, v0, v1, v2);
+        double area = (half == 0) ? rwg.area_p[rwg_idx] : rwg.area_m[rwg_idx];
+        std::vector<LocalTri> tris;
+        tris.push_back({v0, v1, v2, area});
+        for (int l = 0; l < levels; l++)
+            split_local_tris(tris);
+        return tris;
+    };
+    auto direct_pair_subdiv = [&](const HalfInfo& mi, int tri_m,
+                                  const HalfInfo& ni, int tri_n,
+                                  const TriQuad& tq, cdouble kv,
+                                  int levels, cdouble& L, cdouble& K) {
+        L = cdouble(0);
+        K = cdouble(0);
+        std::vector<LocalTri> mt = make_local_tris(tri_m, mi.half, mi.n, levels);
+        std::vector<LocalTri> nt = make_local_tris(tri_n, ni.half, ni.n, levels);
+        for (const LocalTri& a : mt) {
+            for (const LocalTri& b : nt) {
+                cdouble Lt, Kt;
+                direct_pair_geom(mi, a.a, a.b, a.c, a.area,
+                                 ni, b.a, b.b, b.c, b.area,
+                                 tq, kv, Lt, Kt);
+                L += Lt;
+                K += Kt;
+            }
+        }
+    };
 
     for (auto& pair : tri_to_rwg) {
         const std::vector<HalfInfo>& rwg_list = pair.second;
@@ -991,11 +1269,7 @@ void BemFmmOperator::precompute_corrections(const RWG& rwg, const Mesh& mesh, in
                     const double* m_jw = (mi.half == 0) ? &jw_p[mi.jw_offset] : &jw_m[mi.jw_offset];
                     const double* n_jw = (ni.half == 0) ? &jw_p[ni.jw_offset] : &jw_m[ni.jw_offset];
 
-                    // Find position in CSR
-                    const int* col_begin = &corr_col_idx[corr_row_ptr[m]];
-                    const int* col_end   = &corr_col_idx[corr_row_ptr[m + 1]];
-                    const int* it = std::lower_bound(col_begin, col_end, n_idx);
-                    int pos = corr_row_ptr[m] + (int)(it - col_begin);
+                    int pos = csr_pos(m, n_idx);
 
                     // L correction
                     double mass_corr = 0.0;
@@ -1041,6 +1315,57 @@ void BemFmmOperator::precompute_corrections(const RWG& rwg, const Mesh& mesh, in
                 }
             }
         }
+    }
+
+    int local_corr_entries = 0;
+    if (edge_delta_enabled || local_delta_enabled) {
+        TriQuad q_low = tri_quadrature(quad_order);
+        TriQuad q_high = local_delta_enabled ? tri_quadrature(quad_order) : tri_quadrature(13);
+        int subdiv_levels = std::max(0, bem_env_int("BEM_LOCAL_CORR_SUBDIV", 1));
+        subdiv_levels = std::min(subdiv_levels, 3);
+        cdouble k_vals[2] = {k_ext, k_int};
+        cdouble* val_L_ptrs[2] = {corr_L_ext_val.data(), corr_L_int_val.data()};
+        cdouble* val_K_ptrs[2] = {corr_K_ext_val.data(), corr_K_int_val.data()};
+
+        auto add_local_delta = [&](int tri_m, int tri_n) {
+            const std::vector<HalfInfo>& test_list = tri_to_rwg[tri_m];
+            const std::vector<HalfInfo>& src_list = tri_to_rwg[tri_n];
+            for (const HalfInfo& mi : test_list) {
+                for (const HalfInfo& ni : src_list) {
+                    int pos = csr_pos(mi.n, ni.n);
+                    for (int ki = 0; ki < 2; ki++) {
+                        cdouble L_low, K_low, L_high, K_high;
+                        direct_pair(mi, tri_m, ni, tri_n, q_low, k_vals[ki], L_low, K_low);
+                        if (local_delta_enabled)
+                            direct_pair_subdiv(mi, tri_m, ni, tri_n, q_high, k_vals[ki], subdiv_levels, L_high, K_high);
+                        else
+                            direct_pair(mi, tri_m, ni, tri_n, q_high, k_vals[ki], L_high, K_high);
+                        val_L_ptrs[ki][pos] += L_high - L_low;
+                        val_K_ptrs[ki][pos] += K_high - K_low;
+                    }
+                    local_corr_entries++;
+                }
+            }
+        };
+
+        for (const auto& tri_pair : local_tri_pairs) {
+            add_local_delta(tri_pair.first, tri_pair.second);
+            add_local_delta(tri_pair.second, tri_pair.first);
+        }
+        if (local_corr_entries > 0 && local_delta_enabled) {
+            printf("  [BEM-FMM] Local subdivided q%d corrections%s: tri_pairs=%zu (edge=%d vertex_extra=%d), subdiv=%d, half-pair entries=%d\n",
+                   quad_order, auto_local_delta && !explicit_local_delta ? " [auto edge]" : "",
+                   local_tri_pairs.size(), edge_adjacent_tri_pairs,
+                   vertex_adjacent_tri_pairs, subdiv_levels, local_corr_entries);
+            if (near_disjoint_tri_pairs > 0) {
+                printf("  [BEM-FMM] Local near-disjoint corrections: pairs=%d, factor=%.3g, max_pairs=%d\n",
+                       near_disjoint_tri_pairs, near_factor, near_pair_limit);
+            }
+        }
+    }
+    if (local_corr_entries > 0 && edge_delta_enabled && !local_delta_enabled) {
+        printf("  [BEM-FMM] Edge-adjacent q13-q%d corrections: tri_pairs=%d, half-pair entries=%d\n",
+               quad_order, edge_adjacent_tri_pairs, local_corr_entries);
     }
 }
 
@@ -1914,6 +2239,115 @@ void BemFmmOperator::LK_combined_batch2_spfft_device_split(
 }
 #endif
 
+bool BemFmmOperator::device_matvec_available() const
+{
+#ifndef BEM_FMM_ONLY
+    if (use_pfft || use_spfft)
+        return false;
+#endif
+    return true;
+}
+
+void BemFmmOperator::matvec_batch2_device(const double2* d_x1_full_in,
+                                          const double2* d_x2_full_in,
+                                          double2* d_y1_out,
+                                          double2* d_y2_out)
+{
+#ifndef BEM_FMM_ONLY
+    if (use_pfft) {
+        fprintf(stderr, "Error: matvec_batch2_device is not implemented for PFFT backend\n");
+        std::exit(1);
+        return;
+    }
+#endif
+
+    if (use_spfft) {
+#ifdef BEM_FMM_ONLY
+        use_spfft = false;
+#else
+        fprintf(stderr, "Error: matvec_batch2_device is not implemented for SurfPFFT backend\n");
+        std::exit(1);
+        return;
+#endif
+    }
+
+    HelmholtzFMM& fmm_i = shared_fmm ? fmm_ext : fmm_int;
+
+    int block = 256;
+    int grid_N = (N + block - 1) / block;
+    int grid_sys = (system_size + block - 1) / block;
+
+    double assembly_unknown_m_scale = unknown_m_scale;
+    double split_m_scale = 1.0;
+    if (unknown_m_scale != 1.0) {
+        split_m_scale = 1.0 / unknown_m_scale;
+        assembly_unknown_m_scale = 1.0;
+    }
+    bem_split_complex_batch2_scale_kernel<<<grid_sys, block>>>(
+        d_x1_full_in, d_x2_full_in,
+        d_full_x1_re, d_full_x1_im,
+        d_full_x2_re, d_full_x2_im,
+        system_size, N, split_m_scale);
+    CUDA_CHECK(cudaGetLastError());
+
+    if (use_full_mvslot_memset(N)) {
+        const int mv_slots = n_form ? 10 : 8;
+        CUDA_CHECK(cudaMemset(d_mv1_re, 0, mv_slots * N * sizeof(double)));
+        CUDA_CHECK(cudaMemset(d_mv1_im, 0, mv_slots * N * sizeof(double)));
+        CUDA_CHECK(cudaMemset(d_mv2_re, 0, mv_slots * N * sizeof(double)));
+        CUDA_CHECK(cudaMemset(d_mv2_im, 0, mv_slots * N * sizeof(double)));
+    } else if (n_form) {
+        CUDA_CHECK(cudaMemset(d_mv1_re + 8 * N, 0, 2 * N * sizeof(double)));
+        CUDA_CHECK(cudaMemset(d_mv1_im + 8 * N, 0, 2 * N * sizeof(double)));
+        CUDA_CHECK(cudaMemset(d_mv2_re + 8 * N, 0, 2 * N * sizeof(double)));
+        CUDA_CHECK(cudaMemset(d_mv2_im + 8 * N, 0, 2 * N * sizeof(double)));
+    }
+
+    bool use_batch4 = (bem_env_flag_enabled("BEM_FMM_BATCH4") &&
+                       fmm_ext.batch4_allocated && fmm_i.batch4_allocated);
+    if (use_batch4) {
+        LK_combined_batch4_jm_device_split(d_full_x1_re, d_full_x1_im,
+                                           d_full_x2_re, d_full_x2_im,
+                                           d_full_x1_re + N, d_full_x1_im + N,
+                                           d_full_x2_re + N, d_full_x2_im + N,
+                                           k_ext, fmm_ext, 0, 2, 1, 3);
+        LK_combined_batch4_jm_device_split(d_full_x1_re, d_full_x1_im,
+                                           d_full_x2_re, d_full_x2_im,
+                                           d_full_x1_re + N, d_full_x1_im + N,
+                                           d_full_x2_re + N, d_full_x2_im + N,
+                                           k_int, fmm_i, 4, 6, 5, 7);
+    } else {
+        LK_combined_batch2_device_split(d_full_x1_re, d_full_x1_im,
+                                        d_full_x2_re, d_full_x2_im,
+                                        k_ext, fmm_ext, 0, 2);
+        LK_combined_batch2_device_split(d_full_x1_re + N, d_full_x1_im + N,
+                                        d_full_x2_re + N, d_full_x2_im + N,
+                                        k_ext, fmm_ext, 1, 3);
+        LK_combined_batch2_device_split(d_full_x1_re, d_full_x1_im,
+                                        d_full_x2_re, d_full_x2_im,
+                                        k_int, fmm_i, 4, 6);
+        LK_combined_batch2_device_split(d_full_x1_re + N, d_full_x1_im + N,
+                                        d_full_x2_re + N, d_full_x2_im + N,
+                                        k_int, fmm_i, 5, 7);
+    }
+
+    bem_apply_corr_assemble_batch2_kernel<<<grid_N, block>>>(
+        d_mv1_re, d_mv1_im, d_mv2_re, d_mv2_im,
+        d_full_x1_re, d_full_x1_im, d_full_x2_re, d_full_x2_im,
+        d_corr_row_ptr, d_corr_col_idx,
+        d_corr_L_ext_re, d_corr_L_ext_im,
+        d_corr_K_ext_re, d_corr_K_ext_im,
+        d_corr_L_int_re, d_corr_L_int_im,
+        d_corr_K_int_re, d_corr_K_int_im,
+        d_corr_I,
+        N, eta_ext.real(), eta_ext.imag(), eta_int.real(), eta_int.imag(),
+        assembly_unknown_m_scale, row_h_scale.real(), row_h_scale.imag(),
+        int_op_sign, k_identity,
+        n_form ? 1 : 0, n_form_eps_int, n_form_m_identity,
+        d_y1_out, d_y2_out);
+    CUDA_CHECK(cudaGetLastError());
+}
+
 void BemFmmOperator::matvec_batch2(const cdouble* x1_full, const cdouble* x2_full,
                                     cdouble* y1, cdouble* y2)
 {
@@ -1923,12 +2357,7 @@ void BemFmmOperator::matvec_batch2(const cdouble* x1_full, const cdouble* x2_ful
         matvec(x2_full, y2);
         return;
     }
-#endif
-
     if (use_spfft) {
-#ifdef BEM_FMM_ONLY
-        use_spfft = false;
-#else
         HelmholtzSurfacePFFT& sp_i = shared_fmm ? spfft_ext : spfft_int;
 
         int block = 256;
@@ -1999,89 +2428,14 @@ void BemFmmOperator::matvec_batch2(const cdouble* x1_full, const cdouble* x2_ful
         download_complex_stage(y2, h_y2_complex, d_y2_complex,
                                system_size, pinned_matvec_stage);
         return;
-#endif
     }
-
-    HelmholtzFMM& fmm_i = shared_fmm ? fmm_ext : fmm_int;
-
-    int block = 256;
-    int grid_N = (N + block - 1) / block;
-    int grid_sys = (system_size + block - 1) / block;
+#endif
 
     upload_complex_stage(d_full_x1_complex, h_full_x1_complex, x1_full,
                          system_size, pinned_matvec_stage);
     upload_complex_stage(d_full_x2_complex, h_full_x2_complex, x2_full,
                          system_size, pinned_matvec_stage);
-    double assembly_unknown_m_scale = unknown_m_scale;
-    double split_m_scale = 1.0;
-    if (unknown_m_scale != 1.0) {
-        split_m_scale = 1.0 / unknown_m_scale;
-        assembly_unknown_m_scale = 1.0;
-    }
-    bem_split_complex_batch2_scale_kernel<<<grid_sys, block>>>(
-        d_full_x1_complex, d_full_x2_complex,
-        d_full_x1_re, d_full_x1_im,
-        d_full_x2_re, d_full_x2_im,
-        system_size, N, split_m_scale);
-    CUDA_CHECK(cudaGetLastError());
-
-    if (use_full_mvslot_memset(N)) {
-        const int mv_slots = n_form ? 10 : 8;
-        CUDA_CHECK(cudaMemset(d_mv1_re, 0, mv_slots * N * sizeof(double)));
-        CUDA_CHECK(cudaMemset(d_mv1_im, 0, mv_slots * N * sizeof(double)));
-        CUDA_CHECK(cudaMemset(d_mv2_re, 0, mv_slots * N * sizeof(double)));
-        CUDA_CHECK(cudaMemset(d_mv2_im, 0, mv_slots * N * sizeof(double)));
-    } else if (n_form) {
-        CUDA_CHECK(cudaMemset(d_mv1_re + 8 * N, 0, 2 * N * sizeof(double)));
-        CUDA_CHECK(cudaMemset(d_mv1_im + 8 * N, 0, 2 * N * sizeof(double)));
-        CUDA_CHECK(cudaMemset(d_mv2_re + 8 * N, 0, 2 * N * sizeof(double)));
-        CUDA_CHECK(cudaMemset(d_mv2_im + 8 * N, 0, 2 * N * sizeof(double)));
-    }
-
-    bool use_batch4 = (bem_env_flag_enabled("BEM_FMM_BATCH4") &&
-                       fmm_ext.batch4_allocated && fmm_i.batch4_allocated);
-    if (use_batch4) {
-        LK_combined_batch4_jm_device_split(d_full_x1_re, d_full_x1_im,
-                                           d_full_x2_re, d_full_x2_im,
-                                           d_full_x1_re + N, d_full_x1_im + N,
-                                           d_full_x2_re + N, d_full_x2_im + N,
-                                           k_ext, fmm_ext, 0, 2, 1, 3);
-        LK_combined_batch4_jm_device_split(d_full_x1_re, d_full_x1_im,
-                                           d_full_x2_re, d_full_x2_im,
-                                           d_full_x1_re + N, d_full_x1_im + N,
-                                           d_full_x2_re + N, d_full_x2_im + N,
-                                           k_int, fmm_i, 4, 6, 5, 7);
-    } else {
-        LK_combined_batch2_device_split(d_full_x1_re, d_full_x1_im,
-                                        d_full_x2_re, d_full_x2_im,
-                                        k_ext, fmm_ext, 0, 2);
-        LK_combined_batch2_device_split(d_full_x1_re + N, d_full_x1_im + N,
-                                        d_full_x2_re + N, d_full_x2_im + N,
-                                        k_ext, fmm_ext, 1, 3);
-        LK_combined_batch2_device_split(d_full_x1_re, d_full_x1_im,
-                                        d_full_x2_re, d_full_x2_im,
-                                        k_int, fmm_i, 4, 6);
-        LK_combined_batch2_device_split(d_full_x1_re + N, d_full_x1_im + N,
-                                        d_full_x2_re + N, d_full_x2_im + N,
-                                        k_int, fmm_i, 5, 7);
-    }
-
-    bem_apply_corr_assemble_batch2_kernel<<<grid_N, block>>>(
-        d_mv1_re, d_mv1_im, d_mv2_re, d_mv2_im,
-        d_full_x1_re, d_full_x1_im, d_full_x2_re, d_full_x2_im,
-        d_corr_row_ptr, d_corr_col_idx,
-        d_corr_L_ext_re, d_corr_L_ext_im,
-        d_corr_K_ext_re, d_corr_K_ext_im,
-        d_corr_L_int_re, d_corr_L_int_im,
-        d_corr_K_int_re, d_corr_K_int_im,
-        d_corr_I,
-        N, eta_ext.real(), eta_ext.imag(), eta_int.real(), eta_int.imag(),
-        assembly_unknown_m_scale, row_h_scale.real(), row_h_scale.imag(),
-        int_op_sign, k_identity,
-        n_form ? 1 : 0, n_form_eps_int, n_form_m_identity,
-        d_y1_complex, d_y2_complex);
-    CUDA_CHECK(cudaGetLastError());
-
+    matvec_batch2_device(d_full_x1_complex, d_full_x2_complex, d_y1_complex, d_y2_complex);
     download_complex_stage(y1, h_y1_complex, d_y1_complex,
                            system_size, pinned_matvec_stage);
     download_complex_stage(y2, h_y2_complex, d_y2_complex,

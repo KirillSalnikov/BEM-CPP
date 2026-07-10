@@ -122,6 +122,7 @@ def main():
     ]
     if accurate_obj:
         bem_cmd.append("--accurate")
+        bem_cmd.append("--mesh-quality-strict")
     else:
         bem_cmd.append("--fast-obj")
     if args.system is not None:

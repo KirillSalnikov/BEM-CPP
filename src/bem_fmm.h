@@ -159,6 +159,12 @@ struct BemFmmOperator {
     // Batched matvec: y1 = Z*x1, y2 = Z*x2
     void matvec_batch2(const cdouble* x1, const cdouble* x2, cdouble* y1, cdouble* y2);
 
+    // Device-resident batched matvec for GPU GMRES.
+    // Inputs and outputs are full PMCHWT vectors of length system_size on the active CUDA device.
+    void matvec_batch2_device(const double2* d_x1, const double2* d_x2,
+                              double2* d_y1, double2* d_y2);
+    bool device_matvec_available() const;
+
     // Cleanup FMM resources
     void cleanup();
 

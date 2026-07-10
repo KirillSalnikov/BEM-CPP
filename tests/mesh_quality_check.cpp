@@ -2,6 +2,8 @@
 
 #include <cassert>
 #include <iostream>
+#include <map>
+#include <tuple>
 
 static Mesh tetrahedron()
 {
@@ -36,6 +38,52 @@ static Mesh near_touching_nonadjacent_panels()
         0, 1, 2,
         3, 5, 4,
     };
+    return m;
+}
+
+static Mesh many_voxel_edges_box()
+{
+    Mesh m;
+    // A small closed cubical box triangulated by face grids.  It is a clean
+    // manifold, but its surface is dominated by right-angle feature edges,
+    // which should trigger the voxel-edge high quadrature guard.
+    const int n = 4;
+    std::map<std::tuple<int,int,int>, int> vertex_ids;
+    auto vid = [&](double x, double y, double z) -> int {
+        int ix = (int)(x * n);
+        int iy = (int)(y * n);
+        int iz = (int)(z * n);
+        auto key = std::make_tuple(ix, iy, iz);
+        std::map<std::tuple<int,int,int>, int>::const_iterator it = vertex_ids.find(key);
+        if (it != vertex_ids.end())
+            return it->second;
+        m.verts.push_back(Vec3(x, y, z));
+        int id = (int)m.verts.size() - 1;
+        vertex_ids[key] = id;
+        return id;
+    };
+    auto add_quad = [&](int a, int b, int c, int d) {
+        m.tris.push_back(a); m.tris.push_back(b); m.tris.push_back(c);
+        m.tris.push_back(a); m.tris.push_back(c); m.tris.push_back(d);
+    };
+    for (int face = 0; face < 6; face++) {
+        int ids[n + 1][n + 1];
+        for (int i = 0; i <= n; i++) {
+            for (int j = 0; j <= n; j++) {
+                double u = -1.0 + 2.0 * i / n;
+                double v = -1.0 + 2.0 * j / n;
+                if (face == 0) ids[i][j] = vid( 1.0, u, v);
+                if (face == 1) ids[i][j] = vid(-1.0, v, u);
+                if (face == 2) ids[i][j] = vid(u,  1.0, v);
+                if (face == 3) ids[i][j] = vid(v, -1.0, u);
+                if (face == 4) ids[i][j] = vid(u, v,  1.0);
+                if (face == 5) ids[i][j] = vid(v, u, -1.0);
+            }
+        }
+        for (int i = 0; i < n; i++)
+            for (int j = 0; j < n; j++)
+                add_quad(ids[i][j], ids[i + 1][j], ids[i + 1][j + 1], ids[i][j + 1]);
+    }
     return m;
 }
 
@@ -75,10 +123,18 @@ int main()
     MeshQualityReport prism_q = analyze_mesh_quality(prism);
     assert(prism_q.pass_default_gate);
     assert(prism_q.feature_edges_30deg > 0);
+    assert(!prism_q.voxel_surface_like);
+    assert(prism_q.recommended_min_quad_order == 7);
     assert(prism_q.edge_adjacent_pair_count == prism_q.manifold_edges);
     assert(prism_q.taylor_duffy_candidate_count > prism_q.self_panel_count);
     assert(prism_q.max_dihedral_deg > 60.0);
     assert(prism_q.mean_feature_dihedral_deg > 60.0);
+
+    Mesh voxel = many_voxel_edges_box();
+    MeshQualityReport voxel_q = analyze_mesh_quality(voxel);
+    assert(voxel_q.closed);
+    assert(voxel_q.voxel_surface_like);
+    assert(voxel_q.recommended_min_quad_order == 13);
 
     std::cout << "mesh quality check: ok\n";
     return 0;

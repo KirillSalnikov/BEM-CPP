@@ -51,11 +51,11 @@ TARGET_FMM = $(BINDIR)/bem_cuda_fmm
 # Source files
 CU_SRCS = $(SRCDIR)/assembly.cu $(SRCDIR)/pmchwt.cu $(SRCDIR)/solver.cu $(SRCDIR)/farfield.cu \
           $(SRCDIR)/p2p.cu $(SRCDIR)/fmm.cu $(SRCDIR)/bem_fmm.cu $(SRCDIR)/gmres.cu \
-          $(SRCDIR)/block_gmres.cu $(SRCDIR)/precond.cu \
+          $(SRCDIR)/block_gmres.cu $(SRCDIR)/device_linalg.cu $(SRCDIR)/precond.cu \
           $(SRCDIR)/pfft.cu $(SRCDIR)/surface_pfft.cu
 CU_SRCS_FMM = $(SRCDIR)/assembly.cu $(SRCDIR)/pmchwt.cu $(SRCDIR)/solver.cu $(SRCDIR)/farfield.cu \
               $(SRCDIR)/p2p.cu $(SRCDIR)/fmm.cu $(SRCDIR)/bem_fmm.cu $(SRCDIR)/gmres.cu \
-              $(SRCDIR)/block_gmres.cu $(SRCDIR)/precond.cu
+              $(SRCDIR)/block_gmres.cu $(SRCDIR)/device_linalg.cu $(SRCDIR)/precond.cu
 CPP_SRCS = $(SRCDIR)/mesh.cpp $(SRCDIR)/rwg.cpp $(SRCDIR)/rhs.cpp \
            $(SRCDIR)/orient.cpp $(SRCDIR)/output.cpp \
            $(SRCDIR)/main.cpp

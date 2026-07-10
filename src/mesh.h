@@ -58,12 +58,14 @@ struct MeshQualityReport {
     int near_disjoint_pair_count = 0;
     int taylor_duffy_candidate_count = 0;
     int recommended_min_quad_order = 4;
+    double feature_edge_fraction = 0.0;
     int edge_refine_requested = 0;
     int edge_refine_applied = 0;
     bool edge_refine_uniform_fallback = false;
     bool near_touch_checked = false;
     bool closed = false;
     bool outward_winding = false;
+    bool voxel_surface_like = false;
     bool requires_remesh = false;
     bool pass_default_gate = false;
     std::string verdict;

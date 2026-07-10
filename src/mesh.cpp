@@ -480,6 +480,12 @@ MeshQualityReport analyze_mesh_quality(const Mesh& m,
     }
     if (q.feature_edges_30deg > 0)
         q.mean_feature_dihedral_deg = feature_sum / (double)q.feature_edges_30deg;
+    q.feature_edge_fraction = (q.manifold_edges > 0) ?
+        (double)q.feature_edges_30deg / (double)q.manifold_edges : 0.0;
+    q.voxel_surface_like =
+        q.feature_edges_30deg > 0 &&
+        (q.feature_edge_fraction >= 0.30 ||
+         (q.mean_feature_dihedral_deg >= 85.0 && q.feature_edge_fraction >= 0.10));
     q.closed = (q.boundary_edges == 0 && q.nonmanifold_edges == 0);
     int near_touch_limit = near_touch_triangle_limit();
     q.near_touch_checked = m.nt() <= near_touch_limit;
@@ -565,6 +571,10 @@ MeshQualityReport analyze_mesh_quality(const Mesh& m,
         q.recommended_mesh_strategy = "quality_remesh";
         q.recommended_mesh_action = "improve minimum angle and aspect ratio before production solve";
         q.recommended_min_quad_order = 13;
+    } else if (q.voxel_surface_like) {
+        q.recommended_mesh_strategy = "cubical_edge_aware_quadrature";
+        q.recommended_mesh_action = "keep the closed triangulated surface and use high-order near-edge quadrature";
+        q.recommended_min_quad_order = 13;
     } else if (q.feature_edges_30deg > 0) {
         q.recommended_mesh_strategy = "edge_aware_refinement";
         q.recommended_mesh_action = "keep conforming edge-aware refinement near sharp dihedral edges";
@@ -596,9 +606,10 @@ void print_mesh_quality_report(const MeshQualityReport& q)
            q.skinny_triangles, q.triangles);
     printf("    edges: min=%.4g, mean=%.4g, max=%.4g, max edge ratio=%.3g; max aspect=%.3g\n",
            q.min_edge, q.mean_edge, q.max_edge, q.max_edge_ratio, q.max_aspect_ratio);
-    printf("    feature edges: sharp30=%d/%d, max dihedral=%.2f deg, mean sharp=%.2f deg, max adjacent area ratio=%.3g\n",
-           q.feature_edges_30deg, q.manifold_edges, q.max_dihedral_deg,
-           q.mean_feature_dihedral_deg, q.max_adjacent_area_ratio);
+    printf("    feature edges: sharp30=%d/%d (%.3g), max dihedral=%.2f deg, mean sharp=%.2f deg, max adjacent area ratio=%.3g, voxel_like=%s\n",
+           q.feature_edges_30deg, q.manifold_edges, q.feature_edge_fraction,
+           q.max_dihedral_deg, q.mean_feature_dihedral_deg,
+           q.max_adjacent_area_ratio, q.voxel_surface_like ? "yes" : "no");
     printf("    areas: min=%.4g, mean=%.4g, max=%.4g; signed volume=%.6g\n",
            q.min_area, q.mean_area, q.max_area, q.signed_volume);
     if (q.near_touch_checked)
@@ -641,10 +652,12 @@ bool write_mesh_quality_json(const char* path, const MeshQualityReport& q,
     os << "  \"boundary_edges\": " << q.boundary_edges << ",\n";
     os << "  \"nonmanifold_edges\": " << q.nonmanifold_edges << ",\n";
     os << "  \"feature_edges_30deg\": " << q.feature_edges_30deg << ",\n";
+    os << "  \"feature_edge_fraction\": " << q.feature_edge_fraction << ",\n";
     os << "  \"degenerate_triangles\": " << q.degenerate_triangles << ",\n";
     os << "  \"skinny_triangles\": " << q.skinny_triangles << ",\n";
     os << "  \"closed\": " << (q.closed ? "true" : "false") << ",\n";
     os << "  \"outward_winding\": " << (q.outward_winding ? "true" : "false") << ",\n";
+    os << "  \"voxel_surface_like\": " << (q.voxel_surface_like ? "true" : "false") << ",\n";
     os << "  \"pass_default_gate\": " << (q.pass_default_gate ? "true" : "false") << ",\n";
     os << "  \"verdict\": \"" << q.verdict << "\",\n";
     os << "  \"signed_volume\": " << q.signed_volume << ",\n";
