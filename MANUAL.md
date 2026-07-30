@@ -1,350 +1,544 @@
-# BEM-CUDA Manual
+# BEM-CPP Operational Manual
 
-## Overview
+## 1. Purpose and Solver Selection
 
-BEM-CUDA solves the electromagnetic scattering problem for dielectric particles
-using the Boundary Element Method with PMCHWT formulation.
+BEM-CPP computes electromagnetic scattering by a homogeneous dielectric
+particle represented by a closed triangular surface. It contains two solver
+families that must not be confused.
 
-The 2N x 2N system:
+| Family | Executable | Unknowns and formulation | Recommended use |
+|---|---|---|---|
+| Muller | `muller_nodal_fmm_demo[_fp32]` | electric and magnetic tangential currents; second-kind Muller equation | current sharp-particle and large-grid work |
+| PMCHWT | `bem_cuda_fmm` | RWG electric and magnetic currents; PMCHWT or balanced PMCHWT | legacy controls, OBJ tools, GraphSAI |
 
-```
-[ eta_e*L_ext + eta_i*L_int    -(K_ext + K_int)        ] [J]   [b_J]
-[  K_ext + K_int           L_ext/eta_e + L_int/eta_i   ] [M] = [b_M]
-```
+The legacy PMCHWT option named `muller2` is an operator experiment in the
+RWG path. It is not equivalent to the separate P2/H(div) Muller solver.
 
-where L, K are single-layer and double-layer BEM operators,
-eta_e = 1, eta_i = 1/|m|, and m is the complex refractive index.
+The dense Muller executable, `muller_nodal_demo`, is a small-problem
+reference. It assembles a dense matrix and is useful for checking the
+matrix-free action and preconditioner.
 
-## Command-Line Reference
+## 2. Mathematical Object Being Solved
 
-### Required
+For a fixed particle, material, wavelength, and incidence, discretization
+produces a complex linear system
 
-| Flag | Type | Description |
-|------|------|-------------|
-| `--ka F` | float | Size parameter ka = 2*pi*a_eff/lambda |
-
-### Physical Parameters
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--ri RE IM` | 2 floats | 1.3116 0 | Complex refractive index m = RE + i*IM |
-
-### Geometry & Mesh
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--shape TYPE` | string | sphere | Particle shape: `sphere`, `hex` |
-| `--ref N` | int | 3 | Icosphere refinement level (ref=3: 1920 RWG, ref=4: 7680) |
-| `--ar F` | float | 1.0 | Hex prism aspect ratio H/D |
-| `--obj FILE` | string | -- | Load mesh from Wavefront OBJ file |
-| `--subdiv N` | int | 0 | Subdivide OBJ mesh N times (each iteration 4x triangles) |
-
-**Mesh size by refinement level** (sphere/hex):
-
-| ref | Triangles | RWG (N) | System (2N) | Suitable ka |
-|-----|-----------|---------|-------------|-------------|
-| 2 | 320 | 480 | 960 | 1-2 |
-| 3 | 1280 | 1920 | 3840 | 2-5 |
-| 4 | 5120 | 7680 | 15360 | 5-10 |
-| 5 | 20480 | 30720 | 61440 | 10-20 |
-| 6 | 81920 | 122880 | 245760 | 20-40 |
-
-Rule of thumb: ~10 elements per interior wavelength (lambda_int/h >= 10).
-The solver prints mesh resolution diagnostics: `lambda_ext/h` and `lambda_int/h`.
-
-### Solver Selection
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--solver TYPE` | string | dense | Solver type (see below) |
-
-**Solver types:**
-
-| Solver | Method | Complexity | Best for |
-|--------|--------|------------|----------|
-| `dense` | Direct LU (cuSOLVER) | O(N^3) time, O(N^2) mem | N <= 8000 |
-| `fmm` | Plane-wave MLFMA + GMRES | O(N log N) matvec | Large N, any shape |
-| `pfft` | Precorrected FFT + GMRES | O(N log N) matvec | Smooth geometries |
-| `spfft` | Surface pFFT + GMRES | O(N log N) matvec | Hex prisms (flat faces) |
-| `auto` | Auto-select + auto precond | -- | Recommended for production |
-
-`auto` selects solver based on N, ka, shape and enables auto-preconditioner.
-
-### GMRES Parameters (for iterative solvers)
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--gmres-tol F` | float | 1e-4 | Relative convergence tolerance |
-| `--gmres-restart N` | int | 100 | Restart parameter m (Krylov subspace size) |
-
-GMRES memory: restart * 2N * 16 bytes. Example: restart=100, N=9216 -> 60 MB.
-
-**Important:** GMRES tolerance should not be tighter than FMM accuracy:
-- `--digits 3` -> FMM error ~1e-3 -> use `--gmres-tol 1e-3` or `1e-4` with preconditioner
-- Without preconditioner, GMRES may not converge at ref >= 4
-
-### FMM Parameters
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--digits N` | int | 3 | FMM accuracy digits (higher = slower but more accurate) |
-| `--max-leaf N` | int | 64 | Max particles per octree leaf |
-
-### Preconditioner
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--prec TYPE` | string | none | Preconditioner type |
-| `--prec-r F` | float | 2.0 | Block-Jacobi cell radius multiplier |
-| `--prec-bs N` | int | 1500 | Max RWG per block (larger blocks bisected) |
-| `--prec-overlap N` | int | 0 | RAS overlap layers (0 = standard Block-Jacobi) |
-
-**Preconditioner types:**
-
-| Type | Description | Build time | Iteration reduction |
-|------|-------------|------------|---------------------|
-| `none` | No preconditioning | 0 | -- |
-| `diag` | 2x2 block-diagonal (self-interaction) | ~0s | Moderate |
-| `blockj` | Block-Jacobi with spatial cells + dense LU | ~30s (ref=4) | 50-90% |
-| `blockj` + `--prec-overlap 1` | RAS overlap (extends blocks with neighbors) | ~150s (ref=4) | 95-99% |
-| `ilu0` | ILU(0) on near-field sparse matrix | Slow | ~50% |
-| `auto` | Auto-select (with `--solver auto`) | Adaptive | Adaptive |
-
-**Recommended for production (ref >= 4, high ka):**
-```bash
---prec blockj --prec-r 2.0 --prec-bs 1000 --prec-overlap 1 --gmres-restart 200
-```
-Creates ~12 blocks with RAS overlap, ~14-22 matvecs instead of 700+ without.
-
-### Orientation Averaging
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--single` | flag | off | Single orientation (no averaging) |
-| `--orient NA NB NG` | 3 ints | 8 8 1 | GL quadrature grid (alpha x beta x gamma) |
-| `--orient-auto [R]` | opt float | R=4.0 | Auto-compute orientation count from ka, D_max |
-| `--orient-tol F` | float | 0 | Adaptive stop tolerance (0 = disabled) |
-| `--orient-sym B G` | 2 ints | 1 1 | Symmetry factors: B=2 (beta mirror), G=6 (C6 hex) |
-| `--gamma-mirror` | flag | off | Gamma mirror symmetry (sigma_v) |
-| `--orient-range I0 I1` | 2 ints | -- | Compute orientations [I0, I1) only (for cluster) |
-
-**`--orient-auto` formula:** angular step = 0.69 * lambda / D_max / (3*R), giving
-NA = ceil(360/step), NB = ceil(180/step). Larger R = more orientations.
-
-### Output
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--out FILE` | string | result.json | Output JSON file |
-| `--ntheta N` | int | 181 | Scattering angles (0 to 180 degrees) |
-| `--quad N` | int | 7 | Triangle quadrature order: 4, 7, 13 |
-
-**Output JSON structure:**
-- `mueller`: 16 x Ntheta array (M11, M12, ..., M44)
-- `theta`: scattering angles in degrees
-- `ka`, `ri`: input parameters
-- `timing`: assembly, solve, farfield, total (seconds)
-
-Additionally creates `<outfile>.per_orient` binary with per-orientation Mueller data.
-
-## Working with OBJ Meshes
-
-### Preparing the Mesh
-
-The OBJ file must contain a closed, manifold triangulated surface.
-Non-manifold edges or open boundaries will cause incorrect results.
-
-**Requirements:**
-- Triangulated faces only (no quads)
-- Closed surface (no holes)
-- Manifold edges (each edge shared by exactly 2 triangles)
-- Consistent face orientation (normals pointing outward)
-
-Repair tools: MeshLab (Filters -> Cleaning), Blender (3D Print Toolkit).
-
-### Mesh Resolution
-
-The solver automatically reports mesh resolution:
-```
-Resolution: h_avg=0.1057, lambda_ext/h=11.9, lambda_int/h=9.1 [OK]
+```text
+A x = b,
+x = [J, M]^T.
 ```
 
-| lambda_int/h | Status | Action |
-|--------------|--------|--------|
-| >= 10 | OK | Good resolution |
-| 6 - 10 | Marginal | Results may have ~5-10% error |
-| < 6 | WARNING | Mesh too coarse, use `--subdiv` or reduce ka |
+`J` and `M` are coefficients of equivalent electric and magnetic surface
+currents. `b` is generated from the tangential incident electric and magnetic
+fields. The matrix `A` contains exterior and interior Green-function
+interactions, singular local integrals, and second-kind identity terms.
 
-Formula: lambda_int = 2*pi / (ka * |m|), h_avg = sqrt(2 * total_area / (N_tri * sqrt(3)))
+The code does not normally store the full matrix. It evaluates `A*v` through:
 
-### Scaling
+1. projection of current coefficients to quadrature points;
+2. exterior and interior FMM or pFFT interactions;
+3. sparse correction of singular and adjacent interactions;
+4. assembly of the two Muller rows;
+5. FP64 Krylov updates and residual reductions.
 
-The OBJ mesh is automatically scaled so that D_max (maximum bounding box dimension)
-corresponds to the size parameter ka. No manual scaling needed.
+The final far field is computed from the converged currents. Two orthogonal
+incident polarizations produce the four complex amplitude functions and the
+complete real `4 x 4` Mueller matrix as a function of scattering angle.
 
-### Subdivision
+## 3. Surface Discretizations
 
-`--subdiv N` performs N rounds of Loop-like flat subdivision:
-- Each triangle splits into 4 triangles
-- N=1: 4x triangles, N=2: 16x triangles
-- Example: 1200-triangle OBJ + `--subdiv 2` = 19200 triangles, ~28800 RWG
+### 3.1 Smooth P2 mode
 
-### Example: Greek Statue
+`--edge-mode smooth` uses quadratic nodal interpolation with a smooth local
+tangent frame. It is appropriate for spheres and smooth convergence controls.
+It is not the preferred representation across a sharp polyhedral edge because
+a single smooth tangent frame is not physically natural there.
+
+### 3.2 Split nodal mode
+
+`--edge-mode split` duplicates selected feature-edge degrees of freedom. It is
+retained for controlled comparisons with earlier work, not as the production
+sharp-particle mode.
+
+### 3.3 H(div)-BDM1 mode
+
+`--edge-mode hdiv` uses linearly varying BDM1 edge moments. A global edge
+orientation and the surface Piola transform preserve the shared co-normal
+flux. This is the default recommendation for prisms, cubes, and sharp OBJ
+surfaces.
+
+The option `--feature-angle` controls feature detection where it is relevant.
+The surface must still be closed, manifold, non-degenerate, and consistently
+oriented.
+
+### 3.4 Refinement
+
+`--ref N` recursively refines the surface. It is not interchangeable with
+ADDA's dipoles-per-wavelength parameter. A converged linear residual only
+shows that the chosen discrete system was solved. Physical convergence must
+be established by comparing at least two refinement levels.
+
+## 4. Acceleration Components
+
+### 4.1 FMM
+
+The fast multipole method evaluates long-range Green-function interactions
+without forming a dense matrix. The Muller action requires scalar,
+gradient/curl, and Hessian contractions for both exterior and interior
+wavenumbers.
+
+`--digits N` controls the requested FMM expansion accuracy.
+`--max-leaf N` controls octree depth and work distribution. At high frequency,
+an excessively deep tree can reduce the admissible expansion order; the
+driver contains a guard for this condition.
+
+### 4.2 Near correction
+
+FMM and pFFT approximations are replaced by accurately integrated entries for
+singular and topologically adjacent element pairs. `--fmm-near-radius`
+controls the geometric near region. `--near-correction-cache FILE` stores the
+validated correction and rejects incompatible geometry or physics.
+
+Equivalent local configurations on regular polyhedra reuse correction
+templates. This reduces setup cost without changing the operator.
+
+### 4.3 Morton block-Jacobi
+
+MBJ partitions surface unknowns in Morton order, assembles dense local blocks,
+and stores their LU factors:
+
+```text
+P approximately equals A,
+A P^{-1} y = b,
+x = P^{-1} y.
+```
+
+The preconditioner is applied on the right. Therefore the reported physical
+solution is still `x`, and the true residual must be evaluated with the full
+selected operator.
+
+`--mbj-nodes` controls nominal block size. `--mbj-overlap` enables a restricted
+additive-Schwarz overlap. Larger blocks or overlap may reduce iterations but
+increase setup time and memory. They are not universally faster.
+
+`--mbj-cache FILE` reuses the LU factors when geometry, material, basis,
+quadrature, and MBJ parameters are unchanged.
+
+### 4.4 pFFT-FGMRES
+
+`--pfft-fgmres` uses an approximate pFFT solve as a variable right
+preconditioner inside an outer FGMRES solve. The outer operator remains FMM:
+
+```text
+z_k approximately solves A_pFFT z_k = v_k,
+w_k = A_FMM z_k.
+```
+
+The inner solve is intentionally loose. `--pfft-inner-tol` and
+`--pfft-inner-iters` limit its cost; `auto` selects a size-dependent cap.
+Because the inner action varies, flexible GMRES is required rather than
+ordinary right-preconditioned GMRES.
+
+The outer residual decides convergence. A fast inner solve that increases the
+outer iteration count can be slower overall, so setup, inner, outer, and
+far-field times must be reported separately.
+
+## 5. Precision
+
+Build targets:
 
 ```bash
-# Coarse mesh, quick test (1 orientation)
-bin/bem_cuda --ka 5 --ri 1.3116 0 --obj model.obj --subdiv 1 \
-  --solver auto --single --out greek_test.json
-
-# Full computation with auto-orientations
-bin/bem_cuda --ka 5 --ri 1.3116 0 --obj model.obj --subdiv 1 \
-  --solver auto --orient-auto --out greek_ka5.json
+make bin/muller_nodal_fmm_demo CXX=g++-12 CUDA_HOME=/usr
+make muller-fp32 CXX=g++-12 CUDA_HOME=/usr -j"$(nproc)"
 ```
 
-### Memory Estimates for OBJ Meshes
+`muller_nodal_fmm_demo` uses FP64 operator storage/work where implemented.
+`muller_nodal_fmm_demo_fp32` enables FP32 pFFT arrays and selected near-field
+work. Krylov vectors, MBJ factors, orthogonalization, and norm reductions
+remain FP64.
 
-With leaf-to-leaf P2P optimization, GPU memory usage is modest:
+This is mixed precision, not a pure single-precision calculation. The selected
+mixed operator is still slightly different from the FP64 operator. Validate a
+new regime by checking:
 
-| N (RWG) | FMM arrays | Preconditioner | GMRES (m=100) | Total |
-|---------|-----------|----------------|---------------|-------|
-| 2,304 | ~100 MB | ~200 MB | 15 MB | ~0.3 GB |
-| 9,216 | ~170 MB | ~1.2 GB | 60 MB | ~1.4 GB |
-| 30,000 | ~500 MB | ~3 GB | 200 MB | ~3.7 GB |
-| 100,000 | ~1.5 GB | ~8 GB | 600 MB | ~10 GB |
+1. final independently recomputed residual;
+2. FP32 versus FP64 Mueller difference;
+3. surface-refinement convergence;
+4. sensitivity of weak Mueller elements.
 
-RTX 3080 Ti (12 GB): up to ~30,000 RWG comfortably.
+Use `--fmm-near-fp64` for an FP64 near-field control with the mixed binary.
 
-## Solvers
+## 6. Building
 
-### Dense LU (default)
-Direct LU factorization via cuSOLVER. O(N^3) time, O(N^2) memory.
-Practical for N <= 8000 (ref <= 4). No iterative convergence issues.
+### 6.1 Dependencies
 
-### FMM+GMRES (`--solver fmm`)
-Plane-wave MLFMA with GMRES iterative solver.
-Matrix-free O(N log N) matvec. GPU-accelerated P2P, P2M, M2L, L2P kernels.
+- Linux;
+- CUDA toolkit, cuFFT, cuSPARSE;
+- a CUDA-compatible C++ compiler;
+- OpenMP;
+- Python 3 for reports.
 
-**P2P near-field**: Leaf-to-leaf neighbor structure (~1 MB) instead of point-to-point
-CSR (~6 GB). Each target looks up its leaf, iterates over neighboring leaves, and
-evaluates Green's function for all sources in those leaves.
-
-**Two-stream pipeline**: P2P and FMM tree traversal run concurrently on separate
-CUDA streams, with results merged at the end.
-
-**Shared tree**: For PMCHWT (two wavenumbers k_ext, k_int), the octree, P2P structure,
-and point positions are shared between the two FMM instances. Only k-dependent arrays
-(multipole/local coefficients, M2L transfers) are duplicated.
-
-### pFFT+GMRES (`--solver pfft`)
-Precorrected FFT: 3D Cartesian grid with FFT-based far-field.
-Faster than FMM for smooth geometries.
-
-### Surface pFFT (`--solver spfft`)
-Specialized for particles with flat faces (hex prisms).
-Uses 2D FFT per face instead of 3D FFT.
-
-Features:
-- FP32 C2C FFT (2x less memory than Z2Z)
-- CUDA streams: per-face async kernel execution
-- Mixed-radix grids (7-smooth: factors of 2,3,5,7)
-- Automatic density-based grid spacing (~4 points/cell)
-- Inter-face P2P kernel for cross-face Green's function
-
-## Preconditioners
-
-Right preconditioning in GMRES: solve Z*M^{-1} * (M*x) = b.
-
-### Block-Jacobi (`--prec blockj`)
-Spatial cell blocks with dense LU per block.
-
-- Cell size: `bb_max_dim / (2.5 / radius_mult)`, giving ~8-20 blocks
-- **Adaptive splitting**: blocks > `--prec-bs` RWG are automatically bisected
-  along the longest axis (recursive, up to 20 rounds)
-- **GPU-accelerated apply**: LU factors uploaded to GPU (row-major for
-  coalesced access), CUDA kernel with warp-parallel triangular solve
-- Build: typically 5-30s at ref=4
-- With RAS overlap (`--prec-overlap 1`): 51x fewer iterations at high ka
-
-### RAS Overlap (`--prec-overlap N`)
-
-Restricted Additive Schwarz (RAS) extends each Block-Jacobi block with
-neighboring RWGs from other blocks. The extended system is factorized,
-but only own RWGs are scattered back (restricted).
-
-**Benchmark** (hex D/L=0.7, m=1.3116, RTX 3080 Ti):
-
-| ref | ka | Precond | Blocks | Build (s) | Matvecs | Total (s) |
-|-----|----|---------|---------|-----------|---------| ----------|
-| 3 | 10 | none | -- | -- | 451 | 85 |
-| 3 | 10 | blockj | 4 | 1.4 | 392 | 115 |
-| 4 | 5 | blockj+RAS(1) | 73 | 31 | 22 | 50 |
-| **4** | **16** | **blockj+RAS(1)** | **12** | **154** | **14** | **184** |
-| 4 | 20 | blockj+RAS(1) | 4 | 2432 | 13 | 2476 |
-
-## Orientation Averaging
-
-`--orient NA NB NG` specifies an NA x NB x NG Gauss-Legendre quadrature
-grid over Euler angles. Typical: `--orient 8 8 1` (64 orientations).
-
-Previous-orientation solution reused as initial guess for the next,
-reducing iterations for neighboring angles.
-
-`--orient-auto` computes the orientation count automatically based on
-ka * D_max / lambda, ensuring sufficient angular sampling for the
-diffraction pattern.
-
-`--orient-range I0 I1` allows splitting orientations across multiple
-compute nodes for cluster parallelism.
-
-## Examples
+### 6.2 RTX 3090 Ti
 
 ```bash
-# 1. Dense LU, sphere, ka=5, single orientation
-bin/bem_cuda --ka 5 --ref 3 --ri 1.3116 0 --single
+git clone https://github.com/KirillSalnikov/BEM-CPP.git
+cd BEM-CPP
 
-# 2. FMM, hex D/L=0.7, Block-Jacobi+RAS, 64 orientations
-bin/bem_cuda --solver fmm --ka 10 --ref 4 --shape hex --ar 1.4286 \
-  --prec blockj --prec-overlap 1 --gmres-restart 200 \
-  --orient 8 8 1 --out hex_ka10.json
-
-# 3. Auto solver, auto orientations, hex
-bin/bem_cuda --solver auto --ka 15 --ref 4 --shape hex --ar 0.7 \
-  --orient-auto --out hex_ka15.json
-
-# 4. OBJ mesh with subdivision
-bin/bem_cuda --ka 5 --ri 1.5 0.01 --obj statue.obj --subdiv 1 \
-  --solver auto --orient-auto --out statue_ka5.json
-
-# 5. Cluster parallelism: split 805 orientations across 4 nodes
-bin/bem_cuda --solver auto --ka 15 --ref 4 --shape hex --ar 0.7 \
-  --orient 35 23 1 --orient-range 0 202 --out node0.json     # node 0
-bin/bem_cuda ... --orient-range 202 404 --out node1.json       # node 1
-bin/bem_cuda ... --orient-range 404 606 --out node2.json       # node 2
-bin/bem_cuda ... --orient-range 606 805 --out node3.json       # node 3
-
-# 6. High-ka sweep with RAS preconditioner (ref=4, hex D/L=0.7)
-bin/bem_cuda --solver spfft --shape hex --ar 0.7 --ka 20 --ref 4 --ri 1.3116 0 \
-  --prec blockj --prec-r 2.0 --prec-bs 1000 --prec-overlap 1 \
-  --gmres-restart 200 --gmres-tol 1e-4 --ntheta 181 \
-  --orient 45 31 1 --out hex_ka20_r4.json
+make muller-fp32 CXX=g++-12 CUDA_HOME=/usr -j"$(nproc)"
+make fmm-only CXX=g++-12 CUDA_HOME=/usr \
+  ARCH=-arch=sm_86 -j"$(nproc)"
 ```
 
-## Build
+The mixed Muller target sets `sm_86`. For another GPU, adjust the Makefile
+target or build flags.
+
+## 7. Single-Orientation Muller Calculation
 
 ```bash
-make -j$(nproc)
+mkdir -p runs/prism_ka25_ref5
+
+OMP_NUM_THREADS=16 bin/muller_nodal_fmm_demo_fp32 \
+  --shape prism --sides 6 --aspect 1 \
+  --ref 5 --ka 25 --ri 1.3 \
+  --edge-mode hdiv \
+  --quad 7 --duffy-order 4 \
+  --digits 5 --max-leaf 64 --fmm-near-radius 3 \
+  --tol 1e-5 --max-iters 500 --gmres-restart 100 \
+  --mbj-only --mbj-nodes 50 --mbj-overlap 0 \
+  --near-correction-cache runs/prism_ka25_ref5/operator.near \
+  --mbj-cache runs/prism_ka25_ref5/mbj50.cache \
+  --pfft-fgmres \
+  --pfft-inner-tol 4e-2 --pfft-inner-iters auto \
+  --pfft-outer-restart 32 \
+  --pfft-order 2 --pfft-correction-radius 0 \
+  --pfft-grid-safety 1 \
+  --physical-check --ntheta 181 \
+  --no-dense-validation \
+  --iteration-log runs/prism_ka25_ref5/iterations.csv \
+  --out runs/prism_ka25_ref5/result.json
 ```
 
-For CUDA 12.8+ with gcc 15 (too new for nvcc), use an older compiler:
+Interpretation of the main controls:
+
+| Control | Meaning |
+|---|---|
+| `--ka 25` | equal-volume size parameter |
+| `--ri 1.3` | real refractive index |
+| `--ref 5` | fifth recursive surface refinement |
+| `--tol 1e-5` | requested relative residual |
+| `--physical-check` | solve both incident polarizations |
+| `--ntheta 181` | one-degree scattering grid |
+| `--mbj-only` | skip an unpreconditioned comparison solve |
+| `--no-dense-validation` | do not attempt impossible dense assembly |
+
+For small systems, remove `--mbj-only` and use the FP64 executable to compare
+baseline and preconditioned solutions.
+
+## 8. Checkpoints and Caches
+
+Unless `--no-checkpoint` is supplied, the driver stores solver checkpoints
+under the output-derived prefix:
+
+```text
+result.json.checkpoint.<stage>.bin
+```
+
+The checkpoint contains the current outer Krylov state/solution and is saved
+after each outer iteration. Compatibility includes geometry, material,
+quadrature, precision mode, system dimensions, and the right-hand side.
+
+Use `--checkpoint PREFIX` to choose another location. Repeating an identical
+command resumes automatically. A changed signature is rejected.
+
+Three mechanisms have different purposes:
+
+| File | Purpose |
+|---|---|
+| solver checkpoint | resume interrupted Krylov work |
+| near-correction cache | avoid rebuilding local exact corrections |
+| MBJ cache | avoid rebuilding local LU factors |
+
+Do not describe cache loading as solver acceleration unless complete wall time
+and cold-start time are both reported.
+
+## 9. Orientation Averaging
+
+Recommended wrapper:
+
 ```bash
-make -j$(nproc) NVFLAGS="-arch=sm_86 -O3 --use_fast_math -ccbin g++-13 -Xcompiler '-O2 -Wall -std=c++11 -fopenmp' -std=c++11"
+KA=25 RI=1.3 REF=5 \
+ALPHA=8 BETA=8 GAMMA=4 NTHETA=181 THREADS=16 \
+OUT="$PWD/runs/prism_ka25_avg" \
+scripts/run_muller_orientation_average.sh
 ```
 
-Set GPU architecture in `Makefile` (default: `sm_86`).
+`--orient-average Na Nb Ng` uses quadrature nodes in `cos(beta)` and uniform
+azimuthal nodes. Two polarization solves at each `(beta,gamma)` provide the
+alpha dependence in the far field. Consequently, `Na` increases far-field
+sampling but does not multiply the number of linear systems.
 
-## References
+`--orient-symmetry-order 6` restricts a regular hexagonal prism to one gamma
+sector. This is exact only when:
 
-1. Rao, Wilton, Glisson, "Electromagnetic scattering by surfaces of arbitrary shape," IEEE TAP, 1982.
-2. Chew, Jin, Michielssen, Song, *Fast and Efficient Algorithms in CEM*, 2001.
-3. Graglia, "On the numerical integration of the linear shape functions times the 3-D Green's function," IEEE TAP, 1993.
-4. Phillips, White, "A precorrected-FFT method for electrostatic analysis," IEEE TCAD, 1997.
+- the material is rotationally invariant;
+- the generated or imported mesh preserves the declared symmetry;
+- no orientation-dependent external feature breaks that symmetry.
+
+Nearby base orientations may use a previous solution as an initial guess.
+`--orient-warm-max-angle` limits this transfer and `--orient-zero-start`
+disables it. An initial guess changes iteration count, not the converged
+equation.
+
+The orientation checkpoint stores accumulated weights, Mueller values, timing,
+the next orientation, and previous solutions. It is replaced atomically after
+every completed base orientation.
+
+## 10. Output and Interpretation
+
+The JSON output contains:
+
+- geometry, material, mesh, basis, and quadrature metadata;
+- number of system unknowns and quadrature points;
+- solver and preconditioner settings;
+- projected and independently checked residual information;
+- iteration counts;
+- setup, solve, inner-preconditioner, and far-field timing;
+- scattering angles and Mueller elements;
+- checkpoint and cache metadata.
+
+The iteration CSV records residual and phase timing for diagnosing whether
+time is spent in the FMM action, pFFT inner solves, preconditioning, or
+orthogonalization.
+
+Always distinguish:
+
+1. iteration speedup;
+2. solve-only wall-time speedup;
+3. complete wall-time speedup including setup, cache generation, and far field.
+
+The same iteration count can have different wall time because an MBJ or pFFT
+application adds mathematical work to every outer step.
+
+## 11. Accuracy Protocol
+
+### 11.1 Linear convergence
+
+The true residual must meet the requested tolerance:
+
+```text
+||b - A x||_2 / ||b||_2 <= tolerance.
+```
+
+A projected GMRES residual alone is insufficient, especially for inexact or
+mixed-precision operators.
+
+### 11.2 Surface convergence
+
+Repeat at the next refinement level. Compare the complete Mueller matrix with
+a solid-angle-weighted norm and inspect important weak components separately.
+
+### 11.3 Operator convergence
+
+Increase FMM digits, quadrature order, Duffy order, and near radius one at a
+time. The observable change should be below the target physical error.
+
+### 11.4 Independent physics
+
+- sphere: compare with Mie theory;
+- prism or OBJ: compare with a converged ADDA calculation or another
+  independently implemented surface/volume method;
+- compare matching geometry, orientation, refractive index, wavelength,
+  angular grid, polarization convention, and normalization.
+
+Agreement of forward `M11` alone is not enough. Compare all nonzero Mueller
+elements and integrated quantities.
+
+## 12. Main Muller Command-Line Controls
+
+### Geometry
+
+| Option | Description |
+|---|---|
+| `--shape sphere` | built-in sphere |
+| `--shape prism --sides N --aspect F` | regular prism |
+| `--shape cube` | structured cube |
+| `--obj FILE` | imported triangular surface |
+| `--ref N` | recursive surface refinement |
+| `--edge-refine N` | local edge refinement experiment |
+| `--edge-mode smooth|split|hdiv` | surface-current basis |
+
+### Operator
+
+| Option | Description |
+|---|---|
+| `--digits N` | FMM accuracy target |
+| `--quad N` | regular triangle quadrature |
+| `--duffy-order N` | singular/adjacent quadrature |
+| `--max-leaf N` | FMM leaf occupancy |
+| `--fmm-near-radius N` | exact near-correction radius |
+| `--operator-backend fmm|pfft` | selected direct action backend |
+| `--fmm-near-fp32|--fmm-near-fp64` | near precision |
+
+### Solver and preconditioner
+
+| Option | Description |
+|---|---|
+| `--tol F` | requested relative residual |
+| `--max-iters N` | maximum outer iterations |
+| `--gmres-restart N` | restart size; zero requests unrestarted mode |
+| `--mbj-nodes N` | nominal MBJ block size |
+| `--mbj-overlap N` | Schwarz overlap |
+| `--pfft-fgmres` | pFFT-preconditioned FGMRES |
+| `--pfft-inner-tol F` | inner tolerance |
+| `--pfft-inner-iters auto|N` | inner iteration cap |
+| `--setup-only` | construct operator and report resources |
+
+### Persistence and diagnostics
+
+| Option | Description |
+|---|---|
+| `--checkpoint PREFIX` | explicit solver checkpoint prefix |
+| `--no-checkpoint` | disable checkpointing |
+| `--near-correction-cache FILE` | reusable local correction |
+| `--mbj-cache FILE` | reusable MBJ factors |
+| `--iteration-log FILE` | per-iteration CSV |
+| `--iteration-log-every N` | logging interval |
+| `--out FILE` | result JSON |
+
+## 13. Legacy PMCHWT Solver
+
+Build:
+
+```bash
+make fmm-only CXX=g++-12 CUDA_HOME=/usr \
+  ARCH=-arch=sm_86 -j"$(nproc)"
+```
+
+Example:
+
+```bash
+bin/bem_cuda_fmm \
+  --shape hex_prism --prism-aspect 1 \
+  --ka 10 --ri 1.3 0 --ref 4 \
+  --system balanced --solver fmm --single \
+  --quad 7 --fmm-digits 5 --gmres-tol 1e-5 \
+  --prec auto --ntheta 181 \
+  --out runs/pmchwt_prism.json
+```
+
+Available PMCHWT preconditioners include `mass`, `local`, `ilu0`, and the
+experimental `calderon-rwg` operator square. The latter is not a strict
+Calderon RWG/BC discretization and must not be reported as one.
+
+Run:
+
+```bash
+bin/bem_cuda_fmm --help
+```
+
+for the complete legacy CLI.
+
+## 14. Neural Interfaces
+
+### 14.1 PMCHWT GraphSAI
+
+Export:
+
+```bash
+bin/bem_cuda_fmm \
+  --shape sphere --ref 2 --ka 4.2 --ri 2.2 0 \
+  --system balanced --solver fmm --single \
+  --quad 7 --fmm-digits 5 \
+  --neural-neighbors 24 \
+  --neural-dump runs/case.raw
+```
+
+Import an exact-system GraphSAI file with `--neural-prec FILE`.
+`--neural-action-dump` records Krylov/operator actions for training or
+diagnostics.
+
+### 14.2 Muller training export
+
+```bash
+make bin/muller_training_dump CXX=g++-12 CUDA_HOME=/usr
+```
+
+The resulting exporter provides local blocks and full-operator actions to the
+separate neural-training project. Training artifacts are intentionally not
+stored in this repository.
+
+## 15. Verification Commands
+
+```bash
+make host-checks CXX=g++-12 CUDA_HOME=/usr -j4
+make cuda-hessian-check CXX=g++-12 CUDA_HOME=/usr
+make cuda-pfft-hessian-check CXX=g++-12 CUDA_HOME=/usr
+make cuda-muller-fmm-check CXX=g++-12 CUDA_HOME=/usr
+make cuda-muller-edge-check CXX=g++-12 CUDA_HOME=/usr
+```
+
+These checks cover mesh topology, dense Muller assembly, singular quadrature,
+FMM derivatives, pFFT derivatives, matrix-free action, MBJ cache reuse, and
+H(div) prism handling.
+
+## 16. Troubleshooting
+
+### CUDA out of memory
+
+- reduce `ref`;
+- reduce GMRES restart;
+- use the mixed binary;
+- reduce MBJ overlap/block size;
+- run `--setup-only` before a long solve;
+- do not run two large jobs on the same GPU.
+
+### Residual stagnates
+
+- verify mesh orientation and quality;
+- increase quadrature/Duffy order;
+- increase FMM digits;
+- compare MBJ block sizes;
+- inspect the iteration CSV;
+- use pFFT-FGMRES only when the pFFT inner action is accurate enough.
+
+### Checkpoint rejected
+
+The geometry, material, quadrature, precision, operator, right-hand side, or
+system size changed. Start a new output prefix. Do not force migration for a
+production result.
+
+### Result changes after refinement
+
+This is discretization error, even when both linear residuals are small.
+Continue refinement or lower the physical size range claimed for that mesh.
+
+### BEM and ADDA disagree
+
+Check, in order:
+
+1. equal-volume scaling and `ka`;
+2. exact geometry and aspect-ratio convention;
+3. Euler angles and scattering plane;
+4. Mueller normalization and polarization signs;
+5. independent BEM mesh convergence;
+6. independent ADDA DPL convergence;
+7. angular interpolation and integration weights.
+
+## 17. Additional Documentation
+
+- `MANUAL.pdf`: mathematical manual in Russian.
+- `docs/muller_nodal_mbj.md`: dense/FMM Muller and MBJ implementation.
+- `docs/muller_edges.md`: sharp-edge basis and checks.
+- `docs/muller_pfft.md`: pFFT-FGMRES details.
+- `docs/preconditioner_comparison.md`: PMCHWT preconditioners.
+- `docs/hdiv_bem_adda_size_sweep_journal.md`: detailed validation journal.
+
+Rebuild the Russian PDF with:
+
+```bash
+tectonic MANUAL.tex --keep-logs --keep-intermediates
+```
+
+Generated binaries, `runs/`, checkpoints, and caches are excluded from Git.
+Record the exact commit, command line, GPU, compiler, and CUDA version with
+every result intended for publication.

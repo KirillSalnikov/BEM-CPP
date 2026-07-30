@@ -4,9 +4,6 @@ runs/
 .pytest_cache/
 src/*.o
 *.json
-!results/
-!results/reference/
-!results/reference/**/*.json
 *.npz
 *.pyc
 __pycache__/
@@ -14,6 +11,8 @@ MANUAL.aux
 MANUAL.log
 MANUAL.out
 MANUAL.toc
+MANUAL.lof
+MANUAL.lot
 *.o
 bin/
 tests/*_check
