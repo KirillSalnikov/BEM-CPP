@@ -24,6 +24,11 @@ REQUIRED_METHOD_KEYS = {
 PRECONDITIONER_ENABLED_REASONS = {
     "auto",
     "forced",
+    "explicit_neural_graph_sai",
+    "explicit_mass",
+    "explicit_calderon_rwg",
+    "explicit_local",
+    "explicit_ilu0",
     "obj_strict_block_jacobi_measured",
     "obj_strict_block_jacobi",
     "obj_quality_strict_block_jacobi",

@@ -33,6 +33,24 @@ static bool parse_obj_vertex_index(const std::string& tok, int vertex_count, int
     return true;
 }
 
+bool write_mesh_obj(const char* filename, const Mesh& mesh)
+{
+    std::ofstream stream(filename);
+    if (!stream)
+        return false;
+    stream.precision(17);
+    stream << "# BEM-CPP surface mesh: " << mesh.nv() << " vertices, "
+           << mesh.nt() << " triangles\n";
+    for (const Vec3& vertex : mesh.verts)
+        stream << "v " << vertex.x << ' ' << vertex.y << ' ' << vertex.z << '\n';
+    for (int triangle = 0; triangle < mesh.nt(); triangle++) {
+        stream << "f " << mesh.tris[3 * triangle] + 1 << ' '
+               << mesh.tris[3 * triangle + 1] + 1 << ' '
+               << mesh.tris[3 * triangle + 2] + 1 << '\n';
+    }
+    return (bool)stream;
+}
+
 Mesh icosphere(double radius, int refinements) {
     double phi = (1.0 + sqrt(5.0)) / 2.0;
 
@@ -774,6 +792,50 @@ static void refine_marked_edges(Mesh& m, const std::set<std::pair<int,int>>& mar
     m.tris.swap(out);
 }
 
+static double marked_refinement_min_angle(
+    const Vec3& a, const Vec3& b, const Vec3& c,
+    bool mab, bool mbc, bool mca)
+{
+    const Vec3 ab = (a + b) * 0.5;
+    const Vec3 bc = (b + c) * 0.5;
+    const Vec3 ca = (c + a) * 0.5;
+    double minimum = M_PI;
+    auto child = [&](const Vec3& p0, const Vec3& p1, const Vec3& p2) {
+        minimum = std::min(minimum, tri_quality_min_angle(p0, p1, p2));
+    };
+
+    const int nmark = (mab ? 1 : 0) + (mbc ? 1 : 0) + (mca ? 1 : 0);
+    if (nmark == 1) {
+        if (mab) {
+            child(a, ab, c);
+            child(ab, b, c);
+        } else if (mbc) {
+            child(b, bc, a);
+            child(bc, c, a);
+        } else {
+            child(c, ca, b);
+            child(ca, a, b);
+        }
+    } else if (nmark == 2) {
+        if (mab && mbc) {
+            child(ab, b, bc);
+            child(a, ab, bc);
+            child(a, bc, c);
+        } else if (mbc && mca) {
+            child(bc, c, ca);
+            child(b, bc, ca);
+            child(b, ca, a);
+        } else {
+            child(ca, a, ab);
+            child(c, ca, ab);
+            child(c, ab, b);
+        }
+    } else {
+        minimum = tri_quality_min_angle(a, b, c);
+    }
+    return minimum;
+}
+
 static double refine_prism_edges(Mesh& m, const std::vector<Vec3>& poly,
                                  double ztop, double zbot, int seg, int passes)
 {
@@ -819,6 +881,35 @@ static double refine_prism_edges(Mesh& m, const std::vector<Vec3>& poly,
         }
         if (marked.empty())
             break;
+
+        // Extend the red-refined band only where a green transition would
+        // create a poor triangle. This preserves a local edge layer without
+        // accepting the skinny elements produced by an arbitrary bisection.
+        const double min_transition_angle = 25.0 * M_PI / 180.0;
+        bool closure_changed = true;
+        while (closure_changed) {
+            closure_changed = false;
+            for (int t = 0; t < nt; t++) {
+                int a = m.tris[3*t], b = m.tris[3*t + 1],
+                    c = m.tris[3*t + 2];
+                auto edge_key = [](int p, int q) {
+                    return std::make_pair(std::min(p, q), std::max(p, q));
+                };
+                bool mab = marked.find(edge_key(a, b)) != marked.end();
+                bool mbc = marked.find(edge_key(b, c)) != marked.end();
+                bool mca = marked.find(edge_key(c, a)) != marked.end();
+                int nmark =
+                    (mab ? 1 : 0) + (mbc ? 1 : 0) + (mca ? 1 : 0);
+                if ((nmark == 1 || nmark == 2) &&
+                    marked_refinement_min_angle(
+                        m.verts[a], m.verts[b], m.verts[c],
+                        mab, mbc, mca) < min_transition_angle) {
+                    closure_changed |= marked.insert(edge_key(a, b)).second;
+                    closure_changed |= marked.insert(edge_key(b, c)).second;
+                    closure_changed |= marked.insert(edge_key(c, a)).second;
+                }
+            }
+        }
         refine_marked_edges(m, marked);
     }
 
@@ -838,7 +929,7 @@ static double refine_prism_edges(Mesh& m, const std::vector<Vec3>& poly,
 }
 
 Mesh regular_prism(int sides, double aspect, int refinements, double equiv_radius,
-                   int edge_refine) {
+                   int edge_refine, bool mirror_symmetric_sides) {
     if (sides < 3) sides = 3;
     if (aspect <= 0.0) aspect = 1.0;
     int seg = 1 << std::max(0, refinements);
@@ -912,8 +1003,15 @@ Mesh regular_prism(int sides, double aspect, int refinements, double equiv_radiu
                 int v10 = add_vertex(Vec3(p10.x, p10.y, z0));
                 int v01 = add_vertex(Vec3(p00.x, p00.y, z1));
                 int v11 = add_vertex(Vec3(p10.x, p10.y, z1));
-                add_tri(v00, v10, v11);
-                add_tri(v00, v11, v01);
+                const bool forward_diagonal =
+                    !mirror_symmetric_sides || (e % 2 == 0);
+                if (forward_diagonal) {
+                    add_tri(v00, v10, v11);
+                    add_tri(v00, v11, v01);
+                } else {
+                    add_tri(v00, v10, v01);
+                    add_tri(v10, v11, v01);
+                }
             }
         }
     }
@@ -978,4 +1076,74 @@ Mesh regular_prism(int sides, double aspect, int refinements, double equiv_radiu
         }
     }
     return m;
+}
+
+//======================================================================================================================
+
+Mesh structured_cube(int refinements, double equiv_radius)
+{
+    const int cells = 1 << std::max(0, refinements);
+    const double target_volume =
+        4.0 * M_PI * equiv_radius * equiv_radius * equiv_radius / 3.0;
+    const double edge = std::cbrt(target_volume);
+    const double half = 0.5 * edge;
+
+    Mesh mesh;
+    std::map<std::tuple<int, int, int>, int> vertex_ids;
+    auto vertex = [&](int ix, int iy, int iz) {
+        const std::tuple<int, int, int> key(ix, iy, iz);
+        const auto found = vertex_ids.find(key);
+        if (found != vertex_ids.end())
+            return found->second;
+        const double scale = edge / static_cast<double>(cells);
+        const int id = static_cast<int>(mesh.verts.size());
+        mesh.verts.push_back(Vec3(
+            -half + scale * ix,
+            -half + scale * iy,
+            -half + scale * iz));
+        vertex_ids[key] = id;
+        return id;
+    };
+    auto triangle = [&](int a, int b, int c) {
+        mesh.tris.push_back(a);
+        mesh.tris.push_back(b);
+        mesh.tris.push_back(c);
+    };
+    auto face = [&](int face_index) {
+        std::vector<int> ids((cells + 1) * (cells + 1));
+        auto at = [&](int i, int j) -> int& {
+            return ids[i * (cells + 1) + j];
+        };
+        for (int i = 0; i <= cells; i++) {
+            for (int j = 0; j <= cells; j++) {
+                switch (face_index) {
+                    case 0: at(i, j) = vertex(cells, i, j); break; // +x
+                    case 1: at(i, j) = vertex(0, j, i); break;     // -x
+                    case 2: at(i, j) = vertex(j, cells, i); break; // +y
+                    case 3: at(i, j) = vertex(i, 0, j); break;     // -y
+                    case 4: at(i, j) = vertex(i, j, cells); break; // +z
+                    default: at(i, j) = vertex(j, i, 0); break;    // -z
+                }
+            }
+        }
+        for (int i = 0; i < cells; i++) {
+            for (int j = 0; j < cells; j++) {
+                const int v00 = at(i, j);
+                const int v10 = at(i + 1, j);
+                const int v11 = at(i + 1, j + 1);
+                const int v01 = at(i, j + 1);
+                if ((i + j) % 2 == 0) {
+                    triangle(v00, v10, v11);
+                    triangle(v00, v11, v01);
+                } else {
+                    triangle(v00, v10, v01);
+                    triangle(v10, v11, v01);
+                }
+            }
+        }
+    };
+
+    for (int face_index = 0; face_index < 6; face_index++)
+        face(face_index);
+    return mesh;
 }

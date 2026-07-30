@@ -29,6 +29,13 @@ static void require_policy(const SolverAccuracyInput& in,
 
 int main()
 {
+    if (!symmetry_reconstruction_meets_tolerance(1e-5, 1e-5) ||
+        symmetry_reconstruction_meets_tolerance(0.302, 1e-5) ||
+        symmetry_reconstruction_meets_tolerance(-1.0, 1e-5)) {
+        std::cerr << "unexpected symmetry reconstruction policy\n";
+        return 1;
+    }
+
     SolverAccuracyInput in;
     in.use_fmm = true;
     in.fmm_backend = true;

@@ -60,6 +60,14 @@ inline int bem_policy_max_int(int a, int b)
     return (a > b) ? a : b;
 }
 
+inline bool symmetry_reconstruction_meets_tolerance(
+    double operator_residual,
+    double tolerance)
+{
+    return operator_residual >= 0.0 &&
+           operator_residual <= tolerance;
+}
+
 inline SolverAccuracyPolicy choose_solver_accuracy_policy(const SolverAccuracyInput& in)
 {
     SolverAccuracyPolicy out;

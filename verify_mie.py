@@ -157,6 +157,27 @@ def mueller_component(mueller, i, j):
     raise ValueError("unknown mueller layout; expected 4x4xN, 16xN, or Nx16")
 
 
+def physical_result(data):
+    """Return theta and Mueller arrays from either BEM JSON schema."""
+    physical = data.get("physical")
+    if isinstance(physical, dict):
+        return physical["theta_degrees"], physical["mueller"]
+    return data["theta"], data["mueller"]
+
+
+def solid_angle_relative_l2(theta, values, reference):
+    weights = [max(math.sin(math.radians(value)), 0.0) for value in theta]
+    numerator = sum(
+        weight * abs(value - target) ** 2
+        for weight, value, target in zip(weights, values, reference)
+    )
+    denominator = sum(
+        weight * abs(target) ** 2
+        for weight, target in zip(weights, reference)
+    )
+    return math.sqrt(numerator / max(denominator, 1e-300))
+
+
 def component_floor2_errors(theta, bem_mueller, ref_mueller):
     bem_norm = max(abs(mueller_component(bem_mueller, 0, 0)[0]), 1e-300)
     ref_norm = max(abs(ref_mueller[0][0][0]), 1e-300)
@@ -175,8 +196,7 @@ def component_floor2_errors(theta, bem_mueller, ref_mueller):
 def compare(out_file, n_re, n_im, ka):
     with open(out_file) as f:
         data = json.load(f)
-    theta = data["theta"]
-    bem_mueller = data["mueller"]
+    theta, bem_mueller = physical_result(data)
     mie = mie_mueller(theta, complex(n_re, n_im), ka)
     errors = component_floor2_errors(theta, bem_mueller, mie)
     worst_name, worst_error = max(errors.items(), key=lambda item: item[1])
@@ -188,8 +208,14 @@ def compare(out_file, n_re, n_im, ka):
     mie_m11_ref = mie[0][0]
     bem_norm = max(abs(bem_m11[0]), 1e-300)
     mie_norm = max(abs(mie_m11_ref[0]), 1e-300)
+    absolute_m11_l2 = solid_angle_relative_l2(
+        theta, bem_m11, mie_m11_ref)
+    forward_m11_ratio = bem_m11[0] / mie_m11_ref[0]
 
     print("\nMie check: full Mueller matrix")
+    print("  absolute metrics use solid-angle weights")
+    print(f"  absolute M11 rel L2 = {absolute_m11_l2:.4e}")
+    print(f"  M11(0) BEM/Mie     = {forward_m11_ratio:.8f}")
     print("  normalization = each matrix divided by M11(theta=0)")
     print(f"  max main floor2 err = {max(main_errors):.4e}")
     print(f"  worst component     = {worst_name} ({worst_error:.4e})")
@@ -205,6 +231,8 @@ def compare(out_file, n_re, n_im, ka):
         err = abs(b - m) / max(abs(m), 0.02)
         print(f"  {theta[idx]:6.1f}  {b:12.5e}  {m:12.5e}  {err:9.3e}")
     return {
+        "absolute_m11_solid_angle_relative_l2": absolute_m11_l2,
+        "forward_m11_ratio_bem_over_mie": forward_m11_ratio,
         "max_main_floor2": max(main_errors),
         "worst_component": worst_name,
         "worst_component_error": worst_error,

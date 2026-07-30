@@ -1,0 +1,15 @@
+{
+  "solver": "muller_nodal_p2_fmm",
+  "ka": 12,
+  "ri": 1.5,
+  "refinements": 3,
+  "system_dofs": 10248,
+  "tolerance": 1.0000000000000001e-05,
+  "fmm_setup_s": 46.628377747999998,
+  "dense_validation_s": 0,
+  "mbj_local_setup_s": 24.498962431999999,
+  "baseline": null,
+  "mbj": {"nodes_per_block": 50, "iterations": 65, "solve_s": 30.745721495000002, "fmm_residual": 9.1979870465909525e-06, "dense_residual": null, "storage_mb": 31.24127197265625},
+  "solve_speedup": -1,
+  "solution_relative_difference": -1
+}

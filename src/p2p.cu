@@ -939,6 +939,650 @@ void launch_p2p_gradient_leaf(
         nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
 }
 
+__global__ void p2p_hessian_leaf_kernel(
+    const double* __restrict__ tgt_xyz,
+    const double* __restrict__ src_xyz,
+    const double* __restrict__ q_re,
+    const double* __restrict__ q_im,
+    const int* __restrict__ tgt_offsets,
+    const int* __restrict__ tgt_ids,
+    const int* __restrict__ src_offsets,
+    const int* __restrict__ src_ids,
+    const int* __restrict__ near_offsets,
+    const int* __restrict__ near_leaf_ids,
+    int n_leaves, double k_re, double k_im,
+    double* __restrict__ hess_re,
+    double* __restrict__ hess_im)
+{
+    const int leaf = blockIdx.x;
+    if (leaf >= n_leaves) return;
+    const double inv4pi = 0.07957747154594767;
+    const double k2_re = k_re * k_re - k_im * k_im;
+    const double k2_im = 2.0 * k_re * k_im;
+
+    for (int ti = tgt_offsets[leaf] + threadIdx.x;
+         ti < tgt_offsets[leaf + 1]; ti += blockDim.x) {
+        const int tid = tgt_ids[ti];
+        const double tx = tgt_xyz[3 * tid];
+        const double ty = tgt_xyz[3 * tid + 1];
+        const double tz = tgt_xyz[3 * tid + 2];
+        double acc_re[6] = {0, 0, 0, 0, 0, 0};
+        double acc_im[6] = {0, 0, 0, 0, 0, 0};
+
+        const int near_begin = near_offsets[leaf];
+        const int near_end = near_offsets[leaf + 1];
+        for (int pass = -1; pass < near_end - near_begin; pass++) {
+            const int source_leaf =
+                pass < 0 ? leaf : near_leaf_ids[near_begin + pass];
+            for (int si = src_offsets[source_leaf];
+                 si < src_offsets[source_leaf + 1]; si++) {
+                const int sid = src_ids[si];
+                const double dx = tx - src_xyz[3 * sid];
+                const double dy = ty - src_xyz[3 * sid + 1];
+                const double dz = tz - src_xyz[3 * sid + 2];
+                const double radius =
+                    sqrt(dx * dx + dy * dy + dz * dz);
+                if (radius < 1.0e-12) continue;
+                const double inv_r = 1.0 / radius;
+                const double inv_r2 = inv_r * inv_r;
+                const double attenuation = exp(-k_im * radius);
+                const double phase = k_re * radius;
+                const double green_re =
+                    attenuation * cos(phase) * inv4pi * inv_r;
+                const double green_im =
+                    attenuation * sin(phase) * inv4pi * inv_r;
+
+                // A = 3/r^2 - 3 i k/r - k^2,
+                // B = 1/r^2 - i k/r, and
+                // Hess(G) = G [A rhat rhat^T - B I].
+                const double a_re =
+                    3.0 * inv_r2 + 3.0 * k_im * inv_r - k2_re;
+                const double a_im =
+                    -3.0 * k_re * inv_r - k2_im;
+                const double b_re = inv_r2 + k_im * inv_r;
+                const double b_im = -k_re * inv_r;
+                const double ga_re =
+                    green_re * a_re - green_im * a_im;
+                const double ga_im =
+                    green_re * a_im + green_im * a_re;
+                const double gb_re =
+                    green_re * b_re - green_im * b_im;
+                const double gb_im =
+                    green_re * b_im + green_im * b_re;
+                const double unit[3] = {
+                    dx * inv_r, dy * inv_r, dz * inv_r
+                };
+                const double qr = q_re[sid];
+                const double qi = q_im[sid];
+                const int row[6] = {0, 0, 0, 1, 1, 2};
+                const int col[6] = {0, 1, 2, 1, 2, 2};
+                for (int component = 0; component < 6; component++) {
+                    double hr =
+                        ga_re * unit[row[component]] * unit[col[component]];
+                    double hi =
+                        ga_im * unit[row[component]] * unit[col[component]];
+                    if (row[component] == col[component]) {
+                        hr -= gb_re;
+                        hi -= gb_im;
+                    }
+                    acc_re[component] += hr * qr - hi * qi;
+                    acc_im[component] += hr * qi + hi * qr;
+                }
+            }
+        }
+        for (int component = 0; component < 6; component++) {
+            hess_re[6 * tid + component] += acc_re[component];
+            hess_im[6 * tid + component] += acc_im[component];
+        }
+    }
+}
+
+__device__ inline float p2p_inverse_sqrt(float value)
+{
+    return rsqrtf(value);
+}
+
+__device__ inline double p2p_inverse_sqrt(double value)
+{
+    return 1.0 / sqrt(value);
+}
+
+__device__ inline float p2p_attenuation(float value)
+{
+    return expf(value);
+}
+
+__device__ inline double p2p_attenuation(double value)
+{
+    return exp(value);
+}
+
+__device__ inline void p2p_sine_cosine(
+    float value, float* sine, float* cosine)
+{
+    sincosf(value, sine, cosine);
+}
+
+__device__ inline void p2p_sine_cosine(
+    double value, double* sine, double* cosine)
+{
+    sincos(value, sine, cosine);
+}
+
+template <typename ComputeReal>
+__global__ void p2p_grad_hessian_batch3_leaf_kernel(
+    const double* __restrict__ tgt_xyz,
+    const double* __restrict__ src_xyz,
+    const double* __restrict__ q1_re,
+    const double* __restrict__ q1_im,
+    const double* __restrict__ q2_re,
+    const double* __restrict__ q2_im,
+    const double* __restrict__ q3_re,
+    const double* __restrict__ q3_im,
+    const int* __restrict__ tgt_offsets,
+    const int* __restrict__ tgt_ids,
+    const int* __restrict__ src_offsets,
+    const int* __restrict__ src_ids,
+    const int* __restrict__ near_offsets,
+    const int* __restrict__ near_leaf_ids,
+    int n_leaves, double k_re, double k_im,
+    double* __restrict__ gx1_re,
+    double* __restrict__ gx1_im,
+    double* __restrict__ gy1_re,
+    double* __restrict__ gy1_im,
+    double* __restrict__ gz1_re,
+    double* __restrict__ gz1_im,
+    double* __restrict__ gx2_re,
+    double* __restrict__ gx2_im,
+    double* __restrict__ gy2_re,
+    double* __restrict__ gy2_im,
+    double* __restrict__ gz2_re,
+    double* __restrict__ gz2_im,
+    double* __restrict__ gx3_re,
+    double* __restrict__ gx3_im,
+    double* __restrict__ gy3_re,
+    double* __restrict__ gy3_im,
+    double* __restrict__ gz3_re,
+    double* __restrict__ gz3_im,
+    double* __restrict__ hess1_re,
+    double* __restrict__ hess1_im,
+    double* __restrict__ hess2_re,
+    double* __restrict__ hess2_im,
+    double* __restrict__ hess3_re,
+    double* __restrict__ hess3_im)
+{
+    const int leaf = blockIdx.x;
+    if (leaf >= n_leaves) return;
+    const ComputeReal real_k = static_cast<ComputeReal>(k_re);
+    const ComputeReal imaginary_k = static_cast<ComputeReal>(k_im);
+    const ComputeReal inv4pi =
+        static_cast<ComputeReal>(0.07957747154594767);
+    const ComputeReal k2_re =
+        real_k * real_k - imaginary_k * imaginary_k;
+    const ComputeReal k2_im =
+        static_cast<ComputeReal>(2.0) * real_k * imaginary_k;
+    const int row[6] = {0, 0, 0, 1, 1, 2};
+    const int col[6] = {0, 1, 2, 1, 2, 2};
+
+    for (int ti = tgt_offsets[leaf] + threadIdx.x;
+        ti < tgt_offsets[leaf + 1]; ti += blockDim.x) {
+        const int tid = tgt_ids[ti];
+        const ComputeReal tx =
+            static_cast<ComputeReal>(tgt_xyz[3 * tid]);
+        const ComputeReal ty =
+            static_cast<ComputeReal>(tgt_xyz[3 * tid + 1]);
+        const ComputeReal tz =
+            static_cast<ComputeReal>(tgt_xyz[3 * tid + 2]);
+        ComputeReal acc1_re[6] = {0, 0, 0, 0, 0, 0};
+        ComputeReal acc1_im[6] = {0, 0, 0, 0, 0, 0};
+        ComputeReal acc2_re[6] = {0, 0, 0, 0, 0, 0};
+        ComputeReal acc2_im[6] = {0, 0, 0, 0, 0, 0};
+        ComputeReal acc3_re[6] = {0, 0, 0, 0, 0, 0};
+        ComputeReal acc3_im[6] = {0, 0, 0, 0, 0, 0};
+        ComputeReal grad1_re[3] = {0, 0, 0};
+        ComputeReal grad1_im[3] = {0, 0, 0};
+        ComputeReal grad2_re[3] = {0, 0, 0};
+        ComputeReal grad2_im[3] = {0, 0, 0};
+        ComputeReal grad3_re[3] = {0, 0, 0};
+        ComputeReal grad3_im[3] = {0, 0, 0};
+
+        const int near_begin = near_offsets[leaf];
+        const int near_end = near_offsets[leaf + 1];
+        for (int pass = -1; pass < near_end - near_begin; pass++) {
+            const int source_leaf =
+                pass < 0 ? leaf : near_leaf_ids[near_begin + pass];
+            for (int si = src_offsets[source_leaf];
+                si < src_offsets[source_leaf + 1]; si++) {
+                const int sid = src_ids[si];
+                const ComputeReal dx = tx -
+                    static_cast<ComputeReal>(src_xyz[3 * sid]);
+                const ComputeReal dy = ty -
+                    static_cast<ComputeReal>(src_xyz[3 * sid + 1]);
+                const ComputeReal dz = tz -
+                    static_cast<ComputeReal>(src_xyz[3 * sid + 2]);
+                const ComputeReal radius_squared =
+                    dx * dx + dy * dy + dz * dz;
+                if (radius_squared <
+                    static_cast<ComputeReal>(1.0e-24))
+                    continue;
+                const ComputeReal inv_r =
+                    p2p_inverse_sqrt(radius_squared);
+                const ComputeReal radius = radius_squared * inv_r;
+                const ComputeReal inv_r2 = inv_r * inv_r;
+                const ComputeReal attenuation =
+                    imaginary_k == static_cast<ComputeReal>(0)
+                        ? static_cast<ComputeReal>(1)
+                        : p2p_attenuation(-imaginary_k * radius);
+                const ComputeReal phase = real_k * radius;
+                ComputeReal sine = 0;
+                ComputeReal cosine = 0;
+                p2p_sine_cosine(phase, &sine, &cosine);
+                const ComputeReal green_re =
+                    attenuation * cosine * inv4pi * inv_r;
+                const ComputeReal green_im =
+                    attenuation * sine * inv4pi * inv_r;
+                const ComputeReal gradient_factor_re =
+                    (-imaginary_k - inv_r) * inv_r;
+                const ComputeReal gradient_factor_im = real_k * inv_r;
+                const ComputeReal gradient_green_re =
+                    green_re * gradient_factor_re -
+                    green_im * gradient_factor_im;
+                const ComputeReal gradient_green_im =
+                    green_re * gradient_factor_im +
+                    green_im * gradient_factor_re;
+                const ComputeReal a_re =
+                    static_cast<ComputeReal>(3.0) * inv_r2 +
+                    static_cast<ComputeReal>(3.0) *
+                        imaginary_k * inv_r - k2_re;
+                const ComputeReal a_im =
+                    -static_cast<ComputeReal>(3.0) *
+                        real_k * inv_r - k2_im;
+                const ComputeReal b_re =
+                    inv_r2 + imaginary_k * inv_r;
+                const ComputeReal b_im = -real_k * inv_r;
+                const ComputeReal ga_re =
+                    green_re * a_re - green_im * a_im;
+                const ComputeReal ga_im =
+                    green_re * a_im + green_im * a_re;
+                const ComputeReal gb_re =
+                    green_re * b_re - green_im * b_im;
+                const ComputeReal gb_im =
+                    green_re * b_im + green_im * b_re;
+                const ComputeReal unit[3] = {
+                    dx * inv_r, dy * inv_r, dz * inv_r
+                };
+                const ComputeReal qr[3] = {
+                    static_cast<ComputeReal>(q1_re[sid]),
+                    static_cast<ComputeReal>(q2_re[sid]),
+                    static_cast<ComputeReal>(q3_re[sid])
+                };
+                const ComputeReal qi[3] = {
+                    static_cast<ComputeReal>(q1_im[sid]),
+                    static_cast<ComputeReal>(q2_im[sid]),
+                    static_cast<ComputeReal>(q3_im[sid])
+                };
+                const ComputeReal displacement[3] = {dx, dy, dz};
+                for (int axis = 0; axis < 3; axis++) {
+#define ACCUMULATE_GRADIENT(GRAD_RE, GRAD_IM, INDEX) \
+                    do { \
+                        const ComputeReal value_re = \
+                            gradient_green_re * qr[INDEX] - \
+                            gradient_green_im * qi[INDEX]; \
+                        const ComputeReal value_im = \
+                            gradient_green_re * qi[INDEX] + \
+                            gradient_green_im * qr[INDEX]; \
+                        (GRAD_RE)[axis] += value_re * displacement[axis]; \
+                        (GRAD_IM)[axis] += value_im * displacement[axis]; \
+                    } while (0)
+                    ACCUMULATE_GRADIENT(grad1_re, grad1_im, 0);
+                    ACCUMULATE_GRADIENT(grad2_re, grad2_im, 1);
+                    ACCUMULATE_GRADIENT(grad3_re, grad3_im, 2);
+#undef ACCUMULATE_GRADIENT
+                }
+                for (int component = 0; component < 6; component++) {
+                    ComputeReal hr =
+                        ga_re * unit[row[component]] * unit[col[component]];
+                    ComputeReal hi =
+                        ga_im * unit[row[component]] * unit[col[component]];
+                    if (row[component] == col[component]) {
+                        hr -= gb_re;
+                        hi -= gb_im;
+                    }
+#define ACCUMULATE_HESSIAN(ACC_RE, ACC_IM, INDEX) \
+                    do { \
+                        (ACC_RE)[component] += hr * qr[INDEX] - hi * qi[INDEX]; \
+                        (ACC_IM)[component] += hr * qi[INDEX] + hi * qr[INDEX]; \
+                    } while (0)
+                    ACCUMULATE_HESSIAN(acc1_re, acc1_im, 0);
+                    ACCUMULATE_HESSIAN(acc2_re, acc2_im, 1);
+                    ACCUMULATE_HESSIAN(acc3_re, acc3_im, 2);
+#undef ACCUMULATE_HESSIAN
+                }
+            }
+        }
+        for (int component = 0; component < 6; component++) {
+            const int offset = 6 * tid + component;
+            hess1_re[offset] += acc1_re[component];
+            hess1_im[offset] += acc1_im[component];
+            hess2_re[offset] += acc2_re[component];
+            hess2_im[offset] += acc2_im[component];
+            hess3_re[offset] += acc3_re[component];
+            hess3_im[offset] += acc3_im[component];
+        }
+        gx1_re[tid] += grad1_re[0]; gx1_im[tid] += grad1_im[0];
+        gy1_re[tid] += grad1_re[1]; gy1_im[tid] += grad1_im[1];
+        gz1_re[tid] += grad1_re[2]; gz1_im[tid] += grad1_im[2];
+        gx2_re[tid] += grad2_re[0]; gx2_im[tid] += grad2_im[0];
+        gy2_re[tid] += grad2_re[1]; gy2_im[tid] += grad2_im[1];
+        gz2_re[tid] += grad2_re[2]; gz2_im[tid] += grad2_im[2];
+        gx3_re[tid] += grad3_re[0]; gx3_im[tid] += grad3_im[0];
+        gy3_re[tid] += grad3_re[1]; gy3_im[tid] += grad3_im[1];
+        gz3_re[tid] += grad3_re[2]; gz3_im[tid] += grad3_im[2];
+    }
+}
+
+template <typename ComputeReal>
+__global__ void p2p_vector_actions_batch3_leaf_kernel(
+    const double* __restrict__ tgt_xyz,
+    const double* __restrict__ src_xyz,
+    const double* __restrict__ qx_re,
+    const double* __restrict__ qx_im,
+    const double* __restrict__ qy_re,
+    const double* __restrict__ qy_im,
+    const double* __restrict__ qz_re,
+    const double* __restrict__ qz_im,
+    const int* __restrict__ tgt_offsets,
+    const int* __restrict__ tgt_ids,
+    const int* __restrict__ src_offsets,
+    const int* __restrict__ src_ids,
+    const int* __restrict__ near_offsets,
+    const int* __restrict__ near_leaf_ids,
+    int n_leaves, double k_re, double k_im,
+    double* __restrict__ curl_re,
+    double* __restrict__ curl_im,
+    double* __restrict__ hessian_action_re,
+    double* __restrict__ hessian_action_im)
+{
+    const int leaf = blockIdx.x;
+    if (leaf >= n_leaves)
+        return;
+    const ComputeReal real_k = static_cast<ComputeReal>(k_re);
+    const ComputeReal imaginary_k = static_cast<ComputeReal>(k_im);
+    const ComputeReal inv4pi =
+        static_cast<ComputeReal>(0.07957747154594767);
+    const ComputeReal k2_re =
+        real_k * real_k - imaginary_k * imaginary_k;
+    const ComputeReal k2_im =
+        static_cast<ComputeReal>(2.0) * real_k * imaginary_k;
+
+    for (int ti = tgt_offsets[leaf] + threadIdx.x;
+         ti < tgt_offsets[leaf + 1]; ti += blockDim.x) {
+        const int tid = tgt_ids[ti];
+        const ComputeReal tx =
+            static_cast<ComputeReal>(tgt_xyz[3 * tid]);
+        const ComputeReal ty =
+            static_cast<ComputeReal>(tgt_xyz[3 * tid + 1]);
+        const ComputeReal tz =
+            static_cast<ComputeReal>(tgt_xyz[3 * tid + 2]);
+        ComputeReal curl_acc_re[3] = {0, 0, 0};
+        ComputeReal curl_acc_im[3] = {0, 0, 0};
+        ComputeReal action_acc_re[3] = {0, 0, 0};
+        ComputeReal action_acc_im[3] = {0, 0, 0};
+
+        const int near_begin = near_offsets[leaf];
+        const int near_end = near_offsets[leaf + 1];
+        for (int pass = -1; pass < near_end - near_begin; pass++) {
+            const int source_leaf =
+                pass < 0 ? leaf : near_leaf_ids[near_begin + pass];
+            for (int si = src_offsets[source_leaf];
+                 si < src_offsets[source_leaf + 1]; si++) {
+                const int sid = src_ids[si];
+                const ComputeReal dx = tx -
+                    static_cast<ComputeReal>(src_xyz[3 * sid]);
+                const ComputeReal dy = ty -
+                    static_cast<ComputeReal>(src_xyz[3 * sid + 1]);
+                const ComputeReal dz = tz -
+                    static_cast<ComputeReal>(src_xyz[3 * sid + 2]);
+                const ComputeReal radius_squared =
+                    dx * dx + dy * dy + dz * dz;
+                if (radius_squared <
+                    static_cast<ComputeReal>(1.0e-24))
+                    continue;
+                const ComputeReal inv_r =
+                    p2p_inverse_sqrt(radius_squared);
+                const ComputeReal radius = radius_squared * inv_r;
+                const ComputeReal inv_r2 = inv_r * inv_r;
+                const ComputeReal attenuation =
+                    imaginary_k == static_cast<ComputeReal>(0)
+                        ? static_cast<ComputeReal>(1)
+                        : p2p_attenuation(-imaginary_k * radius);
+                const ComputeReal phase = real_k * radius;
+                ComputeReal sine = 0;
+                ComputeReal cosine = 0;
+                p2p_sine_cosine(phase, &sine, &cosine);
+                const ComputeReal green_re =
+                    attenuation * cosine * inv4pi * inv_r;
+                const ComputeReal green_im =
+                    attenuation * sine * inv4pi * inv_r;
+                const ComputeReal gradient_factor_re =
+                    (-imaginary_k - inv_r) * inv_r;
+                const ComputeReal gradient_factor_im = real_k * inv_r;
+                const ComputeReal gradient_green_re =
+                    green_re * gradient_factor_re -
+                    green_im * gradient_factor_im;
+                const ComputeReal gradient_green_im =
+                    green_re * gradient_factor_im +
+                    green_im * gradient_factor_re;
+                const ComputeReal a_re =
+                    static_cast<ComputeReal>(3.0) * inv_r2 +
+                    static_cast<ComputeReal>(3.0) *
+                        imaginary_k * inv_r - k2_re;
+                const ComputeReal a_im =
+                    -static_cast<ComputeReal>(3.0) *
+                        real_k * inv_r - k2_im;
+                const ComputeReal b_re =
+                    inv_r2 + imaginary_k * inv_r;
+                const ComputeReal b_im = -real_k * inv_r;
+                const ComputeReal ga_re =
+                    green_re * a_re - green_im * a_im;
+                const ComputeReal ga_im =
+                    green_re * a_im + green_im * a_re;
+                const ComputeReal gb_re =
+                    green_re * b_re - green_im * b_im;
+                const ComputeReal gb_im =
+                    green_re * b_im + green_im * b_re;
+                const ComputeReal unit[3] = {
+                    dx * inv_r, dy * inv_r, dz * inv_r
+                };
+                const ComputeReal qr[3] = {
+                    static_cast<ComputeReal>(qx_re[sid]),
+                    static_cast<ComputeReal>(qy_re[sid]),
+                    static_cast<ComputeReal>(qz_re[sid])
+                };
+                const ComputeReal qi[3] = {
+                    static_cast<ComputeReal>(qx_im[sid]),
+                    static_cast<ComputeReal>(qy_im[sid]),
+                    static_cast<ComputeReal>(qz_im[sid])
+                };
+
+                const ComputeReal curl_scale[3][3] = {
+                    {dy, -dx, static_cast<ComputeReal>(0)},
+                    {dz, static_cast<ComputeReal>(0), -dx},
+                    {static_cast<ComputeReal>(0), dz, -dy}
+                };
+                for (int component = 0; component < 3; component++) {
+                    for (int source = 0; source < 3; source++) {
+                        const ComputeReal scale =
+                            curl_scale[component][source];
+                        const ComputeReal value_re =
+                            gradient_green_re * qr[source] -
+                            gradient_green_im * qi[source];
+                        const ComputeReal value_im =
+                            gradient_green_re * qi[source] +
+                            gradient_green_im * qr[source];
+                        curl_acc_re[component] += scale * value_re;
+                        curl_acc_im[component] += scale * value_im;
+                    }
+                }
+
+                ComputeReal dot_q_re = 0;
+                ComputeReal dot_q_im = 0;
+                for (int source = 0; source < 3; source++) {
+                    dot_q_re += unit[source] * qr[source];
+                    dot_q_im += unit[source] * qi[source];
+                }
+                const ComputeReal isotropic_re =
+                    static_cast<ComputeReal>(2.0) * gb_re - ga_re;
+                const ComputeReal isotropic_im =
+                    static_cast<ComputeReal>(2.0) * gb_im - ga_im;
+                const ComputeReal radial_re =
+                    ga_re * dot_q_re - ga_im * dot_q_im;
+                const ComputeReal radial_im =
+                    ga_re * dot_q_im + ga_im * dot_q_re;
+                for (int component = 0; component < 3; component++) {
+                    action_acc_re[component] +=
+                        unit[component] * radial_re +
+                        isotropic_re * qr[component] -
+                        isotropic_im * qi[component];
+                    action_acc_im[component] +=
+                        unit[component] * radial_im +
+                        isotropic_re * qi[component] +
+                        isotropic_im * qr[component];
+                }
+            }
+        }
+        for (int component = 0; component < 3; component++) {
+            const int offset = 3 * tid + component;
+            curl_re[offset] += curl_acc_re[component];
+            curl_im[offset] += curl_acc_im[component];
+            hessian_action_re[offset] += action_acc_re[component];
+            hessian_action_im[offset] += action_acc_im[component];
+        }
+    }
+}
+
+void launch_p2p_hessian_leaf(
+    const double* d_tgt, const double* d_src,
+    const double* d_q_re, const double* d_q_im,
+    const int* d_tgt_offsets, const int* d_tgt_ids,
+    const int* d_src_offsets, const int* d_src_ids,
+    const int* d_near_offsets, const int* d_near_leaf_ids,
+    int n_leaves, double k_re, double k_im,
+    double* d_hess_re, double* d_hess_im)
+{
+    p2p_hessian_leaf_kernel<<<n_leaves, 128>>>(
+        d_tgt, d_src, d_q_re, d_q_im,
+        d_tgt_offsets, d_tgt_ids, d_src_offsets, d_src_ids,
+        d_near_offsets, d_near_leaf_ids,
+        n_leaves, k_re, k_im, d_hess_re, d_hess_im);
+}
+
+void launch_p2p_grad_hessian_batch3_leaf(
+    const double* d_tgt, const double* d_src,
+    const double* d_q1_re, const double* d_q1_im,
+    const double* d_q2_re, const double* d_q2_im,
+    const double* d_q3_re, const double* d_q3_im,
+    const int* d_tgt_offsets, const int* d_tgt_ids,
+    const int* d_src_offsets, const int* d_src_ids,
+    const int* d_near_offsets, const int* d_near_leaf_ids,
+    int n_leaves, double k_re, double k_im,
+    double* d_gx1_re, double* d_gx1_im,
+    double* d_gy1_re, double* d_gy1_im,
+    double* d_gz1_re, double* d_gz1_im,
+    double* d_gx2_re, double* d_gx2_im,
+    double* d_gy2_re, double* d_gy2_im,
+    double* d_gz2_re, double* d_gz2_im,
+    double* d_gx3_re, double* d_gx3_im,
+    double* d_gy3_re, double* d_gy3_im,
+    double* d_gz3_re, double* d_gz3_im,
+    double* d_hess1_re, double* d_hess1_im,
+    double* d_hess2_re, double* d_hess2_im,
+    double* d_hess3_re, double* d_hess3_im,
+    bool fp32_compute)
+{
+    if (fp32_compute) {
+        p2p_grad_hessian_batch3_leaf_kernel<float><<<n_leaves, 128>>>(
+            d_tgt, d_src,
+            d_q1_re, d_q1_im,
+            d_q2_re, d_q2_im,
+            d_q3_re, d_q3_im,
+            d_tgt_offsets, d_tgt_ids, d_src_offsets, d_src_ids,
+            d_near_offsets, d_near_leaf_ids,
+            n_leaves, k_re, k_im,
+            d_gx1_re, d_gx1_im,
+            d_gy1_re, d_gy1_im,
+            d_gz1_re, d_gz1_im,
+            d_gx2_re, d_gx2_im,
+            d_gy2_re, d_gy2_im,
+            d_gz2_re, d_gz2_im,
+            d_gx3_re, d_gx3_im,
+            d_gy3_re, d_gy3_im,
+            d_gz3_re, d_gz3_im,
+            d_hess1_re, d_hess1_im,
+            d_hess2_re, d_hess2_im,
+            d_hess3_re, d_hess3_im);
+        return;
+    }
+    p2p_grad_hessian_batch3_leaf_kernel<double><<<n_leaves, 128>>>(
+        d_tgt, d_src,
+        d_q1_re, d_q1_im,
+        d_q2_re, d_q2_im,
+        d_q3_re, d_q3_im,
+        d_tgt_offsets, d_tgt_ids, d_src_offsets, d_src_ids,
+        d_near_offsets, d_near_leaf_ids,
+        n_leaves, k_re, k_im,
+        d_gx1_re, d_gx1_im,
+        d_gy1_re, d_gy1_im,
+        d_gz1_re, d_gz1_im,
+        d_gx2_re, d_gx2_im,
+        d_gy2_re, d_gy2_im,
+        d_gz2_re, d_gz2_im,
+        d_gx3_re, d_gx3_im,
+        d_gy3_re, d_gy3_im,
+        d_gz3_re, d_gz3_im,
+        d_hess1_re, d_hess1_im,
+        d_hess2_re, d_hess2_im,
+        d_hess3_re, d_hess3_im);
+}
+
+void launch_p2p_vector_actions_batch3_leaf(
+    const double* d_tgt, const double* d_src,
+    const double* d_qx_re, const double* d_qx_im,
+    const double* d_qy_re, const double* d_qy_im,
+    const double* d_qz_re, const double* d_qz_im,
+    const int* d_tgt_offsets, const int* d_tgt_ids,
+    const int* d_src_offsets, const int* d_src_ids,
+    const int* d_near_offsets, const int* d_near_leaf_ids,
+    int n_leaves, double k_re, double k_im,
+    double* d_curl_re, double* d_curl_im,
+    double* d_hessian_action_re, double* d_hessian_action_im,
+    bool fp32_compute)
+{
+    if (fp32_compute) {
+        p2p_vector_actions_batch3_leaf_kernel<float><<<n_leaves, 128>>>(
+            d_tgt, d_src,
+            d_qx_re, d_qx_im,
+            d_qy_re, d_qy_im,
+            d_qz_re, d_qz_im,
+            d_tgt_offsets, d_tgt_ids, d_src_offsets, d_src_ids,
+            d_near_offsets, d_near_leaf_ids,
+            n_leaves, k_re, k_im,
+            d_curl_re, d_curl_im,
+            d_hessian_action_re, d_hessian_action_im);
+        return;
+    }
+    p2p_vector_actions_batch3_leaf_kernel<double><<<n_leaves, 128>>>(
+        d_tgt, d_src,
+        d_qx_re, d_qx_im,
+        d_qy_re, d_qy_im,
+        d_qz_re, d_qz_im,
+        d_tgt_offsets, d_tgt_ids, d_src_offsets, d_src_ids,
+        d_near_offsets, d_near_leaf_ids,
+        n_leaves, k_re, k_im,
+        d_curl_re, d_curl_im,
+        d_hessian_action_re, d_hessian_action_im);
+}
+
 void launch_p2p_pot_grad_batch2_leaf(
     const double* d_tgt, const double* d_src,
     const double* d_q1_re, const double* d_q1_im,

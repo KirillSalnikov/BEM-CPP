@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <unordered_map>
 
 struct OctreeNode {
@@ -54,9 +55,17 @@ struct Octree {
 
     void build(const double* targets, int n_tgt,
                const double* sources, int n_src,
-               int max_leaf = 64) {
+               int max_leaf = 64,
+               int near_radius = 1) {
         N_tgt = n_tgt;
         N_total = n_tgt + n_src;
+        leaves.clear();
+        near_list.clear();
+        far_list.clear();
+        sorted_idx.clear();
+        sorted_pts.clear();
+        level_ranges.clear();
+        level_nodes.clear();
 
         // Merge all points
         std::vector<double> all_pts(N_total * 3);
@@ -82,11 +91,13 @@ struct Octree {
         hs *= 1.001;  // small margin
 
         // Compute uniform depth
-        int uniform_depth = 2;
+        int uniform_depth = 0;
         {
             double ratio = (double)N_total / max_leaf;
             if (ratio > 1.0)
-                uniform_depth = std::max(2, (int)std::ceil(std::log(ratio) / std::log(8.0)));
+                uniform_depth = std::max(
+                    1, (int)std::ceil(
+                        std::log(ratio) / std::log(8.0)));
             if (uniform_depth > 6) uniform_depth = 6;
         }
 
@@ -154,10 +165,12 @@ struct Octree {
             level_nodes[nodes[i].level].push_back(i);
 
         // Build interaction lists
-        build_interaction_lists();
+        build_interaction_lists(std::max(1, near_radius));
 
-        printf("  [Octree] %d nodes, %d leaves, depth=%d, %d points\n",
-               (int)nodes.size(), (int)leaves.size(), max_level, N_total);
+        printf("  [Octree] %d nodes, %d leaves, depth=%d, %d points, "
+               "near-radius=%d\n",
+               (int)nodes.size(), (int)leaves.size(), max_level, N_total,
+               std::max(1, near_radius));
     }
 
     // Get target point indices in a leaf (indices into sorted array)
@@ -224,8 +237,12 @@ private:
                 sorted_idx[pos++] = octant_pts[o][j];
         }
 
-        // Create children (all 8 for uniform tree)
+        // Keep a uniform depth for occupied boxes, but do not materialize
+        // empty volume. Surface meshes otherwise create a dense 8^depth tree
+        // and millions of useless M2L pairs in boxes containing no points.
         for (int o = 0; o < 8; o++) {
+            if (octant_counts[o] == 0)
+                continue;
             OctreeNode child;
             child.center[0] = node_center[0] + ((o & 1) ? hs : -hs);
             child.center[1] = node_center[1] + ((o & 2) ? hs : -hs);
@@ -250,85 +267,71 @@ private:
         }
     }
 
-    void build_interaction_lists() {
+    void build_interaction_lists(int near_radius) {
         near_list.clear();
         far_list.clear();
+        std::vector<std::vector<int>> near_by_node(nodes.size());
+        std::vector<std::vector<int>> far_by_node(nodes.size());
 
-        // Hash function for (gx, gy, gz) grid coordinates
-        struct GridHash {
-            size_t operator()(int64_t k) const { return std::hash<int64_t>()(k); }
-        };
-        auto grid_key = [](int gx, int gy, int gz) -> int64_t {
-            return ((int64_t)(gx + 100000) * 200001LL + (gy + 100000)) * 200001LL + (gz + 100000);
-        };
+        // Traverse ordered target/source box pairs. A pair is represented
+        // exactly once: by M2L when admissible, or by P2P at leaf level.
+        // near_radius=1 reproduces the conventional 3x3x3 near stencil.
+        std::function<void(int, int)> classify_pair =
+            [&](int target_index, int source_index) {
+                const OctreeNode& target = nodes[target_index];
+                const OctreeNode& source = nodes[source_index];
+                const int grid_distance = std::max(
+                    std::abs(target.gx - source.gx),
+                    std::max(
+                        std::abs(target.gy - source.gy),
+                        std::abs(target.gz - source.gz)));
 
-        for (int level = 0; level <= max_level; level++) {
-            const std::vector<int>& lvl = level_nodes[level];
-            int n_lvl = (int)lvl.size();
-            if (n_lvl == 0) continue;
-
-            // Build spatial hash map for this level: grid_key -> node_index
-            std::unordered_map<int64_t, int, GridHash> grid_map;
-            grid_map.reserve(n_lvl * 2);
-            for (int ii = 0; ii < n_lvl; ii++) {
-                int ni = lvl[ii];
-                grid_map[grid_key(nodes[ni].gx, nodes[ni].gy, nodes[ni].gz)] = ni;
-            }
-
-            for (int ii = 0; ii < n_lvl; ii++) {
-                int ni = lvl[ii];
-                OctreeNode& node_i = nodes[ni];
-                int ix = node_i.gx, iy = node_i.gy, iz = node_i.gz;
-
-                // Near list: check 3^3-1 = 26 neighbor positions (leaves only)
-                if (node_i.is_leaf) {
-                    node_i.near_start = (int)near_list.size();
-                    node_i.near_count = 0;
-                    for (int dx = -1; dx <= 1; dx++)
-                    for (int dy = -1; dy <= 1; dy++)
-                    for (int dz = -1; dz <= 1; dz++) {
-                        if (dx == 0 && dy == 0 && dz == 0) continue;
-                        auto it = grid_map.find(grid_key(ix+dx, iy+dy, iz+dz));
-                        if (it != grid_map.end() && nodes[it->second].is_leaf) {
-                            near_list.push_back(it->second);
-                            node_i.near_count++;
-                        }
-                    }
+                if (grid_distance > near_radius) {
+                    far_by_node[target_index].push_back(source_index);
+                    return;
+                }
+                if (target.is_leaf && source.is_leaf) {
+                    if (target_index != source_index)
+                        near_by_node[target_index].push_back(source_index);
+                    return;
                 }
 
-                // Far list (interaction list): children of parent's neighbors
-                // that are NOT self-neighbors. Up to 6^3 - 3^3 = 189 candidates.
-                node_i.far_start = (int)far_list.size();
-                node_i.far_count = 0;
-
-                if (level > 0) {
-                    // Parent grid coord via integer floor division
-                    int pix = (ix >= 0) ? ix / 2 : (ix - 1) / 2;
-                    int piy = (iy >= 0) ? iy / 2 : (iy - 1) / 2;
-                    int piz = (iz >= 0) ? iz / 2 : (iz - 1) / 2;
-
-                    // Enumerate children of parent's 3^3 neighborhood
-                    for (int dpx = -1; dpx <= 1; dpx++)
-                    for (int dpy = -1; dpy <= 1; dpy++)
-                    for (int dpz = -1; dpz <= 1; dpz++) {
-                        int ppx = pix + dpx, ppy = piy + dpy, ppz = piz + dpz;
-                        // 8 children of this parent-level cell
-                        for (int cx = 0; cx <= 1; cx++)
-                        for (int cy = 0; cy <= 1; cy++)
-                        for (int cz = 0; cz <= 1; cz++) {
-                            int jx = 2*ppx + cx, jy = 2*ppy + cy, jz = 2*ppz + cz;
-                            // Skip self and neighbors
-                            if (std::abs(jx-ix) <= 1 && std::abs(jy-iy) <= 1 && std::abs(jz-iz) <= 1)
-                                continue;
-                            auto it = grid_map.find(grid_key(jx, jy, jz));
-                            if (it != grid_map.end()) {
-                                far_list.push_back(it->second);
-                                node_i.far_count++;
-                            }
-                        }
+                for (int target_octant = 0; target_octant < 8;
+                     target_octant++) {
+                    const int target_child =
+                        target.children[target_octant];
+                    if (target_child < 0)
+                        continue;
+                    for (int source_octant = 0; source_octant < 8;
+                         source_octant++) {
+                        const int source_child =
+                            source.children[source_octant];
+                        if (source_child < 0)
+                            continue;
+                        classify_pair(
+                            target_child,
+                            source_child);
                     }
                 }
-            }
+            };
+        classify_pair(0, 0);
+
+        for (size_t index = 0; index < nodes.size(); index++) {
+            OctreeNode& node = nodes[index];
+            node.near_start = static_cast<int>(near_list.size());
+            node.near_count =
+                static_cast<int>(near_by_node[index].size());
+            near_list.insert(
+                near_list.end(),
+                near_by_node[index].begin(),
+                near_by_node[index].end());
+            node.far_start = static_cast<int>(far_list.size());
+            node.far_count =
+                static_cast<int>(far_by_node[index].size());
+            far_list.insert(
+                far_list.end(),
+                far_by_node[index].begin(),
+                far_by_node[index].end());
         }
 
         int total_near = 0, total_far = 0;

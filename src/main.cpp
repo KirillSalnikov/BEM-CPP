@@ -26,6 +26,7 @@
 #include <vector>
 #include <algorithm>
 #include <climits>
+#include <cstdint>
 #include <numeric>
 #include <fstream>
 #include <sstream>
@@ -153,7 +154,8 @@ static void print_usage(const char* prog) {
     printf("                 (OBJ default: digits7/tol1e-5/restart1000; mesh guard: digits8/restart1400)\n");
     printf("  --fast-obj      Reproduce old fast OBJ defaults; use only for speed diagnostics\n");
     printf("  --solver TYPE   Solver backend: auto, dense, fmm, pfft, spfft (spfft falls back to fmm; default: auto)\n");
-    printf("  --system TYPE   Linear system: pmchwt, balanced, muller, muller-balanced, muller2, or muller2-balanced (default: auto-balanced for |m-1|>=0.05)\n");
+    printf("  --system TYPE   Legacy RWG system: pmchwt, balanced, muller, muller-balanced, muller2, or muller2-balanced\n");
+    printf("                  (the article's P2 nodal Muller equation is bin/muller_nodal_demo)\n");
     printf("  --fmm           Use FMM+GMRES instead of dense LU\n");
     printf("  --fmm-digits N  FMM accuracy digits (default: 3; hex_prism auto uses 5, accurate uses 6)\n");
     printf("  --gmres-tol F   GMRES relative tolerance (default: 1e-4; hex_prism auto uses 1e-3)\n");
@@ -162,7 +164,18 @@ static void print_usage(const char* prog) {
     printf("  --krylov TYPE   FMM iterative method: gmres, gpu-gmres, bicgstab, bicgstab-rr, cgs-rr, gpu-adaptive, gpu-native, hybrid, or auto (default: gmres; GPU modes fall back to GMRES when needed)\n");
     printf("  --max-leaf N    FMM max particles per leaf (default: 128)\n");
     printf("  --no-prec       Disable automatic FMM preconditioner (auto skips small non-sphere cases)\n");
+    printf("  --prec TYPE     FMM preconditioner: auto, mbj, mass, calderon-rwg, local, ilu0, or none\n");
+    printf("  --neural-prec FILE  Load a GraphSAI block-CSR preconditioner exported for this exact system\n");
+    printf("  --neural-dump FILE  Build the local PMCHWT graph for neural inference, then exit\n");
+    printf("  --neural-neighbors N  Geometric neighbors per row for --neural-dump (default: 10)\n");
+    printf("  --neural-coarse-rank N  Add N global modes and their full FMM actions to --neural-dump (0..18)\n");
+    printf("  --neural-action-dump FILE  Record right-preconditioned Krylov vectors and full FMM actions\n");
+    printf("  --neural-action-mode TYPE  inverse records Mv,A(Mv); right-operator records v,A(Mv)\n");
+    printf("  --neural-probe-file FILE  Evaluate transferable coarse probes; requires --neural-action-dump\n");
+    printf("  --neural-action-probes N  Number of Krylov/FMM action pairs to record (default: 32)\n");
+    printf("  --neural-action-skip N  Skip the first N Krylov/FMM action pairs before recording\n");
     printf("  --export-currents FILE  Write equivalent surface currents for the single orientation to VTK\n");
+    printf("  --export-mesh FILE  Write the generated/normalized triangular mesh to OBJ\n");
     printf("  --mesh-quality-report FILE  Write mesh quality JSON before solve\n");
     printf("  --mesh-quality-strict       Stop if mesh gate fails (closed, outward, min angle >=20 deg, aspect <=12)\n");
     printf("  --mesh-quality-only         Build mesh, write/print quality report, then exit\n");
@@ -421,6 +434,137 @@ static bool parse_cli_string_arg(int argc, char** argv, int& i, const char* opt,
         return false;
     }
     out = argv[++i];
+    return true;
+}
+
+static bool evaluate_neural_probe_file(const char* probe_path, const char* action_path,
+                                       BemFmmOperator& op, int system_size,
+                                       uint32_t expected_system_code, uint64_t expected_n_rwg,
+                                       uint64_t expected_geometry_signature,
+                                       double expected_ka, double expected_n_re, double expected_n_im)
+{
+    std::ifstream input(probe_path, std::ios::binary);
+    if (!input) {
+        fprintf(stderr, "Error: cannot open neural probe file: %s\n", probe_path);
+        return false;
+    }
+    char magic[8];
+    uint32_t version = 0, probe_count = 0, system_code = expected_system_code;
+    uint64_t file_n_rwg = expected_n_rwg;
+    uint64_t file_system_size = 0;
+    uint64_t geometry_signature = expected_geometry_signature;
+    double file_ka = expected_ka, file_n_re = expected_n_re, file_n_im = expected_n_im;
+    input.read(magic, sizeof(magic));
+    input.read(reinterpret_cast<char*>(&version), sizeof(version));
+    if (version == 1) {
+        input.read(reinterpret_cast<char*>(&file_system_size), sizeof(file_system_size));
+        input.read(reinterpret_cast<char*>(&probe_count), sizeof(probe_count));
+    } else if (version == 2) {
+        input.read(reinterpret_cast<char*>(&system_code), sizeof(system_code));
+        input.read(reinterpret_cast<char*>(&file_n_rwg), sizeof(file_n_rwg));
+        input.read(reinterpret_cast<char*>(&file_system_size), sizeof(file_system_size));
+        input.read(reinterpret_cast<char*>(&geometry_signature), sizeof(geometry_signature));
+        input.read(reinterpret_cast<char*>(&file_ka), sizeof(file_ka));
+        input.read(reinterpret_cast<char*>(&file_n_re), sizeof(file_n_re));
+        input.read(reinterpret_cast<char*>(&file_n_im), sizeof(file_n_im));
+        input.read(reinterpret_cast<char*>(&probe_count), sizeof(probe_count));
+    }
+    const char expected_magic[8] = {'B','E','M','P','R','O','B','1'};
+    if (!input || std::memcmp(magic, expected_magic, sizeof(magic)) != 0 ||
+        (version != 1 && version != 2) || file_system_size != (uint64_t)system_size ||
+        probe_count < 1 || probe_count > 256) {
+        fprintf(stderr,
+                "Error: invalid neural probe header in %s "
+                "(version=%u system=%llu probes=%u, expected system=%d)\n",
+                probe_path, version, (unsigned long long)file_system_size,
+                probe_count, system_size);
+        return false;
+    }
+    auto close_parameter = [](double value, double expected) {
+        return std::abs(value - expected) <=
+            1e-10 * std::max(1.0, std::max(std::abs(value), std::abs(expected)));
+    };
+    if (version == 2 &&
+        (system_code != expected_system_code || file_n_rwg != expected_n_rwg ||
+         geometry_signature != expected_geometry_signature ||
+         !close_parameter(file_ka, expected_ka) ||
+         !close_parameter(file_n_re, expected_n_re) ||
+         !close_parameter(file_n_im, expected_n_im))) {
+        fprintf(stderr,
+                "Error: neural probe operator metadata does not match the current operator "
+                "(system=%u/%u N=%llu/%llu signature=%llu/%llu "
+                "ka=%.17g/%.17g n=%.17g%+.17gi/%.17g%+.17gi)\n",
+                system_code, expected_system_code,
+                (unsigned long long)file_n_rwg, (unsigned long long)expected_n_rwg,
+                (unsigned long long)geometry_signature,
+                (unsigned long long)expected_geometry_signature,
+                file_ka, expected_ka, file_n_re, file_n_im, expected_n_re, expected_n_im);
+        return false;
+    }
+
+    std::vector<cdouble> probes((size_t)probe_count * system_size);
+    for (size_t i = 0; i < probes.size(); i++) {
+        double real = 0.0, imag = 0.0;
+        input.read(reinterpret_cast<char*>(&real), sizeof(real));
+        input.read(reinterpret_cast<char*>(&imag), sizeof(imag));
+        if (!input || !std::isfinite(real) || !std::isfinite(imag)) {
+            fprintf(stderr, "Error: invalid neural probe payload in %s at value %zu\n",
+                    probe_path, i);
+            return false;
+        }
+        probes[i] = cdouble(real, imag);
+    }
+    char trailing = 0;
+    if (input.read(&trailing, 1)) {
+        fprintf(stderr, "Error: trailing bytes in neural probe file: %s\n", probe_path);
+        return false;
+    }
+
+    std::ofstream output(action_path, std::ios::binary);
+    if (!output) {
+        fprintf(stderr, "Error: cannot create neural action file: %s\n", action_path);
+        return false;
+    }
+    const char action_magic[8] = {'B','E','M','A','C','T','N','1'};
+    const uint32_t action_version = 1;
+    output.write(action_magic, sizeof(action_magic));
+    output.write(reinterpret_cast<const char*>(&action_version), sizeof(action_version));
+    output.write(reinterpret_cast<const char*>(&file_system_size), sizeof(file_system_size));
+    output.write(reinterpret_cast<const char*>(&probe_count), sizeof(probe_count));
+    auto write_complex = [&](const cdouble* values, size_t count) {
+        std::vector<double> buffer(16384);
+        size_t offset = 0;
+        while (offset < count) {
+            const size_t chunk = std::min(count - offset, buffer.size() / 2);
+            for (size_t i = 0; i < chunk; i++) {
+                buffer[2 * i] = values[offset + i].real();
+                buffer[2 * i + 1] = values[offset + i].imag();
+            }
+            output.write(reinterpret_cast<const char*>(buffer.data()),
+                         2 * chunk * sizeof(double));
+            offset += chunk;
+        }
+    };
+    write_complex(probes.data(), probes.size());
+
+    Timer timer;
+    std::vector<cdouble> action1(system_size), action2(system_size);
+    for (uint32_t k = 0; k < probe_count; k += 2) {
+        const cdouble* probe1 = probes.data() + (size_t)k * system_size;
+        const cdouble* probe2 = k + 1 < probe_count
+            ? probes.data() + (size_t)(k + 1) * system_size : probe1;
+        op.matvec_batch2(probe1, probe2, action1.data(), action2.data());
+        write_complex(action1.data(), system_size);
+        if (k + 1 < probe_count)
+            write_complex(action2.data(), system_size);
+    }
+    if (!output) {
+        fprintf(stderr, "Error: failed while writing neural actions: %s\n", action_path);
+        return false;
+    }
+    printf("  [Precond] Universal coarse probes evaluated: rank=%u "
+           "batched_FMM_calls=%u time=%.2fs -> %s\n",
+           probe_count, (probe_count + 1) / 2, timer.elapsed_s(), action_path);
     return true;
 }
 
@@ -874,6 +1018,17 @@ int main(int argc, char** argv) {
     bool use_spfft = false;
     bool use_prec = false;
     bool no_prec = false;
+    const char* precond_kind = "auto";
+    bool precond_kind_set = false;
+    const char* neural_prec_file = nullptr;
+    const char* neural_dump_file = nullptr;
+    int neural_neighbors = 10;
+    int neural_coarse_rank = 0;
+    const char* neural_action_dump_file = nullptr;
+    const char* neural_action_mode = "inverse";
+    const char* neural_probe_file = nullptr;
+    int neural_action_probes = 32;
+    int neural_action_skip = 0;
     bool fmm_test = false;
     int fmm_digits = 3;
     bool fmm_digits_set = false;
@@ -892,6 +1047,7 @@ int main(int argc, char** argv) {
     const char* system_kind = "pmchwt";
     bool system_kind_set = false;
     const char* export_currents_file = nullptr;
+    const char* export_mesh_file = nullptr;
     const char* mesh_quality_report_file = nullptr;
     bool mesh_quality_strict = false;
     bool mesh_quality_only = false;
@@ -1023,6 +1179,50 @@ int main(int argc, char** argv) {
             }
         } else if (strcmp(argv[i], "--no-prec") == 0) {
             no_prec = true;
+        } else if (strcmp(argv[i], "--prec") == 0) {
+            if (!parse_cli_string_arg(argc, argv, i, "--prec", precond_kind))
+                return 1;
+            precond_kind_set = true;
+            if (strcmp(precond_kind, "auto") != 0 &&
+                strcmp(precond_kind, "mbj") != 0 &&
+                strcmp(precond_kind, "mass") != 0 &&
+                strcmp(precond_kind, "calderon-rwg") != 0 &&
+                strcmp(precond_kind, "local") != 0 &&
+                strcmp(precond_kind, "ilu0") != 0 &&
+                strcmp(precond_kind, "none") != 0) {
+                fprintf(stderr, "Error: --prec must be auto, mbj, mass, "
+                                "calderon-rwg, local, ilu0, or none\n");
+                return 1;
+            }
+            if (strcmp(precond_kind, "none") == 0)
+                no_prec = true;
+        } else if (strcmp(argv[i], "--neural-prec") == 0) {
+            if (!parse_cli_string_arg(argc, argv, i, "--neural-prec", neural_prec_file))
+                return 1;
+        } else if (strcmp(argv[i], "--neural-dump") == 0) {
+            if (!parse_cli_string_arg(argc, argv, i, "--neural-dump", neural_dump_file))
+                return 1;
+        } else if (strcmp(argv[i], "--neural-neighbors") == 0) {
+            if (i + 1 >= argc || !parse_cli_int_arg("--neural-neighbors", argv[++i], neural_neighbors))
+                return 1;
+        } else if (strcmp(argv[i], "--neural-coarse-rank") == 0) {
+            if (i + 1 >= argc || !parse_cli_int_arg("--neural-coarse-rank", argv[++i], neural_coarse_rank))
+                return 1;
+        } else if (strcmp(argv[i], "--neural-action-dump") == 0) {
+            if (!parse_cli_string_arg(argc, argv, i, "--neural-action-dump", neural_action_dump_file))
+                return 1;
+        } else if (strcmp(argv[i], "--neural-action-mode") == 0) {
+            if (!parse_cli_string_arg(argc, argv, i, "--neural-action-mode", neural_action_mode))
+                return 1;
+        } else if (strcmp(argv[i], "--neural-probe-file") == 0) {
+            if (!parse_cli_string_arg(argc, argv, i, "--neural-probe-file", neural_probe_file))
+                return 1;
+        } else if (strcmp(argv[i], "--neural-action-probes") == 0) {
+            if (i + 1 >= argc || !parse_cli_int_arg("--neural-action-probes", argv[++i], neural_action_probes))
+                return 1;
+        } else if (strcmp(argv[i], "--neural-action-skip") == 0) {
+            if (i + 1 >= argc || !parse_cli_int_arg("--neural-action-skip", argv[++i], neural_action_skip))
+                return 1;
         } else if (strcmp(argv[i], "--fmm-digits") == 0) {
             if (i + 1 >= argc || !parse_cli_int_arg("--fmm-digits", argv[++i], fmm_digits))
                 return 1;
@@ -1072,6 +1272,9 @@ int main(int argc, char** argv) {
             max_leaf_set = true;
         } else if (strcmp(argv[i], "--export-currents") == 0) {
             if (!parse_cli_string_arg(argc, argv, i, "--export-currents", export_currents_file))
+                return 1;
+        } else if (strcmp(argv[i], "--export-mesh") == 0) {
+            if (!parse_cli_string_arg(argc, argv, i, "--export-mesh", export_mesh_file))
                 return 1;
         } else if (strcmp(argv[i], "--mesh-quality-report") == 0) {
             if (!parse_cli_string_arg(argc, argv, i, "--mesh-quality-report", mesh_quality_report_file))
@@ -1135,6 +1338,78 @@ int main(int argc, char** argv) {
     }
     if (gmres_tol <= 0.0) {
         fprintf(stderr, "Error: --gmres-tol must be positive\n");
+        return 1;
+    }
+    if ((neural_prec_file || neural_dump_file) && no_prec) {
+        fprintf(stderr, "Error: neural preconditioner options and --no-prec are mutually exclusive\n");
+        return 1;
+    }
+    if ((neural_prec_file || neural_dump_file) && precond_kind_set &&
+        strcmp(precond_kind, "auto") != 0) {
+        fprintf(stderr, "Error: --prec and neural preconditioner options are mutually exclusive\n");
+        return 1;
+    }
+    if (neural_prec_file && neural_dump_file) {
+        fprintf(stderr, "Error: --neural-prec and --neural-dump are mutually exclusive\n");
+        return 1;
+    }
+    if (neural_probe_file && (neural_prec_file || neural_dump_file)) {
+        fprintf(stderr, "Error: --neural-probe-file is mutually exclusive with "
+                        "--neural-prec and --neural-dump\n");
+        return 1;
+    }
+    if (neural_probe_file && !neural_action_dump_file) {
+        fprintf(stderr, "Error: --neural-probe-file requires --neural-action-dump\n");
+        return 1;
+    }
+    if (neural_neighbors < 1 || neural_neighbors > 128) {
+        fprintf(stderr, "Error: --neural-neighbors must be in 1..128\n");
+        return 1;
+    }
+    if (neural_neighbors != 10 && !neural_dump_file) {
+        fprintf(stderr, "Error: --neural-neighbors is only valid with --neural-dump\n");
+        return 1;
+    }
+    if (neural_coarse_rank < 0 || neural_coarse_rank > 18) {
+        fprintf(stderr, "Error: --neural-coarse-rank must be in 0..18\n");
+        return 1;
+    }
+    if (neural_coarse_rank != 0 && !neural_dump_file) {
+        fprintf(stderr, "Error: --neural-coarse-rank is only valid with --neural-dump\n");
+        return 1;
+    }
+    if (neural_action_dump_file && !neural_probe_file && !single_orient && !orient_file) {
+        fprintf(stderr, "Error: --neural-action-dump requires --single or --orient-file\n");
+        return 1;
+    }
+    if (neural_probe_file && (neural_action_probes != 32 || neural_action_skip != 0)) {
+        fprintf(stderr, "Error: --neural-action-probes and --neural-action-skip "
+                        "are not used with --neural-probe-file\n");
+        return 1;
+    }
+    if (neural_action_probes < 1 || neural_action_probes > 512) {
+        fprintf(stderr, "Error: --neural-action-probes must be in 1..512\n");
+        return 1;
+    }
+    if (neural_action_probes != 32 && !neural_action_dump_file) {
+        fprintf(stderr, "Error: --neural-action-probes is only valid with --neural-action-dump\n");
+        return 1;
+    }
+    if (strcmp(neural_action_mode, "inverse") != 0 &&
+        strcmp(neural_action_mode, "right-operator") != 0) {
+        fprintf(stderr, "Error: --neural-action-mode must be inverse or right-operator\n");
+        return 1;
+    }
+    if (strcmp(neural_action_mode, "inverse") != 0 && !neural_action_dump_file) {
+        fprintf(stderr, "Error: --neural-action-mode is only valid with --neural-action-dump\n");
+        return 1;
+    }
+    if (neural_action_skip < 0 || neural_action_skip > 1000000) {
+        fprintf(stderr, "Error: --neural-action-skip must be in 0..1000000\n");
+        return 1;
+    }
+    if (neural_action_skip != 0 && !neural_action_dump_file) {
+        fprintf(stderr, "Error: --neural-action-skip is only valid with --neural-action-dump\n");
         return 1;
     }
     if (gmres_restart < 1) {
@@ -1460,6 +1735,13 @@ int main(int argc, char** argv) {
            mesh.nv(), mesh.nt(), mesh_timer.elapsed_ms());
     MeshQualityReport mesh_quality = analyze_mesh_quality(mesh);
     print_mesh_quality_report(mesh_quality);
+    if (export_mesh_file) {
+        if (!write_mesh_obj(export_mesh_file, mesh)) {
+            fprintf(stderr, "Error: cannot export mesh: %s\n", export_mesh_file);
+            return 1;
+        }
+        printf("  Mesh OBJ: %s\n", export_mesh_file);
+    }
     if (is_obj && !fast_obj_mode && !quad_order_set &&
         mesh_quality.recommended_min_quad_order > quad_order) {
         if (mesh_quality.recommended_min_quad_order <= 7)
@@ -1628,7 +1910,15 @@ int main(int argc, char** argv) {
     PrecondPolicyInput prec_in;
     prec_in.use_fmm = use_fmm;
     prec_in.user_disabled = no_prec;
-    prec_in.force = bem_env_flag_enabled("BEM_PREC_FORCE");
+    const bool explicit_calderon_rwg =
+        precond_kind_set && strcmp(precond_kind, "calderon-rwg") == 0;
+    const bool explicit_mbj =
+        precond_kind_set && strcmp(precond_kind, "mbj") == 0;
+    const bool explicit_classical_prec = precond_kind_set &&
+        (explicit_mbj || strcmp(precond_kind, "mass") == 0 ||
+         explicit_calderon_rwg ||
+         strcmp(precond_kind, "local") == 0 || strcmp(precond_kind, "ilu0") == 0);
+    prec_in.force = bem_env_flag_enabled("BEM_PREC_FORCE") || explicit_classical_prec;
     prec_in.pfft_backend = (solver == SOLVER_PFFT);
     prec_in.sphere = is_sphere;
     prec_in.hex_prism = is_hex_prism;
@@ -1641,9 +1931,103 @@ int main(int argc, char** argv) {
     prec_in.gmres_tol = gmres_tol;
     PrecondPolicy prec_policy = choose_precond_policy(prec_in);
     use_prec = prec_policy.enabled;
+    if (explicit_classical_prec) {
+        if (!use_fmm) {
+            fprintf(stderr, "Error: --prec requires the FMM/GMRES path\n");
+            return 1;
+        }
+        if (use_bicgstab || use_cgs_rr || use_krylov_auto || use_krylov_hybrid) {
+            fprintf(stderr, "Error: --prec currently requires GMRES or gpu-gmres\n");
+            return 1;
+        }
+        use_prec = true;
+        if (explicit_mbj) {
+            setenv("BEM_PREC_CALDERON_RWG", "0", 1);
+            setenv("BEM_PREC_MASS", "0", 1);
+            setenv("BEM_PREC_ILU0", "0", 1);
+            setenv("BEM_PREC_MBJ", "1", 1);
+            setenv("BEM_PREC_BLOCK", "1", 1);
+            setenv("BEM_PREC_SWEEPS", "0", 1);
+            if (!bem_env_has_value("BEM_PREC_BLOCK_SIZE"))
+                setenv("BEM_PREC_BLOCK_SIZE", "100", 0);
+        } else if (strcmp(precond_kind, "local") == 0) {
+            setenv("BEM_PREC_MBJ", "0", 1);
+            setenv("BEM_PREC_CALDERON_RWG", "0", 1);
+            setenv("BEM_PREC_MASS", "0", 1);
+            setenv("BEM_PREC_ILU0", "0", 1);
+            setenv("BEM_PREC_BLOCK", "1", 1);
+        } else if (strcmp(precond_kind, "ilu0") == 0) {
+            setenv("BEM_PREC_MBJ", "0", 1);
+            setenv("BEM_PREC_CALDERON_RWG", "0", 1);
+            setenv("BEM_PREC_MASS", "0", 1);
+            setenv("BEM_PREC_ILU0", "1", 1);
+            setenv("BEM_PREC_BLOCK", "0", 1);
+            setenv("BEM_PREC_SWEEPS", "0", 1);
+            if (!bem_env_has_value("BEM_PREC_NEAR"))
+                setenv("BEM_PREC_NEAR", "12", 0);
+        } else if (strcmp(precond_kind, "mass") == 0) {
+            setenv("BEM_PREC_MBJ", "0", 1);
+            setenv("BEM_PREC_CALDERON_RWG", "0", 1);
+            setenv("BEM_PREC_MASS", "1", 1);
+            setenv("BEM_PREC_ILU0", "0", 1);
+            setenv("BEM_PREC_BLOCK", "0", 1);
+            setenv("BEM_PREC_SWEEPS", "0", 1);
+        } else if (explicit_calderon_rwg) {
+            setenv("BEM_PREC_MBJ", "0", 1);
+            setenv("BEM_PREC_CALDERON_RWG", "1", 1);
+            setenv("BEM_PREC_MASS", "0", 1);
+            setenv("BEM_PREC_ILU0", "0", 1);
+            setenv("BEM_PREC_BLOCK", "0", 1);
+            setenv("BEM_PREC_SWEEPS", "0", 1);
+        }
+    }
+    if (neural_prec_file || neural_dump_file) {
+        if (!use_fmm) {
+            fprintf(stderr, "Error: neural preconditioner options require the FMM/GMRES path\n");
+            return 1;
+        }
+        use_prec = true;
+    }
+    if (neural_dump_file) {
+        setenv("BEM_PREC_BLOCK", "1", 1);
+        char neural_neighbors_text[32];
+        std::snprintf(neural_neighbors_text, sizeof(neural_neighbors_text), "%d", neural_neighbors);
+        setenv("BEM_PREC_NEAR", neural_neighbors_text, 1);
+        setenv("BEM_PREC_GEOM_NEAR_MAX_N", "0", 1);
+        setenv("BEM_PREC_KEEP_HOST", "1", 1);
+        setenv("BEM_PREC_GPU", "0", 1);
+    }
+    if (neural_action_dump_file && !neural_probe_file) {
+        setenv("BEM_NEURAL_ACTION_DUMP", neural_action_dump_file, 1);
+        char neural_action_probes_text[32];
+        std::snprintf(neural_action_probes_text, sizeof(neural_action_probes_text),
+                      "%d", neural_action_probes);
+        setenv("BEM_NEURAL_ACTION_PROBES", neural_action_probes_text, 1);
+        char neural_action_skip_text[32];
+        std::snprintf(neural_action_skip_text, sizeof(neural_action_skip_text),
+                      "%d", neural_action_skip);
+        setenv("BEM_NEURAL_ACTION_SKIP", neural_action_skip_text, 1);
+        setenv("BEM_NEURAL_ACTION_MODE", neural_action_mode, 1);
+    }
     const bool use_gpu_gmres =
         use_fmm && !use_bicgstab && !use_cgs_rr && !use_krylov_auto && !use_krylov_hybrid &&
         (force_gpu_gmres || bem_env_flag_enabled("BEM_GMRES_DEVICE"));
+    if (explicit_classical_prec &&
+        (explicit_mbj || strcmp(precond_kind, "mass") == 0 ||
+         explicit_calderon_rwg) &&
+        !use_gpu_gmres) {
+        fprintf(stderr, "Error: --prec %s currently requires --krylov gpu-gmres\n",
+                precond_kind);
+        return 1;
+    }
+    if (neural_action_dump_file && !neural_probe_file && !use_gpu_gmres) {
+        fprintf(stderr, "Error: --neural-action-dump requires --krylov gpu-gmres\n");
+        return 1;
+    }
+    if (neural_probe_file && !use_fmm) {
+        fprintf(stderr, "Error: --neural-probe-file requires the FMM backend\n");
+        return 1;
+    }
     const char* output_krylov_solver = use_krylov_auto ? "auto_best_short_recurrence_gmres_gpu" :
                                        (use_krylov_hybrid ?
                                         (requested_gpu_adaptive ? "gpu_adaptive_short_recurrence_gmres" :
@@ -1651,21 +2035,36 @@ int main(int argc, char** argv) {
                                        (use_cgs_rr ? "cgs_rr_gpu" :
                                        (use_bicgstab_rr ? "bicgstab_rr_gpu" :
                                         (use_bicgstab ? "bicgstab_gpu" :
-                                         (use_gpu_gmres ? "gmres_gpu_requested" : "gmres")))));
+                                        (use_gpu_gmres ? "gmres_gpu_requested" : "gmres")))));
+    const char* output_precond_reason = neural_prec_file ? "explicit_neural_graph_sai" :
+        (explicit_mbj ? "explicit_morton_block_jacobi" :
+         (explicit_calderon_rwg ? "explicit_calderon_rwg" :
+         ((precond_kind_set && strcmp(precond_kind, "mass") == 0) ? "explicit_mass" :
+          ((precond_kind_set && strcmp(precond_kind, "ilu0") == 0) ? "explicit_ilu0" :
+           ((precond_kind_set && strcmp(precond_kind, "local") == 0) ? "explicit_local" :
+            prec_policy.reason)))));
 
-    if (use_fmm && use_prec && !bem_env_flag_present("BEM_PREC_BLOCK")) {
+    if (use_fmm && use_prec && !neural_prec_file && !bem_env_flag_present("BEM_PREC_BLOCK")) {
         setenv("BEM_PREC_BLOCK", prec_policy.schwarz ? "1" : "0", 0);
     }
     const bool strict_obj_prec = is_obj && gmres_tol <= 5e-4;
-    if (use_fmm && use_prec && bem_env_flag_enabled("BEM_PREC_BLOCK") && !bem_env_has_value("BEM_PREC_BLOCK_SIZE"))
+    if (use_fmm && use_prec && !neural_prec_file && bem_env_flag_enabled("BEM_PREC_BLOCK") && !bem_env_has_value("BEM_PREC_BLOCK_SIZE"))
         setenv("BEM_PREC_BLOCK_SIZE", strict_obj_prec ? "10" : (is_obj ? "6" : (is_hex_prism ? "8" : "4")), 0);
-    if (use_fmm && use_prec && bem_env_flag_enabled("BEM_PREC_BLOCK") && !bem_env_has_value("BEM_PREC_SWEEPS"))
+    if (use_fmm && use_prec && !neural_prec_file &&
+        !explicit_mbj &&
+        bem_env_flag_enabled("BEM_PREC_BLOCK") &&
+        !bem_env_has_value("BEM_PREC_SWEEPS"))
         setenv("BEM_PREC_SWEEPS", strict_obj_prec ? "2" : ((is_obj || is_hex_prism) ? "1" : "2"), 0);
-    if (use_fmm && use_prec && bem_env_flag_enabled("BEM_PREC_BLOCK") && !bem_env_has_value("BEM_PREC_NEAR"))
+    if (use_fmm && use_prec && !neural_prec_file &&
+        !explicit_mbj &&
+        bem_env_flag_enabled("BEM_PREC_BLOCK") &&
+        !bem_env_has_value("BEM_PREC_NEAR"))
         setenv("BEM_PREC_NEAR", strict_obj_prec ? "16" : (is_obj ? "10" : (is_hex_prism ? "12" : "6")), 0);
-    if (use_fmm && use_prec && bem_env_flag_enabled("BEM_PREC_BLOCK") && !bem_env_has_value("BEM_PREC_OMEGA"))
+    if (use_fmm && use_prec && !neural_prec_file && bem_env_flag_enabled("BEM_PREC_BLOCK") && !bem_env_has_value("BEM_PREC_OMEGA"))
         setenv("BEM_PREC_OMEGA", "1.0", 0);
     if (use_fmm && use_prec &&
+        !(precond_kind_set && strcmp(precond_kind, "mass") == 0) &&
+        !explicit_calderon_rwg &&
         !bem_env_flag_present("BEM_GMRES_STORE_Z") &&
         !bem_env_flag_enabled("BEM_GMRES_NO_STORE_Z")) {
         double store_z_max_mb = 512.0;
@@ -1713,10 +2112,20 @@ int main(int argc, char** argv) {
         use_fmm && bem_env_has_value("BEM_LOAD_COEFFS_FARFIELD_JSON");
 
     if (use_fmm) {
-        const bool schwarz_prec = use_prec && bem_env_flag_enabled("BEM_PREC_BLOCK");
+        const bool schwarz_prec = use_prec && !neural_prec_file && bem_env_flag_enabled("BEM_PREC_BLOCK");
+        const bool ilu0_prec = use_prec && !neural_prec_file && bem_env_flag_enabled("BEM_PREC_ILU0");
+        const bool mass_prec = use_prec && !neural_prec_file && bem_env_flag_enabled("BEM_PREC_MASS");
+        const bool calderon_rwg_prec = use_prec && !neural_prec_file &&
+            bem_env_flag_enabled("BEM_PREC_CALDERON_RWG");
         const bool batch4_active = bem_env_flag_enabled("BEM_FMM_BATCH4");
-        const bool store_z_active = use_prec && bem_env_flag_enabled("BEM_GMRES_STORE_Z");
-        const char* prec_name = use_prec ? (schwarz_prec ? ", Schwarz prec" : ", block-Jacobi prec") : "";
+        const bool store_z_active = use_prec && !mass_prec && !calderon_rwg_prec &&
+            bem_env_flag_enabled("BEM_GMRES_STORE_Z");
+        const char* prec_name = neural_prec_file ? ", neural GraphSAI prec" :
+                                (neural_dump_file ? ", neural feature export" :
+                                (use_prec ? (calderon_rwg_prec ? ", experimental RWG Calderon prec" :
+                                 (mass_prec ? ", RWG mass-matrix prec" :
+                                 (ilu0_prec ? ", ILU(0) prec" :
+                                  (schwarz_prec ? ", Schwarz prec" : ", block-Jacobi prec")))) : ""));
         const char* batch4_name = batch4_active ? ", batch4" : "";
         const char* store_z_name = store_z_active ? ", store-Z" : "";
         const char* krylov_name = use_krylov_auto ? "Auto-best-GPU-Krylov" :
@@ -1750,6 +2159,7 @@ int main(int argc, char** argv) {
     int output_orient_total = single_orient ? 1 : 1;
     double output_orientation_weight_sum = 1.0;
     long long output_gmres_matvecs = 0;
+    bool output_device_gmres = false;
     int output_gmres_converged_systems = 0;
     int output_gmres_nonconverged_systems = 0;
     int output_gmres_stagnation_stops = 0;
@@ -1793,14 +2203,51 @@ int main(int argc, char** argv) {
 	        fmm_op.init(rwg, mesh, k_ext, k_int, eta_ext_c, eta_int_c,
 	                     quad_order, fmm_digits, max_leaf, use_pfft, use_spfft);
         }
+        if (neural_probe_file) {
+            const uint32_t neural_system_code =
+                std::strcmp(system_kind, "balanced") == 0 ? 1u : 0u;
+            bool dumped = evaluate_neural_probe_file(
+                neural_probe_file, neural_action_dump_file, fmm_op, N2,
+                neural_system_code, (uint64_t)N, bem_neural_geometry_signature(rwg),
+                ka, n_re, n_im);
+            fmm_op.cleanup();
+            return dumped ? 0 : 1;
+        }
 
 	    // Build preconditioner if requested
         NearFieldPrecond* precond_ptr = nullptr;
         NearFieldPrecond precond;
         if (use_prec && !coeffs_farfield_only) {
-            precond.build(fmm_op);
+            if (neural_prec_file) {
+                const bool balanced_system = std::strcmp(system_kind, "balanced") == 0;
+                if (!precond.load_neural(neural_prec_file, N, ka, n_re, n_im,
+                                         balanced_system,
+                                         bem_neural_geometry_signature(rwg))) {
+                    fmm_op.cleanup();
+                    return 1;
+                }
+            } else {
+                const bool needs_precond_geometry =
+                    neural_dump_file || bem_env_flag_enabled("BEM_PREC_MASS") ||
+                    bem_env_flag_enabled("BEM_PREC_CALDERON_RWG") ||
+                    bem_env_flag_enabled("BEM_PREC_MBJ");
+                precond.build(fmm_op, needs_precond_geometry ? &rwg : nullptr,
+                              needs_precond_geometry ? &mesh : nullptr);
+                if (neural_dump_file) {
+                    const bool balanced_system = std::strcmp(system_kind, "balanced") == 0;
+                    bool dumped = precond.dump_neural_features(
+                        neural_dump_file, rwg, mesh, fmm_op, ka, n_re, n_im,
+                        balanced_system, neural_coarse_rank);
+                    fmm_op.cleanup();
+                    return dumped ? 0 : 1;
+                }
+            }
             precond_ptr = &precond;
         }
+        output_device_gmres = use_gpu_gmres &&
+            (precond_ptr == nullptr ||
+             (precond_ptr->device_apply_available() &&
+              bem_env_flag_enabled("BEM_GMRES_DEVICE_PREC", true)));
 
         time_assembly = asm_timer.elapsed_s();
 
@@ -2497,6 +2944,22 @@ int main(int argc, char** argv) {
                         }
                         fflush(stdout);
                     } else {
+                        std::string orientation_action_path;
+                        if (neural_action_dump_file && n_total > 1) {
+                            std::string base(neural_action_dump_file);
+                            const size_t slash = base.find_last_of("/\\");
+                            const size_t dot = base.find_last_of('.');
+                            const bool has_extension =
+                                dot != std::string::npos &&
+                                (slash == std::string::npos || dot > slash);
+                            char suffix[48];
+                            std::snprintf(suffix, sizeof(suffix), ".orient_%04d",
+                                          orient_start + oi);
+                            orientation_action_path = has_extension
+                                ? base.substr(0, dot) + suffix + base.substr(dot)
+                                : base + suffix;
+                            setenv("BEM_NEURAL_ACTION_DUMP", orientation_action_path.c_str(), 1);
+                        }
                         if (warm_start == OrientWarmStart::Zero) {
                             #pragma omp parallel for schedule(static) if(N2 > 4096)
                             for (int i = 0; i < N2; i++) {
@@ -2601,9 +3064,9 @@ int main(int argc, char** argv) {
                                        quad_order, unknown_m_scale,
                                        row_h_scale, int_op_sign, k_identity,
                                        use_prec,
-                                       use_prec && bem_env_flag_enabled("BEM_PREC_BLOCK"),
-                                       !use_prec && (bem_env_flag_enabled("BEM_GMRES_DEVICE") || use_bicgstab || use_cgs_rr || use_krylov_auto || use_krylov_hybrid),
-                                       prec_policy.reason,
+                                       use_prec && !neural_prec_file && bem_env_flag_enabled("BEM_PREC_BLOCK"),
+                                       output_device_gmres || (!use_prec && (use_bicgstab || use_cgs_rr || use_krylov_auto || use_krylov_hybrid)),
+                                       output_precond_reason,
                                        mesh_quality.vertices, mesh_quality.triangles,
                                        mesh_quality.skinny_triangles,
                                        mesh_quality.min_angle_deg, mesh_quality.max_aspect_ratio,
@@ -2649,6 +3112,8 @@ int main(int argc, char** argv) {
                                oi + 1, n_total, (double)orient_matvecs / (oi + 1));
                 }
             }
+            if (neural_action_dump_file)
+                setenv("BEM_NEURAL_ACTION_DUMP", neural_action_dump_file, 1);
 		            if (!split_orientation_outputs) {
 		                if (ff_alpha_direct)
 		                    flush_alpha_direct_batch();
@@ -3409,9 +3874,9 @@ int main(int argc, char** argv) {
                quad_order,
                unknown_m_scale, row_h_scale, int_op_sign, k_identity,
                use_prec,
-               use_prec && bem_env_flag_enabled("BEM_PREC_BLOCK"),
-               !use_prec && (bem_env_flag_enabled("BEM_GMRES_DEVICE") || use_bicgstab || use_cgs_rr || use_krylov_auto || use_krylov_hybrid),
-               prec_policy.reason,
+               use_prec && !neural_prec_file && bem_env_flag_enabled("BEM_PREC_BLOCK"),
+               output_device_gmres || (!use_prec && (use_bicgstab || use_cgs_rr || use_krylov_auto || use_krylov_hybrid)),
+               output_precond_reason,
                mesh_quality.vertices, mesh_quality.triangles,
                mesh_quality.skinny_triangles, mesh_quality.min_angle_deg,
                mesh_quality.max_aspect_ratio,

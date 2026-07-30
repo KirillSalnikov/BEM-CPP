@@ -147,6 +147,55 @@ void launch_p2p_gradient_leaf(
     double* d_gy_re, double* d_gy_im,
     double* d_gz_re, double* d_gz_im);
 
+// Symmetric Hessian in interleaved xx,xy,xz,yy,yz,zz order.
+void launch_p2p_hessian_leaf(
+    const double* d_tgt, const double* d_src,
+    const double* d_q_re, const double* d_q_im,
+    const int* d_tgt_offsets, const int* d_tgt_ids,
+    const int* d_src_offsets, const int* d_src_ids,
+    const int* d_near_offsets, const int* d_near_leaf_ids,
+    int n_leaves, double k_re, double k_im,
+    double* d_hess_re, double* d_hess_im);
+
+void launch_p2p_grad_hessian_batch3_leaf(
+    const double* d_tgt, const double* d_src,
+    const double* d_q1_re, const double* d_q1_im,
+    const double* d_q2_re, const double* d_q2_im,
+    const double* d_q3_re, const double* d_q3_im,
+    const int* d_tgt_offsets, const int* d_tgt_ids,
+    const int* d_src_offsets, const int* d_src_ids,
+    const int* d_near_offsets, const int* d_near_leaf_ids,
+    int n_leaves, double k_re, double k_im,
+    double* d_gx1_re, double* d_gx1_im,
+    double* d_gy1_re, double* d_gy1_im,
+    double* d_gz1_re, double* d_gz1_im,
+    double* d_gx2_re, double* d_gx2_im,
+    double* d_gy2_re, double* d_gy2_im,
+    double* d_gz2_re, double* d_gz2_im,
+    double* d_gx3_re, double* d_gx3_im,
+    double* d_gy3_re, double* d_gy3_im,
+    double* d_gz3_re, double* d_gz3_im,
+    double* d_hess1_re, double* d_hess1_im,
+    double* d_hess2_re, double* d_hess2_im,
+    double* d_hess3_re, double* d_hess3_im,
+    bool fp32_compute = false);
+
+// Contract the derivatives of a three-component source field directly.
+// curl uses xy, xz, yz antisymmetric gradient components. hessian_action is
+// H*q - trace(H)*q. Both outputs are interleaved xyz arrays.
+void launch_p2p_vector_actions_batch3_leaf(
+    const double* d_tgt, const double* d_src,
+    const double* d_qx_re, const double* d_qx_im,
+    const double* d_qy_re, const double* d_qy_im,
+    const double* d_qz_re, const double* d_qz_im,
+    const int* d_tgt_offsets, const int* d_tgt_ids,
+    const int* d_src_offsets, const int* d_src_ids,
+    const int* d_near_offsets, const int* d_near_leaf_ids,
+    int n_leaves, double k_re, double k_im,
+    double* d_curl_re, double* d_curl_im,
+    double* d_hessian_action_re, double* d_hessian_action_im,
+    bool fp32_compute = false);
+
 void launch_p2p_pot_grad_batch2_leaf(
     const double* d_tgt, const double* d_src,
     const double* d_q1_re, const double* d_q1_im,

@@ -62,6 +62,9 @@ struct HelmholtzFMM {
     int*    d_m2l_tgt;        // per-level batch arrays (concatenated)
     int*    d_m2l_src;
     int*    d_m2l_tidx;
+    int*    d_m2l_row_target; // target-grouped M2L rows
+    int*    d_m2l_row_start;
+    int*    d_m2l_row_end;
 
     // M2M/L2L shifts on GPU
     double* d_m2m_shift_re;   // concatenated across levels
@@ -76,6 +79,7 @@ struct HelmholtzFMM {
     // Per-level offset info for M2L/M2M/L2L kernel launches
     struct LevelKernelInfo { int offset, count; };
     std::vector<LevelKernelInfo> m2l_level_info;
+    std::vector<LevelKernelInfo> m2l_row_level_info;
     std::vector<LevelKernelInfo> m2m_level_info;
     std::vector<LevelKernelInfo> l2l_level_info;
 
@@ -104,6 +108,8 @@ struct HelmholtzFMM {
     double* d_result_im;
     double* d_grad_re;        // (Nt*3) for gradient mode
     double* d_grad_im;
+    double* d_hess_re;        // (Nt*6): xx, xy, xz, yy, yz, zz
+    double* d_hess_im;
 
     // Batch-2 workspace (second charge vector)
     double* d_charges2_re = nullptr;
@@ -128,6 +134,10 @@ struct HelmholtzFMM {
     double* d_grad3_im = nullptr;
     double* d_grad4_re = nullptr;
     double* d_grad4_im = nullptr;
+    double* d_hess2_re = nullptr;
+    double* d_hess2_im = nullptr;
+    double* d_hess3_re = nullptr;
+    double* d_hess3_im = nullptr;
     double* d_multi3_re = nullptr;
     double* d_multi3_im = nullptr;
     double* d_multi4_re = nullptr;
@@ -179,16 +189,18 @@ struct HelmholtzFMM {
 
     bool initialized;
     bool batch4_allocated;
+    bool near_field_fp32;
 
-    HelmholtzFMM() : initialized(false),
-        d_tgt_pts(0), d_src_pts(0), d_p2p_offsets(0), d_p2p_indices(0),
+    HelmholtzFMM() : d_tgt_pts(0), d_src_pts(0),
+        d_p2p_offsets(0), d_p2p_indices(0),
         d_multi_re(0), d_multi_im(0), d_local_re(0), d_local_im(0),
         d_transfer_re(0), d_transfer_im(0),
         d_m2l_tgt(0), d_m2l_src(0), d_m2l_tidx(0),
+        d_m2l_row_target(0), d_m2l_row_start(0), d_m2l_row_end(0),
         d_m2m_shift_re(0), d_m2m_shift_im(0), d_m2m_parent(0), d_m2m_child(0),
         d_l2l_shift_re(0), d_l2l_shift_im(0), d_l2l_parent(0), d_l2l_child(0),
         d_charges_re(0), d_charges_im(0), d_result_re(0), d_result_im(0),
-        d_grad_re(0), d_grad_im(0),
+        d_grad_re(0), d_grad_im(0), d_hess_re(0), d_hess_im(0),
         d_charges2_re(0), d_charges2_im(0), d_result2_re(0), d_result2_im(0),
         d_grad2_re(0), d_grad2_im(0),
         d_multi2_re(0), d_multi2_im(0), d_local2_re(0), d_local2_im(0),
@@ -209,12 +221,15 @@ struct HelmholtzFMM {
         d_gx3_re_tmp_cached(0), d_gx3_im_tmp_cached(0),
         d_gy4_re_cached(0), d_gy4_im_cached(0), d_gz4_re_cached(0), d_gz4_im_cached(0),
         d_gx4_re_tmp_cached(0), d_gx4_im_tmp_cached(0),
-        d_complex_tmp1(0), d_complex_tmp2(0), batch4_allocated(false) {}
+        d_complex_tmp1(0), d_complex_tmp2(0), initialized(false),
+        batch4_allocated(false),
+        near_field_fp32(false) {}
 
     // Initialize: build tree, precompute transfers, upload to GPU
     void init(const double* targets, int n_tgt,
               const double* sources, int n_src,
-              cdouble k_val, int digits = 3, int max_leaf = 64);
+              cdouble k_val, int digits = 3, int max_leaf = 64,
+              int near_radius = 1, bool request_batch4 = false);
 
     // Evaluate: y[i] = sum_j G(r_i, r_j) * q[j]
     // charges: host array (Ns), result: host array (Nt)
@@ -223,6 +238,48 @@ struct HelmholtzFMM {
     // Evaluate gradient: grad[i] = sum_j nabla_G(r_i, r_j) * q[j]
     // charges: host array (Ns), grad_result: host array (Nt*3) [x0,y0,z0,x1,y1,z1,...]
     void evaluate_gradient(const cdouble* charges, cdouble* grad_result);
+
+    // Evaluate the symmetric Hessian in xx,xy,xz,yy,yz,zz order.
+    void evaluate_hessian(const cdouble* charges, cdouble* hessian_result);
+
+    // Evaluate gradient and Hessian from one multipole/local traversal.
+    void evaluate_grad_hessian(
+        const cdouble* charges,
+        cdouble* gradient_result,
+        cdouble* hessian_result);
+    // Evaluate three vector components in one shared FMM traversal.
+    void evaluate_grad_hessian_batch3(
+        const cdouble* charges1,
+        const cdouble* charges2,
+        const cdouble* charges3,
+        cdouble* gradient1,
+        cdouble* gradient2,
+        cdouble* gradient3,
+        cdouble* hessian1,
+        cdouble* hessian2,
+        cdouble* hessian3);
+
+    // Contract the derivatives of a three-component field during L2P/P2P.
+    // curl_result stores xy, xz, yz antisymmetric gradient components.
+    // hessian_action stores H*q - trace(H)*q.
+    void evaluate_vector_actions_batch3(
+        const cdouble* charges_x,
+        const cdouble* charges_y,
+        const cdouble* charges_z,
+        cdouble* curl_result,
+        cdouble* hessian_action);
+
+    // Keep the contracted vector action on the device. The source arrays are
+    // split-complex device buffers. Results remain in d_grad_{re,im} (curl)
+    // and d_hess_{re,im} (H*q-tr(H)q), so a caller can fuse medium
+    // combination and Galerkin testing without a host round trip.
+    void evaluate_vector_actions_batch3_device(
+        const double* charges_x_re,
+        const double* charges_x_im,
+        const double* charges_y_re,
+        const double* charges_y_im,
+        const double* charges_z_re,
+        const double* charges_z_im);
 
     // Evaluate both potential and gradient in a single tree traversal.
     // charges: host (Ns), pot_result: host (Nt), grad_result: host (Nt*3)
@@ -240,12 +297,17 @@ struct HelmholtzFMM {
     void evaluate_pot_grad_uploaded();
     void evaluate_pot_grad_batch2_uploaded();
     void evaluate_batch4_uploaded();
-    void evaluate_batch4_far_uploaded();
+    void evaluate_batch3_far_uploaded();
+    void evaluate_batch4_far_uploaded(bool evaluate_potential = true);
+    void evaluate_gradient_batch4_l2p_uploaded();
     void evaluate_pot_grad_batch4_uploaded();
 
     // Run FMM tree traversal (P2M→M2M→M2L→L2L→L2P/P2P)
-    void run_tree(const double* h_q_re, const double* h_q_im, bool need_grad);
-    void run_tree_uploaded(bool need_grad);
+    // derivative_order: 0 potential, 1 gradient, 2 Hessian,
+    // 3 gradient and Hessian.
+    void run_tree(const double* h_q_re, const double* h_q_im,
+                  int derivative_order);
+    void run_tree_uploaded(int derivative_order);
 
     // Free GPU memory
     void cleanup();

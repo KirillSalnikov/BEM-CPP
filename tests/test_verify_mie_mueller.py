@@ -56,6 +56,19 @@ def main() -> int:
     assert summary["worst_component"] == "M34", summary
     assert "M34" in summary["failed_all_20pct"], summary
 
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "muller_fmm.json"
+        path.write_text(json.dumps({
+            "physical": {
+                "theta_degrees": theta,
+                "mueller": mu,
+            },
+        }))
+        with redirect_stdout(StringIO()):
+            summary = compare(path, m.real, m.imag, ka)
+    assert_close(summary["absolute_m11_solid_angle_relative_l2"], 0.0)
+    assert_close(summary["forward_m11_ratio_bem_over_mie"], 1.0)
+
     print("verify mie mueller: ok")
     return 0
 

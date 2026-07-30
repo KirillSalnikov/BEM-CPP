@@ -1,6 +1,12 @@
 bin/
+build/
+runs/
+.pytest_cache/
 src/*.o
 *.json
+!results/
+!results/reference/
+!results/reference/**/*.json
 *.npz
 *.pyc
 __pycache__/
@@ -10,3 +16,4 @@ MANUAL.out
 MANUAL.toc
 *.o
 bin/
+tests/*_check

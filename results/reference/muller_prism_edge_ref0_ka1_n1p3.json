@@ -1,0 +1,33 @@
+{
+  "solver": "muller_nodal_p2_fmm",
+  "shape": "prism",
+  "ka": 1,
+  "ri": 1.3,
+  "refinements": 0,
+  "system_dofs": 512,
+  "edge_mode": "split",
+  "feature_angle_degrees": 45,
+  "feature_edge_segments": 24,
+  "smooth_patches": 8,
+  "duplicated_edge_nodes": 54,
+  "tolerance": 1e-05,
+  "fmm_setup_s": 1.460160745,
+  "dense_validation_s": 0,
+  "mbj_local_setup_s": 0.631255109,
+  "baseline": {
+    "iterations": 120,
+    "solve_s": 5.468111483,
+    "fmm_residual": 7.73057484818918e-06,
+    "dense_residual": null
+  },
+  "mbj": {
+    "nodes_per_block": 32,
+    "iterations": 11,
+    "solve_s": 0.543711289,
+    "fmm_residual": 9.588598183406036e-06,
+    "dense_residual": null,
+    "storage_mb": 1.00390625
+  },
+  "solve_speedup": 10.05701296557041,
+  "solution_relative_difference": 4.478032225039977e-05
+}

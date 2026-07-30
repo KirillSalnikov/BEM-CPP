@@ -1,8 +1,11 @@
 #include "mesh.h"
 
 #include <cassert>
+#include <algorithm>
+#include <array>
 #include <iostream>
 #include <map>
+#include <set>
 #include <tuple>
 
 static Mesh tetrahedron()
@@ -135,6 +138,58 @@ int main()
     assert(voxel_q.closed);
     assert(voxel_q.voxel_surface_like);
     assert(voxel_q.recommended_min_quad_order == 13);
+
+    const int cube_refinement = 3;
+    const int cube_cells = 1 << cube_refinement;
+    Mesh cube = structured_cube(cube_refinement, 1.0);
+    MeshQualityReport cube_q = analyze_mesh_quality(cube);
+    assert(cube.nv() == 6 * cube_cells * cube_cells + 2);
+    assert(cube.nt() == 12 * cube_cells * cube_cells);
+    assert(cube_q.unique_edges == 18 * cube_cells * cube_cells);
+    assert(cube_q.feature_edges_30deg == 12 * cube_cells);
+    assert(cube_q.closed);
+    assert(cube_q.outward_winding);
+    assert(cube_q.boundary_edges == 0);
+    assert(cube_q.nonmanifold_edges == 0);
+    assert(cube_q.degenerate_triangles == 0);
+    assert(cube_q.skinny_triangles == 0);
+    assert(cube_q.min_angle_deg > 44.9);
+    assert(cube_q.max_adjacent_area_ratio < 1.0000001);
+    assert(cube_q.pass_default_gate);
+    assert(std::abs(cube_q.signed_volume - 4.0 * M_PI / 3.0) < 1e-12);
+
+    std::map<std::tuple<long long, long long, long long>, int> cube_vertices;
+    const double position_scale = 1e12;
+    auto position_key = [&](const Vec3& point) {
+        return std::make_tuple(
+            std::llround(position_scale * point.x),
+            std::llround(position_scale * point.y),
+            std::llround(position_scale * point.z));
+    };
+    for (int vertex = 0; vertex < cube.nv(); vertex++)
+        cube_vertices[position_key(cube.verts[vertex])] = vertex;
+    std::set<std::array<int, 3>> cube_triangles;
+    for (int triangle = 0; triangle < cube.nt(); triangle++) {
+        std::array<int, 3> vertices = {{
+            cube.tris[3 * triangle],
+            cube.tris[3 * triangle + 1],
+            cube.tris[3 * triangle + 2]}};
+        std::sort(vertices.begin(), vertices.end());
+        cube_triangles.insert(vertices);
+    }
+    for (int triangle = 0; triangle < cube.nt(); triangle++) {
+        std::array<int, 3> rotated;
+        for (int local = 0; local < 3; local++) {
+            const Vec3& point =
+                cube.verts[cube.tris[3 * triangle + local]];
+            const Vec3 rotated_point(-point.y, point.x, point.z);
+            const auto found = cube_vertices.find(position_key(rotated_point));
+            assert(found != cube_vertices.end());
+            rotated[local] = found->second;
+        }
+        std::sort(rotated.begin(), rotated.end());
+        assert(cube_triangles.find(rotated) != cube_triangles.end());
+    }
 
     std::cout << "mesh quality check: ok\n";
     return 0;

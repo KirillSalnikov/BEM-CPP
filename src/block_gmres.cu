@@ -8,6 +8,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cstdint>
+#include <fstream>
 #include <limits>
 #include <vector>
 #include <cuda_runtime.h>
@@ -590,6 +592,35 @@ __global__ void gmres_update_x_pair_kernel(double2* x1, double2* x2,
     x2[k] = make_double2(x2[k].x + acc2.x, x2[k].y + acc2.y);
 }
 
+__global__ void gmres_combine_pair_kernel(double2* out1, double2* out2,
+                                           const double2* V1, const double2* V2,
+                                           const double2* y1, const double2* y2,
+                                           int n, int m1, int m2)
+{
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
+    if (k >= n)
+        return;
+    double2 acc1 = make_double2(0.0, 0.0);
+    double2 acc2 = make_double2(0.0, 0.0);
+    for (int i = 0; i < m1; i++)
+        acc1 = d_cadd(acc1, d_cmul(y1[i], V1[(size_t)i * n + k]));
+    for (int i = 0; i < m2; i++)
+        acc2 = d_cadd(acc2, d_cmul(y2[i], V2[(size_t)i * n + k]));
+    out1[k] = acc1;
+    out2[k] = acc2;
+}
+
+__global__ void gmres_add_pair_kernel(double2* x1, double2* x2,
+                                       const double2* dx1, const double2* dx2,
+                                       int n)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n)
+        return;
+    x1[i] = d_cadd(x1[i], dx1[i]);
+    x2[i] = d_cadd(x2[i], dx2[i]);
+}
+
 struct GmresDeviceBufferCache {
     int n = 0;
     int restart = 0;
@@ -1152,6 +1183,47 @@ static void gpu_orthogonalize_column_pair(double2* d_V1, double2* d_w1,
     CUDA_CHECK(cudaGetLastError());
 }
 
+static bool write_neural_action_dump(const char* path, int n, int count,
+                                     const std::vector<cdouble>& probes,
+                                     const std::vector<cdouble>& actions,
+                                     bool right_operator_actions)
+{
+    if (!path || count <= 0 || probes.size() != (size_t)count * n ||
+        actions.size() != probes.size())
+        return false;
+    std::ofstream stream(path, std::ios::binary);
+    if (!stream)
+        return false;
+    const char inverse_magic[8] = {'B','E','M','A','C','T','N','1'};
+    const char right_operator_magic[8] = {'B','E','M','A','M','O','P','1'};
+    const char* magic = right_operator_actions
+        ? right_operator_magic
+        : inverse_magic;
+    const uint32_t version = 1;
+    const uint64_t system_size = (uint64_t)n;
+    const uint32_t probe_count = (uint32_t)count;
+    stream.write(magic, 8);
+    stream.write(reinterpret_cast<const char*>(&version), sizeof(version));
+    stream.write(reinterpret_cast<const char*>(&system_size), sizeof(system_size));
+    stream.write(reinterpret_cast<const char*>(&probe_count), sizeof(probe_count));
+    auto write_complex = [&](const std::vector<cdouble>& values) {
+        std::vector<double> buffer(16384);
+        size_t offset = 0;
+        while (offset < values.size()) {
+            const size_t chunk = std::min(values.size() - offset, buffer.size() / 2);
+            for (size_t i = 0; i < chunk; i++) {
+                buffer[2 * i] = values[offset + i].real();
+                buffer[2 * i + 1] = values[offset + i].imag();
+            }
+            stream.write(reinterpret_cast<const char*>(buffer.data()), 2 * chunk * sizeof(double));
+            offset += chunk;
+        }
+    };
+    write_complex(probes);
+    write_complex(actions);
+    return (bool)stream;
+}
+
 static int gmres_solve_paired_device_ws(BemFmmOperator& op,
                                         const cdouble* b1, const cdouble* b2,
                                         cdouble* x1, cdouble* x2,
@@ -1165,6 +1237,11 @@ static int gmres_solve_paired_device_ws(BemFmmOperator& op,
     const int red_grid = grid;
     const size_t vec_bytes = (size_t)n * sizeof(double2);
     int ret_matvecs = 0;
+    const double projected_tol_factor = std::max(
+        0.01, std::min(1.0, bem_env_double("BEM_GMRES_PROJECTED_TOL_FACTOR", 0.9)));
+    const double projected_tol = tol * projected_tol_factor;
+    const long long initial_precond_operator_actions =
+        precond ? precond->full_operator_action_count() : 0;
 
     ws.final_relres1 = 0.0;
     ws.final_relres2 = 0.0;
@@ -1190,10 +1267,46 @@ static int gmres_solve_paired_device_ws(BemFmmOperator& op,
     double *d_reduce2 = cache.d_reduce2, *d_reduce4 = cache.d_reduce4;
     double2 *d_col_partial1 = cache.d_col_partial1, *d_col_partial2 = cache.d_col_partial2;
     double2 *d_hcol1 = cache.d_hcol1, *d_hcol2 = cache.d_hcol2;
-    const bool left_precond =
+    const bool device_precond =
         precond != nullptr &&
         precond->device_apply_available() &&
         bem_env_flag_enabled("BEM_GMRES_DEVICE_PREC", true);
+    const bool right_precond =
+        device_precond && precond->uses_right_device_preconditioning();
+    const bool left_precond = device_precond && !right_precond;
+    const char* neural_action_path = std::getenv("BEM_NEURAL_ACTION_DUMP");
+    const int neural_action_limit = std::max(1, std::min(512,
+        bem_env_int("BEM_NEURAL_ACTION_PROBES", 32)));
+    const int neural_action_skip = std::max(0,
+        bem_env_int("BEM_NEURAL_ACTION_SKIP", 0));
+    const bool collect_neural_actions =
+        neural_action_path && neural_action_path[0] != '\0';
+    const char* neural_action_mode = std::getenv("BEM_NEURAL_ACTION_MODE");
+    const bool collect_right_operator_actions =
+        neural_action_mode && strcmp(neural_action_mode, "right-operator") == 0;
+    int neural_action_count = 0;
+    int neural_action_seen = 0;
+    std::vector<cdouble> neural_action_probes;
+    std::vector<cdouble> neural_action_images;
+    if (collect_neural_actions) {
+        neural_action_probes.reserve((size_t)neural_action_limit * n);
+        neural_action_images.reserve((size_t)neural_action_limit * n);
+    }
+    auto capture_neural_action = [&](const double2* d_probe, const double2* d_image) {
+        if (!collect_neural_actions)
+            return;
+        if (neural_action_seen++ < neural_action_skip ||
+            neural_action_count >= neural_action_limit)
+            return;
+        const size_t offset = (size_t)neural_action_count * n;
+        neural_action_probes.resize(offset + n);
+        neural_action_images.resize(offset + n);
+        CUDA_CHECK(cudaMemcpy(reinterpret_cast<double2*>(neural_action_probes.data() + offset),
+                              d_probe, vec_bytes, cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(reinterpret_cast<double2*>(neural_action_images.data() + offset),
+                              d_image, vec_bytes, cudaMemcpyDeviceToHost));
+        neural_action_count++;
+    };
 
     auto& H1 = ws.H1; auto& H2 = ws.H2;
     auto& cs1 = ws.cs1; auto& sn1 = ws.sn1; auto& s1 = ws.s1;
@@ -1219,8 +1332,7 @@ static int gmres_solve_paired_device_ws(BemFmmOperator& op,
 
     double bnorm1 = true_bnorm1, bnorm2 = true_bnorm2;
     if (left_precond) {
-        precond->apply_device_complex(d_b1, d_w1);
-        precond->apply_device_complex(d_b2, d_w2);
+        precond->apply_device_complex_pair(d_b1, d_b2, d_w1, d_w2);
         gpu_norm_pair(d_w1, d_w2, n, d_p1, d_p2, d_reduce2, bnorm1, bnorm2);
         if (bnorm1 < 1e-30) bnorm1 = 1.0;
         if (bnorm2 < 1e-30) bnorm2 = 1.0;
@@ -1250,8 +1362,7 @@ static int gmres_solve_paired_device_ws(BemFmmOperator& op,
     double true_rel2 = rnorm2 / true_bnorm2;
 
     if (left_precond) {
-        precond->apply_device_complex(d_r1, d_w1);
-        precond->apply_device_complex(d_r2, d_w2);
+        precond->apply_device_complex_pair(d_r1, d_r2, d_w1, d_w2);
         CUDA_CHECK(cudaMemcpy(d_r1, d_w1, vec_bytes, cudaMemcpyDeviceToDevice));
         CUDA_CHECK(cudaMemcpy(d_r2, d_w2, vec_bytes, cudaMemcpyDeviceToDevice));
         gpu_norm_pair(d_r1, d_r2, n, d_p1, d_p2, d_reduce2, rnorm1, rnorm2);
@@ -1271,8 +1382,7 @@ static int gmres_solve_paired_device_ws(BemFmmOperator& op,
         true_rel1 = 1.0;
         true_rel2 = 1.0;
         if (left_precond) {
-            precond->apply_device_complex(d_r1, d_w1);
-            precond->apply_device_complex(d_r2, d_w2);
+            precond->apply_device_complex_pair(d_r1, d_r2, d_w1, d_w2);
             CUDA_CHECK(cudaMemcpy(d_r1, d_w1, vec_bytes, cudaMemcpyDeviceToDevice));
             CUDA_CHECK(cudaMemcpy(d_r2, d_w2, vec_bytes, cudaMemcpyDeviceToDevice));
             gpu_norm_pair(d_r1, d_r2, n, d_p1, d_p2, d_reduce2, rnorm1, rnorm2);
@@ -1297,7 +1407,8 @@ static int gmres_solve_paired_device_ws(BemFmmOperator& op,
     if (verbose) {
         printf("  [GMRES-paired-GPU] start: res1=%.2e res2=%.2e%s%s\n",
                true_rel1, true_rel2, (warm1 || warm2) ? " (warm)" : "",
-               left_precond ? " (left-preconditioned)" : "");
+               left_precond ? " (left-preconditioned)" :
+               (right_precond ? " (right-preconditioned)" : ""));
         fflush(stdout);
     }
 
@@ -1324,28 +1435,66 @@ static int gmres_solve_paired_device_ws(BemFmmOperator& op,
             double2* Vj1 = d_V1 + (size_t)j * n;
             double2* Vj2 = d_V2 + (size_t)j * n;
             if (!conv1 && !conv2) {
-                op.matvec_batch2_device(Vj1, Vj2, d_w1, d_w2);
+                if (right_precond) {
+                    precond->apply_device_complex_pair(Vj1, Vj2, d_r1, d_r2);
+                    op.matvec_batch2_device(d_r1, d_r2, d_w1, d_w2);
+                } else {
+                    op.matvec_batch2_device(Vj1, Vj2, d_w1, d_w2);
+                }
                 if (left_precond) {
-                    precond->apply_device_complex(d_w1, d_r1);
-                    precond->apply_device_complex(d_w2, d_r2);
+                    precond->apply_device_complex_pair(d_w1, d_w2, d_r1, d_r2);
                     CUDA_CHECK(cudaMemcpy(d_w1, d_r1, vec_bytes, cudaMemcpyDeviceToDevice));
                     CUDA_CHECK(cudaMemcpy(d_w2, d_r2, vec_bytes, cudaMemcpyDeviceToDevice));
                 }
                 ret_matvecs++;
             } else if (!conv1) {
-                op.matvec_batch2_device(Vj1, Vj1, d_w1, d_w2);
+                if (right_precond) {
+                    precond->apply_device_complex(Vj1, d_r1);
+                    op.matvec_batch2_device(d_r1, d_r1, d_w1, d_w2);
+                } else {
+                    op.matvec_batch2_device(Vj1, Vj1, d_w1, d_w2);
+                }
                 if (left_precond) {
                     precond->apply_device_complex(d_w1, d_r1);
                     CUDA_CHECK(cudaMemcpy(d_w1, d_r1, vec_bytes, cudaMemcpyDeviceToDevice));
                 }
                 ret_matvecs++;
             } else {
-                op.matvec_batch2_device(Vj2, Vj2, d_w2, d_w1);
+                if (right_precond) {
+                    precond->apply_device_complex(Vj2, d_r2);
+                    op.matvec_batch2_device(d_r2, d_r2, d_w2, d_w1);
+                } else {
+                    op.matvec_batch2_device(Vj2, Vj2, d_w2, d_w1);
+                }
                 if (left_precond) {
                     precond->apply_device_complex(d_w2, d_r2);
                     CUDA_CHECK(cudaMemcpy(d_w2, d_r2, vec_bytes, cudaMemcpyDeviceToDevice));
                 }
                 ret_matvecs++;
+            }
+
+            if (right_precond) {
+                if (!conv1 && !conv2) {
+                    capture_neural_action(
+                        collect_right_operator_actions ? Vj1 : d_r1, d_w1);
+                    capture_neural_action(
+                        collect_right_operator_actions ? Vj2 : d_r2, d_w2);
+                } else if (!conv1) {
+                    capture_neural_action(
+                        collect_right_operator_actions ? Vj1 : d_r1, d_w1);
+                } else {
+                    capture_neural_action(
+                        collect_right_operator_actions ? Vj2 : d_r2, d_w2);
+                }
+            } else if (!left_precond) {
+                if (!conv1 && !conv2) {
+                    capture_neural_action(Vj1, d_w1);
+                    capture_neural_action(Vj2, d_w2);
+                } else if (!conv1) {
+                    capture_neural_action(Vj1, d_w1);
+                } else {
+                    capture_neural_action(Vj2, d_w2);
+                }
             }
 
             bool column_ortho = bem_env_flag_enabled("BEM_GMRES_COLUMN_ORTHO", true);
@@ -1469,7 +1618,7 @@ static int gmres_solve_paired_device_ws(BemFmmOperator& op,
                 s[j + 1] = -sn[j] * s0;
                 m = j + 1;
                 last_rel = std::abs(s[j + 1]) / bnorm;
-                if (last_rel < tol)
+                if (last_rel < projected_tol)
                     conv = true;
             };
             givens_step(H1, cs1, sn1, s1, bnorm1, conv1, m1, last_rel1);
@@ -1496,8 +1645,16 @@ static int gmres_solve_paired_device_ws(BemFmmOperator& op,
             CUDA_CHECK(cudaMemcpy(d_y2, reinterpret_cast<const double2*>(ytmp2.data()),
                                   (size_t)m2 * sizeof(double2), cudaMemcpyHostToDevice));
         }
-        gmres_update_x_pair_kernel<<<grid, block>>>(d_x1, d_x2, d_V1, d_V2,
-                                                    d_y1, d_y2, n, restart, m1, m2);
+        if (right_precond) {
+            gmres_combine_pair_kernel<<<grid, block>>>(d_w1, d_w2, d_V1, d_V2,
+                                                       d_y1, d_y2, n, m1, m2);
+            CUDA_CHECK(cudaGetLastError());
+            precond->apply_device_complex_pair(d_w1, d_w2, d_r1, d_r2);
+            gmres_add_pair_kernel<<<grid, block>>>(d_x1, d_x2, d_r1, d_r2, n);
+        } else {
+            gmres_update_x_pair_kernel<<<grid, block>>>(d_x1, d_x2, d_V1, d_V2,
+                                                        d_y1, d_y2, n, restart, m1, m2);
+        }
         CUDA_CHECK(cudaGetLastError());
 
         op.matvec_batch2_device(d_x1, d_x2, d_w1, d_w2);
@@ -1526,18 +1683,17 @@ static int gmres_solve_paired_device_ws(BemFmmOperator& op,
         }
 
         if (left_precond && !(conv1 && conv2)) {
-            if (!conv1)
-                precond->apply_device_complex(d_r1, d_w1);
-            if (!conv2)
-                precond->apply_device_complex(d_r2, d_w2);
             if (!conv1 && !conv2) {
+                precond->apply_device_complex_pair(d_r1, d_r2, d_w1, d_w2);
                 CUDA_CHECK(cudaMemcpy(d_r1, d_w1, vec_bytes, cudaMemcpyDeviceToDevice));
                 CUDA_CHECK(cudaMemcpy(d_r2, d_w2, vec_bytes, cudaMemcpyDeviceToDevice));
                 gpu_norm_pair(d_r1, d_r2, n, d_p1, d_p2, d_reduce2, rnorm1, rnorm2);
             } else if (!conv1) {
+                precond->apply_device_complex(d_r1, d_w1);
                 CUDA_CHECK(cudaMemcpy(d_r1, d_w1, vec_bytes, cudaMemcpyDeviceToDevice));
                 gpu_norm_pair(d_r1, d_r1, n, d_p1, d_p2, d_reduce2, rnorm1, rnorm2);
             } else if (!conv2) {
+                precond->apply_device_complex(d_r2, d_w2);
                 CUDA_CHECK(cudaMemcpy(d_r2, d_w2, vec_bytes, cudaMemcpyDeviceToDevice));
                 gpu_norm_pair(d_r2, d_r2, n, d_p1, d_p2, d_reduce2, rnorm1, rnorm2);
             }
@@ -1570,10 +1726,27 @@ static int gmres_solve_paired_device_ws(BemFmmOperator& op,
     ws.converged2 = (last_rel2 < tol);
     ws.numerical_breakdown = numerical_breakdown;
     ws.reached_max_cycles = reached_max_cycles;
+    if (collect_neural_actions) {
+        if (write_neural_action_dump(neural_action_path, n, neural_action_count,
+                                     neural_action_probes, neural_action_images,
+                                     collect_right_operator_actions)) {
+            printf("  [NeuralActions] wrote %d %s pairs after skipping %d: %s\n",
+                   neural_action_count,
+                   collect_right_operator_actions ? "v,A(Mv)" : "Krylov/FMM",
+                   neural_action_skip, neural_action_path);
+        } else {
+            fprintf(stderr, "Error: failed to write neural action probes: %s\n",
+                    neural_action_path);
+        }
+    }
+    const long long precond_operator_actions = precond ?
+        precond->full_operator_action_count() - initial_precond_operator_actions : 0;
+    ret_matvecs += (int)precond_operator_actions;
     if (verbose) {
-        printf("  [GMRES-paired-GPU] %s, %d matvec evaluations, res1=%.2e res2=%.2e\n",
+        printf("  [GMRES-paired-GPU] %s, %d full-operator evaluations "
+               "(%lld in preconditioner), res1=%.2e res2=%.2e\n",
                (ws.converged1 && ws.converged2) ? "Both converged" : "NOT fully converged",
-               ret_matvecs, last_rel1, last_rel2);
+               ret_matvecs, precond_operator_actions, last_rel1, last_rel2);
         fflush(stdout);
     }
     return ret_matvecs;
