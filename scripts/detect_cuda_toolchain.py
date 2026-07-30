@@ -233,7 +233,7 @@ def build_recommendation(usable: Optional[dict]) -> Optional[dict]:
             "conda_env_file": "environment.cuda.yml",
             "create_command": "conda env create -f environment.cuda.yml",
             "activate_command": "conda activate bem-cuda-toolchain",
-            "rerun": "scripts/run_cuda_reference_audits.sh",
+            "rerun": "make cuda-toolchain-check",
         }
     if usable.get("usable_for_local_build") is False:
         compat = usable.get("host_compiler_compatibility", {})
@@ -244,11 +244,11 @@ def build_recommendation(usable: Optional[dict]) -> Optional[dict]:
                 "install_host_compiler": f"install gcc-{max_gcc} g++-{max_gcc} or use a CUDA toolkit that supports the current compiler",
                 "make_command": f"CXX=g++-{max_gcc} CUDA_HOME={usable['root']} make fmm-only",
                 "bootstrap_cuda_12_8": "python3 scripts/bootstrap_cuda_toolchain.py --out .cuda-local --force",
-                "rerun": "scripts/run_cuda_reference_audits.sh",
+                "rerun": "make cuda-toolchain-check",
             }
         return {
             "reason": "CUDA toolkit found, but local build compatibility could not be verified",
-            "rerun": "scripts/run_cuda_reference_audits.sh",
+            "rerun": "make cuda-toolchain-check",
         }
     return None
 

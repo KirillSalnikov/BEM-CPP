@@ -32,10 +32,15 @@ regression tests, OBJ workflows, and neural GraphSAI experiments.
 - CUDA-capable GPU, compute capability 7.0 or newer;
 - C++11 compiler compatible with the installed CUDA toolkit;
 - OpenMP;
-- Python 3, NumPy, and Matplotlib for reports.
+- Python 3 for build detection and validation;
+- NumPy and Matplotlib only for optional comparison plots.
 
 The mixed-precision target is configured for `sm_86` and was developed on an
 RTX 3090 Ti with 24 GiB.
+
+The BEM calculation itself runs entirely in C++/CUDA and does not invoke
+Python. The remaining Python files are limited to validation against
+Mie/ADDA, mesh conversion, toolchain detection, and automated tests.
 
 ## Clone and Build
 

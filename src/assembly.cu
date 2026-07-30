@@ -11,7 +11,7 @@
 
 // ============================================================
 // CUDA kernel: assemble L,K block (float64 compute)
-// Ported from OpenCL kernel in bem_opencl.py
+// Ported from the original OpenCL assembly kernel.
 // ============================================================
 
 __global__ void assemble_LK_kernel(

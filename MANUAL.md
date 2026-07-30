@@ -531,7 +531,6 @@ Check, in order:
 - `docs/muller_edges.md`: sharp-edge basis and checks.
 - `docs/muller_pfft.md`: pFFT-FGMRES details.
 - `docs/preconditioner_comparison.md`: PMCHWT preconditioners.
-- `docs/hdiv_bem_adda_size_sweep_journal.md`: detailed validation journal.
 
 Rebuild the Russian PDF with:
 

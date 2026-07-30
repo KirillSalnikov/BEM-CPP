@@ -251,23 +251,15 @@ host-checks: $(HOST_CHECKS)
 	python3 scripts/check_result_metadata.py --strict /tmp/bem_output_json_mesh_check.json
 
 host-audits: host-checks
-	scripts/run_local_audits.sh
-
-audit-1-6: host-audits
-	python3 scripts/audit_1_6.py --out runs/audit_1_6_report.json
-	python3 scripts/check_audit_1_6_report.py runs/audit_1_6_report.json
-
-audit-1-6-summary:
-	python3 scripts/summarize_audit_1_6.py runs/audit_1_6_report.json
+	python3 scripts/mueller_audit.py --self-test
+	python3 scripts/operator_block_audit.py --self-test
+	@for test in tests/test_*.py; do \
+		echo "==> $$test"; \
+		python3 "$$test" || exit $$?; \
+	done
 
 cuda-runtime-check:
 	@mkdir -p runs/audit_1_6_cuda
 	python3 scripts/detect_cuda_toolchain.py --json-out runs/audit_1_6_cuda/cuda_runtime_detect.json --require-runtime
 
-cuda-audits:
-	scripts/run_cuda_reference_audits.sh
-
-cuda-audits-summary:
-	python3 scripts/summarize_audit_1_6.py runs/audit_1_6_cuda/report.json --require-cuda-reference
-
-.PHONY: all fmm-only muller-fp32 cuda-toolchain-check host-checks host-audits audit-1-6 audit-1-6-summary cuda-runtime-check cuda-audits cuda-audits-summary cuda-muller-edge-check clean
+.PHONY: all fmm-only muller-fp32 cuda-toolchain-check host-checks host-audits cuda-runtime-check cuda-muller-edge-check clean
