@@ -1716,7 +1716,281 @@ struct AveragingOrientation {
     double beta = 0.0;
     double gamma = 0.0;
     double weight = 0.0;
+    int beta_master_index = -1;
+    int gamma_master_index = -1;
+    int persistent_index = -1;
 };
+
+std::vector<AveragingOrientation> load_averaging_orientations(
+    const char* path)
+{
+    std::ifstream input(path);
+    if (!input)
+        throw std::runtime_error(
+            std::string("cannot open orientation file ") + path);
+    std::vector<AveragingOrientation> result;
+    std::string line;
+    while (std::getline(input, line)) {
+        const size_t first = line.find_first_not_of(" \t");
+        if (first == std::string::npos || line[first] == '#')
+            continue;
+        std::istringstream row(line);
+        double beta_degrees = 0.0;
+        double gamma_degrees = 0.0;
+        AveragingOrientation orientation;
+        if (!(row >> orientation.persistent_index >>
+              beta_degrees >> gamma_degrees >> orientation.weight))
+            throw std::runtime_error(
+                std::string("invalid orientation row in ") + path +
+                ": " + line);
+        orientation.beta = beta_degrees * M_PI / 180.0;
+        orientation.gamma = gamma_degrees * M_PI / 180.0;
+        orientation.RT = euler_rotation(
+            0.0, orientation.beta, orientation.gamma).T();
+        result.push_back(orientation);
+    }
+    if (result.empty())
+        throw std::runtime_error(
+            std::string("empty orientation file ") + path);
+    return result;
+}
+
+void write_orientation_sample(
+    const std::string& directory,
+    int persistent_index,
+    const AveragingOrientation& orientation,
+    const std::vector<double>& theta,
+    const std::vector<double>& mueller)
+{
+    char filename[64];
+    std::snprintf(
+        filename, sizeof(filename), "part_%08d.json", persistent_index);
+    const std::string final = directory + "/" + filename;
+    const std::string temporary = final + ".tmp";
+    std::ofstream output(temporary, std::ios::trunc);
+    if (!output)
+        throw std::runtime_error(
+            "cannot create orientation sample " + temporary);
+    output << std::setprecision(17)
+           << "{\"index\":" << persistent_index
+           << ",\"beta_degrees\":"
+           << orientation.beta * 180.0 / M_PI
+           << ",\"gamma_degrees\":"
+           << orientation.gamma * 180.0 / M_PI
+           << ",\"theta_degrees\":[";
+    for (size_t angle = 0; angle < theta.size(); angle++) {
+        if (angle)
+            output << ',';
+        output << theta[angle];
+    }
+    output << "],\"mueller\":[";
+    for (size_t index = 0; index < mueller.size(); index++) {
+        if (index)
+            output << ',';
+        output << mueller[index];
+    }
+    output << "]}\n";
+    output.close();
+    if (!output)
+        throw std::runtime_error(
+            "failed to write orientation sample " + temporary);
+    if (std::rename(temporary.c_str(), final.c_str()) != 0)
+        throw std::runtime_error(
+            "cannot publish orientation sample " + final);
+}
+
+bool load_orientation_sample(
+    const std::string& directory,
+    int persistent_index,
+    size_t expected_values,
+    std::vector<double>& mueller)
+{
+    char filename[64];
+    std::snprintf(
+        filename, sizeof(filename), "part_%08d.json", persistent_index);
+    const std::string path = directory + "/" + filename;
+    std::ifstream input(path);
+    if (!input)
+        return false;
+    const std::string document(
+        (std::istreambuf_iterator<char>(input)),
+        std::istreambuf_iterator<char>());
+    const std::string marker = "\"mueller\":[";
+    size_t position = document.find(marker);
+    if (position == std::string::npos)
+        throw std::runtime_error(
+            "invalid orientation sample " + path);
+    position += marker.size();
+    mueller.clear();
+    mueller.reserve(expected_values);
+    const char* cursor = document.c_str() + position;
+    char* end = nullptr;
+    while (mueller.size() < expected_values) {
+        const double value = std::strtod(cursor, &end);
+        if (end == cursor)
+            throw std::runtime_error(
+                "truncated orientation sample " + path);
+        mueller.push_back(value);
+        cursor = end;
+        if (*cursor == ',')
+            cursor++;
+        else if (*cursor == ']')
+            break;
+        else
+            throw std::runtime_error(
+                "invalid Mueller array in " + path);
+    }
+    if (mueller.size() != expected_values || *cursor != ']')
+        throw std::runtime_error(
+            "wrong Mueller array size in " + path);
+    return true;
+}
+
+std::vector<double> clenshaw_curtis_weights(int intervals)
+{
+    if (intervals < 1)
+        throw std::runtime_error(
+            "Clenshaw-Curtis quadrature needs at least one interval");
+    std::vector<double> weights(intervals + 1, 0.0);
+    if (intervals == 1) {
+        weights[0] = weights[1] = 1.0;
+        return weights;
+    }
+    const bool even = intervals % 2 == 0;
+    const double endpoint = even
+        ? 1.0 / (static_cast<double>(intervals) * intervals - 1.0)
+        : 1.0 / (static_cast<double>(intervals) * intervals);
+    weights.front() = weights.back() = endpoint;
+    for (int j = 1; j < intervals; j++) {
+        const double theta = M_PI * j / intervals;
+        double value = 1.0;
+        const int upper = even ? intervals / 2 - 1 : (intervals - 1) / 2;
+        for (int k = 1; k <= upper; k++)
+            value -= 2.0 * std::cos(2.0 * k * theta) /
+                (4.0 * k * k - 1.0);
+        if (even)
+            value -= std::cos(intervals * theta) /
+                (static_cast<double>(intervals) * intervals - 1.0);
+        weights[j] = 2.0 * value / intervals;
+    }
+    return weights;
+}
+
+std::vector<AveragingOrientation> nested_averaging_orientations(
+    int level, int maximum_level, int symmetry_order)
+{
+    const int beta_intervals = 1 << level;
+    const int gamma_count = 1 << level;
+    const int beta_stride = 1 << (maximum_level - level);
+    const int gamma_stride = beta_stride;
+    const std::vector<double> beta_weights =
+        clenshaw_curtis_weights(beta_intervals);
+    const double gamma_period =
+        2.0 * M_PI / static_cast<double>(symmetry_order);
+    std::vector<AveragingOrientation> result;
+    result.reserve((beta_intervals + 1) * gamma_count);
+    for (int beta_index = 0; beta_index <= beta_intervals; beta_index++) {
+        const double mu =
+            std::cos(M_PI * beta_index / beta_intervals);
+        const double beta = std::acos(
+            std::max(-1.0, std::min(1.0, mu)));
+        for (int gamma_index = 0;
+             gamma_index < gamma_count; gamma_index++) {
+            AveragingOrientation orientation;
+            orientation.beta = beta;
+            orientation.gamma =
+                gamma_period * gamma_index / gamma_count;
+            orientation.RT =
+                euler_rotation(0.0, beta, orientation.gamma).T();
+            orientation.weight =
+                0.5 * beta_weights[beta_index] / gamma_count;
+            orientation.beta_master_index = beta_index * beta_stride;
+            orientation.gamma_master_index = gamma_index * gamma_stride;
+            result.push_back(orientation);
+        }
+    }
+    return result;
+}
+
+struct NestedOrientationLevel {
+    int level = 0;
+    std::vector<AveragingOrientation> quadrature;
+    size_t schedule_end = 0;
+};
+
+double rotation_distance_squared(const Mat3& first, const Mat3& second);
+
+void build_nested_orientation_schedule(
+    int minimum_level,
+    int maximum_level,
+    int symmetry_order,
+    std::vector<AveragingOrientation>& schedule,
+    std::vector<NestedOrientationLevel>& levels)
+{
+    const int master_gamma = 1 << maximum_level;
+    std::unordered_map<int, size_t> scheduled;
+    for (int level = minimum_level;
+         level <= maximum_level; level++) {
+        NestedOrientationLevel entry;
+        entry.level = level;
+        entry.quadrature = nested_averaging_orientations(
+            level, maximum_level, symmetry_order);
+        std::vector<AveragingOrientation> additions;
+        for (AveragingOrientation& orientation : entry.quadrature) {
+            orientation.persistent_index =
+                orientation.beta_master_index * master_gamma +
+                orientation.gamma_master_index;
+            if (scheduled.emplace(
+                    orientation.persistent_index,
+                    schedule.size() + additions.size()).second)
+                additions.push_back(orientation);
+        }
+        if (!schedule.empty() && !additions.empty()) {
+            std::vector<AveragingOrientation> ordered;
+            ordered.reserve(additions.size());
+            std::vector<unsigned char> used(additions.size(), 0);
+            Mat3 previous = schedule.back().RT;
+            for (size_t count = 0; count < additions.size(); count++) {
+                size_t nearest = additions.size();
+                double distance = std::numeric_limits<double>::max();
+                for (size_t candidate = 0;
+                     candidate < additions.size(); candidate++) {
+                    if (used[candidate])
+                        continue;
+                    const double value = rotation_distance_squared(
+                        previous, additions[candidate].RT);
+                    if (value < distance) {
+                        distance = value;
+                        nearest = candidate;
+                    }
+                }
+                used[nearest] = 1;
+                ordered.push_back(additions[nearest]);
+                previous = additions[nearest].RT;
+            }
+            additions.swap(ordered);
+        }
+        schedule.insert(
+            schedule.end(), additions.begin(), additions.end());
+        entry.schedule_end = schedule.size();
+        levels.push_back(std::move(entry));
+    }
+}
+
+double relative_curve_l2(
+    const double* current, const double* previous, int count)
+{
+    double difference = 0.0;
+    double reference = 0.0;
+    for (int index = 0; index < count; index++) {
+        const double delta = current[index] - previous[index];
+        difference += delta * delta;
+        reference += current[index] * current[index];
+    }
+    return reference > 0.0
+        ? std::sqrt(difference / reference)
+        : std::numeric_limits<double>::infinity();
+}
 
 double rotation_distance_squared(const Mat3& first, const Mat3& second)
 {
@@ -1971,6 +2245,13 @@ int run_orientation_average(
     double setup_seconds,
     double mbj_setup_seconds,
     bool checkpoint_enabled,
+    const char* orientation_file,
+    const char* orientation_parts_directory,
+    int adaptive_minimum_level,
+    int adaptive_maximum_level,
+    double adaptive_m11_tolerance,
+    double adaptive_integral_tolerance,
+    double adaptive_component_tolerance,
     const char* output_path)
 {
     const auto total_start = std::chrono::steady_clock::now();
@@ -2016,9 +2297,20 @@ int run_orientation_average(
         throw std::runtime_error(
             "orientation averaging requires GPU operator assembly");
 
-    const std::vector<AveragingOrientation> orientations =
-        averaging_orientations(
-            beta_count, gamma_count, symmetry_order);
+    std::vector<AveragingOrientation> orientations;
+    std::vector<NestedOrientationLevel> adaptive_levels;
+    if (adaptive_maximum_level > 0)
+        build_nested_orientation_schedule(
+            adaptive_minimum_level,
+            adaptive_maximum_level,
+            symmetry_order,
+            orientations,
+            adaptive_levels);
+    else
+        orientations = orientation_file
+            ? load_averaging_orientations(orientation_file)
+            : averaging_orientations(
+                  beta_count, gamma_count, symmetry_order);
     std::vector<double> theta(ntheta);
     std::vector<Vec3> laboratory_directions(ntheta);
     std::vector<Vec3> laboratory_theta_hat(ntheta);
@@ -2034,6 +2326,11 @@ int run_orientation_average(
 
     std::vector<double> averaged_mueller(
         static_cast<size_t>(16) * ntheta, 0.0);
+    std::unordered_map<int, std::vector<double>> orientation_samples;
+    std::vector<double> previous_level_mueller;
+    int accepted_adaptive_level = 0;
+    bool adaptive_converged = false;
+    size_t completed_orientations = 0;
     std::vector<cdouble> previous_x;
     std::vector<cdouble> previous_y;
     Mat3 previous_rotation = {};
@@ -2044,8 +2341,11 @@ int run_orientation_average(
     double solve_seconds = 0.0;
     double farfield_seconds = 0.0;
     int warm_started_solves = 0;
-    int represented_orientations =
-        alpha_count * beta_count * gamma_count * symmetry_order;
+    int represented_orientations = adaptive_levels.empty()
+        ? alpha_count * beta_count * gamma_count * symmetry_order
+        : alpha_count *
+              static_cast<int>(adaptive_levels.back().quadrature.size()) *
+              symmetry_order;
     std::uint64_t checkpoint_signature = FNV_OFFSET;
     const std::uint64_t operator_signature =
         muller_operator_hash(fmm);
@@ -2089,10 +2389,83 @@ int run_orientation_average(
         sizeof(gmres_restart));
     hash_bytes(checkpoint_signature, &ntheta, sizeof(ntheta));
     hash_bytes(
+        checkpoint_signature, &adaptive_minimum_level,
+        sizeof(adaptive_minimum_level));
+    hash_bytes(
+        checkpoint_signature, &adaptive_maximum_level,
+        sizeof(adaptive_maximum_level));
+    hash_bytes(
+        checkpoint_signature, &adaptive_m11_tolerance,
+        sizeof(adaptive_m11_tolerance));
+    hash_bytes(
+        checkpoint_signature, &adaptive_integral_tolerance,
+        sizeof(adaptive_integral_tolerance));
+    hash_bytes(
+        checkpoint_signature, &adaptive_component_tolerance,
+        sizeof(adaptive_component_tolerance));
+    if (orientation_file || !adaptive_levels.empty()) {
+        hash_bytes(
+            checkpoint_signature,
+            orientation_file ? orientation_file : "nested",
+            orientation_file ? std::strlen(orientation_file) : 6);
+        for (const AveragingOrientation& orientation : orientations) {
+            hash_bytes(
+                checkpoint_signature, &orientation.persistent_index,
+                sizeof(orientation.persistent_index));
+            hash_bytes(
+                checkpoint_signature, &orientation.beta,
+                sizeof(orientation.beta));
+            hash_bytes(
+                checkpoint_signature, &orientation.gamma,
+                sizeof(orientation.gamma));
+        }
+    }
+    hash_bytes(
         checkpoint_signature, &fmm.system_dofs,
         sizeof(fmm.system_dofs));
     const std::string orientation_checkpoint_path =
         std::string(output_path) + ".orient.checkpoint";
+    const std::string adaptive_done_path =
+        std::string(output_path) + ".adaptive.done";
+    if (!adaptive_levels.empty()) {
+        if (!orientation_parts_directory)
+            throw std::runtime_error(
+                "internal adaptive averaging requires "
+                "--orient-parts-dir for lossless restart");
+        const std::string manifest_path =
+            std::string(orientation_parts_directory) +
+            "/adaptive_manifest.txt";
+        std::ifstream manifest_input(manifest_path);
+        if (manifest_input) {
+            std::uint64_t stored_signature = 0;
+            int stored_ntheta = 0;
+            if (!(manifest_input >> stored_signature >> stored_ntheta) ||
+                stored_signature != checkpoint_signature ||
+                stored_ntheta != ntheta)
+                throw std::runtime_error(
+                    "orientation parts belong to a different run: " +
+                    manifest_path);
+        } else {
+            std::vector<double> stale_sample;
+            if (load_orientation_sample(
+                    orientation_parts_directory,
+                    orientations.front().persistent_index,
+                    averaged_mueller.size(),
+                    stale_sample))
+                throw std::runtime_error(
+                    "orientation parts have no signature manifest; "
+                    "use a new --orient-parts-dir");
+            const std::string temporary = manifest_path + ".tmp";
+            std::ofstream manifest(temporary, std::ios::trunc);
+            manifest << checkpoint_signature << ' ' << ntheta << '\n';
+            manifest.close();
+            if (!manifest ||
+                std::rename(
+                    temporary.c_str(), manifest_path.c_str()) != 0)
+                throw std::runtime_error(
+                    "cannot create adaptive orientation manifest");
+        }
+    }
     int orientation_start = 0;
     double previous_loop_seconds = 0.0;
     bool resumed = false;
@@ -2133,10 +2506,83 @@ int run_orientation_average(
                 orientation_checkpoint_path.c_str());
         }
     }
+    if (!adaptive_levels.empty()) {
+        if (!orientation_parts_directory)
+            throw std::runtime_error(
+                "internal adaptive averaging requires "
+                "--orient-parts-dir for lossless restart");
+        int stored_prefix = 0;
+        for (const AveragingOrientation& orientation : orientations) {
+            std::vector<double> sample;
+            if (!load_orientation_sample(
+                    orientation_parts_directory,
+                    orientation.persistent_index,
+                    averaged_mueller.size(),
+                    sample))
+                break;
+            orientation_samples[orientation.persistent_index] =
+                std::move(sample);
+            stored_prefix++;
+        }
+        if (stored_prefix != orientation_start) {
+            orientation_start = stored_prefix;
+            previous_x.clear();
+            previous_y.clear();
+            have_previous_rotation = false;
+            if (orientation_start > 0) {
+                previous_rotation =
+                    orientations[orientation_start - 1].RT;
+                have_previous_rotation = true;
+            }
+            resumed = orientation_start > 0;
+        }
+        for (const NestedOrientationLevel& level : adaptive_levels) {
+            if (level.schedule_end >
+                static_cast<size_t>(orientation_start))
+                break;
+            std::fill(
+                averaged_mueller.begin(),
+                averaged_mueller.end(), 0.0);
+            for (const AveragingOrientation& node : level.quadrature) {
+                const auto sample =
+                    orientation_samples.find(node.persistent_index);
+                if (sample == orientation_samples.end())
+                    throw std::runtime_error(
+                        "incomplete adaptive orientation checkpoint");
+                for (size_t index = 0;
+                     index < averaged_mueller.size(); index++)
+                    averaged_mueller[index] +=
+                        node.weight * sample->second[index];
+            }
+            previous_level_mueller = averaged_mueller;
+            accepted_adaptive_level = level.level;
+        }
+        completed_orientations =
+            static_cast<size_t>(orientation_start);
+        std::ifstream done(adaptive_done_path);
+        std::uint64_t done_signature = 0;
+        int done_level = 0;
+        if (done >> done_signature >> done_level &&
+            done_signature == checkpoint_signature &&
+            done_level == accepted_adaptive_level) {
+            adaptive_converged = true;
+            std::printf(
+                "  [adaptive restart] convergence at J=%d was "
+                "already accepted\n",
+                done_level);
+        }
+        if (orientation_start > 0)
+            std::printf(
+                "  [adaptive restart] restored %d/%zu orientation "
+                "samples through J=%d\n",
+                orientation_start, orientations.size(),
+                accepted_adaptive_level);
+    }
 
     for (size_t orientation_index =
              static_cast<size_t>(orientation_start);
-         orientation_index < orientations.size();
+         orientation_index < orientations.size() &&
+             !adaptive_converged;
          orientation_index++) {
         const AveragingOrientation& orientation =
             orientations[orientation_index];
@@ -2233,6 +2679,8 @@ int run_orientation_average(
         std::vector<Vec3> particle_directions(
             static_cast<size_t>(alpha_count) * ntheta);
         std::vector<Mat3> rotations(alpha_count);
+        std::vector<double> orientation_mueller(
+            averaged_mueller.size(), 0.0);
         for (int alpha_index = 0;
              alpha_index < alpha_count; alpha_index++) {
             const double alpha =
@@ -2306,15 +2754,29 @@ int run_orientation_average(
             std::vector<double> sample_mueller;
             amplitude_to_mueller(
                 s1, s2, s3, s4, sample_mueller);
-            const double sample_weight =
-                orientation.weight /
-                static_cast<double>(alpha_count);
             for (size_t index = 0;
                  index < averaged_mueller.size(); index++) {
-                averaged_mueller[index] +=
-                    sample_weight * sample_mueller[index];
+                orientation_mueller[index] +=
+                    sample_mueller[index] /
+                    static_cast<double>(alpha_count);
             }
         }
+        for (size_t index = 0;
+             index < averaged_mueller.size(); index++)
+            averaged_mueller[index] +=
+                orientation.weight * orientation_mueller[index];
+        if (orientation_parts_directory &&
+            orientation.persistent_index >= 0)
+            write_orientation_sample(
+                orientation_parts_directory,
+                orientation.persistent_index,
+                orientation,
+                theta,
+                orientation_mueller);
+        if (!adaptive_levels.empty())
+            orientation_samples[orientation.persistent_index] =
+                orientation_mueller;
+        completed_orientations = orientation_index + 1;
         farfield_seconds +=
             std::chrono::duration<double>(
                 std::chrono::steady_clock::now() -
@@ -2362,8 +2824,131 @@ int run_orientation_average(
                 previous_x,
                 previous_y);
         }
+        if (!adaptive_levels.empty()) {
+            const NestedOrientationLevel* completed_level = nullptr;
+            for (const NestedOrientationLevel& level : adaptive_levels)
+                if (level.schedule_end == orientation_index + 1) {
+                    completed_level = &level;
+                    break;
+                }
+            if (completed_level) {
+                std::fill(
+                    averaged_mueller.begin(),
+                    averaged_mueller.end(), 0.0);
+                for (const AveragingOrientation& node :
+                     completed_level->quadrature) {
+                    const auto sample =
+                        orientation_samples.find(node.persistent_index);
+                    if (sample == orientation_samples.end())
+                        throw std::runtime_error(
+                            "missing nested orientation sample");
+                    for (size_t index = 0;
+                         index < averaged_mueller.size(); index++)
+                        averaged_mueller[index] +=
+                            node.weight * sample->second[index];
+                }
+                if (!previous_level_mueller.empty()) {
+                    const double m11_l2 = relative_curve_l2(
+                        averaged_mueller.data(),
+                        previous_level_mueller.data(), ntheta);
+                    double current_integral = 0.0;
+                    double previous_integral = 0.0;
+                    for (int angle = 1; angle < ntheta; angle++) {
+                        const double theta0 =
+                            theta[angle - 1] * M_PI / 180.0;
+                        const double theta1 =
+                            theta[angle] * M_PI / 180.0;
+                        const double step = theta1 - theta0;
+                        current_integral += 0.5 * step * (
+                            averaged_mueller[angle - 1] *
+                                std::sin(theta0) +
+                            averaged_mueller[angle] *
+                                std::sin(theta1));
+                        previous_integral += 0.5 * step * (
+                            previous_level_mueller[angle - 1] *
+                                std::sin(theta0) +
+                            previous_level_mueller[angle] *
+                                std::sin(theta1));
+                    }
+                    const double integral_change =
+                        std::abs(current_integral) > 0.0
+                        ? std::abs(
+                              current_integral - previous_integral) /
+                              std::abs(current_integral)
+                        : std::numeric_limits<double>::infinity();
+                    double maximum_component_l2 = 0.0;
+                    const int components[] = {1, 5, 10, 11, 15};
+                    const double m11_peak = *std::max_element(
+                        averaged_mueller.begin(),
+                        averaged_mueller.begin() + ntheta);
+                    const double floor =
+                        std::max(1.0e-300, 1.0e-4 * m11_peak);
+                    for (int component : components) {
+                        std::vector<double> current(ntheta);
+                        std::vector<double> previous(ntheta);
+                        for (int angle = 0; angle < ntheta; angle++) {
+                            current[angle] =
+                                averaged_mueller[
+                                    component * ntheta + angle] /
+                                std::max(
+                                    std::abs(averaged_mueller[angle]),
+                                    floor);
+                            previous[angle] =
+                                previous_level_mueller[
+                                    component * ntheta + angle] /
+                                std::max(
+                                    std::abs(
+                                        previous_level_mueller[angle]),
+                                    floor);
+                        }
+                        maximum_component_l2 = std::max(
+                            maximum_component_l2,
+                            relative_curve_l2(
+                                current.data(), previous.data(), ntheta));
+                    }
+                    adaptive_converged =
+                        m11_l2 <= adaptive_m11_tolerance &&
+                        integral_change <= adaptive_integral_tolerance &&
+                        maximum_component_l2 <=
+                            adaptive_component_tolerance;
+                    std::printf(
+                        "  [adaptive J=%d] L2(M11)=%.4g, "
+                        "integral=%.4g, max normalized=%.4g, %s\n",
+                        completed_level->level, m11_l2,
+                        integral_change, maximum_component_l2,
+                        adaptive_converged ? "accepted" : "continue");
+                }
+                previous_level_mueller = averaged_mueller;
+                accepted_adaptive_level = completed_level->level;
+                if (adaptive_converged) {
+                    const std::string temporary =
+                        adaptive_done_path + ".tmp";
+                    std::ofstream done(temporary, std::ios::trunc);
+                    done << checkpoint_signature << ' '
+                         << accepted_adaptive_level << '\n';
+                    done.close();
+                    if (!done ||
+                        std::rename(
+                            temporary.c_str(),
+                            adaptive_done_path.c_str()) != 0)
+                        throw std::runtime_error(
+                            "cannot save adaptive convergence marker");
+                    break;
+                }
+            }
+        }
     }
 
+    if (!adaptive_levels.empty() && accepted_adaptive_level > 0) {
+        for (const NestedOrientationLevel& level : adaptive_levels)
+            if (level.level == accepted_adaptive_level) {
+                represented_orientations =
+                    alpha_count *
+                    static_cast<int>(level.quadrature.size()) *
+                    symmetry_order;
+                break;
+            }
+    }
     const double total_seconds =
         previous_loop_seconds +
         std::chrono::duration<double>(
@@ -2387,7 +2972,7 @@ int run_orientation_average(
            << ", \"rotational_symmetry_order\": "
            << symmetry_order
            << ", \"solved_base_orientations\": "
-           << orientations.size()
+           << completed_orientations
            << ", \"represented_full_orientations\": "
            << represented_orientations
            << ", \"warm_start\": "
@@ -2404,11 +2989,17 @@ int run_orientation_average(
     else
         output << "null";
     output << "},\n"
+           << "  \"adaptive\": {\"enabled\": "
+           << (!adaptive_levels.empty() ? "true" : "false")
+           << ", \"accepted_level\": " << accepted_adaptive_level
+           << ", \"converged\": "
+           << (adaptive_converged ? "true" : "false") << "},\n"
            << "  \"iterations\": {\"total\": "
            << total_iterations
            << ", \"mean_per_polarization\": "
            << static_cast<double>(total_iterations) /
-                  (2.0 * orientations.size())
+                  (2.0 * std::max<size_t>(
+                      1, completed_orientations))
            << ", \"maximum_per_orientation\": "
            << maximum_orientation_iterations
            << ", \"maximum_residual\": "
@@ -2458,7 +3049,7 @@ int run_orientation_average(
         "Muller orientation average: %zu base orientations represent "
         "%d full samples, %d iterations, %.3fs solve, %.3fs far field, "
         "max residual %.3e, out=%s\n",
-        orientations.size(), represented_orientations,
+        completed_orientations, represented_orientations,
         total_iterations, solve_seconds, farfield_seconds,
         maximum_residual, output_path);
     fmm.cleanup();
@@ -2513,6 +3104,13 @@ int main(int argc, char** argv)
     int orient_average_beta = 0;
     int orient_average_gamma = 0;
     int orient_symmetry_order = 0;
+    const char* orient_file = nullptr;
+    const char* orient_parts_directory = nullptr;
+    int orient_adaptive_minimum_level = 0;
+    int orient_adaptive_maximum_level = 0;
+    double orient_adaptive_m11_tolerance = 0.01;
+    double orient_adaptive_integral_tolerance = 0.01;
+    double orient_adaptive_component_tolerance = 0.10;
     bool orient_warm_start = true;
     double orient_warm_max_angle_degrees = 25.0;
 #ifdef BEM_DEFAULT_FMM_NEAR_FP32
@@ -2684,6 +3282,32 @@ int main(int argc, char** argv)
             orient_average_gamma = std::atoi(argv[++i]);
             physical_check = true;
         }
+        else if (std::strcmp(argv[i], "--orient-file") == 0 &&
+                 i + 1 < argc) {
+            orient_file = argv[++i];
+            physical_check = true;
+        }
+        else if (std::strcmp(argv[i], "--orient-parts-dir") == 0 &&
+                 i + 1 < argc)
+            orient_parts_directory = argv[++i];
+        else if (std::strcmp(argv[i], "--orient-adaptive") == 0 &&
+                 i + 2 < argc) {
+            orient_adaptive_minimum_level = std::atoi(argv[++i]);
+            orient_adaptive_maximum_level = std::atoi(argv[++i]);
+            physical_check = true;
+        }
+        else if (std::strcmp(
+                     argv[i], "--orient-adaptive-m11-tol") == 0 &&
+                 i + 1 < argc)
+            orient_adaptive_m11_tolerance = std::atof(argv[++i]);
+        else if (std::strcmp(
+                     argv[i], "--orient-adaptive-integral-tol") == 0 &&
+                 i + 1 < argc)
+            orient_adaptive_integral_tolerance = std::atof(argv[++i]);
+        else if (std::strcmp(
+                     argv[i], "--orient-adaptive-component-tol") == 0 &&
+                 i + 1 < argc)
+            orient_adaptive_component_tolerance = std::atof(argv[++i]);
         else if (std::strcmp(
                      argv[i], "--orient-symmetry-order") == 0 &&
                  i + 1 < argc)
@@ -2926,7 +3550,23 @@ int main(int argc, char** argv)
     const bool orientation_average =
         orient_average_alpha > 0 ||
         orient_average_beta > 0 ||
-        orient_average_gamma > 0;
+        orient_average_gamma > 0 ||
+        orient_file ||
+        orient_adaptive_maximum_level > 0;
+    if (orient_adaptive_maximum_level > 0 &&
+        (orient_adaptive_minimum_level < 1 ||
+         orient_adaptive_maximum_level <
+             orient_adaptive_minimum_level ||
+         orient_adaptive_maximum_level > 15 ||
+         orient_adaptive_m11_tolerance < 0.0 ||
+         orient_adaptive_integral_tolerance < 0.0 ||
+         orient_adaptive_component_tolerance < 0.0)) {
+        std::fprintf(
+            stderr,
+            "--orient-adaptive Jmin Jmax requires "
+            "1 <= Jmin <= Jmax <= 15 and non-negative tolerances\n");
+        return 2;
+    }
     if (orientation_average &&
         (orient_average_alpha < 1 ||
          orient_average_beta < 1 ||
@@ -3492,6 +4132,13 @@ int main(int argc, char** argv)
             fmm_setup_seconds,
             mbj_local_setup_seconds,
             !checkpoint_disabled,
+            orient_file,
+            orient_parts_directory,
+            orient_adaptive_minimum_level,
+            orient_adaptive_maximum_level,
+            orient_adaptive_m11_tolerance,
+            orient_adaptive_integral_tolerance,
+            orient_adaptive_component_tolerance,
             output_path);
     }
     const bool rotation_polarization =
