@@ -33,14 +33,41 @@ def load_normalized_mesh(path: Path) -> trimesh.Trimesh:
     return mesh
 
 
-def voxel_centers(bounds: np.ndarray, pad: int = 1) -> tuple[np.ndarray, np.ndarray]:
+def lattice_axes(bounds: np.ndarray, pad: int = 1) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     lo = np.floor(bounds[0]).astype(int) - pad
     hi = np.ceil(bounds[1]).astype(int) + pad
     xs = np.arange(lo[0], hi[0] + 1, dtype=int)
     ys = np.arange(lo[1], hi[1] + 1, dtype=int)
     zs = np.arange(lo[2], hi[2] + 1, dtype=int)
-    grid = np.stack(np.meshgrid(xs, ys, zs, indexing="ij"), axis=-1).reshape(-1, 3)
-    return grid.astype(float), grid
+    return xs, ys, zs
+
+
+def occupied_centers(
+    mesh: trimesh.Trimesh,
+    axes: tuple[np.ndarray, np.ndarray, np.ndarray],
+    chunk: int,
+) -> np.ndarray:
+    """Return occupied integer centers without materializing the full 3-D grid."""
+    xs, ys, zs = axes
+    ny, nz = len(ys), len(zs)
+    yz = ny * nz
+    total = len(xs) * yz
+    occupied_parts = []
+
+    for start in range(0, total, chunk):
+        flat = np.arange(start, min(start + chunk, total), dtype=np.int64)
+        ix = flat // yz
+        rem = flat % yz
+        iy = rem // nz
+        iz = rem % nz
+        centers = np.column_stack((xs[ix], ys[iy], zs[iz]))
+        inside = mesh.contains(centers.astype(float, copy=False))
+        if np.any(inside):
+            occupied_parts.append(centers[inside])
+
+    if not occupied_parts:
+        return np.empty((0, 3), dtype=np.int64)
+    return np.concatenate(occupied_parts, axis=0)
 
 
 def main() -> int:
@@ -49,20 +76,21 @@ def main() -> int:
     ap.add_argument("--ka", required=True, type=float)
     ap.add_argument("--dpl", required=True, type=float)
     ap.add_argument("--out", required=True, type=Path)
-    ap.add_argument("--chunk", type=int, default=1_000_000)
+    ap.add_argument(
+        "--chunk",
+        type=int,
+        default=20_000,
+        help="points per mesh.contains call (default: 20000; keeps memory bounded)",
+    )
     args = ap.parse_args()
+    if args.chunk <= 0:
+        ap.error("--chunk must be positive")
 
     mesh = load_normalized_mesh(args.obj)
     scale = args.ka * args.dpl / (2.0 * math.pi)
     mesh.apply_scale(scale)
 
-    centers_f, centers_i = voxel_centers(mesh.bounds)
-    inside_parts = []
-    for start in range(0, len(centers_f), args.chunk):
-        pts = centers_f[start:start + args.chunk]
-        inside_parts.append(mesh.contains(pts))
-    inside = np.concatenate(inside_parts)
-    occ = centers_i[inside]
+    occ = occupied_centers(mesh, lattice_axes(mesh.bounds), args.chunk)
     if len(occ) == 0:
         raise SystemExit("voxelization produced no occupied dipoles")
 
