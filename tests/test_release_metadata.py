@@ -49,6 +49,10 @@ def main() -> int:
     assert "software_version" in driver
     assert (ROOT / "scripts/release_audit.sh").stat().st_mode & 0o111
     assert (ROOT / "scripts/package_release.sh").stat().st_mode & 0o111
+    assert (ROOT / "bem").stat().st_mode & 0o111
+    launcher = read("bem")
+    for command in ("run", "average", "resume", "validate", "presets"):
+        assert f'add_parser("{command}"' in launcher
 
     checked_suffixes = {".md", ".py", ".sh", ".cpp", ".cu", ".h", ".yml"}
     tracked = subprocess.check_output(

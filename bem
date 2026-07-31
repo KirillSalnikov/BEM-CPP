@@ -1,0 +1,821 @@
+#!/usr/bin/env python3
+"""User-facing launcher for the BEM-CPP Muller solver."""
+
+from __future__ import annotations
+
+import argparse
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+import json
+import math
+import os
+from pathlib import Path
+import shlex
+import shutil
+import subprocess
+import sys
+from typing import Any, Iterable, NoReturn
+
+
+ROOT = Path(__file__).resolve().parent
+VERSION = (ROOT / "VERSION").read_text(encoding="ascii").strip()
+CONFIG_NAME = "effective_config.json"
+
+
+@dataclass(frozen=True)
+class Profile:
+    name: str
+    purpose: str
+    tolerance: float
+    fmm_digits: int
+    quadrature: int
+    duffy_order: int
+    ntheta: int
+    maximum_iterations: int
+    gmres_restart: int
+    max_leaf: int
+    points_per_wavelength: float
+    minimum_refinement: int
+    mixed_precision: bool
+    two_meshes: bool
+
+
+PROFILES = {
+    "quick": Profile(
+        name="quick",
+        purpose="Exploratory calculation; not suitable for publication.",
+        tolerance=1.0e-3,
+        fmm_digits=4,
+        quadrature=4,
+        duffy_order=3,
+        ntheta=73,
+        maximum_iterations=200,
+        gmres_restart=50,
+        max_leaf=64,
+        points_per_wavelength=4.0,
+        minimum_refinement=1,
+        mixed_precision=True,
+        two_meshes=False,
+    ),
+    "standard": Profile(
+        name="standard",
+        purpose="Normal mixed-precision calculation with a 1e-5 residual target.",
+        tolerance=1.0e-5,
+        fmm_digits=5,
+        quadrature=7,
+        duffy_order=4,
+        ntheta=181,
+        maximum_iterations=500,
+        gmres_restart=100,
+        max_leaf=32,
+        points_per_wavelength=8.0,
+        minimum_refinement=2,
+        mixed_precision=True,
+        two_meshes=False,
+    ),
+    "strict": Profile(
+        name="strict",
+        purpose="FP64 control on two successive surface refinements.",
+        tolerance=1.0e-6,
+        fmm_digits=5,
+        quadrature=13,
+        duffy_order=6,
+        ntheta=181,
+        maximum_iterations=800,
+        gmres_restart=100,
+        max_leaf=32,
+        points_per_wavelength=8.0,
+        minimum_refinement=2,
+        mixed_precision=False,
+        two_meshes=True,
+    ),
+}
+
+
+def fail(message: str, code: int = 2) -> NoReturn:
+    print(f"bem: {message}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+def number_slug(value: float) -> str:
+    return f"{value:g}".replace("-", "m").replace(".", "p")
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def default_output(args: argparse.Namespace) -> Path:
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    name = (
+        f"{args.shape}_ka{number_slug(args.ka)}_"
+        f"m{number_slug(args.ri)}_{args.quality}_{stamp}"
+    )
+    return ROOT / "runs" / name
+
+
+def base_edge_scale(args: argparse.Namespace) -> float:
+    if args.shape == "prism":
+        return max(2.0 * math.sin(math.pi / args.sides), args.aspect)
+    if args.shape == "cube":
+        return 1.0
+    return 1.0
+
+
+def automatic_refinement(args: argparse.Namespace, profile: Profile) -> int:
+    if args.ref is not None:
+        if args.ref < 0:
+            fail("--ref must be non-negative")
+        return args.ref
+    if args.shape == "obj":
+        fail("automatic refinement is unsafe for OBJ meshes; specify --ref")
+    required = (
+        profile.points_per_wavelength
+        * args.ka
+        * base_edge_scale(args)
+        / (2.0 * math.pi)
+    )
+    return max(profile.minimum_refinement, int(math.ceil(math.log2(max(1.0, required)))))
+
+
+def obj_triangle_count(path: Path) -> int:
+    try:
+        with path.open(encoding="utf-8", errors="ignore") as stream:
+            return sum(1 for line in stream if line.startswith("f "))
+    except OSError as error:
+        fail(f"cannot read OBJ mesh {path}: {error}")
+
+
+def estimate_dofs(args: argparse.Namespace, refinement: int) -> int:
+    scale = 4 ** refinement
+    if args.shape == "sphere":
+        return 160 * scale + 8
+    if args.shape == "obj":
+        triangles = obj_triangle_count(Path(args.obj))
+        return max(1, 6 * triangles * scale)
+    sides = 4 if args.shape == "cube" else args.sides
+    return 36 * sides * scale
+
+
+def estimate_memory_gib(profile: Profile, dofs: int) -> float:
+    # Conservative empirical envelope from the 24 GiB release-machine runs.
+    bytes_per_dof = 26 * 1024 if not profile.mixed_precision else 20 * 1024
+    fixed_gib = 1.0
+    return fixed_gib + dofs * bytes_per_dof / (1024.0 ** 3)
+
+
+def gpu_memory_gib(index: int) -> float | None:
+    executable = shutil.which("nvidia-smi")
+    if not executable:
+        return None
+    process = subprocess.run(
+        [
+            executable,
+            f"--id={index}",
+            "--query-gpu=memory.total",
+            "--format=csv,noheader,nounits",
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if process.returncode != 0:
+        return None
+    try:
+        return float(process.stdout.splitlines()[0].strip()) / 1024.0
+    except (IndexError, ValueError):
+        return None
+
+
+def binary_for(args: argparse.Namespace, profile: Profile) -> tuple[Path, str]:
+    if args.binary:
+        return Path(args.binary).expanduser().resolve(), ""
+    if profile.mixed_precision:
+        return ROOT / "bin" / "muller_nodal_fmm_demo_fp32", "muller-fp32"
+    return ROOT / "bin" / "muller_nodal_fmm_demo", "bin/muller_nodal_fmm_demo"
+
+
+def shape_arguments(args: argparse.Namespace) -> list[str]:
+    if args.shape == "prism":
+        if args.sides < 3:
+            fail("--sides must be at least 3")
+        if args.aspect <= 0.0:
+            fail("--aspect must be positive")
+        return ["--shape", "prism", "--sides", str(args.sides), "--aspect", str(args.aspect)]
+    if args.shape == "cube":
+        return ["--shape", "cube"]
+    if args.shape == "sphere":
+        return ["--shape", "sphere"]
+    obj = Path(args.obj).expanduser().resolve() if args.obj else None
+    if not obj or not obj.is_file():
+        fail("--shape obj requires an existing --obj FILE")
+    return ["--shape", "obj", "--obj", str(obj)]
+
+
+def solver_arguments() -> list[str]:
+    return [
+        "--mbj-only",
+        "--mbj-nodes", "50",
+        "--mbj-overlap", "0",
+    ]
+
+
+def effective_max_leaf(args: argparse.Namespace, profile: Profile) -> int:
+    # Shallow trees avoid unstable mixed-precision translations on small cases.
+    if profile.mixed_precision and args.ka < 5.0:
+        return 128
+    return profile.max_leaf
+
+
+def make_single_plan(
+    args: argparse.Namespace,
+    profile: Profile,
+    output: Path,
+    refinement: int,
+    kind: str,
+) -> dict[str, Any]:
+    output = output.resolve()
+    binary, build_target = binary_for(args, profile)
+    edge_mode = "smooth" if args.shape == "sphere" else "hdiv"
+    max_leaf = effective_max_leaf(args, profile)
+    result = output / "result.json"
+    command = [str(binary)]
+    command += shape_arguments(args)
+    command += [
+        "--ref", str(refinement),
+        "--ka", f"{args.ka:g}",
+        "--ri", f"{args.ri:g}",
+        "--edge-mode", edge_mode,
+        "--quad", str(profile.quadrature),
+        "--duffy-order", str(profile.duffy_order),
+        "--digits", str(profile.fmm_digits),
+        "--max-leaf", str(max_leaf),
+        "--fmm-near-radius", "3",
+        "--tol", f"{profile.tolerance:.1e}",
+        "--max-iters", str(profile.maximum_iterations),
+        "--gmres-restart", str(profile.gmres_restart),
+    ]
+    command += solver_arguments()
+    command += [
+        "--fmm-near-fp32" if profile.mixed_precision else "--fmm-near-fp64",
+        "--near-correction-cache", str(output / "operator.near"),
+        "--mbj-cache", str(output / "mbj50.cache"),
+        "--physical-check",
+        "--ntheta", str(profile.ntheta),
+        "--no-dense-validation",
+        "--iteration-log", str(output / "iterations.csv"),
+    ]
+
+    if kind == "average":
+        symmetry = args.symmetry_order
+        if symmetry is None:
+            symmetry = args.sides if args.shape == "prism" else (
+                4 if args.shape == "cube" else 1
+            )
+        command += [
+            "--orient-average", str(args.alpha), str(args.beta), str(args.gamma),
+            "--orient-symmetry-order", str(symmetry),
+            "--orient-warm-max-angle", "25",
+            "--orient-recycle-rank", "0" if profile.name == "strict" else "8",
+        ]
+        command.append("--orient-paired-gpu-gmres")
+
+    command += ["--out", str(result)]
+    dofs = estimate_dofs(args, refinement)
+    memory = estimate_memory_gib(profile, dofs)
+    return {
+        "schema_version": 1,
+        "wrapper_version": VERSION,
+        "created_at_utc": utc_now(),
+        "kind": kind,
+        "quality": profile.name,
+        "profile": asdict(profile),
+        "effective_parameters": {
+            "max_leaf": max_leaf,
+            "near_precision": "fp32" if profile.mixed_precision else "fp64",
+        },
+        "inputs": {
+            "shape": args.shape,
+            "ka": args.ka,
+            "relative_refractive_index": args.ri,
+            "refinement": refinement,
+            "sides": args.sides if args.shape == "prism" else None,
+            "aspect": args.aspect if args.shape == "prism" else None,
+            "obj": str(Path(args.obj).expanduser().resolve()) if args.obj else None,
+        },
+        "estimate": {
+            "system_dofs": dofs,
+            "gpu_memory_gib": round(memory, 2),
+            "note": "conservative estimate; setup-only reports actual allocation",
+        },
+        "runtime": {
+            "binary": str(binary),
+            "build_target": build_target,
+            "threads": args.threads,
+            "gpu": args.gpu,
+            "cxx": args.cxx,
+            "cuda_home": args.cuda_home,
+        },
+        "output_directory": str(output),
+        "result_path": str(result),
+        "command": command,
+    }
+
+
+def create_plan(args: argparse.Namespace, kind: str) -> dict[str, Any]:
+    if args.ka <= 0.0:
+        fail("--ka must be positive")
+    if args.ri <= 0.0:
+        fail("--ri must be positive")
+    profile = PROFILES[args.quality]
+    refinement = automatic_refinement(args, profile)
+    output = Path(args.out).expanduser() if args.out else default_output(args)
+    output = output.resolve()
+
+    if not profile.two_meshes:
+        return make_single_plan(args, profile, output, refinement, kind)
+
+    coarse = make_single_plan(args, profile, output / "coarse", refinement, kind)
+    fine = make_single_plan(args, profile, output / "fine", refinement + 1, kind)
+    return {
+        "schema_version": 1,
+        "wrapper_version": VERSION,
+        "created_at_utc": utc_now(),
+        "kind": "strict_suite",
+        "calculation_kind": kind,
+        "quality": "strict",
+        "output_directory": str(output),
+        "children": [coarse, fine],
+        "comparison": {
+            "coarse": coarse["result_path"],
+            "fine": fine["result_path"],
+            "maximum_normalized_relative_l2": 0.05,
+            "maximum_forward_relative_difference": 0.05,
+        },
+    }
+
+
+def print_plan(plan: dict[str, Any], as_json: bool = False) -> None:
+    if as_json:
+        print(json.dumps(plan, indent=2, ensure_ascii=False))
+        return
+    if plan["kind"] == "strict_suite":
+        print("Strict validation suite:")
+        for child in plan["children"]:
+            print(
+                f"  ref={child['inputs']['refinement']}: "
+                f"~{child['estimate']['system_dofs']:,} unknowns, "
+                f"~{child['estimate']['gpu_memory_gib']:.2f} GiB GPU"
+            )
+        print(f"  output: {plan['output_directory']}")
+        return
+    print(
+        f"{plan['quality']} {plan['kind']}: {plan['inputs']['shape']}, "
+        f"ka={plan['inputs']['ka']:g}, m={plan['inputs']['relative_refractive_index']:g}, "
+        f"ref={plan['inputs']['refinement']}"
+    )
+    print(
+        f"  estimate: {plan['estimate']['system_dofs']:,} unknowns, "
+        f"{plan['estimate']['gpu_memory_gib']:.2f} GiB GPU"
+    )
+    print(f"  output: {plan['output_directory']}")
+    print(f"  command: {shlex.join(plan['command'])}")
+
+
+def plan_leaves(plan: dict[str, Any]) -> Iterable[dict[str, Any]]:
+    if plan["kind"] == "strict_suite":
+        yield from plan["children"]
+    else:
+        yield plan
+
+
+def enforce_memory(plan: dict[str, Any], allow_risk: bool) -> None:
+    for leaf in plan_leaves(plan):
+        available = gpu_memory_gib(int(leaf["runtime"]["gpu"]))
+        if available is None:
+            continue
+        estimated = float(leaf["estimate"]["gpu_memory_gib"])
+        if estimated > 0.85 * available:
+            message = (
+                f"ref={leaf['inputs']['refinement']} is estimated to need "
+                f"{estimated:.1f} GiB, while GPU {leaf['runtime']['gpu']} has "
+                f"{available:.1f} GiB"
+            )
+            if not allow_risk:
+                fail(message + "; choose a smaller --ref or use --allow-memory-risk")
+            print(f"warning: {message}", file=sys.stderr)
+
+
+def write_json_atomic(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
+def write_single_files(plan: dict[str, Any]) -> None:
+    output = Path(plan["output_directory"])
+    output.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(output / CONFIG_NAME, plan)
+    runtime = plan["runtime"]
+    script = (
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        f"export OMP_NUM_THREADS={shlex.quote(str(runtime['threads']))}\n"
+        f"export CUDA_VISIBLE_DEVICES={shlex.quote(str(runtime['gpu']))}\n"
+        f"exec {shlex.join(plan['command'])}\n"
+    )
+    command_path = output / "command.sh"
+    command_path.write_text(script, encoding="utf-8")
+    command_path.chmod(0o755)
+
+
+def write_plan_files(plan: dict[str, Any]) -> None:
+    output = Path(plan["output_directory"])
+    output.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(output / CONFIG_NAME, plan)
+    for leaf in plan_leaves(plan):
+        write_single_files(leaf)
+
+
+def ensure_binary(plan: dict[str, Any], no_build: bool) -> None:
+    binary = Path(plan["runtime"]["binary"])
+    if binary.is_file() and os.access(binary, os.X_OK):
+        return
+    target = plan["runtime"]["build_target"]
+    if no_build or not target:
+        fail(f"missing executable {binary}")
+    command = [
+        "make", target,
+        f"CXX={plan['runtime']['cxx']}",
+        f"CUDA_HOME={plan['runtime']['cuda_home']}",
+        f"-j{max(1, int(plan['runtime']['threads']))}",
+    ]
+    print(f"Building solver: {shlex.join(command)}")
+    completed = subprocess.run(command, cwd=ROOT, check=False)
+    if completed.returncode != 0:
+        fail(f"build failed with code {completed.returncode}", 1)
+
+
+def residuals(data: dict[str, Any]) -> list[float]:
+    values: list[float] = []
+    if isinstance(data.get("iterations"), dict):
+        value = data["iterations"].get("maximum_residual")
+        if value is not None:
+            values.append(float(value))
+    if isinstance(data.get("mbj"), dict):
+        value = data["mbj"].get("fmm_residual")
+        if value is not None:
+            values.append(float(value))
+    if isinstance(data.get("physical"), dict):
+        value = data["physical"].get("parallel_fmm_residual")
+        if value is not None:
+            values.append(float(value))
+    return values
+
+
+def mueller_data(data: dict[str, Any]) -> tuple[list[float], list[Any]] | None:
+    if isinstance(data.get("physical"), dict):
+        theta = data["physical"].get("theta_degrees")
+        mueller = data["physical"].get("mueller")
+    else:
+        theta = data.get("theta_degrees")
+        mueller = data.get("mueller")
+    if not isinstance(theta, list) or not isinstance(mueller, list):
+        return None
+    return theta, mueller
+
+
+def flatten(values: Any) -> list[float]:
+    if isinstance(values, list):
+        result: list[float] = []
+        for value in values:
+            result.extend(flatten(value))
+        return result
+    return [float(values)]
+
+
+def inspect_result(path: Path) -> tuple[dict[str, Any], bool]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return {"path": str(path), "errors": [str(error)], "warnings": []}, False
+
+    errors: list[str] = []
+    warnings: list[str] = []
+    tolerance = float(data.get("tolerance", 0.0))
+    found_residuals = residuals(data)
+    if not found_residuals:
+        errors.append("no true full-operator residual found")
+    elif tolerance <= 0.0:
+        errors.append("missing positive tolerance")
+    elif max(found_residuals) > 2.0 * tolerance:
+        errors.append(
+            f"maximum residual {max(found_residuals):.3e} exceeds 2*tolerance"
+        )
+
+    physical = mueller_data(data)
+    if physical is None:
+        errors.append("Mueller matrix is missing")
+    else:
+        theta, mueller = physical
+        flat = flatten(mueller)
+        if not theta or not flat:
+            errors.append("Mueller matrix is empty")
+        elif not all(math.isfinite(value) for value in flat):
+            errors.append("Mueller matrix contains non-finite values")
+
+    if data.get("software_version") is None:
+        warnings.append("software_version is absent (pre-release result)")
+    if data.get("hdiv_conforming") and not data.get("sharp_edge_formulation_validated"):
+        warnings.append("sharp-edge H(div) result still requires independent validation")
+    report = {
+        "path": str(path),
+        "software_version": data.get("software_version"),
+        "solver": data.get("solver"),
+        "tolerance": tolerance,
+        "maximum_residual": max(found_residuals) if found_residuals else None,
+        "errors": errors,
+        "warnings": warnings,
+    }
+    return report, not errors
+
+
+def compare_results(first_path: Path, second_path: Path) -> dict[str, float]:
+    first = json.loads(first_path.read_text(encoding="utf-8"))
+    second = json.loads(second_path.read_text(encoding="utf-8"))
+    first_physical = mueller_data(first)
+    second_physical = mueller_data(second)
+    if first_physical is None or second_physical is None:
+        fail("both comparison results must contain Mueller matrices")
+    first_theta, first_mueller = first_physical
+    second_theta, second_mueller = second_physical
+    if first_theta != second_theta:
+        fail("comparison results use different scattering-angle grids")
+    a = flatten(first_mueller)
+    b = flatten(second_mueller)
+    if len(a) != len(b) or not a:
+        fail("comparison results use incompatible Mueller layouts")
+    a0 = float(first_mueller[0][0][0])
+    b0 = float(second_mueller[0][0][0])
+    if a0 == 0.0 or b0 == 0.0:
+        fail("M11(0) is zero in a comparison result")
+    an = [value / a0 for value in a]
+    bn = [value / b0 for value in b]
+    raw_den = math.sqrt(sum(value * value for value in b)) or 1.0
+    norm_den = math.sqrt(sum(value * value for value in bn)) or 1.0
+    return {
+        "raw_relative_l2": math.sqrt(sum((x - y) ** 2 for x, y in zip(a, b))) / raw_den,
+        "normalized_relative_l2": math.sqrt(
+            sum((x - y) ** 2 for x, y in zip(an, bn))
+        ) / norm_den,
+        "maximum_normalized_absolute_difference": max(
+            abs(x - y) for x, y in zip(an, bn)
+        ),
+        "forward_m11_ratio": a0 / b0,
+        "forward_relative_difference": abs(a0 / b0 - 1.0),
+    }
+
+
+def result_is_complete(plan: dict[str, Any]) -> bool:
+    path = Path(plan["result_path"])
+    return path.is_file() and inspect_result(path)[1]
+
+
+def run_process(plan: dict[str, Any], no_build: bool, resume: bool) -> None:
+    if resume and result_is_complete(plan):
+        print(f"Already complete: {plan['result_path']}")
+        return
+    ensure_binary(plan, no_build)
+    output = Path(plan["output_directory"])
+    environment = os.environ.copy()
+    environment["OMP_NUM_THREADS"] = str(plan["runtime"]["threads"])
+    environment["CUDA_VISIBLE_DEVICES"] = str(plan["runtime"]["gpu"])
+    log_path = output / "run.log"
+    print(f"Running: {shlex.join(plan['command'])}")
+    with log_path.open("a", encoding="utf-8") as log:
+        process = subprocess.Popen(
+            plan["command"],
+            cwd=ROOT,
+            env=environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            bufsize=1,
+        )
+        assert process.stdout is not None
+        for line in process.stdout:
+            print(line, end="")
+            log.write(line)
+            log.flush()
+        return_code = process.wait()
+    if return_code != 0:
+        fail(
+            f"solver exited with code {return_code}; see {log_path}",
+            return_code if return_code > 0 else 1,
+        )
+    report, valid = inspect_result(Path(plan["result_path"]))
+    write_json_atomic(output / "validation.json", report)
+    if not valid:
+        fail(f"result validation failed; see {output / 'validation.json'}", 1)
+    print(f"Finished: {plan['result_path']}")
+    print(f"Validation: PASS ({output / 'validation.json'})")
+
+
+def execute_plan(plan: dict[str, Any], no_build: bool, resume: bool) -> None:
+    write_plan_files(plan)
+    if plan["kind"] != "strict_suite":
+        run_process(plan, no_build, resume)
+        return
+    for child in plan["children"]:
+        run_process(child, no_build, resume)
+    comparison = compare_results(
+        Path(plan["comparison"]["coarse"]),
+        Path(plan["comparison"]["fine"]),
+    )
+    comparison["passes"] = (
+        comparison["normalized_relative_l2"] <=
+        plan["comparison"]["maximum_normalized_relative_l2"]
+        and comparison["forward_relative_difference"] <=
+        plan["comparison"]["maximum_forward_relative_difference"]
+    )
+    write_json_atomic(Path(plan["output_directory"]) / "mesh_convergence.json", comparison)
+    if not comparison["passes"]:
+        fail("strict two-mesh convergence gate failed", 1)
+    print("Strict two-mesh convergence gate: passed")
+
+
+def command_calculate(args: argparse.Namespace, kind: str) -> int:
+    plan = create_plan(args, kind)
+    print_plan(plan, args.json)
+    enforce_memory(plan, args.allow_memory_risk)
+    if args.dry_run:
+        return 0
+    output = Path(plan["output_directory"])
+    if output.exists() and any(output.iterdir()):
+        fail(f"output directory is not empty: {output}; use 'bem resume {output}'")
+    if plan["kind"] == "strict_suite" and not args.yes:
+        if not sys.stdin.isatty():
+            fail("strict mode requires --yes in a non-interactive session")
+        answer = input("Run both FP64 refinements? [y/N] ").strip().lower()
+        if answer not in {"y", "yes"}:
+            print("Cancelled.")
+            return 0
+    execute_plan(plan, args.no_build, resume=False)
+    return 0
+
+
+def command_resume(args: argparse.Namespace) -> int:
+    directory = Path(args.directory).expanduser().resolve()
+    config = directory / CONFIG_NAME
+    if not config.is_file():
+        fail(f"missing {config}")
+    plan = json.loads(config.read_text(encoding="utf-8"))
+    print_plan(plan, args.json)
+    enforce_memory(plan, args.allow_memory_risk)
+    execute_plan(plan, args.no_build, resume=True)
+    return 0
+
+
+def command_validate(args: argparse.Namespace) -> int:
+    path = Path(args.result).expanduser().resolve()
+    report, valid = inspect_result(path)
+    if args.reference:
+        reference = Path(args.reference).expanduser().resolve()
+        comparison = compare_results(path, reference)
+        comparison["passes"] = (
+            comparison["normalized_relative_l2"] <= args.max_normalized_l2
+            and comparison["forward_relative_difference"] <= args.max_forward_difference
+        )
+        report["comparison"] = comparison
+        valid = valid and comparison["passes"]
+    if args.json:
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+    else:
+        print(f"Result: {'PASS' if valid else 'FAIL'}")
+        print(f"  solver: {report.get('solver')}")
+        print(f"  maximum residual: {report.get('maximum_residual')}")
+        for warning in report["warnings"]:
+            print(f"  warning: {warning}")
+        for error in report["errors"]:
+            print(f"  error: {error}")
+        if "comparison" in report:
+            print(
+                "  normalized L2 difference: "
+                f"{report['comparison']['normalized_relative_l2']:.3e}"
+            )
+            print(
+                "  forward M11 difference: "
+                f"{report['comparison']['forward_relative_difference']:.3e}"
+            )
+    return 0 if valid else 1
+
+
+def command_presets(args: argparse.Namespace) -> int:
+    data = {name: asdict(profile) for name, profile in PROFILES.items()}
+    if args.json:
+        print(json.dumps(data, indent=2, ensure_ascii=False))
+    else:
+        for name, profile in PROFILES.items():
+            print(f"{name:8s} {profile.purpose}")
+    return 0
+
+
+def command_explain(args: argparse.Namespace) -> int:
+    profile = PROFILES[args.quality]
+    if args.json:
+        print(json.dumps(asdict(profile), indent=2, ensure_ascii=False))
+        return 0
+    precision = "mixed FP32/FP64" if profile.mixed_precision else "FP64"
+    print(f"{profile.name}: {profile.purpose}")
+    print(f"  precision: {precision}")
+    print(f"  residual target: {profile.tolerance:.0e}")
+    print(f"  angular samples: {profile.ntheta}")
+    print("  solver: FMM with MBJ")
+    print(f"  automatic mesh target: {profile.points_per_wavelength:g} points/wavelength")
+    if profile.two_meshes:
+        print("  validation: two successive meshes and a Mueller-matrix comparison")
+    return 0
+
+
+def add_calculation_arguments(parser: argparse.ArgumentParser, average: bool) -> None:
+    parser.add_argument("--shape", choices=("sphere", "cube", "prism", "obj"), required=True)
+    parser.add_argument("--ka", type=float, required=True, help="equal-volume size parameter")
+    parser.add_argument("--ri", type=float, required=True, help="real relative refractive index")
+    parser.add_argument("--quality", choices=tuple(PROFILES), default="standard")
+    parser.add_argument("--ref", type=int, help="surface refinement; automatic for built-in shapes")
+    parser.add_argument("--sides", type=int, default=6, help="number of prism sides")
+    parser.add_argument("--aspect", type=float, default=1.0, help="prism height/diameter ratio")
+    parser.add_argument("--obj", help="OBJ mesh for --shape obj")
+    parser.add_argument("--out", help="output directory")
+    parser.add_argument("--threads", type=int, default=min(16, os.cpu_count() or 1))
+    parser.add_argument("--gpu", type=int, default=0)
+    parser.add_argument("--binary", help="expert override for the solver executable")
+    parser.add_argument("--cxx", default="g++-12")
+    parser.add_argument("--cuda-home", default="/usr")
+    parser.add_argument("--no-build", action="store_true")
+    parser.add_argument("--allow-memory-risk", action="store_true")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--yes", action="store_true", help="confirm strict two-grid execution")
+    parser.add_argument("--json", action="store_true", help="print the effective plan as JSON")
+    if average:
+        parser.add_argument("--alpha", "--orientations", type=int, default=8)
+        parser.add_argument("--beta", type=int, default=8)
+        parser.add_argument("--gamma", type=int, default=4)
+        parser.add_argument("--symmetry-order", type=int)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="bem",
+        description="Safe preset launcher for the BEM-CPP Muller solver.",
+    )
+    parser.add_argument("--version", action="version", version=f"bem {VERSION}")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    run = subparsers.add_parser("run", help="single-orientation calculation")
+    add_calculation_arguments(run, average=False)
+    run.set_defaults(handler=lambda args: command_calculate(args, "run"))
+
+    average = subparsers.add_parser("average", help="Euler-angle orientation average")
+    add_calculation_arguments(average, average=True)
+    average.set_defaults(handler=lambda args: command_calculate(args, "average"))
+
+    presets = subparsers.add_parser("presets", help="list quality profiles")
+    presets.add_argument("--json", action="store_true")
+    presets.set_defaults(handler=command_presets)
+
+    explain = subparsers.add_parser("explain", help="show one quality profile")
+    explain.add_argument("quality", choices=tuple(PROFILES))
+    explain.add_argument("--json", action="store_true")
+    explain.set_defaults(handler=command_explain)
+
+    resume = subparsers.add_parser("resume", help="resume a saved calculation")
+    resume.add_argument("directory")
+    resume.add_argument("--no-build", action="store_true")
+    resume.add_argument("--allow-memory-risk", action="store_true")
+    resume.add_argument("--json", action="store_true")
+    resume.set_defaults(handler=command_resume)
+
+    validate = subparsers.add_parser("validate", help="validate a result JSON")
+    validate.add_argument("result")
+    validate.add_argument("--reference")
+    validate.add_argument("--max-normalized-l2", type=float, default=0.05)
+    validate.add_argument("--max-forward-difference", type=float, default=0.05)
+    validate.add_argument("--json", action="store_true")
+    validate.set_defaults(handler=command_validate)
+    return parser
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+    return int(args.handler(args))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

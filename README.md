@@ -54,14 +54,73 @@ pinned CUDA 12.2 build environment. Other CUDA 12.x toolkits should be treated
 as unverified until the release audit passes on that system.
 
 The BEM calculation itself runs entirely in C++/CUDA and does not invoke
-Python. The remaining Python files are limited to validation against
-Mie/ADDA, mesh conversion, toolchain detection, and automated tests.
+Python. The `bem` convenience launcher uses only the Python standard library.
+The remaining Python files are limited to validation against Mie/ADDA, mesh
+conversion, toolchain detection, and automated tests.
+
+## Simple Interface
+
+The recommended entry point is `./bem`. It chooses the surface refinement,
+precision, solver, quadrature, cache paths, checkpoint paths, and output names
+from one of three reviewed profiles. A normal prism calculation needs only:
+
+```bash
+./bem run --shape prism --ka 25 --ri 1.3
+```
+
+The default `standard` profile uses the mixed-precision FMM+MBJ Muller solver,
+targets a `1e-5` true residual, computes both incident polarizations, and
+writes the complete Mueller matrix. The executable is built automatically
+when absent. The nested pFFT-FGMRES path remains an expert option because it
+is not robust for every particle and size regime.
+
+Use the same interface for orientation averaging:
+
+```bash
+./bem average --shape prism --ka 25 --ri 1.3 \
+  --alpha 256 --beta 8 --gamma 4
+```
+
+For a regular prism, its rotational symmetry is selected automatically. The
+available quality levels are:
+
+| Profile | Intended use | Numerical control |
+|---|---|---|
+| `quick` | exploratory runs only | mixed precision, residual `1e-3` |
+| `standard` | normal calculations | mixed precision, residual `1e-5` |
+| `strict` | publication control | FP64, residual `1e-6`, two successive meshes |
+
+Inspect the presets or the exact planned command without running it:
+
+```bash
+./bem presets
+./bem explain standard
+./bem run --shape prism --ka 25 --ri 1.3 --dry-run
+```
+
+Each output directory contains `effective_config.json`, executable
+`command.sh`, `run.log`, `result.json`, and `validation.json`. Interrupted
+work is resumed with the directory printed at startup:
+
+```bash
+./bem resume runs/prism_ka25_m1p3_standard_YYYYMMDD_HHMMSS
+./bem validate runs/prism_ka25_m1p3_standard_YYYYMMDD_HHMMSS/result.json
+```
+
+For built-in shapes, automatic refinement is a wavelength-resolution rule,
+not proof of mesh convergence. Use `--quality strict` for a two-mesh check.
+Imported OBJ meshes require an explicit `--ref` because their initial triangle
+size is unknown. The launcher refuses an estimated GPU allocation above 85%
+of available memory unless the expert override `--allow-memory-risk` is given.
 
 ## Clone and Build
 
 ```bash
 git clone https://github.com/KirillSalnikov/BEM-CPP.git
 cd BEM-CPP
+
+# No separate build command is needed for the simple interface.
+./bem run --shape sphere --ka 1 --ri 1.3 --quality quick
 
 # Recommended Muller solver for RTX 3090/3090 Ti
 make muller-fp32 CXX=g++-12 CUDA_HOME=/usr -j"$(nproc)"
@@ -85,9 +144,11 @@ Unknown options and options with missing values are rejected. Parent
 directories for results, logs, caches, and checkpoints are created
 automatically.
 
-## Recommended Muller Run
+## Expert Muller Run
 
-This command solves a six-sided prism with `ka=25`, refractive index `1.3`,
+The simple equivalent is `./bem run --shape prism --ka 25 --ri 1.3`. The full
+command below exposes every selected control for auditing. It solves a
+six-sided prism with `ka=25`, refractive index `1.3`,
 H(div)-BDM1 currents, tolerance `1e-5`, MBJ, and pFFT-FGMRES:
 
 ```bash

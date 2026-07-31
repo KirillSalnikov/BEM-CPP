@@ -32,6 +32,7 @@ for script in scripts/*.sh examples/*.sh; do
   bash -n "$script"
 done
 python3 -m compileall -q scripts tests verify_mie.py
+python3 -m py_compile bem
 
 if [[ "$MODE" == --host ]]; then
   echo "Host release audit: ok"

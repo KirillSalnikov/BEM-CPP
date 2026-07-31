@@ -13,6 +13,8 @@ Semantic Versioning while its public interfaces are stabilizing.
 - two-polarization GPU solve and orientation averaging;
 - atomic solver and orientation checkpoints plus reusable operator caches;
 - angular spectral reconstruction for large alpha grids;
+- `bem` launcher with automatic mesh selection, quality profiles, memory
+  checks, restart, and result validation;
 - command-line help, version reporting, and automatic output directories;
 - host and CUDA regression tests and release metadata.
 
