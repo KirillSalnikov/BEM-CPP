@@ -40,6 +40,34 @@ error. Raising the minimum to ref2 costs only 0.07 s in this control and makes
 the exploratory profile materially safer. pFFT remains disabled below `ka=10`,
 where direct FMM+MBJ is faster and avoids unnecessary setup.
 
+## Adaptive orientation averaging
+
+The adaptive beta/gamma path was exercised through the public `bem average`
+interface on a sphere with `ka=1`, `m=1.3`, automatic `ref`, and eight alpha
+samples. Each profile started from its own minimum level and stopped only after
+all three angular criteria passed. Times include cold setup, all orientation
+solves, far-field evaluation, and wrapper validation.
+
+| Profile | Mesh | Allowed levels | Accepted level | Solved base orientations | Total iterations | Maximum residual | Wall time |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| quick | ref2 | 1--3 | 2 | 20 | 184 | 8.47e-4 | 1.29 s |
+| standard | ref2 | 2--4 | 3 | 72 | 1,228 | 9.00e-6 | 3.47 s |
+| strict coarse | ref2 | 2--5 | 3 | 72 | 1,736 | 8.98e-7 | 64.25 s |
+| strict fine | ref3 | 2--5 | 3 | 72 | 1,674 | 8.42e-7 | 245.49 s |
+
+The strict two-mesh suite took 309.74 s and passed. Its normalized Mueller
+difference between ref2 and ref3 was 0.116%, and the forward `M11` difference
+was 0.782%. Relative to strict fine, standard differed by 0.116% in the
+normalized complete Mueller matrix and 0.775% in forward `M11`; quick differed
+by 0.439% and 1.72%, respectively. The quick comparison required angular
+interpolation because that profile intentionally writes a smaller scattering
+grid.
+
+These data validate control flow, checkpointing, automatic stopping, and the
+quality ordering on one small case. They do not establish that level 3 is
+sufficient for every shape or size; nonconvergence at a profile's maximum
+level is reported as a failed validation.
+
 ## Reproduction
 
 Replace `PROFILE` with `quick`, `standard`, or `strict`:

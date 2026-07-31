@@ -259,7 +259,7 @@ flag.
 ```bash
 ./bem run --shape prism --ka 25 --ri 1.3
 ./bem average --shape prism --ka 25 --ri 1.3 \
-  --alpha 256 --beta 8 --gamma 4
+  --alpha 256
 ```
 
 `standard` is the default. It uses direct FMM+MBJ below `ka=10` and the
@@ -277,10 +277,27 @@ The current profile definitions are always available from:
 ```
 
 For sphere, cube, and regular-prism generators, the launcher selects `ref`
-from a points-per-wavelength target. This is an initial discretization rule,
-not a convergence proof. OBJ meshes require `--ref` explicitly. Before
-execution, the launcher prints a conservative unknown-count and GPU-memory
-estimate and blocks a projected allocation above 85% of device memory.
+from a points-per-wavelength target. If `h0` is the longest edge scale of the
+initial built-in mesh, the selected level is
+
+```text
+ref = max(ref_min, ceil(log2(P * ka * h0 / (2*pi)))),
+```
+
+where `P` is 4 for `quick` and 8 for `standard`/`strict`. This keeps the
+exterior wavelength resolved as particle size grows. It is an initial
+discretization rule, not a convergence proof: `strict` always calculates both
+that level and `ref+1`. `--points-per-wavelength P` changes the automatic
+target and explicit `--ref N` has highest priority. OBJ meshes require
+`--ref` explicitly because their initial edge scale is not known to the
+launcher. Before execution, the launcher prints a conservative unknown-count
+and GPU-memory estimate and blocks a projected allocation above 85% of device
+memory.
+
+Every profile parameter is a default. Explicit solver, tolerance, quadrature,
+FMM, MBJ, pFFT, angular, and mesh options replace the corresponding profile
+value; they are not appended as conflicting duplicate flags. The resolved
+command is recorded in `effective_config.json` and `command.sh`.
 
 The output directory is self-describing:
 
@@ -377,7 +394,44 @@ and cold-start time are both reported.
 
 ## 9. Orientation Averaging
 
-Recommended wrapper:
+Recommended adaptive interface:
+
+```bash
+./bem average --shape prism --ka 25 --ri 1.3 \
+  --quality standard --alpha 256
+```
+
+All three profiles use nested adaptive beta/gamma refinement by default:
+
+| Profile | Levels | `M11` curve | `M11` integral | normalized components |
+|---|---:|---:|---:|---:|
+| `quick` | `J=1..3` | 5% | 5% | 25% |
+| `standard` | `J=2..4` | 1% | 1% | 10% |
+| `strict` | `J=2..5` | 0.2% | 0.2% | 2% |
+
+Level `J` contains `N_beta=2^J+1` quadrature nodes in `cos(beta)` and
+`N_gamma=2^J` uniform azimuthal nodes before particle symmetry is applied.
+The nodes are nested, so values already computed at a coarser level are loaded
+from `orientation_parts` instead of solved again. After each level, the code
+compares the `M11` angular curve, its weighted integral, and every normalized
+Mueller component with the preceding level. It accepts the first level that
+passes all three tolerances. If the maximum level is reached without passing,
+the result is retained for diagnosis but `bem validate` rejects it.
+
+The adaptive controls may be replaced explicitly:
+
+```bash
+./bem average --shape prism --ka 25 --ri 1.3 \
+  --adaptive-levels 2 5 \
+  --adaptive-m11-tol 2e-3 \
+  --adaptive-integral-tol 2e-3 \
+  --adaptive-component-tol 2e-2
+```
+
+Supplying `--beta` or `--gamma`, or selecting `--fixed-grid`, requests the
+previous fixed-grid mode. Fixed and adaptive controls cannot be mixed because
+their stopping rules are different. The equivalent low-level fixed-grid
+wrapper is:
 
 ```bash
 KA=25 RI=1.3 REF=5 SOLVER=fmm RECYCLE_RANK=8 \
@@ -418,6 +472,13 @@ the paired GPU solver.
 The orientation checkpoint stores accumulated weights, Mueller values, timing,
 the next orientation, and previous solutions. It is replaced atomically after
 every completed base orientation.
+
+Explicit `--orient-warm-max-angle`, `--orient-recycle-rank`,
+`--orient-zero-start`, and `--[no-]orient-paired-gpu-gmres` values override the
+profile choices in both adaptive and fixed-grid modes. pFFT-FGMRES uses its
+flexible CPU-managed outer iteration and therefore disables the specialized
+paired-GPU GMRES path. The complete resolved choice is stored in the output
+configuration.
 
 ## 10. Output and Interpretation
 

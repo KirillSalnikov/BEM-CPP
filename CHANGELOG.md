@@ -17,6 +17,11 @@ Semantic Versioning while its public interfaces are stabilizing.
   checks, restart, and result validation;
 - adaptive FP64 pFFT acceleration for normal-size strict runs and a safer
   minimum quick mesh selected from cross-profile Mueller comparisons;
+- profile-aware adaptive orientation averaging with nested angular levels,
+  per-orientation persistence, convergence validation, and explicit fixed-grid
+  compatibility;
+- command-line overrides for profile solver/numerical controls and documented
+  size-dependent automatic surface refinement;
 - command-line help, version reporting, and automatic output directories;
 - host and CUDA regression tests and release metadata.
 

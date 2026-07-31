@@ -25,7 +25,8 @@ regression tests, OBJ workflows, and neural GraphSAI experiments.
 - P2 nodal currents on smooth surfaces;
 - H(div)-BDM1 currents on prisms, cubes, and sharp OBJ meshes;
 - GPU far-field and complete Mueller-matrix output;
-- orientation averaging with alpha reconstruction and rotational symmetry;
+- adaptive orientation averaging with alpha reconstruction, rotational
+  symmetry, and per-orientation checkpoints;
 - atomic solver and orientation checkpoints;
 - optional GraphSAI import and training-data export.
 
@@ -78,17 +79,23 @@ Use the same interface for orientation averaging:
 
 ```bash
 ./bem average --shape prism --ka 25 --ri 1.3 \
-  --alpha 256 --beta 8 --gamma 4
+  --alpha 256
 ```
 
-For a regular prism, its rotational symmetry is selected automatically. The
-available quality levels are:
+Beta/gamma refinement is adaptive by default in every quality profile. The
+solver increases a nested angular level until the Mueller curve, its integral,
+and the normalized matrix components meet the profile tolerances. For a
+regular prism, its rotational symmetry is selected automatically. Supplying
+`--beta` or `--gamma`, or using `--fixed-grid`, deliberately selects the old
+fixed-grid mode.
 
-| Profile | Intended use | Numerical control |
+The available quality levels are:
+
+| Profile | Intended use | Numerical and angular control |
 |---|---|---|
-| `quick` | exploratory runs only | mixed precision, residual `1e-3`, at least `ref=2` |
-| `standard` | normal calculations | mixed precision, adaptive pFFT, residual `1e-5` |
-| `strict` | publication control | FP64, adaptive pFFT, residual `1e-6`, two successive meshes |
+| `quick` | exploratory runs only | mixed precision, residual `1e-3`, at least `ref=2`, adaptive `J=1..3` |
+| `standard` | normal calculations | mixed precision, adaptive pFFT, residual `1e-5`, adaptive `J=2..4` |
+| `strict` | publication control | FP64, residual `1e-6`, adaptive `J=2..5`, two successive meshes |
 
 Measured cross-profile accuracy and cold-start timings are documented in
 [Quality-profile validation](docs/quality_profiles.md).
@@ -115,6 +122,20 @@ not proof of mesh convergence. Use `--quality strict` for a two-mesh check.
 Imported OBJ meshes require an explicit `--ref` because their initial triangle
 size is unknown. The launcher refuses an estimated GPU allocation above 85%
 of available memory unless the expert override `--allow-memory-risk` is given.
+
+For a built-in shape the initial level is
+`ceil(log2(P * ka * L0 / (2*pi)))`, bounded by the profile minimum. Here `P`
+is the target points per exterior wavelength and `L0` is the longest initial
+edge scale. Thus `ref` grows logarithmically with particle size, while the
+number of surface elements grows by approximately four per added level.
+Override the target with `--points-per-wavelength`; an explicit `--ref` always
+wins. The `strict` profile then adds a second calculation at `ref+1`.
+
+Profile values are defaults, not immutable settings. Explicit `--solver`,
+`--tol`, `--digits`, `--quad`, `--duffy-order`, `--ntheta`, iteration, MBJ,
+pFFT, angular-adaptation, and mesh-resolution options replace their profile
+values and appear only once in the generated command. The final values and
+environment are recorded in `effective_config.json` and `command.sh`.
 
 ## Clone and Build
 
@@ -194,7 +215,38 @@ without changing the iterative operator or the converged result.
 
 ## Orientation Averaging
 
-The maintained wrapper runs the same solver for an Euler grid:
+The recommended adaptive calculation uses the same three quality profiles as
+a single-orientation run:
+
+```bash
+./bem average --shape prism --ka 25 --ri 1.3 \
+  --quality standard --alpha 256
+```
+
+At adaptive level `J`, the nested base grid contains `(2^J+1) * 2^J`
+beta/gamma orientations before exact particle symmetry is applied. Increasing
+`alpha` changes far-field reconstruction only; it does not add linear solves.
+Each completed base orientation is saved under `orientation_parts`, so an
+interrupted calculation resumes without discarding completed angles. Reaching
+the maximum level without meeting all angular tolerances makes validation
+fail rather than silently accepting an under-resolved average.
+
+Use explicit controls only when needed:
+
+```bash
+./bem average --shape prism --ka 25 --ri 1.3 \
+  --adaptive-levels 2 5 \
+  --adaptive-m11-tol 2e-3 \
+  --adaptive-integral-tol 2e-3 \
+  --adaptive-component-tol 2e-2
+
+# Backward-compatible fixed angular grid.
+./bem average --shape prism --ka 25 --ri 1.3 \
+  --alpha 256 --beta 8 --gamma 4
+```
+
+The low-level shell wrapper also runs the same solver on an explicitly fixed
+Euler grid:
 
 ```bash
 KA=25 RI=1.3 REF=5 SOLVER=fmm RECYCLE_RANK=8 \

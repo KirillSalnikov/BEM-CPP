@@ -65,6 +65,11 @@ void print_usage(const char* program)
         "  --physical-check --ntheta N     Solve both polarizations and far field\n\n"
         "Orientation averaging:\n"
         "  --orient-average NA NB NG       Uniform Euler-angle grid\n"
+        "  --orient-adaptive JMIN JMAX     Nested beta/gamma convergence levels\n"
+        "  --orient-adaptive-m11-tol V     Relative M11 curve tolerance\n"
+        "  --orient-adaptive-integral-tol V  Relative M11 integral tolerance\n"
+        "  --orient-adaptive-component-tol V  Normalized component tolerance\n"
+        "  --orient-parts-dir DIRECTORY    Lossless adaptive restart samples\n"
         "  --orient-file FILE              Explicit orientation list\n"
         "  --orient-symmetry-order N       Declared exact rotational symmetry\n"
         "  --orient-recycle-rank N         Cross-orientation recycling rank\n\n"
@@ -3771,9 +3776,16 @@ int run_orientation_average(
     output << "},\n"
            << "  \"adaptive\": {\"enabled\": "
            << (!adaptive_levels.empty() ? "true" : "false")
+           << ", \"minimum_level\": " << adaptive_minimum_level
+           << ", \"maximum_level\": " << adaptive_maximum_level
            << ", \"accepted_level\": " << accepted_adaptive_level
            << ", \"converged\": "
-           << (adaptive_converged ? "true" : "false") << "},\n"
+           << (adaptive_converged ? "true" : "false")
+           << ", \"m11_tolerance\": " << adaptive_m11_tolerance
+           << ", \"integral_tolerance\": "
+           << adaptive_integral_tolerance
+           << ", \"component_tolerance\": "
+           << adaptive_component_tolerance << "},\n"
            << "  \"iterations\": {\"total\": "
            << total_iterations
            << ", \"mean_per_polarization\": "

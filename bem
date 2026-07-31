@@ -40,6 +40,12 @@ class Profile:
     mixed_precision: bool
     solver_policy: str
     two_meshes: bool
+    orientation_minimum_level: int
+    orientation_maximum_level: int
+    orientation_m11_tolerance: float
+    orientation_integral_tolerance: float
+    orientation_component_tolerance: float
+    orientation_recycle_rank: int
 
 
 PROFILES = {
@@ -59,6 +65,12 @@ PROFILES = {
         mixed_precision=True,
         solver_policy="fmm_mbj",
         two_meshes=False,
+        orientation_minimum_level=1,
+        orientation_maximum_level=3,
+        orientation_m11_tolerance=5.0e-2,
+        orientation_integral_tolerance=5.0e-2,
+        orientation_component_tolerance=2.5e-1,
+        orientation_recycle_rank=8,
     ),
     "standard": Profile(
         name="standard",
@@ -76,6 +88,12 @@ PROFILES = {
         mixed_precision=True,
         solver_policy="adaptive_pfft",
         two_meshes=False,
+        orientation_minimum_level=2,
+        orientation_maximum_level=4,
+        orientation_m11_tolerance=1.0e-2,
+        orientation_integral_tolerance=1.0e-2,
+        orientation_component_tolerance=1.0e-1,
+        orientation_recycle_rank=8,
     ),
     "strict": Profile(
         name="strict",
@@ -93,6 +111,12 @@ PROFILES = {
         mixed_precision=False,
         solver_policy="adaptive_pfft",
         two_meshes=True,
+        orientation_minimum_level=2,
+        orientation_maximum_level=5,
+        orientation_m11_tolerance=2.0e-3,
+        orientation_integral_tolerance=2.0e-3,
+        orientation_component_tolerance=2.0e-2,
+        orientation_recycle_rank=0,
     ),
 }
 
@@ -134,8 +158,15 @@ def automatic_refinement(args: argparse.Namespace, profile: Profile) -> int:
         return args.ref
     if args.shape == "obj":
         fail("automatic refinement is unsafe for OBJ meshes; specify --ref")
+    points_per_wavelength = (
+        args.points_per_wavelength
+        if args.points_per_wavelength is not None
+        else profile.points_per_wavelength
+    )
+    if points_per_wavelength <= 0.0:
+        fail("--points-per-wavelength must be positive")
     required = (
-        profile.points_per_wavelength
+        points_per_wavelength
         * args.ka
         * base_edge_scale(args)
         / (2.0 * math.pi)
@@ -221,6 +252,10 @@ def shape_arguments(args: argparse.Namespace) -> list[str]:
 
 
 def use_pfft_fgmres(args: argparse.Namespace, profile: Profile) -> bool:
+    if args.solver == "fmm":
+        return False
+    if args.solver == "pfft":
+        return True
     return profile.solver_policy == "adaptive_pfft" and args.ka >= 10.0
 
 
@@ -228,30 +263,176 @@ def solver_label(value: str) -> str:
     return "FMM+pFFT-FGMRES" if value == "fmm_pfft_fgmres" else "FMM+MBJ"
 
 
-def solver_arguments(pfft_fgmres: bool) -> list[str]:
+def solver_arguments(
+    pfft_fgmres: bool,
+    mbj_nodes: int,
+    mbj_overlap: int,
+    pfft_inner_tolerance: float,
+    pfft_inner_iterations: str,
+    pfft_outer_restart: int,
+    pfft_order: int,
+    pfft_correction_radius: float,
+    pfft_grid_safety: float,
+) -> list[str]:
     arguments = [
         "--mbj-only",
-        "--mbj-nodes", "50",
-        "--mbj-overlap", "0",
+        "--mbj-nodes", str(mbj_nodes),
+        "--mbj-overlap", str(mbj_overlap),
     ]
     if pfft_fgmres:
         arguments += [
             "--pfft-fgmres",
-            "--pfft-inner-tol", "4e-2",
-            "--pfft-inner-iters", "auto",
-            "--pfft-outer-restart", "32",
-            "--pfft-order", "2",
-            "--pfft-correction-radius", "0",
-            "--pfft-grid-safety", "1",
+            "--pfft-inner-tol", f"{pfft_inner_tolerance:g}",
+            "--pfft-inner-iters", pfft_inner_iterations,
+            "--pfft-outer-restart", str(pfft_outer_restart),
+            "--pfft-order", str(pfft_order),
+            "--pfft-correction-radius", f"{pfft_correction_radius:g}",
+            "--pfft-grid-safety", f"{pfft_grid_safety:g}",
         ]
     return arguments
 
 
 def effective_max_leaf(args: argparse.Namespace, profile: Profile) -> int:
+    if args.max_leaf is not None:
+        return args.max_leaf
     # Shallow trees avoid unstable mixed-precision translations on small cases.
     if profile.mixed_precision and args.ka < 5.0:
         return 128
     return profile.max_leaf
+
+
+def selected(args: argparse.Namespace, name: str, default: Any) -> Any:
+    value = getattr(args, name, None)
+    return default if value is None else value
+
+
+def orientation_parameters(
+    args: argparse.Namespace,
+    profile: Profile,
+    output: Path,
+    pfft_fgmres: bool,
+) -> tuple[list[str], dict[str, Any]]:
+    adaptive_override = any(
+        value is not None
+        for value in (
+            args.adaptive_levels,
+            args.adaptive_m11_tolerance,
+            args.adaptive_integral_tolerance,
+            args.adaptive_component_tolerance,
+        )
+    )
+    fixed_requested = args.fixed_grid or args.beta is not None or args.gamma is not None
+    if adaptive_override and fixed_requested:
+        fail("adaptive averaging controls cannot be combined with --fixed-grid/--beta/--gamma")
+    adaptive = adaptive_override or not fixed_requested
+
+    alpha = selected(args, "alpha", 8)
+    if alpha < 1:
+        fail("--alpha must be positive")
+    symmetry = args.symmetry_order
+    if symmetry is None:
+        symmetry = args.sides if args.shape == "prism" else (
+            4 if args.shape == "cube" else 1
+        )
+    if symmetry < 1:
+        fail("--symmetry-order must be positive")
+
+    warm_angle = selected(args, "orient_warm_max_angle", 25.0)
+    recycle_rank = selected(
+        args, "orient_recycle_rank", profile.orientation_recycle_rank
+    )
+    if warm_angle <= 0.0:
+        fail("--orient-warm-max-angle must be positive")
+    if recycle_rank < 0 or recycle_rank > 128:
+        fail("--orient-recycle-rank must be in [0,128]")
+
+    arguments: list[str]
+    details: dict[str, Any]
+    if adaptive:
+        levels = args.adaptive_levels or (
+            profile.orientation_minimum_level,
+            profile.orientation_maximum_level,
+        )
+        minimum_level, maximum_level = levels
+        if minimum_level < 1 or maximum_level <= minimum_level or maximum_level > 15:
+            fail("--adaptive-levels requires 1 <= MIN < MAX <= 15")
+        m11_tolerance = selected(
+            args, "adaptive_m11_tolerance", profile.orientation_m11_tolerance
+        )
+        integral_tolerance = selected(
+            args,
+            "adaptive_integral_tolerance",
+            profile.orientation_integral_tolerance,
+        )
+        component_tolerance = selected(
+            args,
+            "adaptive_component_tolerance",
+            profile.orientation_component_tolerance,
+        )
+        if min(m11_tolerance, integral_tolerance, component_tolerance) < 0.0:
+            fail("adaptive averaging tolerances must be non-negative")
+        beta_nodes = (1 << maximum_level) + 1
+        gamma_nodes = 1 << maximum_level
+        parts = output / "orientation_parts"
+        arguments = [
+            "--orient-average", str(alpha), str(beta_nodes), str(gamma_nodes),
+            "--orient-adaptive", str(minimum_level), str(maximum_level),
+            "--orient-adaptive-m11-tol", f"{m11_tolerance:g}",
+            "--orient-adaptive-integral-tol", f"{integral_tolerance:g}",
+            "--orient-adaptive-component-tol", f"{component_tolerance:g}",
+            "--orient-parts-dir", str(parts),
+        ]
+        details = {
+            "mode": "adaptive",
+            "alpha": alpha,
+            "minimum_level": minimum_level,
+            "maximum_level": maximum_level,
+            "maximum_beta_nodes": beta_nodes,
+            "maximum_gamma_nodes": gamma_nodes,
+            "maximum_base_orientations": beta_nodes * gamma_nodes,
+            "m11_tolerance": m11_tolerance,
+            "integral_tolerance": integral_tolerance,
+            "component_tolerance": component_tolerance,
+            "parts_directory": str(parts),
+        }
+    else:
+        beta = selected(args, "beta", 8)
+        gamma = selected(args, "gamma", 4)
+        if beta < 1 or gamma < 1:
+            fail("--beta and --gamma must be positive")
+        arguments = ["--orient-average", str(alpha), str(beta), str(gamma)]
+        details = {
+            "mode": "fixed",
+            "alpha": alpha,
+            "beta": beta,
+            "gamma": gamma,
+            "base_orientations": beta * gamma,
+        }
+
+    arguments += [
+        "--orient-symmetry-order", str(symmetry),
+        "--orient-warm-max-angle", f"{warm_angle:g}",
+        "--orient-recycle-rank", str(recycle_rank),
+    ]
+    if args.orient_zero_start:
+        arguments.append("--orient-zero-start")
+    paired = selected(args, "orient_paired_gpu_gmres", not pfft_fgmres)
+    if pfft_fgmres and paired:
+        fail("paired GPU GMRES is incompatible with pFFT-FGMRES averaging")
+    arguments.append(
+        "--orient-paired-gpu-gmres"
+        if paired else "--no-orient-paired-gpu-gmres"
+    )
+    details.update(
+        {
+            "symmetry_order": symmetry,
+            "warm_start": not args.orient_zero_start,
+            "warm_start_max_angle_degrees": warm_angle,
+            "recycle_rank": recycle_rank,
+            "paired_gpu_gmres": paired,
+        }
+    )
+    return arguments, details
 
 
 def make_single_plan(
@@ -266,6 +447,32 @@ def make_single_plan(
     edge_mode = "smooth" if args.shape == "sphere" else "hdiv"
     max_leaf = effective_max_leaf(args, profile)
     pfft_fgmres = use_pfft_fgmres(args, profile)
+    tolerance = selected(args, "tolerance", profile.tolerance)
+    quadrature = selected(args, "quadrature", profile.quadrature)
+    duffy_order = selected(args, "duffy_order", profile.duffy_order)
+    fmm_digits = selected(args, "fmm_digits", profile.fmm_digits)
+    maximum_iterations = selected(
+        args, "maximum_iterations", profile.maximum_iterations
+    )
+    gmres_restart = selected(args, "gmres_restart", profile.gmres_restart)
+    ntheta = selected(args, "ntheta", profile.ntheta)
+    mbj_nodes = selected(args, "mbj_nodes", 50)
+    mbj_overlap = selected(args, "mbj_overlap", 0)
+    pfft_inner_tolerance = selected(args, "pfft_inner_tolerance", 4.0e-2)
+    pfft_inner_iterations = selected(args, "pfft_inner_iterations", "auto")
+    pfft_outer_restart = selected(args, "pfft_outer_restart", 32)
+    pfft_order = selected(args, "pfft_order", 2)
+    pfft_correction_radius = selected(args, "pfft_correction_radius", 0.0)
+    pfft_grid_safety = selected(args, "pfft_grid_safety", 1.0)
+    points_per_wavelength = selected(
+        args, "points_per_wavelength", profile.points_per_wavelength
+    )
+    achieved_points_per_wavelength = None
+    if args.shape != "obj":
+        achieved_points_per_wavelength = (
+            2.0 * math.pi * (1 << refinement)
+            / (args.ka * base_edge_scale(args))
+        )
     dofs = estimate_dofs(args, refinement)
     result = output / "result.json"
     command = [str(binary)]
@@ -275,40 +482,42 @@ def make_single_plan(
         "--ka", f"{args.ka:g}",
         "--ri", f"{args.ri:g}",
         "--edge-mode", edge_mode,
-        "--quad", str(profile.quadrature),
-        "--duffy-order", str(profile.duffy_order),
-        "--digits", str(profile.fmm_digits),
+        "--quad", str(quadrature),
+        "--duffy-order", str(duffy_order),
+        "--digits", str(fmm_digits),
         "--max-leaf", str(max_leaf),
         "--fmm-near-radius", "3",
-        "--tol", f"{profile.tolerance:.1e}",
-        "--max-iters", str(profile.maximum_iterations),
-        "--gmres-restart", str(profile.gmres_restart),
+        "--tol", f"{tolerance:.1e}",
+        "--max-iters", str(maximum_iterations),
+        "--gmres-restart", str(gmres_restart),
     ]
-    command += solver_arguments(pfft_fgmres)
+    command += solver_arguments(
+        pfft_fgmres,
+        mbj_nodes,
+        mbj_overlap,
+        pfft_inner_tolerance,
+        str(pfft_inner_iterations),
+        pfft_outer_restart,
+        pfft_order,
+        pfft_correction_radius,
+        pfft_grid_safety,
+    )
     command += [
         "--fmm-near-fp32" if profile.mixed_precision else "--fmm-near-fp64",
         "--near-correction-cache", str(output / "operator.near"),
-        "--mbj-cache", str(output / "mbj50.cache"),
+        "--mbj-cache", str(output / f"mbj{mbj_nodes}.cache"),
         "--physical-check",
-        "--ntheta", str(profile.ntheta),
+        "--ntheta", str(ntheta),
         "--no-dense-validation",
         "--iteration-log", str(output / "iterations.csv"),
     ]
 
+    orientation: dict[str, Any] | None = None
     if kind == "average":
-        symmetry = args.symmetry_order
-        if symmetry is None:
-            symmetry = args.sides if args.shape == "prism" else (
-                4 if args.shape == "cube" else 1
-            )
-        command += [
-            "--orient-average", str(args.alpha), str(args.beta), str(args.gamma),
-            "--orient-symmetry-order", str(symmetry),
-            "--orient-warm-max-angle", "25",
-            "--orient-recycle-rank", "0" if profile.name == "strict" else "8",
-        ]
-        if not pfft_fgmres:
-            command.append("--orient-paired-gpu-gmres")
+        orientation_arguments, orientation = orientation_parameters(
+            args, profile, output, pfft_fgmres
+        )
+        command += orientation_arguments
 
     command += ["--out", str(result)]
     memory = estimate_memory_gib(profile, dofs, pfft_fgmres)
@@ -323,12 +532,31 @@ def make_single_plan(
             "max_leaf": max_leaf,
             "near_precision": "fp32" if profile.mixed_precision else "fp64",
             "solver": "fmm_pfft_fgmres" if pfft_fgmres else "fmm_mbj",
+            "tolerance": tolerance,
+            "quadrature": quadrature,
+            "duffy_order": duffy_order,
+            "fmm_digits": fmm_digits,
+            "maximum_iterations": maximum_iterations,
+            "gmres_restart": gmres_restart,
+            "ntheta": ntheta,
+            "mbj_nodes": mbj_nodes,
+            "mbj_overlap": mbj_overlap,
+            "pfft_inner_tolerance": pfft_inner_tolerance,
+            "pfft_inner_iterations": pfft_inner_iterations,
+            "pfft_outer_restart": pfft_outer_restart,
+            "pfft_order": pfft_order,
+            "pfft_correction_radius": pfft_correction_radius,
+            "pfft_grid_safety": pfft_grid_safety,
+            "orientation": orientation,
         },
         "inputs": {
             "shape": args.shape,
             "ka": args.ka,
             "relative_refractive_index": args.ri,
             "refinement": refinement,
+            "refinement_selection": "explicit" if args.ref is not None else "automatic",
+            "target_points_per_exterior_wavelength": points_per_wavelength,
+            "estimated_points_per_exterior_wavelength": achieved_points_per_wavelength,
             "sides": args.sides if args.shape == "prism" else None,
             "aspect": args.aspect if args.shape == "prism" else None,
             "obj": str(Path(args.obj).expanduser().resolve()) if args.obj else None,
@@ -345,6 +573,10 @@ def make_single_plan(
             "gpu": args.gpu,
             "cxx": args.cxx,
             "cuda_home": args.cuda_home,
+            "environment": (
+                {"BEM_MULLER_GPU_ASSEMBLY": "1"}
+                if kind == "average" else {}
+            ),
         },
         "output_directory": str(output),
         "result_path": str(result),
@@ -358,6 +590,48 @@ def create_plan(args: argparse.Namespace, kind: str) -> dict[str, Any]:
     if args.ri <= 0.0:
         fail("--ri must be positive")
     profile = PROFILES[args.quality]
+    numeric_checks = {
+        "--tol": selected(args, "tolerance", profile.tolerance),
+        "--digits": selected(args, "fmm_digits", profile.fmm_digits),
+        "--duffy-order": selected(args, "duffy_order", profile.duffy_order),
+        "--ntheta": selected(args, "ntheta", profile.ntheta),
+        "--max-iters": selected(
+            args, "maximum_iterations", profile.maximum_iterations
+        ),
+        "--max-leaf": selected(args, "max_leaf", profile.max_leaf),
+        "--mbj-nodes": selected(args, "mbj_nodes", 50),
+        "--pfft-inner-tol": selected(args, "pfft_inner_tolerance", 4.0e-2),
+        "--pfft-outer-restart": selected(args, "pfft_outer_restart", 32),
+        "--pfft-order": selected(args, "pfft_order", 2),
+        "--pfft-grid-safety": selected(args, "pfft_grid_safety", 1.0),
+    }
+    for option, value in numeric_checks.items():
+        if float(value) <= 0.0:
+            fail(f"{option} must be positive")
+    if selected(args, "ntheta", profile.ntheta) < 2:
+        fail("--ntheta must be at least 2")
+    if selected(args, "gmres_restart", profile.gmres_restart) < 0:
+        fail("--gmres-restart must be non-negative")
+    if selected(args, "mbj_overlap", 0) < 0:
+        fail("--mbj-overlap must be non-negative")
+    if selected(args, "pfft_correction_radius", 0.0) < 0.0:
+        fail("--pfft-correction-radius must be non-negative")
+    pfft_order = selected(args, "pfft_order", 2)
+    if pfft_order < 2 or pfft_order > 5:
+        fail("--pfft-order must be in [2,5]")
+    pfft_grid_safety = selected(args, "pfft_grid_safety", 1.0)
+    if pfft_grid_safety <= 0.5 or pfft_grid_safety > 1.0:
+        fail("--pfft-grid-safety must be in (0.5,1]")
+    pfft_inner_tolerance = selected(args, "pfft_inner_tolerance", 4.0e-2)
+    if pfft_inner_tolerance >= 1.0:
+        fail("--pfft-inner-tol must be in (0,1)")
+    inner_iterations = selected(args, "pfft_inner_iterations", "auto")
+    if inner_iterations != "auto":
+        try:
+            if int(inner_iterations) < 1:
+                raise ValueError
+        except ValueError:
+            fail("--pfft-inner-iters must be 'auto' or a positive integer")
     refinement = automatic_refinement(args, profile)
     output = Path(args.out).expanduser() if args.out else default_output(args)
     output = output.resolve()
@@ -367,6 +641,7 @@ def create_plan(args: argparse.Namespace, kind: str) -> dict[str, Any]:
 
     coarse = make_single_plan(args, profile, output / "coarse", refinement, kind)
     fine = make_single_plan(args, profile, output / "fine", refinement + 1, kind)
+    fine["inputs"]["refinement_selection"] = "strict_fine"
     return {
         "schema_version": 1,
         "wrapper_version": VERSION,
@@ -392,12 +667,27 @@ def print_plan(plan: dict[str, Any], as_json: bool = False) -> None:
     if plan["kind"] == "strict_suite":
         print("Strict validation suite:")
         for child in plan["children"]:
+            mesh = child["inputs"]
             print(
-                f"  ref={child['inputs']['refinement']}: "
+                f"  ref={mesh['refinement']} ({mesh['refinement_selection']}): "
                 f"~{child['estimate']['system_dofs']:,} unknowns, "
                 f"~{child['estimate']['gpu_memory_gib']:.2f} GiB GPU, "
                 f"{solver_label(child['effective_parameters']['solver'])}"
             )
+            if mesh["estimated_points_per_exterior_wavelength"] is not None:
+                print(
+                    "    exterior wavelength resolution: "
+                    f"{mesh['estimated_points_per_exterior_wavelength']:.1f} "
+                    f"points (target >= "
+                    f"{mesh['target_points_per_exterior_wavelength']:g})"
+                )
+            orientation = child["effective_parameters"].get("orientation")
+            if orientation:
+                print(
+                    f"    averaging: {orientation['mode']}, "
+                    f"alpha={orientation['alpha']}, "
+                    f"symmetry={orientation['symmetry_order']}"
+                )
         print(f"  output: {plan['output_directory']}")
         return
     print(
@@ -409,7 +699,30 @@ def print_plan(plan: dict[str, Any], as_json: bool = False) -> None:
         f"  estimate: {plan['estimate']['system_dofs']:,} unknowns, "
         f"{plan['estimate']['gpu_memory_gib']:.2f} GiB GPU"
     )
+    mesh = plan["inputs"]
+    if mesh["estimated_points_per_exterior_wavelength"] is not None:
+        print(
+            f"  mesh: {mesh['refinement_selection']} ref={mesh['refinement']}, "
+            f"~{mesh['estimated_points_per_exterior_wavelength']:.1f} "
+            "points/exterior wavelength "
+            f"(target >= {mesh['target_points_per_exterior_wavelength']:g})"
+        )
     print(f"  solver: {solver_label(plan['effective_parameters']['solver'])}")
+    orientation = plan["effective_parameters"].get("orientation")
+    if orientation:
+        if orientation["mode"] == "adaptive":
+            print(
+                "  averaging: adaptive beta/gamma "
+                f"J={orientation['minimum_level']}..{orientation['maximum_level']}, "
+                f"alpha={orientation['alpha']}, "
+                f"up to {orientation['maximum_base_orientations']} base orientations"
+            )
+        else:
+            print(
+                "  averaging: fixed "
+                f"alpha={orientation['alpha']}, beta={orientation['beta']}, "
+                f"gamma={orientation['gamma']}"
+            )
     print(f"  output: {plan['output_directory']}")
     print(f"  command: {shlex.join(plan['command'])}")
 
@@ -458,8 +771,10 @@ def write_single_files(plan: dict[str, Any]) -> None:
         "set -euo pipefail\n"
         f"export OMP_NUM_THREADS={shlex.quote(str(runtime['threads']))}\n"
         f"export CUDA_VISIBLE_DEVICES={shlex.quote(str(runtime['gpu']))}\n"
-        f"exec {shlex.join(plan['command'])}\n"
     )
+    for name, value in runtime.get("environment", {}).items():
+        script += f"export {name}={shlex.quote(str(value))}\n"
+    script += f"exec {shlex.join(plan['command'])}\n"
     command_path = output / "command.sh"
     command_path.write_text(script, encoding="utf-8")
     command_path.chmod(0o755)
@@ -604,6 +919,13 @@ def inspect_result(path: Path) -> tuple[dict[str, Any], bool]:
 
     if data.get("software_version") is None:
         warnings.append("software_version is absent (pre-release result)")
+    adaptive = data.get("adaptive")
+    if isinstance(adaptive, dict) and adaptive.get("enabled"):
+        if not adaptive.get("converged"):
+            errors.append(
+                "adaptive orientation averaging reached its maximum level "
+                "without satisfying convergence tolerances"
+            )
     if data.get("hdiv_conforming") and not data.get("sharp_edge_formulation_validated"):
         warnings.append("sharp-edge H(div) result still requires independent validation")
     report = {
@@ -672,6 +994,12 @@ def run_process(plan: dict[str, Any], no_build: bool, resume: bool) -> None:
     environment = os.environ.copy()
     environment["OMP_NUM_THREADS"] = str(plan["runtime"]["threads"])
     environment["CUDA_VISIBLE_DEVICES"] = str(plan["runtime"]["gpu"])
+    environment.update(
+        {
+            str(name): str(value)
+            for name, value in plan["runtime"].get("environment", {}).items()
+        }
+    )
     log_path = output / "run.log"
     print(f"Running: {shlex.join(plan['command'])}")
     sys.stdout.flush()
@@ -757,6 +1085,11 @@ def command_resume(args: argparse.Namespace) -> int:
     if not config.is_file():
         fail(f"missing {config}")
     plan = json.loads(config.read_text(encoding="utf-8"))
+    for leaf in plan_leaves(plan):
+        if leaf.get("kind") == "average":
+            leaf.setdefault("runtime", {}).setdefault("environment", {})[
+                "BEM_MULLER_GPU_ASSEMBLY"
+            ] = "1"
     print_plan(plan, args.json)
     enforce_memory(plan, args.allow_memory_risk)
     execute_plan(plan, args.no_build, resume=True)
@@ -824,6 +1157,14 @@ def command_explain(args: argparse.Namespace) -> int:
     else:
         print("  solver: FMM with MBJ")
     print(f"  automatic mesh target: {profile.points_per_wavelength:g} points/wavelength")
+    print(
+        "  adaptive averaging: "
+        f"J={profile.orientation_minimum_level}..{profile.orientation_maximum_level}, "
+        f"M11/integral/component tolerances "
+        f"{profile.orientation_m11_tolerance:g}/"
+        f"{profile.orientation_integral_tolerance:g}/"
+        f"{profile.orientation_component_tolerance:g}"
+    )
     if profile.two_meshes:
         print("  validation: two successive meshes and a Mueller-matrix comparison")
     return 0
@@ -835,6 +1176,11 @@ def add_calculation_arguments(parser: argparse.ArgumentParser, average: bool) ->
     parser.add_argument("--ri", type=float, required=True, help="real relative refractive index")
     parser.add_argument("--quality", choices=tuple(PROFILES), default="standard")
     parser.add_argument("--ref", type=int, help="surface refinement; automatic for built-in shapes")
+    parser.add_argument(
+        "--points-per-wavelength",
+        type=float,
+        help="override the profile's automatic mesh-resolution target",
+    )
     parser.add_argument("--sides", type=int, default=6, help="number of prism sides")
     parser.add_argument("--aspect", type=float, default=1.0, help="prism height/diameter ratio")
     parser.add_argument("--obj", help="OBJ mesh for --shape obj")
@@ -849,11 +1195,58 @@ def add_calculation_arguments(parser: argparse.ArgumentParser, average: bool) ->
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--yes", action="store_true", help="confirm strict two-grid execution")
     parser.add_argument("--json", action="store_true", help="print the effective plan as JSON")
+    parser.add_argument("--solver", choices=("auto", "fmm", "pfft"), default="auto")
+    parser.add_argument("--tol", dest="tolerance", type=float)
+    parser.add_argument("--digits", dest="fmm_digits", type=int)
+    parser.add_argument("--quad", dest="quadrature", type=int, choices=(4, 7, 13))
+    parser.add_argument("--duffy-order", type=int)
+    parser.add_argument("--ntheta", type=int)
+    parser.add_argument("--max-iters", dest="maximum_iterations", type=int)
+    parser.add_argument("--gmres-restart", type=int)
+    parser.add_argument("--max-leaf", type=int)
+    parser.add_argument("--mbj-nodes", type=int)
+    parser.add_argument("--mbj-overlap", type=int)
+    parser.add_argument("--pfft-inner-tol", dest="pfft_inner_tolerance", type=float)
+    parser.add_argument("--pfft-inner-iters", dest="pfft_inner_iterations")
+    parser.add_argument("--pfft-outer-restart", type=int)
+    parser.add_argument("--pfft-order", type=int)
+    parser.add_argument("--pfft-correction-radius", type=float)
+    parser.add_argument("--pfft-grid-safety", type=float)
     if average:
-        parser.add_argument("--alpha", "--orientations", type=int, default=8)
-        parser.add_argument("--beta", type=int, default=8)
-        parser.add_argument("--gamma", type=int, default=4)
+        parser.add_argument("--alpha", "--orientations", type=int)
+        parser.add_argument("--beta", type=int, help="fixed-grid beta nodes")
+        parser.add_argument("--gamma", type=int, help="fixed-grid gamma nodes")
+        parser.add_argument(
+            "--fixed-grid",
+            action="store_true",
+            help="disable adaptive beta/gamma refinement",
+        )
+        parser.add_argument(
+            "--adaptive-levels",
+            nargs=2,
+            type=int,
+            metavar=("MIN", "MAX"),
+        )
+        parser.add_argument("--adaptive-m11-tol", dest="adaptive_m11_tolerance", type=float)
+        parser.add_argument(
+            "--adaptive-integral-tol",
+            dest="adaptive_integral_tolerance",
+            type=float,
+        )
+        parser.add_argument(
+            "--adaptive-component-tol",
+            dest="adaptive_component_tolerance",
+            type=float,
+        )
         parser.add_argument("--symmetry-order", type=int)
+        parser.add_argument("--orient-warm-max-angle", type=float)
+        parser.add_argument("--orient-recycle-rank", type=int)
+        parser.add_argument("--orient-zero-start", action="store_true")
+        parser.add_argument(
+            "--orient-paired-gpu-gmres",
+            action=argparse.BooleanOptionalAction,
+            default=None,
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:
