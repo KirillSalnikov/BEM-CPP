@@ -64,16 +64,25 @@ def main() -> int:
     assert standard["inputs"]["refinement"] == 5
     assert standard["inputs"]["sides"] == 6
     assert standard["quality"] == "standard"
-    assert "--pfft-fgmres" not in standard["command"]
+    assert "--pfft-fgmres" in standard["command"]
     assert "--mbj-only" in standard["command"]
     assert "hdiv" in standard["command"]
     assert standard["effective_parameters"]["max_leaf"] == 32
+    assert standard["effective_parameters"]["solver"] == "fmm_pfft_fgmres"
 
     small = plan(
         "run", "--shape", "sphere", "--ka", "1", "--ri", "1.3",
         "--out", "/tmp/bem-frontend-small-plan",
     )
     assert small["effective_parameters"]["max_leaf"] == 128
+    assert small["effective_parameters"]["solver"] == "fmm_mbj"
+    assert "--pfft-fgmres" not in small["command"]
+
+    below_threshold = plan(
+        "run", "--shape", "prism", "--ka", "9.99", "--ri", "1.3",
+        "--out", "/tmp/bem-frontend-threshold-plan",
+    )
+    assert below_threshold["effective_parameters"]["solver"] == "fmm_mbj"
 
     average = plan(
         "average", "--shape", "prism", "--ka", "25", "--ri", "1.3",
@@ -84,6 +93,14 @@ def main() -> int:
     assert average["command"][orient + 1:orient + 4] == ["256", "4", "4"]
     symmetry = average["command"].index("--orient-symmetry-order")
     assert average["command"][symmetry + 1] == "6"
+
+    standard_average = plan(
+        "average", "--shape", "prism", "--ka", "10", "--ri", "1.3",
+        "--alpha", "8", "--beta", "4", "--gamma", "4",
+        "--out", "/tmp/bem-frontend-standard-average-plan",
+    )
+    assert "--pfft-fgmres" in standard_average["command"]
+    assert "--orient-paired-gpu-gmres" not in standard_average["command"]
 
     strict = plan(
         "run", "--shape", "sphere", "--ka", "1", "--ri", "1.3",

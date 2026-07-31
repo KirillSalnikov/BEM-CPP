@@ -68,11 +68,11 @@ from one of three reviewed profiles. A normal prism calculation needs only:
 ./bem run --shape prism --ka 25 --ri 1.3
 ```
 
-The default `standard` profile uses the mixed-precision FMM+MBJ Muller solver,
-targets a `1e-5` true residual, computes both incident polarizations, and
-writes the complete Mueller matrix. The executable is built automatically
-when absent. The nested pFFT-FGMRES path remains an expert option because it
-is not robust for every particle and size regime.
+The default `standard` profile targets a `1e-5` true residual, computes both
+incident polarizations, and writes the complete Mueller matrix. It uses the
+stable mixed-precision FMM+MBJ path for `ka<10` and automatically enables the
+faster nested pFFT-FGMRES path for `ka>=10`, where it has been validated on
+normal and large meshes. The executable is built automatically when absent.
 
 Use the same interface for orientation averaging:
 
@@ -87,7 +87,7 @@ available quality levels are:
 | Profile | Intended use | Numerical control |
 |---|---|---|
 | `quick` | exploratory runs only | mixed precision, residual `1e-3` |
-| `standard` | normal calculations | mixed precision, residual `1e-5` |
+| `standard` | normal calculations | mixed precision, adaptive pFFT, residual `1e-5` |
 | `strict` | publication control | FP64, residual `1e-6`, two successive meshes |
 
 Inspect the presets or the exact planned command without running it:

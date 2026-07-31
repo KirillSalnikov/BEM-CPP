@@ -37,6 +37,7 @@ class Profile:
     points_per_wavelength: float
     minimum_refinement: int
     mixed_precision: bool
+    solver_policy: str
     two_meshes: bool
 
 
@@ -55,6 +56,7 @@ PROFILES = {
         points_per_wavelength=4.0,
         minimum_refinement=1,
         mixed_precision=True,
+        solver_policy="fmm_mbj",
         two_meshes=False,
     ),
     "standard": Profile(
@@ -71,6 +73,7 @@ PROFILES = {
         points_per_wavelength=8.0,
         minimum_refinement=2,
         mixed_precision=True,
+        solver_policy="adaptive_pfft",
         two_meshes=False,
     ),
     "strict": Profile(
@@ -87,6 +90,7 @@ PROFILES = {
         points_per_wavelength=8.0,
         minimum_refinement=2,
         mixed_precision=False,
+        solver_policy="fmm_mbj",
         two_meshes=True,
     ),
 }
@@ -157,10 +161,12 @@ def estimate_dofs(args: argparse.Namespace, refinement: int) -> int:
     return 36 * sides * scale
 
 
-def estimate_memory_gib(profile: Profile, dofs: int) -> float:
+def estimate_memory_gib(profile: Profile, dofs: int, pfft_fgmres: bool) -> float:
     # Conservative empirical envelope from the 24 GiB release-machine runs.
-    bytes_per_dof = 26 * 1024 if not profile.mixed_precision else 20 * 1024
-    fixed_gib = 1.0
+    bytes_per_dof = 28 * 1024 if pfft_fgmres else (
+        26 * 1024 if not profile.mixed_precision else 20 * 1024
+    )
+    fixed_gib = 2.0 if pfft_fgmres else 1.0
     return fixed_gib + dofs * bytes_per_dof / (1024.0 ** 3)
 
 
@@ -213,12 +219,31 @@ def shape_arguments(args: argparse.Namespace) -> list[str]:
     return ["--shape", "obj", "--obj", str(obj)]
 
 
-def solver_arguments() -> list[str]:
-    return [
+def use_pfft_fgmres(args: argparse.Namespace, profile: Profile) -> bool:
+    return profile.solver_policy == "adaptive_pfft" and args.ka >= 10.0
+
+
+def solver_label(value: str) -> str:
+    return "FMM+pFFT-FGMRES" if value == "fmm_pfft_fgmres" else "FMM+MBJ"
+
+
+def solver_arguments(pfft_fgmres: bool) -> list[str]:
+    arguments = [
         "--mbj-only",
         "--mbj-nodes", "50",
         "--mbj-overlap", "0",
     ]
+    if pfft_fgmres:
+        arguments += [
+            "--pfft-fgmres",
+            "--pfft-inner-tol", "4e-2",
+            "--pfft-inner-iters", "auto",
+            "--pfft-outer-restart", "32",
+            "--pfft-order", "2",
+            "--pfft-correction-radius", "0",
+            "--pfft-grid-safety", "1",
+        ]
+    return arguments
 
 
 def effective_max_leaf(args: argparse.Namespace, profile: Profile) -> int:
@@ -239,6 +264,8 @@ def make_single_plan(
     binary, build_target = binary_for(args, profile)
     edge_mode = "smooth" if args.shape == "sphere" else "hdiv"
     max_leaf = effective_max_leaf(args, profile)
+    pfft_fgmres = use_pfft_fgmres(args, profile)
+    dofs = estimate_dofs(args, refinement)
     result = output / "result.json"
     command = [str(binary)]
     command += shape_arguments(args)
@@ -256,7 +283,7 @@ def make_single_plan(
         "--max-iters", str(profile.maximum_iterations),
         "--gmres-restart", str(profile.gmres_restart),
     ]
-    command += solver_arguments()
+    command += solver_arguments(pfft_fgmres)
     command += [
         "--fmm-near-fp32" if profile.mixed_precision else "--fmm-near-fp64",
         "--near-correction-cache", str(output / "operator.near"),
@@ -279,11 +306,11 @@ def make_single_plan(
             "--orient-warm-max-angle", "25",
             "--orient-recycle-rank", "0" if profile.name == "strict" else "8",
         ]
-        command.append("--orient-paired-gpu-gmres")
+        if not pfft_fgmres:
+            command.append("--orient-paired-gpu-gmres")
 
     command += ["--out", str(result)]
-    dofs = estimate_dofs(args, refinement)
-    memory = estimate_memory_gib(profile, dofs)
+    memory = estimate_memory_gib(profile, dofs, pfft_fgmres)
     return {
         "schema_version": 1,
         "wrapper_version": VERSION,
@@ -294,6 +321,7 @@ def make_single_plan(
         "effective_parameters": {
             "max_leaf": max_leaf,
             "near_precision": "fp32" if profile.mixed_precision else "fp64",
+            "solver": "fmm_pfft_fgmres" if pfft_fgmres else "fmm_mbj",
         },
         "inputs": {
             "shape": args.shape,
@@ -366,7 +394,8 @@ def print_plan(plan: dict[str, Any], as_json: bool = False) -> None:
             print(
                 f"  ref={child['inputs']['refinement']}: "
                 f"~{child['estimate']['system_dofs']:,} unknowns, "
-                f"~{child['estimate']['gpu_memory_gib']:.2f} GiB GPU"
+                f"~{child['estimate']['gpu_memory_gib']:.2f} GiB GPU, "
+                f"{solver_label(child['effective_parameters']['solver'])}"
             )
         print(f"  output: {plan['output_directory']}")
         return
@@ -379,6 +408,7 @@ def print_plan(plan: dict[str, Any], as_json: bool = False) -> None:
         f"  estimate: {plan['estimate']['system_dofs']:,} unknowns, "
         f"{plan['estimate']['gpu_memory_gib']:.2f} GiB GPU"
     )
+    print(f"  solver: {solver_label(plan['effective_parameters']['solver'])}")
     print(f"  output: {plan['output_directory']}")
     print(f"  command: {shlex.join(plan['command'])}")
 
@@ -735,7 +765,10 @@ def command_explain(args: argparse.Namespace) -> int:
     print(f"  precision: {precision}")
     print(f"  residual target: {profile.tolerance:.0e}")
     print(f"  angular samples: {profile.ntheta}")
-    print("  solver: FMM with MBJ")
+    if profile.solver_policy == "adaptive_pfft":
+        print("  solver: FMM+MBJ for ka<10; FMM+pFFT-FGMRES for ka>=10")
+    else:
+        print("  solver: FMM with MBJ")
     print(f"  automatic mesh target: {profile.points_per_wavelength:g} points/wavelength")
     if profile.two_meshes:
         print("  validation: two successive meshes and a Mueller-matrix comparison")
