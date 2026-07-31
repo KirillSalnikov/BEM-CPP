@@ -68,7 +68,8 @@ quadrature action differed by `1.39e-15`.
 ## Production command
 
 ```bash
-cd /home/kirill/neuro/BEM-CPP-muller-clean
+git clone https://github.com/KirillSalnikov/BEM-CPP.git
+cd BEM-CPP
 
 make bin/muller_nodal_fmm_demo \
   CXX=g++-12 CUDA_HOME=/usr -j8

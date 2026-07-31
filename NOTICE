@@ -1,0 +1,10 @@
+BEM-CPP third-party notice
+==========================
+
+The Sauter-Schwab region maps in src/muller_duffy.cpp follow the open-source
+Bempp-cl Duffy quadrature implementation and were rewritten for the P2 Muller
+reference triangle. Bempp-cl is distributed under the MIT License:
+
+https://github.com/bempp/bempp-cl
+
+No Bempp-cl binary dependency is required by the BEM-CPP solver.

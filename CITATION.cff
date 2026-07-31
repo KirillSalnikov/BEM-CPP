@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: >-
+  If you use BEM-CPP in published work, cite this software release and the
+  numerical methods listed in the documentation.
+title: BEM-CPP
+type: software
+authors:
+  - family-names: Salnikov
+    given-names: Kirill
+    email: kirillpvd_99@mail.ru
+repository-code: https://github.com/KirillSalnikov/BEM-CPP
+url: https://github.com/KirillSalnikov/BEM-CPP
+license: MIT
+version: 0.1.0-alpha.1
+date-released: 2026-07-31
+keywords:
+  - boundary element method
+  - electromagnetic scattering
+  - Muller integral equation
+  - fast multipole method
+  - CUDA

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT=${ROOT:-/home/user/BEM-CUDA}
-ADDA_ROOT=${ADDA_ROOT:-/home/user/adda}
+PROJECT_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+ROOT=${ROOT:-$PROJECT_ROOT}
+ADDA_ROOT=${ADDA_ROOT:-}
 OUT=${OUT:-"$ROOT/runs/adda_ocl_benchmark"}
-ADDA_OCL=${ADDA_OCL:-"$ADDA_ROOT/src/ocl/adda_ocl"}
+ADDA_OCL=${ADDA_OCL:-${ADDA_ROOT:+$ADDA_ROOT/src/ocl/adda_ocl}}
 NTHETA=${NTHETA:-181}
 DPL=${DPL:-20}
 EPS=${EPS:-5}
@@ -41,9 +42,11 @@ emit_row() {
 }
 
 detect_unavailable() {
-    if [[ ! -x "$ADDA_OCL" ]]; then
+    if [[ -z "$ADDA_OCL" || ! -x "$ADDA_OCL" ]]; then
         local reasons=()
-        if [[ ! -f "$ADDA_ROOT/src/ocl/Makefile" ]]; then
+        if [[ -z "$ADDA_ROOT" ]]; then
+            reasons+=("set ADDA_OCL or ADDA_ROOT")
+        elif [[ ! -f "$ADDA_ROOT/src/ocl/Makefile" ]]; then
             reasons+=("missing ADDA OpenCL source Makefile under $ADDA_ROOT/src/ocl")
         fi
         if ! cpp -x c -include CL/cl.h /dev/null >/dev/null 2>&1; then
@@ -61,7 +64,7 @@ detect_unavailable() {
         if [[ ${#reasons[@]} -eq 0 ]]; then
             reasons+=("missing native adda_ocl at $ADDA_OCL; run: cd $ADDA_ROOT/src && make ocl")
         else
-            reasons+=("native adda_ocl is not built at $ADDA_OCL")
+            reasons+=("native adda_ocl is not built at ${ADDA_OCL:-<unset>}")
         fi
         local IFS='; '
         echo "${reasons[*]}"

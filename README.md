@@ -1,5 +1,9 @@
 # BEM-CPP
 
+Current release: `0.1.0-alpha.1`. The command-line and file formats may still
+change before `1.0`; numerical results must include independent convergence
+checks described below.
+
 GPU-accelerated boundary-element solvers for electromagnetic scattering by
 homogeneous dielectric particles. The repository contains two independent
 formulations:
@@ -33,10 +37,21 @@ regression tests, OBJ workflows, and neural GraphSAI experiments.
 - C++11 compiler compatible with the installed CUDA toolkit;
 - OpenMP;
 - Python 3 for build detection and validation;
-- NumPy and Matplotlib only for optional comparison plots.
+- optional Python packages for comparison plots and mesh tools.
+
+The core solver has no Python runtime dependency. Install the common report
+and mesh-analysis packages with `python3 -m pip install -r
+requirements-analysis.txt`. Specialized optional scripts additionally state
+their own requirements, such as Gmsh, Bempp-cl, PyTorch, or cuFINUFFT; none is
+linked into the production solver.
 
 The mixed-precision target is configured for `sm_86` and was developed on an
 RTX 3090 Ti with 24 GiB.
+
+The release test machine uses Ubuntu 24.04, GCC 12.4, CUDA 12.0, and an RTX
+3090 Ti. [`environment.cuda.yml`](environment.cuda.yml) provides a separately
+pinned CUDA 12.2 build environment. Other CUDA 12.x toolkits should be treated
+as unverified until the release audit passes on that system.
 
 The BEM calculation itself runs entirely in C++/CUDA and does not invoke
 Python. The remaining Python files are limited to validation against
@@ -58,6 +73,17 @@ make fmm-only CXX=g++-12 CUDA_HOME=/usr ARCH=-arch=sm_86 -j"$(nproc)"
 
 Set `CUDA_HOME` to the toolkit prefix when CUDA is not installed under
 `/usr`. Change `ARCH` for another GPU architecture.
+
+Inspect the executable before starting a calculation:
+
+```bash
+bin/muller_nodal_fmm_demo_fp32 --version
+bin/muller_nodal_fmm_demo_fp32 --help
+```
+
+Unknown options and options with missing values are rejected. Parent
+directories for results, logs, caches, and checkpoints are created
+automatically.
 
 ## Recommended Muller Run
 
@@ -139,6 +165,8 @@ by the global result peak was `6.9e-8`. One-step large-`ka` controls selected
 `1.3e-8` and `6.0e-6`. `auto` rounds the conservative bandwidth estimate
 `2*(ka+12)` to a multiple of 16 rather than a power of two. Reproduce the
 converged-current controls with `scripts/benchmark_farfield_spectral_replay.sh`.
+That historical replay requires the original ignored `runs/` checkpoints;
+it is not part of the self-contained release smoke test.
 
 With `SOLVER=fmm`, both incident polarizations use GPU-resident FP64 Krylov
 vectors and GPU MBJ application; no Krylov vector is copied to the host between
@@ -361,6 +389,29 @@ make cuda-muller-fmm-check CXX=g++-12 CUDA_HOME=/usr
 make cuda-muller-edge-check CXX=g++-12 CUDA_HOME=/usr
 ```
 
+Run the complete release audit, including a clean build, CLI checks, all host
+tests, all CUDA operator tests, and a small GPU setup calculation:
+
+```bash
+scripts/release_audit.sh --gpu
+```
+
+The host-only checks used in continuous integration are available as:
+
+```bash
+scripts/release_audit.sh --host
+```
+
+A small end-to-end physical check solves a `ka=1`, `m=1.3` sphere and enforces
+explicit Mueller-matrix error limits against Mie theory:
+
+```bash
+examples/run_small_sphere_mie_check.sh
+```
+
+The measured alpha-release reference and its acceptance thresholds are stored
+in [`reference/v0.1.0-alpha.1/small_sphere.json`](reference/v0.1.0-alpha.1/small_sphere.json).
+
 A strict physical study additionally requires:
 
 1. a lower-tolerance control;
@@ -391,9 +442,17 @@ are intentionally excluded from Git.
 
 ## License and Citation
 
-No standalone license file is currently present. Confirm usage and
-redistribution terms with the repository owner before redistribution.
+The project is distributed under the [MIT License](LICENSE). Third-party
+attribution is recorded in [NOTICE](NOTICE). Cite the software metadata from
+[CITATION.cff](CITATION.cff) and the numerical methods relevant to the selected
+solver.
 
 When publishing numerical results, cite the underlying PMCHWT/RWG, Muller,
 FMM/MLFMA, and GMRES/FGMRES methods, and record the exact Git commit and full
 command line used for the calculation.
+
+Release history is maintained in [CHANGELOG.md](CHANGELOG.md). Sharp-edge
+H(div)-BDM1 results remain alpha quality until mesh convergence and an
+independent edge-capable reference agree for the claimed parameter range.
+After the audited commit is tagged, `scripts/package_release.sh` creates the
+versioned source archive and SHA-256 checksum under `dist/`.

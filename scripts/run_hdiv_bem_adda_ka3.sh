@@ -3,12 +3,18 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 OUT=${OUT:-"$ROOT/runs/hdiv_bem_vs_adda_ka3_n1p3"}
-ADDA_EXE=${ADDA_EXE:-/home/kirill/adda-orient-warmstart/src/ocl/adda_ocl}
+ADDA_ROOT=${ADDA_ROOT:-}
+ADDA_EXE=${ADDA_EXE:-${ADDA_ROOT:+$ADDA_ROOT/src/ocl/adda_ocl}}
 PYTHON=${PYTHON:-python3}
 FORCE=${FORCE:-0}
 DPLS=(${DPLS:-15 20 30 40 60 80})
-CLFFT_LIB=${CLFFT_LIB:-/home/kirill/neuro/adda_neuro_prepare-main/third_party/clfft/usr/lib/x86_64-linux-gnu}
-FFTW_LIB=${FFTW_LIB:-/home/kirill/.local/lib}
+CLFFT_LIB=${CLFFT_LIB:-}
+FFTW_LIB=${FFTW_LIB:-}
+
+if [[ -z "$ADDA_EXE" || ! -x "$ADDA_EXE" ]]; then
+  echo "Set ADDA_EXE to an executable adda_ocl, or set ADDA_ROOT." >&2
+  exit 2
+fi
 
 mkdir -p "$OUT"
 cd "$ROOT"
@@ -42,7 +48,10 @@ run_adda() {
     return
   fi
   mkdir -p "$dir"
-  LD_LIBRARY_PATH="$FFTW_LIB:$CLFFT_LIB:${LD_LIBRARY_PATH:-}" \
+  local library_path=${LD_LIBRARY_PATH:-}
+  [[ -n "$CLFFT_LIB" ]] && library_path="$CLFFT_LIB${library_path:+:$library_path}"
+  [[ -n "$FFTW_LIB" ]] && library_path="$FFTW_LIB${library_path:+:$library_path}"
+  LD_LIBRARY_PATH="$library_path" \
     /usr/bin/time \
       -f 'ACTUAL_WALL_S=%e\nMAXRSS_KB=%M' \
       -o "$dir/time.txt" \

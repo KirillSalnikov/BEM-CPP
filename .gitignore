@@ -1,9 +1,11 @@
 bin/
 build/
+dist/
 runs/
 .pytest_cache/
 src/*.o
 *.json
+!reference/**/*.json
 *.npz
 *.pyc
 __pycache__/

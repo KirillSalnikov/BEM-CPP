@@ -259,11 +259,39 @@ def main():
     p.add_argument("--no-prec", action="store_true")
     p.add_argument("--cuda-lib", default="")
     p.add_argument("--skip-run", action="store_true")
+    p.add_argument(
+        "--max-m11-l2", type=float,
+        help="fail when the solid-angle weighted M11 relative L2 exceeds this value",
+    )
+    p.add_argument(
+        "--max-main-floor2", type=float,
+        help="fail when the largest main normalized Mueller error exceeds this value",
+    )
     args = p.parse_args()
 
     if not args.skip_run:
         run_solver(args)
-    compare(args.out, args.n_re, args.n_im, args.ka)
+    metrics = compare(args.out, args.n_re, args.n_im, args.ka)
+    failed = False
+    if (args.max_m11_l2 is not None and
+            metrics["absolute_m11_solid_angle_relative_l2"] > args.max_m11_l2):
+        print(
+            "Mie gate failed: M11 relative L2 "
+            f"{metrics['absolute_m11_solid_angle_relative_l2']:.4e} > "
+            f"{args.max_m11_l2:.4e}",
+            file=sys.stderr,
+        )
+        failed = True
+    if (args.max_main_floor2 is not None and
+            metrics["max_main_floor2"] > args.max_main_floor2):
+        print(
+            "Mie gate failed: main Mueller error "
+            f"{metrics['max_main_floor2']:.4e} > "
+            f"{args.max_main_floor2:.4e}",
+            file=sys.stderr,
+        )
+        failed = True
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

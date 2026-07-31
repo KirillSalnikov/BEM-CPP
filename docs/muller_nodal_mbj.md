@@ -67,7 +67,8 @@ from the projected GMRES residual.
 ## Reproduction
 
 ```bash
-cd /home/kirill/neuro/BEM-CPP
+git clone https://github.com/KirillSalnikov/BEM-CPP.git
+cd BEM-CPP
 make bin/muller_nodal_demo CXX=g++-12 CUDA_HOME=/usr
 
 bin/muller_nodal_demo \
@@ -159,9 +160,9 @@ Current performance limitations are:
 5. the high-order plane-wave FMM needs a parameter policy that avoids its
    low-frequency high-order instability.
 
-The separate neural training path is now prepared in
-`/home/kirill/neuro/BEM-neural-preconditioner`. Existing GraphSAI weights
-remain incompatible because they were trained for the RWG PMCHWT operator.
+The neural training path is maintained as a separate project. Existing
+GraphSAI weights for the RWG PMCHWT operator are incompatible with the Muller
+operator.
 The local training target can be exported without a global dense matrix:
 
 ```bash

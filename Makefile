@@ -1,6 +1,7 @@
 CUDA_HOME ?= $(if $(wildcard /usr/local/cuda/bin/nvcc),/usr/local/cuda,/usr)
 NVCC ?= $(CUDA_HOME)/bin/nvcc
 CXX ?= g++
+VERSION := $(strip $(shell cat VERSION 2>/dev/null || printf unknown))
 ARCH ?= -arch=sm_70
 OPENMP ?= 1
 LAPACK ?= 0
@@ -16,8 +17,9 @@ FP32_PRECISION_FLAGS ?= -DBEM_DEFAULT_FMM_NEAR_FP32 -DBEM_PFFT_FP32 \
 CUDA_TARGET ?= $(if $(wildcard $(CUDA_HOME)/targets/x86_64-linux/include),$(CUDA_HOME)/targets/x86_64-linux,$(CUDA_HOME))
 CUDA_LIB_DIRS = $(CUDA_TARGET)/lib $(CUDA_HOME)/lib/x86_64-linux-gnu $(CUDA_HOME)/lib64 $(CUDA_HOME)/lib
 
-NVFLAGS = $(ARCH) $(NVCC_EXTRA_FLAGS) -O3 -I$(CUDA_TARGET)/include -Xcompiler "$(HOST_OPT) -Wall -Wno-unknown-pragmas -std=c++11" -std=c++11
-CXXFLAGS = $(HOST_OPT) -Wall -std=c++11 -I$(CUDA_TARGET)/include
+VERSION_FLAGS = -DBEM_VERSION=\"$(VERSION)\"
+NVFLAGS = $(ARCH) $(NVCC_EXTRA_FLAGS) $(VERSION_FLAGS) -O3 -I$(CUDA_TARGET)/include -Xcompiler "$(HOST_OPT) -Wall -Wno-unknown-pragmas -std=c++11" -std=c++11
+CXXFLAGS = $(HOST_OPT) -Wall -std=c++11 $(VERSION_FLAGS) -I$(CUDA_TARGET)/include
 LDFLAGS = $(addprefix -L,$(CUDA_LIB_DIRS)) -lcudart -lcufft -lcusparse -lm -lstdc++
 HOST_TEST_DIR = tests
 CUDA_HESSIAN_CHECK = $(HOST_TEST_DIR)/fmm_hessian_check

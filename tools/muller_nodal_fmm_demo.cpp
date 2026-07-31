@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <complex>
@@ -25,6 +26,12 @@
 #include <vector>
 
 #include <cuda_runtime_api.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+
+#ifndef BEM_VERSION
+#define BEM_VERSION "unknown"
+#endif
 
 namespace {
 
@@ -35,6 +42,90 @@ using FlexiblePreconditioner =
 
 std::ofstream iteration_log;
 int iteration_log_every = 1;
+
+void print_usage(const char* program)
+{
+    std::printf(
+        "BEM-CPP Muller solver %s\n"
+        "Usage: %s [options]\n\n"
+        "Geometry and material:\n"
+        "  --shape sphere|cube|prism|obj   Particle geometry\n"
+        "  --obj FILE                      Closed OBJ mesh for --shape obj\n"
+        "  --ref N                         Surface refinement level\n"
+        "  --ka VALUE                      Equal-volume size parameter\n"
+        "  --ri VALUE                      Relative refractive index\n"
+        "  --sides N --aspect VALUE        Prism parameters\n"
+        "  --edge-mode smooth|split|hdiv   Surface-current basis\n\n"
+        "Accuracy and solver:\n"
+        "  --tol VALUE --max-iters N       Residual target and iteration limit\n"
+        "  --digits N --max-leaf N         FMM accuracy controls\n"
+        "  --quad 4|7|13 --duffy-order N   Surface quadrature controls\n"
+        "  --mbj-only --mbj-nodes N        Use the MBJ-preconditioned solve only\n"
+        "  --pfft-fgmres                   Use pFFT as an inner FGMRES operator\n"
+        "  --physical-check --ntheta N     Solve both polarizations and far field\n\n"
+        "Orientation averaging:\n"
+        "  --orient-average NA NB NG       Uniform Euler-angle grid\n"
+        "  --orient-file FILE              Explicit orientation list\n"
+        "  --orient-symmetry-order N       Declared exact rotational symmetry\n"
+        "  --orient-recycle-rank N         Cross-orientation recycling rank\n\n"
+        "Persistence and output:\n"
+        "  --out FILE                      Result JSON path\n"
+        "  --checkpoint PREFIX             Solver checkpoint prefix\n"
+        "  --no-checkpoint                 Disable solver checkpoints\n"
+        "  --near-correction-cache FILE    Exact local-correction cache\n"
+        "  --mbj-cache FILE                MBJ factor cache\n"
+        "  --iteration-log FILE            Per-iteration CSV log\n"
+        "  --setup-only                    Build operators without solving\n\n"
+        "General:\n"
+        "  -h, --help                      Show this help and exit\n"
+        "  --version                       Show the software version and exit\n\n"
+        "See README.md and MANUAL.md for advanced and experimental options.\n",
+        BEM_VERSION, program);
+}
+
+void create_directory_recursive(const std::string& directory)
+{
+    if (directory.empty() || directory == ".")
+        return;
+
+    std::string current;
+    std::size_t offset = 0;
+    if (directory[0] == '/') {
+        current = "/";
+        offset = 1;
+    }
+    while (offset <= directory.size()) {
+        const std::size_t separator = directory.find('/', offset);
+        const std::string component = directory.substr(
+            offset,
+            separator == std::string::npos
+                ? std::string::npos : separator - offset);
+        if (!component.empty()) {
+            if (!current.empty() && current[current.size() - 1] != '/')
+                current += '/';
+            current += component;
+            if (::mkdir(current.c_str(), 0775) != 0 && errno != EEXIST) {
+                throw std::runtime_error(
+                    "cannot create output directory " + current +
+                    ": " + std::strerror(errno));
+            }
+        }
+        if (separator == std::string::npos)
+            break;
+        offset = separator + 1;
+    }
+}
+
+void create_parent_directory(const char* path)
+{
+    if (!path || !path[0])
+        return;
+    const std::string value(path);
+    const std::size_t separator = value.find_last_of('/');
+    if (separator == std::string::npos)
+        return;
+    create_directory_recursive(value.substr(0, separator));
+}
 
 void log_iteration(
     const char* label,
@@ -3629,8 +3720,12 @@ int run_orientation_average(
             std::chrono::steady_clock::now() -
             total_start).count();
     std::ofstream output(output_path);
+    if (!output)
+        throw std::runtime_error(
+            std::string("cannot open result file ") + output_path);
     output << std::setprecision(17)
            << "{\n"
+           << "  \"software_version\": \"" << BEM_VERSION << "\",\n"
            << "  \"solver\": \"muller_orientation_average\",\n"
            << "  \"ka\": " << ka << ",\n"
            << "  \"ri\": " << refractive_real << ",\n"
@@ -3746,7 +3841,7 @@ int run_orientation_average(
 
 } // namespace
 
-int main(int argc, char** argv)
+int run_main(int argc, char** argv)
 {
     int refinement = 2;
     int digits = 5;
@@ -3831,7 +3926,16 @@ int main(int argc, char** argv)
     const char* output_path =
         "runs/muller_nodal_fmm_benchmark.json";
     for (int i = 1; i < argc; i++) {
-        if (std::strcmp(argv[i], "--ref") == 0 && i + 1 < argc)
+        if (std::strcmp(argv[i], "--help") == 0 ||
+            std::strcmp(argv[i], "-h") == 0) {
+            print_usage(argv[0]);
+            return 0;
+        }
+        else if (std::strcmp(argv[i], "--version") == 0) {
+            std::printf("BEM-CPP Muller solver %s\n", BEM_VERSION);
+            return 0;
+        }
+        else if (std::strcmp(argv[i], "--ref") == 0 && i + 1 < argc)
             refinement = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--ka") == 0 && i + 1 < argc)
             ka = std::atof(argv[++i]);
@@ -4096,7 +4200,23 @@ int main(int argc, char** argv)
         }
         else if (std::strcmp(argv[i], "--out") == 0 && i + 1 < argc)
             output_path = argv[++i];
+        else {
+            std::fprintf(
+                stderr,
+                "unknown option or missing value: %s\n"
+                "Run '%s --help' for usage.\n",
+                argv[i], argv[0]);
+            return 2;
+        }
     }
+
+    create_parent_directory(output_path);
+    create_parent_directory(iteration_log_path);
+    create_parent_directory(checkpoint_path);
+    create_parent_directory(near_correction_cache_path);
+    create_parent_directory(mbj_cache_path);
+    if (orient_parts_directory)
+        create_directory_recursive(orient_parts_directory);
 
     const std::string checkpoint_base = checkpoint_disabled
         ? std::string()
@@ -4657,8 +4777,12 @@ int main(int argc, char** argv)
 
     if (setup_only) {
         std::ofstream output(output_path);
+        if (!output)
+            throw std::runtime_error(
+                std::string("cannot open result file ") + output_path);
         output << std::setprecision(17)
                << "{\n"
+               << "  \"software_version\": \"" << BEM_VERSION << "\",\n"
                << "  \"solver\": \"muller_"
                << (edge_mode == MullerEdgeMode::HDivBdm1
                        ? "hdiv_bdm1_" : "nodal_p2_")
@@ -5561,17 +5685,23 @@ int main(int argc, char** argv)
     const double neural_solve_speedup =
         mbj_only || !neural_preconditioner_path ? -1.0 :
         baseline.seconds / neural_preconditioned.seconds;
+    const std::string solver_basis =
+        edge_mode == MullerEdgeMode::HDivBdm1
+            ? "muller_hdiv_bdm1_" : "muller_nodal_p2_";
 
     std::ofstream output(output_path);
+    if (!output)
+        throw std::runtime_error(
+            std::string("cannot open result file ") + output_path);
     output << std::setprecision(17)
            << "{\n"
+           << "  \"software_version\": \"" << BEM_VERSION << "\",\n"
            << "  \"solver\": \""
            << (pfft_fgmres
-                   ? "muller_nodal_p2_pfft_fgmres"
+                   ? solver_basis + "pfft_fgmres"
                    : (hybrid_pfft_fmm
-                   ? "muller_nodal_p2_hybrid_pfft_fmm"
-                   : std::string("muller_nodal_p2_") +
-                         fmm.backend_name()))
+                   ? solver_basis + "hybrid_pfft_fmm"
+                   : solver_basis + fmm.backend_name()))
            << "\",\n"
            << "  \"operator_backend\": \""
            << fmm.backend_name() << "\",\n"
@@ -6119,4 +6249,17 @@ int main(int argc, char** argv)
             parallel_preconditioned.operator_residual <=
                 2.0 * tolerance)
         ? 0 : 1;
+}
+
+int main(int argc, char** argv)
+{
+    try {
+        return run_main(argc, argv);
+    } catch (const std::exception& error) {
+        std::fprintf(stderr, "fatal: %s\n", error.what());
+        return 1;
+    } catch (...) {
+        std::fprintf(stderr, "fatal: unknown error\n");
+        return 1;
+    }
 }
