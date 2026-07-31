@@ -86,9 +86,12 @@ available quality levels are:
 
 | Profile | Intended use | Numerical control |
 |---|---|---|
-| `quick` | exploratory runs only | mixed precision, residual `1e-3` |
+| `quick` | exploratory runs only | mixed precision, residual `1e-3`, at least `ref=2` |
 | `standard` | normal calculations | mixed precision, adaptive pFFT, residual `1e-5` |
-| `strict` | publication control | FP64, residual `1e-6`, two successive meshes |
+| `strict` | publication control | FP64, adaptive pFFT, residual `1e-6`, two successive meshes |
+
+Measured cross-profile accuracy and cold-start timings are documented in
+[Quality-profile validation](docs/quality_profiles.md).
 
 Inspect the presets or the exact planned command without running it:
 

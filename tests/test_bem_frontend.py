@@ -29,9 +29,15 @@ def plan(*arguments: str) -> dict:
     return json.loads(completed.stdout)
 
 
-def synthetic_result(path: Path, scale: float = 1.0, residual: float = 5e-6) -> None:
+def synthetic_result(
+    path: Path,
+    scale: float = 1.0,
+    residual: float = 5e-6,
+    theta: list[float] | None = None,
+) -> None:
+    theta = theta or [0.0, 180.0]
     mueller = [
-        [[scale * (1.0 if i == j else 0.01) for _ in range(2)] for j in range(4)]
+        [[scale * (1.0 if i == j else 0.01) for _ in theta] for j in range(4)]
         for i in range(4)
     ]
     path.write_text(
@@ -42,7 +48,7 @@ def synthetic_result(path: Path, scale: float = 1.0, residual: float = 5e-6) -> 
                 "tolerance": 1e-5,
                 "mbj": {"fmm_residual": residual},
                 "physical": {
-                    "theta_degrees": [0.0, 180.0],
+                    "theta_degrees": theta,
                     "mueller": mueller,
                 },
             }
@@ -75,6 +81,7 @@ def main() -> int:
         "--out", "/tmp/bem-frontend-small-plan",
     )
     assert small["effective_parameters"]["max_leaf"] == 128
+    assert small["inputs"]["refinement"] == 2
     assert small["effective_parameters"]["solver"] == "fmm_mbj"
     assert "--pfft-fgmres" not in small["command"]
 
@@ -109,6 +116,17 @@ def main() -> int:
     assert strict["kind"] == "strict_suite"
     assert [child["inputs"]["refinement"] for child in strict["children"]] == [2, 3]
     assert all("--fmm-near-fp64" in child["command"] for child in strict["children"])
+    assert all("--pfft-fgmres" not in child["command"] for child in strict["children"])
+
+    strict_normal = plan(
+        "run", "--shape", "prism", "--ka", "10", "--ri", "1.5",
+        "--quality", "strict", "--out", "/tmp/bem-frontend-strict-normal-plan",
+    )
+    assert all("--pfft-fgmres" in child["command"] for child in strict_normal["children"])
+    assert all(
+        child["effective_parameters"]["solver"] == "fmm_pfft_fgmres"
+        for child in strict_normal["children"]
+    )
 
     missing_obj = invoke(
         "run", "--shape", "obj", "--obj", "/dev/null", "--ka", "1", "--ri", "1.3",
@@ -126,6 +144,13 @@ def main() -> int:
             invoke("validate", str(result), "--reference", str(reference), "--json").stdout
         )
         assert report["comparison"]["passes"] is True
+        assert report["comparison"]["reference_interpolated"] is False
+        synthetic_result(result, theta=[0.0, 90.0, 180.0])
+        interpolated = json.loads(
+            invoke("validate", str(result), "--reference", str(reference), "--json").stdout
+        )
+        assert interpolated["comparison"]["passes"] is True
+        assert interpolated["comparison"]["reference_interpolated"] is True
         synthetic_result(result, residual=3e-5)
         failed = invoke("validate", str(result), "--json", expected=1)
         assert "exceeds 2*tolerance" in failed.stdout

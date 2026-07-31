@@ -264,10 +264,12 @@ flag.
 
 `standard` is the default. It uses direct FMM+MBJ below `ka=10` and the
 validated pFFT-FGMRES acceleration from `ka=10` upward. `quick` is a
-lower-accuracy exploratory mode, and `strict` runs FP64 on two consecutive
-surface refinements and rejects the result when the normalized Mueller matrix
-or forward `M11` changes by more than 5%. The current profile definitions are
-always available from:
+lower-accuracy exploratory mode, but it never selects less than two uniform
+surface refinements because `ref=1` produced an 11% forward-intensity error
+in a small-sphere control. `strict` applies the same size policy to an FP64
+operator, runs two consecutive surface refinements, and rejects the result
+when the normalized Mueller matrix or forward `M11` changes by more than 5%.
+The current profile definitions are always available from:
 
 ```bash
 ./bem presets

@@ -15,6 +15,8 @@ Semantic Versioning while its public interfaces are stabilizing.
 - angular spectral reconstruction for large alpha grids;
 - `bem` launcher with automatic mesh selection, quality profiles, memory
   checks, restart, and result validation;
+- adaptive FP64 pFFT acceleration for normal-size strict runs and a safer
+  minimum quick mesh selected from cross-profile Mueller comparisons;
 - command-line help, version reporting, and automatic output directories;
 - host and CUDA regression tests and release metadata.
 

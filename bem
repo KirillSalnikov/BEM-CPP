@@ -14,6 +14,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from typing import Any, Iterable, NoReturn
 
 
@@ -54,7 +55,7 @@ PROFILES = {
         gmres_restart=50,
         max_leaf=64,
         points_per_wavelength=4.0,
-        minimum_refinement=1,
+        minimum_refinement=2,
         mixed_precision=True,
         solver_policy="fmm_mbj",
         two_meshes=False,
@@ -90,7 +91,7 @@ PROFILES = {
         points_per_wavelength=8.0,
         minimum_refinement=2,
         mixed_precision=False,
-        solver_policy="fmm_mbj",
+        solver_policy="adaptive_pfft",
         two_meshes=True,
     ),
 }
@@ -529,6 +530,48 @@ def flatten(values: Any) -> list[float]:
     return [float(values)]
 
 
+def interpolate_series(
+    source_x: list[float], source_y: list[float], target_x: list[float]
+) -> list[float]:
+    if len(source_x) != len(source_y) or len(source_x) < 2:
+        fail("Mueller comparison requires at least two matching angular samples")
+    if any(b <= a for a, b in zip(source_x, source_x[1:])):
+        fail("Mueller comparison angles must be strictly increasing")
+    if not target_x or any(b <= a for a, b in zip(target_x, target_x[1:])):
+        fail("target Mueller comparison angles must be strictly increasing")
+    if target_x[0] < source_x[0] or target_x[-1] > source_x[-1]:
+        fail("Mueller comparison angle ranges do not overlap completely")
+    result: list[float] = []
+    lower = 0
+    for target in target_x:
+        while lower + 1 < len(source_x) and source_x[lower + 1] < target:
+            lower += 1
+        if target == source_x[lower]:
+            result.append(source_y[lower])
+            continue
+        upper = min(lower + 1, len(source_x) - 1)
+        if target == source_x[upper]:
+            result.append(source_y[upper])
+            continue
+        fraction = (target - source_x[lower]) / (source_x[upper] - source_x[lower])
+        result.append(source_y[lower] + fraction * (source_y[upper] - source_y[lower]))
+    return result
+
+
+def resample_mueller(
+    source_theta: list[float], source_mueller: list[Any], target_theta: list[float]
+) -> list[Any]:
+    if len(source_mueller) != 4 or any(len(row) != 4 for row in source_mueller):
+        fail("Mueller comparison requires a 4x4 matrix layout")
+    return [
+        [
+            interpolate_series(source_theta, [float(value) for value in values], target_theta)
+            for values in row
+        ]
+        for row in source_mueller
+    ]
+
+
 def inspect_result(path: Path) -> tuple[dict[str, Any], bool]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -575,7 +618,7 @@ def inspect_result(path: Path) -> tuple[dict[str, Any], bool]:
     return report, not errors
 
 
-def compare_results(first_path: Path, second_path: Path) -> dict[str, float]:
+def compare_results(first_path: Path, second_path: Path) -> dict[str, Any]:
     first = json.loads(first_path.read_text(encoding="utf-8"))
     second = json.loads(second_path.read_text(encoding="utf-8"))
     first_physical = mueller_data(first)
@@ -584,8 +627,9 @@ def compare_results(first_path: Path, second_path: Path) -> dict[str, float]:
         fail("both comparison results must contain Mueller matrices")
     first_theta, first_mueller = first_physical
     second_theta, second_mueller = second_physical
-    if first_theta != second_theta:
-        fail("comparison results use different scattering-angle grids")
+    interpolated = first_theta != second_theta
+    if interpolated:
+        second_mueller = resample_mueller(second_theta, second_mueller, first_theta)
     a = flatten(first_mueller)
     b = flatten(second_mueller)
     if len(a) != len(b) or not a:
@@ -599,6 +643,8 @@ def compare_results(first_path: Path, second_path: Path) -> dict[str, float]:
     raw_den = math.sqrt(sum(value * value for value in b)) or 1.0
     norm_den = math.sqrt(sum(value * value for value in bn)) or 1.0
     return {
+        "comparison_angles": len(first_theta),
+        "reference_interpolated": interpolated,
         "raw_relative_l2": math.sqrt(sum((x - y) ** 2 for x, y in zip(a, b))) / raw_den,
         "normalized_relative_l2": math.sqrt(
             sum((x - y) ** 2 for x, y in zip(an, bn))
@@ -620,6 +666,7 @@ def run_process(plan: dict[str, Any], no_build: bool, resume: bool) -> None:
     if resume and result_is_complete(plan):
         print(f"Already complete: {plan['result_path']}")
         return
+    started = time.monotonic()
     ensure_binary(plan, no_build)
     output = Path(plan["output_directory"])
     environment = os.environ.copy()
@@ -627,6 +674,7 @@ def run_process(plan: dict[str, Any], no_build: bool, resume: bool) -> None:
     environment["CUDA_VISIBLE_DEVICES"] = str(plan["runtime"]["gpu"])
     log_path = output / "run.log"
     print(f"Running: {shlex.join(plan['command'])}")
+    sys.stdout.flush()
     with log_path.open("a", encoding="utf-8") as log:
         process = subprocess.Popen(
             plan["command"],
@@ -649,6 +697,7 @@ def run_process(plan: dict[str, Any], no_build: bool, resume: bool) -> None:
             return_code if return_code > 0 else 1,
         )
     report, valid = inspect_result(Path(plan["result_path"]))
+    report["wall_time_s"] = time.monotonic() - started
     write_json_atomic(output / "validation.json", report)
     if not valid:
         fail(f"result validation failed; see {output / 'validation.json'}", 1)
@@ -657,6 +706,7 @@ def run_process(plan: dict[str, Any], no_build: bool, resume: bool) -> None:
 
 
 def execute_plan(plan: dict[str, Any], no_build: bool, resume: bool) -> None:
+    started = time.monotonic()
     write_plan_files(plan)
     if plan["kind"] != "strict_suite":
         run_process(plan, no_build, resume)
@@ -673,6 +723,7 @@ def execute_plan(plan: dict[str, Any], no_build: bool, resume: bool) -> None:
         and comparison["forward_relative_difference"] <=
         plan["comparison"]["maximum_forward_relative_difference"]
     )
+    comparison["suite_wall_time_s"] = time.monotonic() - started
     write_json_atomic(Path(plan["output_directory"]) / "mesh_convergence.json", comparison)
     if not comparison["passes"]:
         fail("strict two-mesh convergence gate failed", 1)
@@ -682,6 +733,7 @@ def execute_plan(plan: dict[str, Any], no_build: bool, resume: bool) -> None:
 def command_calculate(args: argparse.Namespace, kind: str) -> int:
     plan = create_plan(args, kind)
     print_plan(plan, args.json)
+    sys.stdout.flush()
     enforce_memory(plan, args.allow_memory_risk)
     if args.dry_run:
         return 0
@@ -742,6 +794,8 @@ def command_validate(args: argparse.Namespace) -> int:
                 "  forward M11 difference: "
                 f"{report['comparison']['forward_relative_difference']:.3e}"
             )
+            if report["comparison"]["reference_interpolated"]:
+                print("  reference Mueller matrix: linearly interpolated by angle")
     return 0 if valid else 1
 
 
@@ -847,7 +901,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
-    return int(args.handler(args))
+    try:
+        return int(args.handler(args))
+    except KeyboardInterrupt:
+        print("\nbem: interrupted; compatible checkpoints and caches were kept", file=sys.stderr)
+        return 130
 
 
 if __name__ == "__main__":
