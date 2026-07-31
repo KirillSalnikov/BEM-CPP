@@ -92,6 +92,53 @@ wavenumbers.
 an excessively deep tree can reduce the admissible expansion order; the
 driver contains a guard for this condition.
 
+The two vector currents of the Muller action are evaluated together by
+default. Their six scalar components share the far traversal, L2P geometry,
+and direct near-field Green-function values. The mixed build also keeps FP32
+coordinate and charge copies for the FP32 near kernel. For a real wavenumber,
+that kernel omits attenuation and zero imaginary-wavenumber terms. An FP32
+phase cache, direct FP32 multipole and M2L-transfer storage, FP32 local
+coefficients through M2L/L2L, and FP32 accumulation are used in the paired
+M2L and L2P stages; assembled outputs, Krylov vectors, MBJ factors, and
+residual norms remain FP64. On the Shape A benchmark this reduced the steady
+`ref=2` action from 1.086 s to 0.203--0.213 s. With the optional strict
+depth-6 tree, the `ref=3` action decreased from 10.39 s to 1.713 s.
+
+`BEM_FMM_PAIR_CURRENTS=0` selects the previous separate-current path and avoids
+allocating the paired far workspace when set before startup. Stage-isolation
+controls are `BEM_FMM_PAIR_FAR=0` and `BEM_FMM_PAIR_L2P=0`.
+
+The RTX 3090 Ti mixed defaults are 512 threads for paired P2P and 256 threads
+for paired L2P and far work. Tuning controls are
+`BEM_FMM_P2P_PAIR_THREADS=64|128|256|512`,
+`BEM_FMM_L2P_PAIR_THREADS=64|128|256`, and
+`BEM_FMM_PAIR_FAR_THREADS=64|128|256|512`. The 512-thread far option improved
+a one-step microbenchmark but was 7% slower over ten iterations, so 256 remains
+the production default.
+`BEM_FMM_PROFILE_BATCH3=1` reports the far, L2P, and P2P timings, but
+introduces synchronization and is not a production benchmark.
+Use `BEM_FMM_PHASE_CACHE=0`, `BEM_FMM_M2L_STORAGE_FP32=0`,
+`BEM_FMM_MULTI_STORAGE_FP32=0`, `BEM_FMM_LOCAL_STORAGE_FP32=0`,
+`BEM_FMM_M2L_FP32=0`,
+`BEM_FMM_L2P_FP32=0`, and
+`BEM_FMM_P2P_FAST_TRIG=0` for strict stage-isolation controls.
+`BEM_FMM_PHASE_CACHE_RESERVE_MB` controls the default 6144 MiB free-memory
+reserve.
+
+When the direction-major L2P phase table does not fit, the mixed solver
+automatically uses a warp-per-target kernel with the primary phase table. On
+Shape A at `ka=40, ref=3`, this saves about 4.43 GiB and is 1.086x faster than
+the old non-transposed fallback. It remains about 13% slower than retaining
+both phase layouts. `BEM_FMM_L2P_WARP_PER_TARGET=1|0` forces either fallback
+for controlled measurements.
+
+The default high-frequency guard limits the tree to depth 5 when a deeper tree
+would lower the FMM expansion order. `BEM_FMM_ALLOW_DEPTH6=1` permits the
+validated depth-6 path and automatically retains the depth-5 expansion order.
+Use it with `--max-leaf 16` only when the larger workspace fits: the measured
+Shape A `ref=3` run used 13134 MiB. A native reduced depth-6 order was rejected
+because it changed the tested operator by about 2%.
+
 ### 4.2 Near correction
 
 FMM and pFFT approximations are replaced by accurately integrated entries for
@@ -101,6 +148,16 @@ validated correction and rejects incompatible geometry or physics.
 
 Equivalent local configurations on regular polyhedra reuse correction
 templates. This reduces setup cost without changing the operator.
+
+Radius 3 remains the strict Muller default. Radius 2 must be validated for the
+actual `ka` and refractive index: it was accurate in low-contrast checks but
+failed a `ka=20, m=3` prism operator check by about `8e-3`.
+For the tested `ka=20, m=1.3` prism,
+`--fmm-near-radius 2 --digits 6` gave `1.23e-6` operator error and reduced a
+three-step `ref=2` benchmark from 1.531 s to 1.393 s, at the cost of about
+604 MiB more GPU memory. Orders above the conservative Muller cap require an
+explicit `BEM_MULLER_FMM_DIGITS_CAP`; this is a validation control, not a
+general production default.
 
 ### 4.3 Morton block-Jacobi
 
@@ -153,9 +210,9 @@ make muller-fp32 CXX=g++-12 CUDA_HOME=/usr -j"$(nproc)"
 ```
 
 `muller_nodal_fmm_demo` uses FP64 operator storage/work where implemented.
-`muller_nodal_fmm_demo_fp32` enables FP32 pFFT arrays and selected near-field
-work. Krylov vectors, MBJ factors, orthogonalization, and norm reductions
-remain FP64.
+`muller_nodal_fmm_demo_fp32` enables FP32 pFFT arrays, near-field work, cached
+plane-wave phases, and selected M2L/L2P accumulations. Krylov vectors, MBJ
+factors, stage outputs, orthogonalization, and norm reductions remain FP64.
 
 This is mixed precision, not a pure single-precision calculation. The selected
 mixed operator is still slightly different from the FP64 operator. Validate a
@@ -202,7 +259,7 @@ OMP_NUM_THREADS=16 bin/muller_nodal_fmm_demo_fp32 \
   --ref 5 --ka 25 --ri 1.3 \
   --edge-mode hdiv \
   --quad 7 --duffy-order 4 \
-  --digits 5 --max-leaf 64 --fmm-near-radius 3 \
+  --digits 5 --max-leaf 32 --fmm-near-radius 3 \
   --tol 1e-5 --max-iters 500 --gmres-restart 100 \
   --mbj-only --mbj-nodes 50 --mbj-overlap 0 \
   --near-correction-cache runs/prism_ka25_ref5/operator.near \
@@ -258,6 +315,11 @@ Three mechanisms have different purposes:
 | near-correction cache | avoid rebuilding local exact corrections |
 | MBJ cache | avoid rebuilding local LU factors |
 
+For the Shape A `ref=2` measurement, the cold FMM and MBJ setup took
+`5.550 + 6.570 = 12.120 s`. Loading both persistent caches reduced it to
+`1.696 + 0.071 = 1.767 s`, a `6.86x` setup speedup. This does not reduce the
+cost of a Krylov iteration; it removes repeated preparation only.
+
 Do not describe cache loading as solver acceleration unless complete wall time
 and cold-start time are both reported.
 
@@ -266,7 +328,7 @@ and cold-start time are both reported.
 Recommended wrapper:
 
 ```bash
-KA=25 RI=1.3 REF=5 \
+KA=25 RI=1.3 REF=5 SOLVER=fmm RECYCLE_RANK=8 \
 ALPHA=8 BETA=8 GAMMA=4 NTHETA=181 THREADS=16 \
 OUT="$PWD/runs/prism_ka25_avg" \
 scripts/run_muller_orientation_average.sh
@@ -288,6 +350,18 @@ Nearby base orientations may use a previous solution as an initial guess.
 `--orient-warm-max-angle` limits this transfer and `--orient-zero-start`
 disables it. An initial guess changes iteration count, not the converged
 equation.
+
+For direct FMM+MBJ averaging, `--orient-paired-gpu-gmres` keeps both
+polarizations, the Arnoldi bases, and MBJ applications on the GPU. It is the
+default compatible orientation path; `--no-orient-paired-gpu-gmres` selects
+the previous CPU-managed solver. `--orient-recycle-rank R` keeps an updating
+RHS/solution basis across orientations and accepts its projected initial guess
+only when it is at least 2% better than the neighboring solution. The tested
+rank-8 case reduced 312 to 298 iterations and solve time from 1.653 s to
+1.570 s. The paired GPU path reduced a separate large fixed-step solve from
+8.780 s to 8.226 s. pFFT-FGMRES and coarse MBJ retain their existing solver
+path because they require a flexible or coarse application not implemented by
+the paired GPU solver.
 
 The orientation checkpoint stores accumulated weights, Mueller values, timing,
 the next orientation, and previous solutions. It is replaced atomically after
@@ -364,7 +438,8 @@ elements and integrated quantities.
 | `--shape cube` | structured cube |
 | `--obj FILE` | imported triangular surface |
 | `--ref N` | recursive surface refinement |
-| `--edge-refine N` | local edge refinement experiment |
+| `--edge-refine N` | conforming local refinement near prism or OBJ feature edges |
+| `--feature-angle F` | OBJ dihedral threshold in degrees |
 | `--edge-mode smooth|split|hdiv` | surface-current basis |
 
 ### Operator

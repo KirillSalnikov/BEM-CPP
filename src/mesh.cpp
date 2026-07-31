@@ -928,6 +928,114 @@ static double refine_prism_edges(Mesh& m, const std::vector<Vec3>& poly,
     return min_angle * 180.0 / M_PI;
 }
 
+double refine_feature_edges(
+    Mesh& mesh, double feature_angle_degrees, int passes)
+{
+    passes = std::max(0, passes);
+    mesh.edge_refine_requested = passes;
+    mesh.edge_refine_applied = 0;
+    mesh.edge_refine_uniform_fallback = false;
+    const double threshold =
+        std::max(0.0, std::min(180.0, feature_angle_degrees)) *
+        M_PI / 180.0;
+    const auto edge_key = [](int a, int b) {
+        return std::make_pair(std::min(a, b), std::max(a, b));
+    };
+
+    for (int pass = 0; pass < passes; pass++) {
+        const int triangle_count = mesh.nt();
+        std::vector<Vec3> normals(triangle_count);
+        std::map<std::pair<int, int>, std::vector<int>> adjacency;
+        for (int triangle = 0; triangle < triangle_count; triangle++) {
+            const int a = mesh.tris[3 * triangle];
+            const int b = mesh.tris[3 * triangle + 1];
+            const int c = mesh.tris[3 * triangle + 2];
+            const Vec3 raw =
+                (mesh.verts[b] - mesh.verts[a]).cross(
+                    mesh.verts[c] - mesh.verts[a]);
+            const double length = raw.norm();
+            normals[triangle] =
+                length > 1.0e-300 ? raw * (1.0 / length) : Vec3();
+            adjacency[edge_key(a, b)].push_back(triangle);
+            adjacency[edge_key(b, c)].push_back(triangle);
+            adjacency[edge_key(c, a)].push_back(triangle);
+        }
+
+        std::set<std::pair<int, int>> feature_edges;
+        for (const auto& entry : adjacency) {
+            if (entry.second.size() != 2)
+                continue;
+            double cosine = normals[entry.second[0]].dot(
+                normals[entry.second[1]]);
+            cosine = std::max(-1.0, std::min(1.0, cosine));
+            if (std::acos(cosine) >= threshold)
+                feature_edges.insert(entry.first);
+        }
+        if (feature_edges.empty())
+            break;
+
+        std::set<std::pair<int, int>> marked;
+        for (int triangle = 0; triangle < triangle_count; triangle++) {
+            const int a = mesh.tris[3 * triangle];
+            const int b = mesh.tris[3 * triangle + 1];
+            const int c = mesh.tris[3 * triangle + 2];
+            const bool touches_feature =
+                feature_edges.count(edge_key(a, b)) != 0 ||
+                feature_edges.count(edge_key(b, c)) != 0 ||
+                feature_edges.count(edge_key(c, a)) != 0;
+            if (!touches_feature)
+                continue;
+            marked.insert(edge_key(a, b));
+            marked.insert(edge_key(b, c));
+            marked.insert(edge_key(c, a));
+        }
+
+        const double min_transition_angle = 25.0 * M_PI / 180.0;
+        bool closure_changed = true;
+        while (closure_changed) {
+            closure_changed = false;
+            for (int triangle = 0; triangle < triangle_count; triangle++) {
+                const int a = mesh.tris[3 * triangle];
+                const int b = mesh.tris[3 * triangle + 1];
+                const int c = mesh.tris[3 * triangle + 2];
+                const bool mab = marked.count(edge_key(a, b)) != 0;
+                const bool mbc = marked.count(edge_key(b, c)) != 0;
+                const bool mca = marked.count(edge_key(c, a)) != 0;
+                const int count =
+                    (mab ? 1 : 0) + (mbc ? 1 : 0) + (mca ? 1 : 0);
+                if ((count == 1 || count == 2) &&
+                    marked_refinement_min_angle(
+                        mesh.verts[a], mesh.verts[b], mesh.verts[c],
+                        mab, mbc, mca) < min_transition_angle) {
+                    closure_changed |= marked.insert(edge_key(a, b)).second;
+                    closure_changed |= marked.insert(edge_key(b, c)).second;
+                    closure_changed |= marked.insert(edge_key(c, a)).second;
+                }
+            }
+        }
+        refine_marked_edges(mesh, marked);
+        mesh.edge_refine_applied++;
+    }
+
+    double minimum_angle = M_PI;
+    int below_25 = 0;
+    for (int triangle = 0; triangle < mesh.nt(); triangle++) {
+        Vec3 a, b, c;
+        mesh.tri_verts(triangle, a, b, c);
+        const double angle = tri_quality_min_angle(a, b, c);
+        minimum_angle = std::min(minimum_angle, angle);
+        if (angle < 25.0 * M_PI / 180.0)
+            below_25++;
+    }
+    std::printf(
+        "  [Mesh] Generic feature-edge refinement: requested=%d, "
+        "applied=%d, threshold=%.1f deg, min_angle=%.1f deg, "
+        "below25=%d/%d\n",
+        passes, mesh.edge_refine_applied, feature_angle_degrees,
+        minimum_angle * 180.0 / M_PI, below_25, mesh.nt());
+    return minimum_angle * 180.0 / M_PI;
+}
+
 Mesh regular_prism(int sides, double aspect, int refinements, double equiv_radius,
                    int edge_refine, bool mirror_symmetric_sides) {
     if (sides < 3) sides = 3;

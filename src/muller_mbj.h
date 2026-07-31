@@ -36,6 +36,16 @@ struct MullerMbjPreconditioner {
     std::vector<std::complex<double>> coarse_update;
     std::vector<std::complex<double>> coarse_gram_lu;
     std::vector<int> coarse_gram_pivots;
+    void* d_block_offsets = nullptr;
+    void* d_block_lu_offsets = nullptr;
+    void* d_block_dofs = nullptr;
+    void* d_block_pivots = nullptr;
+    void* d_block_lu = nullptr;
+    void* d_block_core_begin = nullptr;
+    void* d_block_core_end = nullptr;
+    int device_block_count = 0;
+    int device_max_dimension = 0;
+    bool device_ready = false;
 
     void build(
         const MullerDenseSystem& system,
@@ -59,6 +69,19 @@ struct MullerMbjPreconditioner {
     void apply(
         const std::complex<double>* rhs,
         std::complex<double>* solution) const;
+    void upload_device();
+    void cleanup_device();
+    bool device_apply_available() const;
+    void apply_device_complex(
+        const void* device_rhs,
+        void* device_solution) const;
+    void apply_device_complex_pair(
+        const void* device_rhs_x,
+        const void* device_rhs_y,
+        void* device_solution_x,
+        void* device_solution_y) const;
+    bool uses_right_device_preconditioning() const { return true; }
+    long long full_operator_action_count() const { return 0; }
     double storage_megabytes() const;
 };
 

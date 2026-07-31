@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <vector>
 
 int main(int argc, char** argv)
@@ -125,11 +126,50 @@ int main(int argc, char** argv)
                 input[column];
         }
     }
+    const char* pair_currents_environment =
+        std::getenv("BEM_FMM_PAIR_CURRENTS");
+    const char* pair_far_environment =
+        std::getenv("BEM_FMM_PAIR_FAR");
+    const bool had_pair_currents_environment =
+        pair_currents_environment != nullptr;
+    const bool had_pair_far_environment =
+        pair_far_environment != nullptr;
+    const std::string saved_pair_currents =
+        had_pair_currents_environment
+            ? pair_currents_environment : "";
+    const std::string saved_pair_far =
+        had_pair_far_environment ? pair_far_environment : "";
+    setenv("BEM_FMM_PAIR_CURRENTS", "1", 1);
+    setenv("BEM_FMM_PAIR_FAR", "1", 1);
     const auto fmm_start = std::chrono::steady_clock::now();
     fmm.matvec(input.data(), actual.data());
     const double fmm_seconds =
         std::chrono::duration<double>(
             std::chrono::steady_clock::now() - fmm_start).count();
+    setenv("BEM_FMM_PAIR_CURRENTS", "0", 1);
+    std::vector<cdouble> separate_current_actual(
+        dense.system_dofs, cdouble(0.0));
+    fmm.matvec(input.data(), separate_current_actual.data());
+    if (had_pair_currents_environment)
+        setenv(
+            "BEM_FMM_PAIR_CURRENTS",
+            saved_pair_currents.c_str(), 1);
+    else
+        unsetenv("BEM_FMM_PAIR_CURRENTS");
+    if (had_pair_far_environment)
+        setenv("BEM_FMM_PAIR_FAR", saved_pair_far.c_str(), 1);
+    else
+        unsetenv("BEM_FMM_PAIR_FAR");
+    double pair_difference_squared = 0.0;
+    double pair_reference_squared = 0.0;
+    for (int i = 0; i < dense.system_dofs; i++) {
+        pair_difference_squared += std::norm(
+            actual[i] - separate_current_actual[i]);
+        pair_reference_squared += std::norm(
+            separate_current_actual[i]);
+    }
+    const double pair_relative_error = std::sqrt(
+        pair_difference_squared / pair_reference_squared);
     double template_relative_error = 0.0;
     {
         MullerFmmOperator legacy_fmm;
@@ -313,6 +353,7 @@ int main(int argc, char** argv)
         "correction_nnz=%zu relative_error=%.3e "
         "direct_error=%.3e electric=%.3e magnetic=%.3e "
         "mbj_error=%.3e mbj_cache_error=%.3e mbj_cache=%s "
+        "pair_error=%.3e "
         "template_error=%.3e "
         "cache_error=%.3e cache_rejected=%s "
         "farfield_error=%.3e fmm_s=%.3f direct_s=%.3f "
@@ -330,6 +371,7 @@ int main(int argc, char** argv)
         preconditioner_relative_error,
         cached_preconditioner_relative_error,
         mbj_cache_ok ? "yes" : "no",
+        pair_relative_error,
         template_relative_error,
         cached_relative_error,
         incompatible_cache_rejected ? "yes" : "no",
@@ -341,6 +383,8 @@ int main(int argc, char** argv)
            direct_error_squared / reference_squared < 1.0e-20 &&
            preconditioner_relative_error < 1.0e-10 &&
            cached_preconditioner_relative_error < 1.0e-14 &&
+           pair_relative_error <
+               (near_fp32 ? 3.0e-6 : 1.0e-11) &&
            template_relative_error < 1.0e-11 &&
            mbj_cache_ok &&
            cached_relative_error <

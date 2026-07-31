@@ -95,6 +95,8 @@ MULLER_FP32_OBJS = \
 	$(FP32_BUILD_DIR)/mesh.o \
 	$(FP32_BUILD_DIR)/orient.o \
 	$(FP32_BUILD_DIR)/muller_fmm_gpu.o \
+	$(FP32_BUILD_DIR)/muller_mbj_gpu.o \
+	$(FP32_BUILD_DIR)/muller_paired_gmres.o \
 	$(FP32_BUILD_DIR)/fmm.o \
 	$(FP32_BUILD_DIR)/p2p.o \
 	$(FP32_BUILD_DIR)/pfft.o
@@ -118,16 +120,18 @@ $(MULLER_FMM_DEMO): tools/muller_nodal_fmm_demo.cpp \
 		$(SRCDIR)/muller_duffy.o $(SRCDIR)/mesh.o \
 		$(SRCDIR)/orient.o \
 		$(SRCDIR)/muller_fmm_gpu.o $(SRCDIR)/fmm.o \
+		$(SRCDIR)/muller_mbj_gpu.o \
+		$(SRCDIR)/muller_paired_gmres.o \
 		$(SRCDIR)/p2p.o $(SRCDIR)/pfft.o
 	@mkdir -p $(BINDIR)
-	$(NVCC) $(NVFLAGS) -I$(SRCDIR) -o $@ $^ $(LDFLAGS)
+	$(NVCC) $(NVFLAGS) -I$(SRCDIR) -o $@ $^ $(LDFLAGS) -lcublas
 	@echo "Built: $@"
 
 $(MULLER_FMM_FP32_DEMO): tools/muller_nodal_fmm_demo.cpp \
 		$(MULLER_FP32_OBJS)
 	@mkdir -p $(BINDIR)
 	$(NVCC) $(NVFLAGS) $(FP32_PRECISION_FLAGS) \
-		-I$(SRCDIR) -o $@ $^ $(LDFLAGS)
+		-I$(SRCDIR) -o $@ $^ $(LDFLAGS) -lcublas
 	@echo "Built optimized mixed-precision solver: $@"
 
 muller-fp32: HOST_OPT=-O3 -march=native

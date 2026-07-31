@@ -1,4 +1,5 @@
 #include "fmm.h"
+#include "gpu_select.h"
 #include <cuda_runtime.h>
 #include <cstdio>
 
@@ -1069,6 +1070,23 @@ __device__ inline void p2p_sine_cosine(
     sincos(value, sine, cosine);
 }
 
+template <bool FastTrig>
+__device__ inline void p2p_pair_sine_cosine(
+    float value, float* sine, float* cosine)
+{
+    if (FastTrig)
+        __sincosf(value, sine, cosine);
+    else
+        sincosf(value, sine, cosine);
+}
+
+template <bool FastTrig>
+__device__ inline void p2p_pair_sine_cosine(
+    double value, double* sine, double* cosine)
+{
+    sincos(value, sine, cosine);
+}
+
 template <typename ComputeReal>
 __global__ void p2p_grad_hessian_batch3_leaf_kernel(
     const double* __restrict__ tgt_xyz,
@@ -1282,6 +1300,120 @@ __global__ void p2p_grad_hessian_batch3_leaf_kernel(
 }
 
 template <typename ComputeReal>
+__device__ __forceinline__ void accumulate_vector_values(
+    ComputeReal dx,
+    ComputeReal dy,
+    ComputeReal dz,
+    const ComputeReal unit[3],
+    ComputeReal gradient_green_re,
+    ComputeReal gradient_green_im,
+    ComputeReal ga_re,
+    ComputeReal ga_im,
+    ComputeReal gb_re,
+    ComputeReal gb_im,
+    const ComputeReal qr[3],
+    const ComputeReal qi[3],
+    ComputeReal curl_acc_re[3],
+    ComputeReal curl_acc_im[3],
+    ComputeReal action_acc_re[3],
+    ComputeReal action_acc_im[3])
+{
+    ComputeReal gradient_q_re[3];
+    ComputeReal gradient_q_im[3];
+#pragma unroll
+    for (int source = 0; source < 3; source++) {
+        gradient_q_re[source] =
+            gradient_green_re * qr[source] -
+            gradient_green_im * qi[source];
+        gradient_q_im[source] =
+            gradient_green_re * qi[source] +
+            gradient_green_im * qr[source];
+    }
+    curl_acc_re[0] +=
+        dy * gradient_q_re[0] - dx * gradient_q_re[1];
+    curl_acc_im[0] +=
+        dy * gradient_q_im[0] - dx * gradient_q_im[1];
+    curl_acc_re[1] +=
+        dz * gradient_q_re[0] - dx * gradient_q_re[2];
+    curl_acc_im[1] +=
+        dz * gradient_q_im[0] - dx * gradient_q_im[2];
+    curl_acc_re[2] +=
+        dz * gradient_q_re[1] - dy * gradient_q_re[2];
+    curl_acc_im[2] +=
+        dz * gradient_q_im[1] - dy * gradient_q_im[2];
+
+    ComputeReal dot_q_re = 0;
+    ComputeReal dot_q_im = 0;
+#pragma unroll
+    for (int source = 0; source < 3; source++) {
+        dot_q_re += unit[source] * qr[source];
+        dot_q_im += unit[source] * qi[source];
+    }
+    const ComputeReal isotropic_re =
+        static_cast<ComputeReal>(2.0) * gb_re - ga_re;
+    const ComputeReal isotropic_im =
+        static_cast<ComputeReal>(2.0) * gb_im - ga_im;
+    const ComputeReal radial_re =
+        ga_re * dot_q_re - ga_im * dot_q_im;
+    const ComputeReal radial_im =
+        ga_re * dot_q_im + ga_im * dot_q_re;
+#pragma unroll
+    for (int component = 0; component < 3; component++) {
+        action_acc_re[component] +=
+            unit[component] * radial_re +
+            isotropic_re * qr[component] -
+            isotropic_im * qi[component];
+        action_acc_im[component] +=
+            unit[component] * radial_im +
+            isotropic_re * qi[component] +
+            isotropic_im * qr[component];
+    }
+}
+
+template <typename ComputeReal, typename ChargeReal>
+__device__ __forceinline__ void accumulate_vector_source_action(
+    ComputeReal dx,
+    ComputeReal dy,
+    ComputeReal dz,
+    const ComputeReal unit[3],
+    ComputeReal gradient_green_re,
+    ComputeReal gradient_green_im,
+    ComputeReal ga_re,
+    ComputeReal ga_im,
+    ComputeReal gb_re,
+    ComputeReal gb_im,
+    const ChargeReal* __restrict__ qx_re,
+    const ChargeReal* __restrict__ qx_im,
+    const ChargeReal* __restrict__ qy_re,
+    const ChargeReal* __restrict__ qy_im,
+    const ChargeReal* __restrict__ qz_re,
+    const ChargeReal* __restrict__ qz_im,
+    int sid,
+    ComputeReal curl_acc_re[3],
+    ComputeReal curl_acc_im[3],
+    ComputeReal action_acc_re[3],
+    ComputeReal action_acc_im[3])
+{
+    const ComputeReal qr[3] = {
+        static_cast<ComputeReal>(qx_re[sid]),
+        static_cast<ComputeReal>(qy_re[sid]),
+        static_cast<ComputeReal>(qz_re[sid])
+    };
+    const ComputeReal qi[3] = {
+        static_cast<ComputeReal>(qx_im[sid]),
+        static_cast<ComputeReal>(qy_im[sid]),
+        static_cast<ComputeReal>(qz_im[sid])
+    };
+    accumulate_vector_values(
+        dx, dy, dz, unit,
+        gradient_green_re, gradient_green_im,
+        ga_re, ga_im, gb_re, gb_im,
+        qr, qi,
+        curl_acc_re, curl_acc_im,
+        action_acc_re, action_acc_im);
+}
+
+template <typename ComputeReal>
 __global__ void p2p_vector_actions_batch3_leaf_kernel(
     const double* __restrict__ tgt_xyz,
     const double* __restrict__ src_xyz,
@@ -1297,13 +1429,16 @@ __global__ void p2p_vector_actions_batch3_leaf_kernel(
     const int* __restrict__ src_ids,
     const int* __restrict__ near_offsets,
     const int* __restrict__ near_leaf_ids,
-    int n_leaves, double k_re, double k_im,
+    const int* __restrict__ near_source_offsets,
+    const int* __restrict__ near_source_ids,
+    int n_leaves, int leaf_split, double k_re, double k_im,
     double* __restrict__ curl_re,
     double* __restrict__ curl_im,
     double* __restrict__ hessian_action_re,
     double* __restrict__ hessian_action_im)
 {
-    const int leaf = blockIdx.x;
+    const int leaf = blockIdx.x / leaf_split;
+    const int leaf_part = blockIdx.x - leaf * leaf_split;
     if (leaf >= n_leaves)
         return;
     const ComputeReal real_k = static_cast<ComputeReal>(k_re);
@@ -1329,14 +1464,55 @@ __global__ void p2p_vector_actions_batch3_leaf_kernel(
         ComputeReal action_acc_re[3] = {0, 0, 0};
         ComputeReal action_acc_im[3] = {0, 0, 0};
 
+        const bool flat_sources =
+            near_source_offsets != nullptr &&
+            near_source_ids != nullptr;
         const int near_begin = near_offsets[leaf];
         const int near_end = near_offsets[leaf + 1];
-        for (int pass = -1; pass < near_end - near_begin; pass++) {
+        const int pass_count = 1 + near_end - near_begin;
+        int pass_index = leaf_part;
+        int source_index = 0;
+        int source_end = 0;
+        const int* selected_source_ids = src_ids;
+        if (flat_sources) {
+            const int flat_begin = near_source_offsets[leaf];
+            const int flat_count =
+                near_source_offsets[leaf + 1] - flat_begin;
+            source_index = flat_begin +
+                static_cast<int>(
+                    static_cast<long long>(flat_count) *
+                    leaf_part / leaf_split);
+            source_end = flat_begin +
+                static_cast<int>(
+                    static_cast<long long>(flat_count) *
+                    (leaf_part + 1) / leaf_split);
+            selected_source_ids = near_source_ids;
+        } else if (pass_index < pass_count) {
             const int source_leaf =
-                pass < 0 ? leaf : near_leaf_ids[near_begin + pass];
-            for (int si = src_offsets[source_leaf];
-                 si < src_offsets[source_leaf + 1]; si++) {
-                const int sid = src_ids[si];
+                pass_index == 0
+                    ? leaf
+                    : near_leaf_ids[near_begin + pass_index - 1];
+            source_index = src_offsets[source_leaf];
+            source_end = src_offsets[source_leaf + 1];
+        }
+        while (true) {
+            if (source_index >= source_end) {
+                if (flat_sources)
+                    break;
+                pass_index += leaf_split;
+                if (pass_index >= pass_count)
+                    break;
+                const int source_leaf =
+                    pass_index == 0
+                        ? leaf
+                        : near_leaf_ids[
+                            near_begin + pass_index - 1];
+                source_index = src_offsets[source_leaf];
+                source_end = src_offsets[source_leaf + 1];
+                continue;
+            }
+                const int sid =
+                    selected_source_ids[source_index++];
                 const ComputeReal dx = tx -
                     static_cast<ComputeReal>(src_xyz[3 * sid]);
                 const ComputeReal dy = ty -
@@ -1394,69 +1570,283 @@ __global__ void p2p_vector_actions_batch3_leaf_kernel(
                 const ComputeReal unit[3] = {
                     dx * inv_r, dy * inv_r, dz * inv_r
                 };
-                const ComputeReal qr[3] = {
-                    static_cast<ComputeReal>(qx_re[sid]),
-                    static_cast<ComputeReal>(qy_re[sid]),
-                    static_cast<ComputeReal>(qz_re[sid])
-                };
-                const ComputeReal qi[3] = {
-                    static_cast<ComputeReal>(qx_im[sid]),
-                    static_cast<ComputeReal>(qy_im[sid]),
-                    static_cast<ComputeReal>(qz_im[sid])
-                };
-
-                const ComputeReal curl_scale[3][3] = {
-                    {dy, -dx, static_cast<ComputeReal>(0)},
-                    {dz, static_cast<ComputeReal>(0), -dx},
-                    {static_cast<ComputeReal>(0), dz, -dy}
-                };
-                for (int component = 0; component < 3; component++) {
-                    for (int source = 0; source < 3; source++) {
-                        const ComputeReal scale =
-                            curl_scale[component][source];
-                        const ComputeReal value_re =
-                            gradient_green_re * qr[source] -
-                            gradient_green_im * qi[source];
-                        const ComputeReal value_im =
-                            gradient_green_re * qi[source] +
-                            gradient_green_im * qr[source];
-                        curl_acc_re[component] += scale * value_re;
-                        curl_acc_im[component] += scale * value_im;
-                    }
-                }
-
-                ComputeReal dot_q_re = 0;
-                ComputeReal dot_q_im = 0;
-                for (int source = 0; source < 3; source++) {
-                    dot_q_re += unit[source] * qr[source];
-                    dot_q_im += unit[source] * qi[source];
-                }
-                const ComputeReal isotropic_re =
-                    static_cast<ComputeReal>(2.0) * gb_re - ga_re;
-                const ComputeReal isotropic_im =
-                    static_cast<ComputeReal>(2.0) * gb_im - ga_im;
-                const ComputeReal radial_re =
-                    ga_re * dot_q_re - ga_im * dot_q_im;
-                const ComputeReal radial_im =
-                    ga_re * dot_q_im + ga_im * dot_q_re;
-                for (int component = 0; component < 3; component++) {
-                    action_acc_re[component] +=
-                        unit[component] * radial_re +
-                        isotropic_re * qr[component] -
-                        isotropic_im * qi[component];
-                    action_acc_im[component] +=
-                        unit[component] * radial_im +
-                        isotropic_re * qi[component] +
-                        isotropic_im * qr[component];
-                }
-            }
+                accumulate_vector_source_action(
+                    dx, dy, dz, unit,
+                    gradient_green_re, gradient_green_im,
+                    ga_re, ga_im, gb_re, gb_im,
+                    qx_re, qx_im, qy_re, qy_im, qz_re, qz_im,
+                    sid,
+                    curl_acc_re, curl_acc_im,
+                    action_acc_re, action_acc_im);
         }
         for (int component = 0; component < 3; component++) {
             const int offset = 3 * tid + component;
-            curl_re[offset] += curl_acc_re[component];
-            curl_im[offset] += curl_acc_im[component];
-            hessian_action_re[offset] += action_acc_re[component];
-            hessian_action_im[offset] += action_acc_im[component];
+            if (leaf_split == 1) {
+                curl_re[offset] += curl_acc_re[component];
+                curl_im[offset] += curl_acc_im[component];
+                hessian_action_re[offset] +=
+                    action_acc_re[component];
+                hessian_action_im[offset] +=
+                    action_acc_im[component];
+            } else {
+                atomicAdd(
+                    curl_re + offset,
+                    static_cast<double>(curl_acc_re[component]));
+                atomicAdd(
+                    curl_im + offset,
+                    static_cast<double>(curl_acc_im[component]));
+                atomicAdd(
+                    hessian_action_re + offset,
+                    static_cast<double>(action_acc_re[component]));
+                atomicAdd(
+                    hessian_action_im + offset,
+                    static_cast<double>(action_acc_im[component]));
+            }
+        }
+    }
+}
+
+template <
+    typename ComputeReal,
+    typename CoordinateReal,
+    typename ChargeReal,
+    bool RealWaveNumber,
+    bool FastTrig>
+__global__ void p2p_vector_actions_pair_batch3_leaf_kernel(
+    const CoordinateReal* __restrict__ tgt_xyz,
+    const CoordinateReal* __restrict__ src_xyz,
+    const ChargeReal* __restrict__ first_x_re,
+    const ChargeReal* __restrict__ first_x_im,
+    const ChargeReal* __restrict__ first_y_re,
+    const ChargeReal* __restrict__ first_y_im,
+    const ChargeReal* __restrict__ first_z_re,
+    const ChargeReal* __restrict__ first_z_im,
+    const ChargeReal* __restrict__ second_x_re,
+    const ChargeReal* __restrict__ second_x_im,
+    const ChargeReal* __restrict__ second_y_re,
+    const ChargeReal* __restrict__ second_y_im,
+    const ChargeReal* __restrict__ second_z_re,
+    const ChargeReal* __restrict__ second_z_im,
+    const int* __restrict__ tgt_offsets,
+    const int* __restrict__ tgt_ids,
+    const int* __restrict__ src_offsets,
+    const int* __restrict__ src_ids,
+    const int* __restrict__ near_offsets,
+    const int* __restrict__ near_leaf_ids,
+    const int* __restrict__ near_source_offsets,
+    const int* __restrict__ near_source_ids,
+    int n_leaves, int leaf_split, double k_re, double k_im,
+    double* __restrict__ first_curl_re,
+    double* __restrict__ first_curl_im,
+    double* __restrict__ first_hessian_action_re,
+    double* __restrict__ first_hessian_action_im,
+    double* __restrict__ second_curl_re,
+    double* __restrict__ second_curl_im,
+    double* __restrict__ second_hessian_action_re,
+    double* __restrict__ second_hessian_action_im)
+{
+    const int leaf = blockIdx.x / leaf_split;
+    const int leaf_part = blockIdx.x - leaf * leaf_split;
+    if (leaf >= n_leaves)
+        return;
+    const ComputeReal real_k = static_cast<ComputeReal>(k_re);
+    const ComputeReal imaginary_k = static_cast<ComputeReal>(k_im);
+    const ComputeReal inv4pi =
+        static_cast<ComputeReal>(0.07957747154594767);
+    const ComputeReal k2_re =
+        real_k * real_k - imaginary_k * imaginary_k;
+    const ComputeReal k2_im =
+        static_cast<ComputeReal>(2.0) * real_k * imaginary_k;
+
+    for (int ti = tgt_offsets[leaf] + threadIdx.x;
+         ti < tgt_offsets[leaf + 1]; ti += blockDim.x) {
+        const int tid = tgt_ids[ti];
+        const ComputeReal tx =
+            static_cast<ComputeReal>(tgt_xyz[3 * tid]);
+        const ComputeReal ty =
+            static_cast<ComputeReal>(tgt_xyz[3 * tid + 1]);
+        const ComputeReal tz =
+            static_cast<ComputeReal>(tgt_xyz[3 * tid + 2]);
+        ComputeReal first_curl_acc_re[3] = {0, 0, 0};
+        ComputeReal first_curl_acc_im[3] = {0, 0, 0};
+        ComputeReal first_action_acc_re[3] = {0, 0, 0};
+        ComputeReal first_action_acc_im[3] = {0, 0, 0};
+        ComputeReal second_curl_acc_re[3] = {0, 0, 0};
+        ComputeReal second_curl_acc_im[3] = {0, 0, 0};
+        ComputeReal second_action_acc_re[3] = {0, 0, 0};
+        ComputeReal second_action_acc_im[3] = {0, 0, 0};
+
+        const bool flat_sources =
+            near_source_offsets != nullptr &&
+            near_source_ids != nullptr;
+        const int near_begin = near_offsets[leaf];
+        const int near_end = near_offsets[leaf + 1];
+        const int pass_count = 1 + near_end - near_begin;
+        int pass_index = leaf_part;
+        int source_index = 0;
+        int source_end = 0;
+        const int* selected_source_ids = src_ids;
+        if (flat_sources) {
+            const int flat_begin = near_source_offsets[leaf];
+            const int flat_count =
+                near_source_offsets[leaf + 1] - flat_begin;
+            source_index = flat_begin +
+                static_cast<int>(
+                    static_cast<long long>(flat_count) *
+                    leaf_part / leaf_split);
+            source_end = flat_begin +
+                static_cast<int>(
+                    static_cast<long long>(flat_count) *
+                    (leaf_part + 1) / leaf_split);
+            selected_source_ids = near_source_ids;
+        } else if (pass_index < pass_count) {
+            const int source_leaf =
+                pass_index == 0
+                    ? leaf
+                    : near_leaf_ids[near_begin + pass_index - 1];
+            source_index = src_offsets[source_leaf];
+            source_end = src_offsets[source_leaf + 1];
+        }
+        while (true) {
+            if (source_index >= source_end) {
+                if (flat_sources)
+                    break;
+                pass_index += leaf_split;
+                if (pass_index >= pass_count)
+                    break;
+                const int source_leaf =
+                    pass_index == 0
+                        ? leaf
+                        : near_leaf_ids[
+                            near_begin + pass_index - 1];
+                source_index = src_offsets[source_leaf];
+                source_end = src_offsets[source_leaf + 1];
+                continue;
+            }
+                const int sid =
+                    selected_source_ids[source_index++];
+                const ComputeReal dx = tx -
+                    static_cast<ComputeReal>(src_xyz[3 * sid]);
+                const ComputeReal dy = ty -
+                    static_cast<ComputeReal>(src_xyz[3 * sid + 1]);
+                const ComputeReal dz = tz -
+                    static_cast<ComputeReal>(src_xyz[3 * sid + 2]);
+                const ComputeReal radius_squared =
+                    dx * dx + dy * dy + dz * dz;
+                if (radius_squared <
+                    static_cast<ComputeReal>(1.0e-24))
+                    continue;
+                const ComputeReal inv_r =
+                    p2p_inverse_sqrt(radius_squared);
+                const ComputeReal radius = radius_squared * inv_r;
+                const ComputeReal inv_r2 = inv_r * inv_r;
+                const ComputeReal attenuation = RealWaveNumber
+                    ? static_cast<ComputeReal>(1)
+                    : p2p_attenuation(-imaginary_k * radius);
+                const ComputeReal phase = real_k * radius;
+                ComputeReal sine = 0;
+                ComputeReal cosine = 0;
+                p2p_pair_sine_cosine<FastTrig>(
+                    phase, &sine, &cosine);
+                const ComputeReal green_re =
+                    attenuation * cosine * inv4pi * inv_r;
+                const ComputeReal green_im =
+                    attenuation * sine * inv4pi * inv_r;
+                const ComputeReal gradient_factor_re = RealWaveNumber
+                    ? -inv_r2
+                    : (-imaginary_k - inv_r) * inv_r;
+                const ComputeReal gradient_factor_im = real_k * inv_r;
+                const ComputeReal gradient_green_re =
+                    green_re * gradient_factor_re -
+                    green_im * gradient_factor_im;
+                const ComputeReal gradient_green_im =
+                    green_re * gradient_factor_im +
+                    green_im * gradient_factor_re;
+                const ComputeReal a_re = RealWaveNumber
+                    ? static_cast<ComputeReal>(3.0) * inv_r2 - k2_re
+                    : static_cast<ComputeReal>(3.0) * inv_r2 +
+                        static_cast<ComputeReal>(3.0) *
+                            imaginary_k * inv_r - k2_re;
+                const ComputeReal a_im =
+                    -static_cast<ComputeReal>(3.0) *
+                        real_k * inv_r - k2_im;
+                const ComputeReal b_re = RealWaveNumber
+                    ? inv_r2
+                    : inv_r2 + imaginary_k * inv_r;
+                const ComputeReal b_im = -real_k * inv_r;
+                const ComputeReal ga_re =
+                    green_re * a_re - green_im * a_im;
+                const ComputeReal ga_im =
+                    green_re * a_im + green_im * a_re;
+                const ComputeReal gb_re =
+                    green_re * b_re - green_im * b_im;
+                const ComputeReal gb_im =
+                    green_re * b_im + green_im * b_re;
+                const ComputeReal unit[3] = {
+                    dx * inv_r, dy * inv_r, dz * inv_r
+                };
+                accumulate_vector_source_action(
+                    dx, dy, dz, unit,
+                    gradient_green_re, gradient_green_im,
+                    ga_re, ga_im, gb_re, gb_im,
+                    first_x_re, first_x_im,
+                    first_y_re, first_y_im,
+                    first_z_re, first_z_im,
+                    sid,
+                    first_curl_acc_re, first_curl_acc_im,
+                    first_action_acc_re, first_action_acc_im);
+                accumulate_vector_source_action(
+                    dx, dy, dz, unit,
+                    gradient_green_re, gradient_green_im,
+                    ga_re, ga_im, gb_re, gb_im,
+                    second_x_re, second_x_im,
+                    second_y_re, second_y_im,
+                    second_z_re, second_z_im,
+                    sid,
+                    second_curl_acc_re, second_curl_acc_im,
+                    second_action_acc_re, second_action_acc_im);
+        }
+        for (int component = 0; component < 3; component++) {
+            const int offset = 3 * tid + component;
+            if (leaf_split == 1) {
+                first_curl_re[offset] += first_curl_acc_re[component];
+                first_curl_im[offset] += first_curl_acc_im[component];
+                first_hessian_action_re[offset] +=
+                    first_action_acc_re[component];
+                first_hessian_action_im[offset] +=
+                    first_action_acc_im[component];
+                second_curl_re[offset] += second_curl_acc_re[component];
+                second_curl_im[offset] += second_curl_acc_im[component];
+                second_hessian_action_re[offset] +=
+                    second_action_acc_re[component];
+                second_hessian_action_im[offset] +=
+                    second_action_acc_im[component];
+            } else {
+                atomicAdd(
+                    first_curl_re + offset,
+                    static_cast<double>(first_curl_acc_re[component]));
+                atomicAdd(
+                    first_curl_im + offset,
+                    static_cast<double>(first_curl_acc_im[component]));
+                atomicAdd(
+                    first_hessian_action_re + offset,
+                    static_cast<double>(first_action_acc_re[component]));
+                atomicAdd(
+                    first_hessian_action_im + offset,
+                    static_cast<double>(first_action_acc_im[component]));
+                atomicAdd(
+                    second_curl_re + offset,
+                    static_cast<double>(second_curl_acc_re[component]));
+                atomicAdd(
+                    second_curl_im + offset,
+                    static_cast<double>(second_curl_acc_im[component]));
+                atomicAdd(
+                    second_hessian_action_re + offset,
+                    static_cast<double>(second_action_acc_re[component]));
+                atomicAdd(
+                    second_hessian_action_im + offset,
+                    static_cast<double>(second_action_acc_im[component]));
+            }
         }
     }
 }
@@ -1553,34 +1943,215 @@ void launch_p2p_vector_actions_batch3_leaf(
     const int* d_tgt_offsets, const int* d_tgt_ids,
     const int* d_src_offsets, const int* d_src_ids,
     const int* d_near_offsets, const int* d_near_leaf_ids,
+    const int* d_near_source_offsets,
+    const int* d_near_source_ids,
     int n_leaves, double k_re, double k_im,
     double* d_curl_re, double* d_curl_im,
     double* d_hessian_action_re, double* d_hessian_action_im,
     bool fp32_compute)
 {
+#ifdef BEM_DEFAULT_FMM_NEAR_FP32
+    const int default_threads = 512;
+#else
+    const int default_threads = 128;
+#endif
+    int threads = bem_env_int(
+        "BEM_FMM_P2P_THREADS", default_threads);
+    if (threads != 64 && threads != 128 &&
+        threads != 256 && threads != 512 && threads != 1024)
+        threads = default_threads;
+#ifdef BEM_DEFAULT_FMM_NEAR_FP32
+    const int default_leaf_split =
+        d_near_source_offsets != nullptr ? 32 : 8;
+#else
+    const int default_leaf_split = 1;
+#endif
+    int leaf_split = bem_env_int(
+        "BEM_FMM_P2P_LEAF_SPLIT", default_leaf_split);
+    if (leaf_split != 1 && leaf_split != 2 &&
+        leaf_split != 4 && leaf_split != 8 &&
+        leaf_split != 16 && leaf_split != 32 &&
+        leaf_split != 64 && leaf_split != 128)
+        leaf_split = 1;
     if (fp32_compute) {
-        p2p_vector_actions_batch3_leaf_kernel<float><<<n_leaves, 128>>>(
+        p2p_vector_actions_batch3_leaf_kernel<float>
+            <<<n_leaves * leaf_split, threads>>>(
             d_tgt, d_src,
             d_qx_re, d_qx_im,
             d_qy_re, d_qy_im,
             d_qz_re, d_qz_im,
             d_tgt_offsets, d_tgt_ids, d_src_offsets, d_src_ids,
             d_near_offsets, d_near_leaf_ids,
-            n_leaves, k_re, k_im,
+            d_near_source_offsets, d_near_source_ids,
+            n_leaves, leaf_split, k_re, k_im,
             d_curl_re, d_curl_im,
             d_hessian_action_re, d_hessian_action_im);
         return;
     }
-    p2p_vector_actions_batch3_leaf_kernel<double><<<n_leaves, 128>>>(
+    p2p_vector_actions_batch3_leaf_kernel<double>
+        <<<n_leaves * leaf_split, threads>>>(
         d_tgt, d_src,
         d_qx_re, d_qx_im,
         d_qy_re, d_qy_im,
         d_qz_re, d_qz_im,
         d_tgt_offsets, d_tgt_ids, d_src_offsets, d_src_ids,
         d_near_offsets, d_near_leaf_ids,
-        n_leaves, k_re, k_im,
+        d_near_source_offsets, d_near_source_ids,
+        n_leaves, leaf_split, k_re, k_im,
         d_curl_re, d_curl_im,
         d_hessian_action_re, d_hessian_action_im);
+}
+
+void launch_p2p_vector_actions_pair_batch3_leaf(
+    const double* d_tgt, const double* d_src,
+    const double* d_first_x_re, const double* d_first_x_im,
+    const double* d_first_y_re, const double* d_first_y_im,
+    const double* d_first_z_re, const double* d_first_z_im,
+    const double* d_second_x_re, const double* d_second_x_im,
+    const double* d_second_y_re, const double* d_second_y_im,
+    const double* d_second_z_re, const double* d_second_z_im,
+    const int* d_tgt_offsets, const int* d_tgt_ids,
+    const int* d_src_offsets, const int* d_src_ids,
+    const int* d_near_offsets, const int* d_near_leaf_ids,
+    const int* d_near_source_offsets,
+    const int* d_near_source_ids,
+    int n_leaves, double k_re, double k_im,
+    double* d_first_curl_re, double* d_first_curl_im,
+    double* d_first_hessian_action_re,
+    double* d_first_hessian_action_im,
+    double* d_second_curl_re, double* d_second_curl_im,
+    double* d_second_hessian_action_re,
+    double* d_second_hessian_action_im,
+    const float* d_tgt_fp32, const float* d_src_fp32,
+    const float* d_packed_charges_fp32, int source_count,
+    bool fp32_compute)
+{
+#ifdef BEM_DEFAULT_FMM_NEAR_FP32
+    const int default_threads = 512;
+#else
+    const int default_threads = 128;
+#endif
+    int threads = bem_env_int(
+        "BEM_FMM_P2P_PAIR_THREADS", default_threads);
+    if (threads != 64 && threads != 128 &&
+        threads != 256 && threads != 512)
+        threads = default_threads;
+#ifdef BEM_DEFAULT_FMM_NEAR_FP32
+    const int default_leaf_split =
+        d_near_source_offsets != nullptr ? 32 : 8;
+#else
+    const int default_leaf_split = 1;
+#endif
+    int leaf_split = bem_env_int(
+        "BEM_FMM_P2P_LEAF_SPLIT", default_leaf_split);
+    if (leaf_split != 1 && leaf_split != 2 &&
+        leaf_split != 4 && leaf_split != 8 &&
+        leaf_split != 16 && leaf_split != 32 &&
+        leaf_split != 64 && leaf_split != 128)
+        leaf_split = 1;
+#define LAUNCH_PAIR_KERNEL( \
+    TYPE, COORD_TYPE, CHARGE_TYPE, REAL_K, FAST_TRIG, TARGETS, SOURCES, \
+    FIRST_X_RE, FIRST_X_IM, FIRST_Y_RE, FIRST_Y_IM, \
+    FIRST_Z_RE, FIRST_Z_IM, SECOND_X_RE, SECOND_X_IM, \
+    SECOND_Y_RE, SECOND_Y_IM, SECOND_Z_RE, SECOND_Z_IM) \
+    p2p_vector_actions_pair_batch3_leaf_kernel< \
+        TYPE, COORD_TYPE, CHARGE_TYPE, REAL_K, FAST_TRIG> \
+        <<<n_leaves * leaf_split, threads>>>( \
+            TARGETS, SOURCES, \
+            FIRST_X_RE, FIRST_X_IM, \
+            FIRST_Y_RE, FIRST_Y_IM, \
+            FIRST_Z_RE, FIRST_Z_IM, \
+            SECOND_X_RE, SECOND_X_IM, \
+            SECOND_Y_RE, SECOND_Y_IM, \
+            SECOND_Z_RE, SECOND_Z_IM, \
+            d_tgt_offsets, d_tgt_ids, \
+            d_src_offsets, d_src_ids, \
+            d_near_offsets, d_near_leaf_ids, \
+            d_near_source_offsets, d_near_source_ids, \
+            n_leaves, leaf_split, k_re, k_im, \
+            d_first_curl_re, d_first_curl_im, \
+            d_first_hessian_action_re, \
+            d_first_hessian_action_im, \
+            d_second_curl_re, d_second_curl_im, \
+            d_second_hessian_action_re, \
+            d_second_hessian_action_im)
+    const bool fast_trig =
+        fp32_compute &&
+        bem_env_flag_enabled("BEM_FMM_P2P_FAST_TRIG", true);
+    const bool real_wave_number = k_im == 0.0;
+    if (fp32_compute && d_tgt_fp32 != nullptr &&
+        d_src_fp32 != nullptr &&
+        d_packed_charges_fp32 != nullptr &&
+        source_count > 0) {
+        if (real_wave_number && fast_trig) {
+            LAUNCH_PAIR_KERNEL(
+                float, float, float, true, true,
+                d_tgt_fp32, d_src_fp32,
+                d_packed_charges_fp32,
+                d_packed_charges_fp32 + source_count,
+                d_packed_charges_fp32 + 2 * source_count,
+                d_packed_charges_fp32 + 3 * source_count,
+                d_packed_charges_fp32 + 4 * source_count,
+                d_packed_charges_fp32 + 5 * source_count,
+                d_packed_charges_fp32 + 6 * source_count,
+                d_packed_charges_fp32 + 7 * source_count,
+                d_packed_charges_fp32 + 8 * source_count,
+                d_packed_charges_fp32 + 9 * source_count,
+                d_packed_charges_fp32 + 10 * source_count,
+                d_packed_charges_fp32 + 11 * source_count);
+        } else if (real_wave_number) {
+            LAUNCH_PAIR_KERNEL(
+                float, float, float, true, false,
+                d_tgt_fp32, d_src_fp32,
+                d_packed_charges_fp32,
+                d_packed_charges_fp32 + source_count,
+                d_packed_charges_fp32 + 2 * source_count,
+                d_packed_charges_fp32 + 3 * source_count,
+                d_packed_charges_fp32 + 4 * source_count,
+                d_packed_charges_fp32 + 5 * source_count,
+                d_packed_charges_fp32 + 6 * source_count,
+                d_packed_charges_fp32 + 7 * source_count,
+                d_packed_charges_fp32 + 8 * source_count,
+                d_packed_charges_fp32 + 9 * source_count,
+                d_packed_charges_fp32 + 10 * source_count,
+                d_packed_charges_fp32 + 11 * source_count);
+        } else {
+            LAUNCH_PAIR_KERNEL(
+                float, float, float, false, false,
+                d_tgt_fp32, d_src_fp32,
+                d_packed_charges_fp32,
+                d_packed_charges_fp32 + source_count,
+                d_packed_charges_fp32 + 2 * source_count,
+                d_packed_charges_fp32 + 3 * source_count,
+                d_packed_charges_fp32 + 4 * source_count,
+                d_packed_charges_fp32 + 5 * source_count,
+                d_packed_charges_fp32 + 6 * source_count,
+                d_packed_charges_fp32 + 7 * source_count,
+                d_packed_charges_fp32 + 8 * source_count,
+                d_packed_charges_fp32 + 9 * source_count,
+                d_packed_charges_fp32 + 10 * source_count,
+                d_packed_charges_fp32 + 11 * source_count);
+        }
+    } else if (fp32_compute) {
+        LAUNCH_PAIR_KERNEL(
+            float, double, double, false, false, d_tgt, d_src,
+            d_first_x_re, d_first_x_im,
+            d_first_y_re, d_first_y_im,
+            d_first_z_re, d_first_z_im,
+            d_second_x_re, d_second_x_im,
+            d_second_y_re, d_second_y_im,
+            d_second_z_re, d_second_z_im);
+    } else {
+        LAUNCH_PAIR_KERNEL(
+            double, double, double, false, false, d_tgt, d_src,
+            d_first_x_re, d_first_x_im,
+            d_first_y_re, d_first_y_im,
+            d_first_z_re, d_first_z_im,
+            d_second_x_re, d_second_x_im,
+            d_second_y_re, d_second_y_im,
+            d_second_z_re, d_second_z_im);
+    }
+#undef LAUNCH_PAIR_KERNEL
 }
 
 void launch_p2p_pot_grad_batch2_leaf(

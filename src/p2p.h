@@ -191,9 +191,37 @@ void launch_p2p_vector_actions_batch3_leaf(
     const int* d_tgt_offsets, const int* d_tgt_ids,
     const int* d_src_offsets, const int* d_src_ids,
     const int* d_near_offsets, const int* d_near_leaf_ids,
+    const int* d_near_source_offsets,
+    const int* d_near_source_ids,
     int n_leaves, double k_re, double k_im,
     double* d_curl_re, double* d_curl_im,
     double* d_hessian_action_re, double* d_hessian_action_im,
+    bool fp32_compute = false);
+
+// Contract two independent three-component source fields while sharing all
+// target/source geometry and Green-function evaluations.
+void launch_p2p_vector_actions_pair_batch3_leaf(
+    const double* d_tgt, const double* d_src,
+    const double* d_first_x_re, const double* d_first_x_im,
+    const double* d_first_y_re, const double* d_first_y_im,
+    const double* d_first_z_re, const double* d_first_z_im,
+    const double* d_second_x_re, const double* d_second_x_im,
+    const double* d_second_y_re, const double* d_second_y_im,
+    const double* d_second_z_re, const double* d_second_z_im,
+    const int* d_tgt_offsets, const int* d_tgt_ids,
+    const int* d_src_offsets, const int* d_src_ids,
+    const int* d_near_offsets, const int* d_near_leaf_ids,
+    const int* d_near_source_offsets,
+    const int* d_near_source_ids,
+    int n_leaves, double k_re, double k_im,
+    double* d_first_curl_re, double* d_first_curl_im,
+    double* d_first_hessian_action_re,
+    double* d_first_hessian_action_im,
+    double* d_second_curl_re, double* d_second_curl_im,
+    double* d_second_hessian_action_re,
+    double* d_second_hessian_action_im,
+    const float* d_tgt_fp32, const float* d_src_fp32,
+    const float* d_packed_charges_fp32, int source_count,
     bool fp32_compute = false);
 
 void launch_p2p_pot_grad_batch2_leaf(

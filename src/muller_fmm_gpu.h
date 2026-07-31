@@ -36,10 +36,13 @@ public:
         const std::vector<MullerGpuCorrectionValue>& correction_entries);
 
     void upload_system_input(const std::complex<double>* input);
+    void upload_system_input_device(const void* device_input);
+    void upload_system_input_pair_device(
+        const void* device_input_x, const void* device_input_y);
     void project_charges_and_mass(int input_offset, int slot);
 
-    const double* charge_re(int component) const;
-    const double* charge_im(int component) const;
+    const double* charge_re(int component, int slot = 0) const;
+    const double* charge_im(int component, int slot = 0) const;
 
     void assemble_media_and_correction(
         const HelmholtzFMM& exterior,
@@ -49,7 +52,8 @@ public:
         std::complex<double> mu_exterior,
         std::complex<double> mu_interior,
         int input_offset,
-        int slot);
+        int slot,
+        int fmm_result_slot = 0);
 
     void combine_and_download(
         std::complex<double> k_exterior,
@@ -58,6 +62,15 @@ public:
         std::complex<double> mu_exterior,
         std::complex<double> mu_interior,
         std::complex<double>* output);
+
+    void combine_to_device(
+        std::complex<double> k_exterior,
+        std::complex<double> epsilon_exterior,
+        std::complex<double> epsilon_interior,
+        std::complex<double> mu_exterior,
+        std::complex<double> mu_interior,
+        void* device_output,
+        int system_slot = 0);
 
     void farfield(
         const std::complex<double>* solution,
@@ -76,6 +89,7 @@ public:
     void cleanup();
 
 private:
+    int system_slots = 2;
     void* d_input = nullptr;
     void* d_output = nullptr;
     int* d_regular_counts = nullptr;
@@ -94,8 +108,14 @@ private:
     void* d_correction_k2_epsilon = nullptr;
     void* d_correction_k2_mu = nullptr;
     int correction_count = 0;
-    double* d_charge_re[3] = {nullptr, nullptr, nullptr};
-    double* d_charge_im[3] = {nullptr, nullptr, nullptr};
+    double* d_charge_re[12] = {
+        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr
+    };
+    double* d_charge_im[12] = {
+        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr
+    };
     double* d_mass_re = nullptr;
     double* d_mass_im = nullptr;
     double* d_k1_re = nullptr;

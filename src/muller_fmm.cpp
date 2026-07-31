@@ -114,6 +114,18 @@ const std::uint32_t correction_cache_endian =
     UINT32_C(0x01020304);
 const std::uint32_t correction_cache_algorithm_version = 2;
 
+int muller_fmm_digits_cap()
+{
+    const char* value = std::getenv("BEM_MULLER_FMM_DIGITS_CAP");
+    if (value == nullptr)
+        return 5;
+    char* end = nullptr;
+    const long parsed = std::strtol(value, &end, 10);
+    if (end == value || *end != '\0')
+        return 5;
+    return std::max(1L, std::min(parsed, 10L));
+}
+
 std::vector<std::vector<int>> build_assembly_colors(
     const MullerP2Mesh& mesh)
 {
@@ -1491,7 +1503,13 @@ void MullerFmmOperator::init(
             common_grid_spacing, pfft_correction_radius_cells);
 #endif
     } else {
-        const int stable_fmm_digits = std::min(fmm_digits, 5);
+        const int stable_fmm_digits =
+            std::min(fmm_digits, muller_fmm_digits_cap());
+        const char* pair_currents =
+            std::getenv("BEM_FMM_PAIR_CURRENTS");
+        const bool request_pair_workspace =
+            pair_currents == nullptr ||
+            std::strcmp(pair_currents, "0") != 0;
         if (stable_fmm_digits != fmm_digits) {
             std::fprintf(
                 stderr,
@@ -1503,12 +1521,12 @@ void MullerFmmOperator::init(
             points.data(), point_count,
             points.data(), point_count,
             k_exterior, stable_fmm_digits, max_leaf,
-            fmm_near_radius, true);
+            fmm_near_radius, true, request_pair_workspace);
         fmm_interior.init(
             points.data(), point_count,
             points.data(), point_count,
             k_interior, stable_fmm_digits, max_leaf,
-            fmm_near_radius, true);
+            fmm_near_radius, true, request_pair_workspace);
         fmm_exterior.near_field_fp32 = fmm_near_fp32;
         fmm_interior.near_field_fp32 = fmm_near_fp32;
     }
@@ -1663,21 +1681,21 @@ void MullerFmmOperator::apply_current_operators_gpu(
     gpu_assembly.project_charges_and_mass(input_offset, slot);
     const auto evaluate_exterior = [&]() {
         fmm_exterior.evaluate_vector_actions_batch3_device(
-            gpu_assembly.charge_re(0),
-            gpu_assembly.charge_im(0),
-            gpu_assembly.charge_re(1),
-            gpu_assembly.charge_im(1),
-            gpu_assembly.charge_re(2),
-            gpu_assembly.charge_im(2));
+            gpu_assembly.charge_re(0, slot),
+            gpu_assembly.charge_im(0, slot),
+            gpu_assembly.charge_re(1, slot),
+            gpu_assembly.charge_im(1, slot),
+            gpu_assembly.charge_re(2, slot),
+            gpu_assembly.charge_im(2, slot));
     };
     const auto evaluate_interior = [&]() {
         fmm_interior.evaluate_vector_actions_batch3_device(
-            gpu_assembly.charge_re(0),
-            gpu_assembly.charge_im(0),
-            gpu_assembly.charge_re(1),
-            gpu_assembly.charge_im(1),
-            gpu_assembly.charge_re(2),
-            gpu_assembly.charge_im(2));
+            gpu_assembly.charge_re(0, slot),
+            gpu_assembly.charge_im(0, slot),
+            gpu_assembly.charge_re(1, slot),
+            gpu_assembly.charge_im(1, slot),
+            gpu_assembly.charge_re(2, slot),
+            gpu_assembly.charge_im(2, slot));
     };
     const char* concurrent_media =
         std::getenv("BEM_FMM_CONCURRENT_MEDIA");
@@ -1710,6 +1728,153 @@ void MullerFmmOperator::apply_current_operators_gpu(
         mu_interior,
         input_offset,
         slot);
+}
+
+void MullerFmmOperator::apply_current_operator_pair_gpu(bool strict)
+{
+    gpu_assembly.project_charges_and_mass(0, 0);
+    gpu_assembly.project_charges_and_mass(current_dofs, 1);
+    const auto evaluate = [&](HelmholtzFMM& fmm) {
+        const auto normal = [&]() {
+            fmm.evaluate_vector_actions_pair_batch3_device(
+            gpu_assembly.charge_re(0, 0),
+            gpu_assembly.charge_im(0, 0),
+            gpu_assembly.charge_re(1, 0),
+            gpu_assembly.charge_im(1, 0),
+            gpu_assembly.charge_re(2, 0),
+            gpu_assembly.charge_im(2, 0),
+            gpu_assembly.charge_re(0, 1),
+            gpu_assembly.charge_im(0, 1),
+            gpu_assembly.charge_re(1, 1),
+            gpu_assembly.charge_im(1, 1),
+            gpu_assembly.charge_re(2, 1),
+            gpu_assembly.charge_im(2, 1));
+        };
+        if (!strict) {
+            normal();
+            return;
+        }
+        fmm.evaluate_vector_actions_pair_batch3_device_strict(
+            gpu_assembly.charge_re(0, 0),
+            gpu_assembly.charge_im(0, 0),
+            gpu_assembly.charge_re(1, 0),
+            gpu_assembly.charge_im(1, 0),
+            gpu_assembly.charge_re(2, 0),
+            gpu_assembly.charge_im(2, 0),
+            gpu_assembly.charge_re(0, 1),
+            gpu_assembly.charge_im(0, 1),
+            gpu_assembly.charge_re(1, 1),
+            gpu_assembly.charge_im(1, 1),
+            gpu_assembly.charge_re(2, 1),
+            gpu_assembly.charge_im(2, 1));
+    };
+    const auto evaluate_exterior = [&]() {
+        evaluate(fmm_exterior);
+    };
+    const auto evaluate_interior = [&]() {
+        evaluate(fmm_interior);
+    };
+    const char* concurrent_media =
+        std::getenv("BEM_FMM_CONCURRENT_MEDIA");
+#ifdef BEM_FMM_CONCURRENT_MEDIA_DEFAULT
+    bool evaluate_media_concurrently = true;
+#else
+    bool evaluate_media_concurrently = false;
+#endif
+    if (concurrent_media != nullptr)
+        evaluate_media_concurrently =
+            std::strcmp(concurrent_media, "0") != 0;
+    if (evaluate_media_concurrently) {
+#pragma omp parallel sections num_threads(2)
+        {
+#pragma omp section
+            evaluate_exterior();
+#pragma omp section
+            evaluate_interior();
+        }
+    } else {
+        evaluate_exterior();
+        evaluate_interior();
+    }
+    gpu_assembly.assemble_media_and_correction(
+        fmm_exterior,
+        fmm_interior,
+        epsilon_exterior,
+        epsilon_interior,
+        mu_exterior,
+        mu_interior,
+        0,
+        0,
+        0);
+    gpu_assembly.assemble_media_and_correction(
+        fmm_exterior,
+        fmm_interior,
+        epsilon_exterior,
+        epsilon_interior,
+        mu_exterior,
+        mu_interior,
+        current_dofs,
+        1,
+        1);
+}
+
+void MullerFmmOperator::apply_current_operator_quad_gpu()
+{
+    for (int slot = 0; slot < 4; slot++)
+        gpu_assembly.project_charges_and_mass(
+            slot * current_dofs, slot);
+    const double* charges_re[12] = {};
+    const double* charges_im[12] = {};
+    for (int slot = 0; slot < 4; slot++) {
+        for (int component = 0; component < 3; component++) {
+            const int field = 3 * slot + component;
+            charges_re[field] =
+                gpu_assembly.charge_re(component, slot);
+            charges_im[field] =
+                gpu_assembly.charge_im(component, slot);
+        }
+    }
+    const auto evaluate_exterior = [&]() {
+        fmm_exterior.evaluate_vector_actions_quad_batch3_device(
+            charges_re, charges_im);
+    };
+    const auto evaluate_interior = [&]() {
+        fmm_interior.evaluate_vector_actions_quad_batch3_device(
+            charges_re, charges_im);
+    };
+    bool evaluate_media_concurrently = false;
+#ifdef BEM_FMM_CONCURRENT_MEDIA_DEFAULT
+    evaluate_media_concurrently = true;
+#endif
+    const char* concurrent_media =
+        std::getenv("BEM_FMM_CONCURRENT_MEDIA");
+    if (concurrent_media != nullptr)
+        evaluate_media_concurrently =
+            std::strcmp(concurrent_media, "0") != 0;
+    if (evaluate_media_concurrently) {
+#pragma omp parallel sections num_threads(2)
+        {
+#pragma omp section
+            evaluate_exterior();
+#pragma omp section
+            evaluate_interior();
+        }
+    } else {
+        evaluate_exterior();
+        evaluate_interior();
+    }
+    for (int slot = 0; slot < 4; slot++) {
+        gpu_assembly.assemble_media_and_correction(
+            fmm_exterior,
+            fmm_interior,
+            epsilon_exterior,
+            epsilon_interior,
+            mu_exterior,
+            mu_interior,
+            slot * current_dofs,
+            slot,
+            slot);
+    }
 }
 
 void MullerFmmOperator::apply_current_operators(
@@ -2001,6 +2166,122 @@ void MullerFmmOperator::apply_current_operators(
     }
 }
 
+bool MullerFmmOperator::device_matvec_available() const
+{
+    return system_dofs > 0 && gpu_operator_assembly && !use_pfft;
+}
+
+void MullerFmmOperator::matvec_device(
+    const void* device_input, void* device_output)
+{
+    if (!device_matvec_available())
+        throw std::runtime_error(
+            "device Muller matvec requires the FMM GPU assembly backend");
+    gpu_assembly.upload_system_input_device(device_input);
+    bool pair_currents =
+        fmm_exterior.vector_actions_pair_available() &&
+        fmm_interior.vector_actions_pair_available();
+    const char* pair_current_override =
+        std::getenv("BEM_FMM_PAIR_CURRENTS");
+    if (pair_current_override != nullptr) {
+        pair_currents =
+            std::strcmp(pair_current_override, "0") != 0 &&
+            fmm_exterior.vector_actions_pair_available() &&
+            fmm_interior.vector_actions_pair_available();
+    }
+    if (pair_currents) {
+        apply_current_operator_pair_gpu();
+    } else {
+        apply_current_operators_gpu(0, 0);
+        apply_current_operators_gpu(current_dofs, 1);
+    }
+    gpu_assembly.combine_to_device(
+        k_exterior,
+        epsilon_exterior,
+        epsilon_interior,
+        mu_exterior,
+        mu_interior,
+        device_output);
+}
+
+void MullerFmmOperator::matvec_batch2_device(
+    const void* device_input_x,
+    const void* device_input_y,
+    void* device_output_x,
+    void* device_output_y)
+{
+    bool four_field =
+        fmm_exterior.vector_actions_quad_available() &&
+        fmm_interior.vector_actions_quad_available();
+    const char* override = std::getenv("BEM_FMM_FOUR_FIELD");
+    if (override != nullptr)
+        four_field = std::strcmp(override, "0") != 0 && four_field;
+    if (!four_field) {
+        matvec_device(device_input_x, device_output_x);
+        matvec_device(device_input_y, device_output_y);
+        return;
+    }
+    gpu_assembly.upload_system_input_pair_device(
+        device_input_x, device_input_y);
+    apply_current_operator_quad_gpu();
+    gpu_assembly.combine_to_device(
+        k_exterior,
+        epsilon_exterior,
+        epsilon_interior,
+        mu_exterior,
+        mu_interior,
+        device_output_x,
+        0);
+    gpu_assembly.combine_to_device(
+        k_exterior,
+        epsilon_exterior,
+        epsilon_interior,
+        mu_exterior,
+        mu_interior,
+        device_output_y,
+        1);
+}
+
+void MullerFmmOperator::matvec_batch2_device_strict(
+    const void* device_input_x,
+    const void* device_input_y,
+    void* device_output_x,
+    void* device_output_y)
+{
+    if (!device_matvec_available())
+        throw std::runtime_error(
+            "strict device Muller matvec requires the FMM backend");
+    const bool previous_near_fp32 = fmm_near_fp32;
+    set_fmm_near_fp32(false);
+    const bool strict_pair =
+        fmm_exterior.strict_vector_pair_available() &&
+        fmm_interior.strict_vector_pair_available();
+    const auto apply_one = [&](const void* input, void* output) {
+        gpu_assembly.upload_system_input_device(input);
+        if (strict_pair) {
+            apply_current_operator_pair_gpu(true);
+        } else {
+            apply_current_operators_gpu(0, 0);
+            apply_current_operators_gpu(current_dofs, 1);
+        }
+        gpu_assembly.combine_to_device(
+            k_exterior,
+            epsilon_exterior,
+            epsilon_interior,
+            mu_exterior,
+            mu_interior,
+            output);
+    };
+    try {
+        apply_one(device_input_x, device_output_x);
+        apply_one(device_input_y, device_output_y);
+    } catch (...) {
+        set_fmm_near_fp32(previous_near_fp32);
+        throw;
+    }
+    set_fmm_near_fp32(previous_near_fp32);
+}
+
 void MullerFmmOperator::matvec(
     const cdouble* input, cdouble* output)
 {
@@ -2009,8 +2290,22 @@ void MullerFmmOperator::matvec(
             "Muller FMM operator is not initialized");
     if (gpu_operator_assembly && !use_pfft) {
         gpu_assembly.upload_system_input(input);
-        apply_current_operators_gpu(0, 0);
-        apply_current_operators_gpu(current_dofs, 1);
+        bool pair_currents =
+            fmm_exterior.vector_actions_pair_available() &&
+            fmm_interior.vector_actions_pair_available();
+        const char* pair_current_override =
+            std::getenv("BEM_FMM_PAIR_CURRENTS");
+        if (pair_current_override != nullptr)
+            pair_currents =
+                std::strcmp(pair_current_override, "0") != 0 &&
+                fmm_exterior.vector_actions_pair_available() &&
+                fmm_interior.vector_actions_pair_available();
+        if (pair_currents) {
+            apply_current_operator_pair_gpu();
+        } else {
+            apply_current_operators_gpu(0, 0);
+            apply_current_operators_gpu(current_dofs, 1);
+        }
         gpu_assembly.combine_and_download(
             k_exterior,
             epsilon_exterior,
@@ -2070,7 +2365,13 @@ double MullerFmmOperator::switch_pfft_to_fmm(
         points.push_back(point.sample.position.z);
     }
     const int point_count = static_cast<int>(quadrature.size());
-    const int stable_fmm_digits = std::min(fmm_digits, 5);
+    const int stable_fmm_digits =
+        std::min(fmm_digits, muller_fmm_digits_cap());
+    const char* pair_currents =
+        std::getenv("BEM_FMM_PAIR_CURRENTS");
+    const bool request_pair_workspace =
+        pair_currents == nullptr ||
+        std::strcmp(pair_currents, "0") != 0;
     if (stable_fmm_digits != fmm_digits) {
         std::fprintf(
             stderr,
@@ -2081,11 +2382,13 @@ double MullerFmmOperator::switch_pfft_to_fmm(
     fmm_exterior.init(
         points.data(), point_count,
         points.data(), point_count,
-        k_exterior, stable_fmm_digits, max_leaf, fmm_near_radius, true);
+        k_exterior, stable_fmm_digits, max_leaf,
+        fmm_near_radius, true, request_pair_workspace);
     fmm_interior.init(
         points.data(), point_count,
         points.data(), point_count,
-        k_interior, stable_fmm_digits, max_leaf, fmm_near_radius, true);
+        k_interior, stable_fmm_digits, max_leaf,
+        fmm_near_radius, true, request_pair_workspace);
     fmm_exterior.near_field_fp32 = fmm_near_fp32;
     fmm_interior.near_field_fp32 = fmm_near_fp32;
     use_pfft = false;

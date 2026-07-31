@@ -133,6 +133,29 @@ int main()
     assert(prism_q.max_dihedral_deg > 60.0);
     assert(prism_q.mean_feature_dihedral_deg > 60.0);
 
+    Mesh generic_refined = prism;
+    const int generic_base_triangles = generic_refined.nt();
+    refine_feature_edges(generic_refined, 45.0, 1);
+    MeshQualityReport generic_refined_q =
+        analyze_mesh_quality(generic_refined);
+    assert(generic_refined.edge_refine_requested == 1);
+    assert(generic_refined.edge_refine_applied == 1);
+    assert(generic_refined.nt() > generic_base_triangles);
+    assert(generic_refined_q.closed);
+    assert(generic_refined_q.outward_winding);
+    assert(generic_refined_q.boundary_edges == 0);
+    assert(generic_refined_q.nonmanifold_edges == 0);
+    assert(std::abs(
+        generic_refined_q.signed_volume -
+        prism_q.signed_volume) < 1.0e-12);
+
+    Mesh smooth_refined = sphere;
+    const int smooth_base_triangles = smooth_refined.nt();
+    refine_feature_edges(smooth_refined, 45.0, 1);
+    assert(smooth_refined.edge_refine_requested == 1);
+    assert(smooth_refined.edge_refine_applied == 0);
+    assert(smooth_refined.nt() == smooth_base_triangles);
+
     Mesh voxel = many_voxel_edges_box();
     MeshQualityReport voxel_q = analyze_mesh_quality(voxel);
     assert(voxel_q.closed);

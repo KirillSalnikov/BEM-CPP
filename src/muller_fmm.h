@@ -108,6 +108,23 @@ struct MullerFmmOperator {
         const std::complex<double>* input,
         std::complex<double>* output);
 
+    // Device-resident action used by the paired orientation solver. The
+    // pointers contain system_dofs CUDA double2 values.
+    void matvec_device(
+        const void* device_input,
+        void* device_output);
+    void matvec_batch2_device(
+        const void* device_input_x,
+        const void* device_input_y,
+        void* device_output_x,
+        void* device_output_y);
+    void matvec_batch2_device_strict(
+        const void* device_input_x,
+        const void* device_input_y,
+        void* device_output_x,
+        void* device_output_y);
+    bool device_matvec_available() const;
+
     void farfield(
         const std::complex<double>* solution,
         const std::vector<Vec3>& directions,
@@ -180,6 +197,8 @@ private:
 
     void prepare_gpu_assembly();
     void apply_current_operators_gpu(int input_offset, int slot);
+    void apply_current_operator_pair_gpu(bool strict = false);
+    void apply_current_operator_quad_gpu();
 };
 
 // Assemble one exact Galerkin principal block in paired-current

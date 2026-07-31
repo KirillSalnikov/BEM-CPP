@@ -1,10 +1,12 @@
 #include "muller_dense.h"
 #include "muller_fmm.h"
 #include "muller_mbj.h"
+#include "muller_paired_gmres.h"
 #include "orient.h"
 #include "solver_policy.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <complex>
@@ -931,6 +933,291 @@ cdouble inner_product(
         imaginary += value.imag();
     }
     return cdouble(real, imaginary);
+}
+
+using ComplexVec3 = std::array<cdouble, 3>;
+using TangentialField =
+    std::function<ComplexVec3(const MullerFrameSample&)>;
+
+struct CurrentProjectionStats {
+    int iterations = 0;
+    double relative_residual = 1.0;
+    double relative_l2_error = 1.0;
+};
+
+struct AxialSlabStartStats {
+    double z_min = 0.0;
+    double z_max = 0.0;
+    cdouble forward_amplitude = 0.0;
+    cdouble backward_amplitude = 0.0;
+    double entrance_e_continuity_error = 0.0;
+    double entrance_h_continuity_error = 0.0;
+    double exit_eh_continuity_error = 0.0;
+    CurrentProjectionStats electric_current;
+    CurrentProjectionStats magnetic_current;
+};
+
+ComplexVec3 real_cross_complex(
+    const Vec3& left, const ComplexVec3& right)
+{
+    return {
+        left.y * right[2] - left.z * right[1],
+        left.z * right[0] - left.x * right[2],
+        left.x * right[1] - left.y * right[0]
+    };
+}
+
+ComplexVec3 complex_cross_real(
+    const ComplexVec3& left, const Vec3& right)
+{
+    return {
+        left[1] * right.z - left[2] * right.y,
+        left[2] * right.x - left[0] * right.z,
+        left[0] * right.y - left[1] * right.x
+    };
+}
+
+cdouble real_dot_complex(
+    const Vec3& left, const ComplexVec3& right)
+{
+    return left.x * right[0] +
+        left.y * right[1] +
+        left.z * right[2];
+}
+
+void apply_muller_mass(
+    const MullerFmmOperator& op,
+    const std::vector<cdouble>& coefficients,
+    std::vector<cdouble>& output)
+{
+    output.assign(op.current_dofs, cdouble(0.0));
+    for (const MullerFmmQuadraturePoint& point :
+         op.mass_quadrature) {
+        const MullerBasisSample basis = evaluate_muller_basis(
+            op.mesh, point.element, point.sample);
+        ComplexVec3 field = {
+            cdouble(0.0), cdouble(0.0), cdouble(0.0)
+        };
+        for (int local = 0; local < basis.count; local++) {
+            const cdouble value = coefficients[basis.dofs[local]];
+            field[0] += value * basis.values[local].x;
+            field[1] += value * basis.values[local].y;
+            field[2] += value * basis.values[local].z;
+        }
+        for (int local = 0; local < basis.count; local++) {
+            output[basis.dofs[local]] += point.weight *
+                real_dot_complex(basis.values[local], field);
+        }
+    }
+}
+
+CurrentProjectionStats project_tangential_field(
+    const MullerFmmOperator& op,
+    const TangentialField& target,
+    std::vector<cdouble>& coefficients)
+{
+    const int n = op.current_dofs;
+    std::vector<cdouble> rhs(n, cdouble(0.0));
+    std::vector<double> diagonal(n, 0.0);
+    for (const MullerFmmQuadraturePoint& point :
+         op.mass_quadrature) {
+        const MullerBasisSample basis = evaluate_muller_basis(
+            op.mesh, point.element, point.sample);
+        const ComplexVec3 field = target(point.sample);
+        for (int local = 0; local < basis.count; local++) {
+            const int dof = basis.dofs[local];
+            rhs[dof] += point.weight *
+                real_dot_complex(basis.values[local], field);
+            diagonal[dof] += point.weight *
+                basis.values[local].dot(basis.values[local]);
+        }
+    }
+
+    coefficients.assign(n, cdouble(0.0));
+    std::vector<cdouble> residual = rhs;
+    std::vector<cdouble> preconditioned(n);
+    std::vector<cdouble> direction(n);
+    std::vector<cdouble> mass_direction;
+    for (int i = 0; i < n; i++) {
+        if (diagonal[i] <= 0.0)
+            throw std::runtime_error(
+                "non-positive Muller mass diagonal");
+        preconditioned[i] = residual[i] / diagonal[i];
+        direction[i] = preconditioned[i];
+    }
+
+    const double rhs_norm = std::max(
+        norm(rhs.data(), n), 1.0e-300);
+    cdouble rho = inner_product(
+        residual.data(), preconditioned.data(), n);
+    CurrentProjectionStats stats;
+    const int maximum_iterations = 200;
+    const double tolerance = 1.0e-11;
+    for (int iteration = 0;
+         iteration < maximum_iterations; iteration++) {
+        apply_muller_mass(op, direction, mass_direction);
+        const cdouble denominator = inner_product(
+            direction.data(), mass_direction.data(), n);
+        if (std::abs(denominator) <= 1.0e-300)
+            throw std::runtime_error(
+                "singular Muller mass projection");
+        const cdouble alpha = rho / denominator;
+        for (int i = 0; i < n; i++) {
+            coefficients[i] += alpha * direction[i];
+            residual[i] -= alpha * mass_direction[i];
+        }
+        stats.iterations = iteration + 1;
+        stats.relative_residual =
+            norm(residual.data(), n) / rhs_norm;
+        if (stats.relative_residual < tolerance)
+            break;
+        for (int i = 0; i < n; i++)
+            preconditioned[i] = residual[i] / diagonal[i];
+        const cdouble next_rho = inner_product(
+            residual.data(), preconditioned.data(), n);
+        const cdouble beta = next_rho / rho;
+        for (int i = 0; i < n; i++)
+            direction[i] = preconditioned[i] + beta * direction[i];
+        rho = next_rho;
+    }
+
+    double target_norm_squared = 0.0;
+    double error_norm_squared = 0.0;
+    for (const MullerFmmQuadraturePoint& point :
+         op.mass_quadrature) {
+        const MullerBasisSample basis = evaluate_muller_basis(
+            op.mesh, point.element, point.sample);
+        ComplexVec3 approximation = {
+            cdouble(0.0), cdouble(0.0), cdouble(0.0)
+        };
+        for (int local = 0; local < basis.count; local++) {
+            const cdouble value =
+                coefficients[basis.dofs[local]];
+            approximation[0] += value * basis.values[local].x;
+            approximation[1] += value * basis.values[local].y;
+            approximation[2] += value * basis.values[local].z;
+        }
+        const ComplexVec3 exact = target(point.sample);
+        for (int axis = 0; axis < 3; axis++) {
+            target_norm_squared +=
+                point.weight * std::norm(exact[axis]);
+            error_norm_squared += point.weight *
+                std::norm(approximation[axis] - exact[axis]);
+        }
+    }
+    stats.relative_l2_error = std::sqrt(
+        error_norm_squared /
+        std::max(target_norm_squared, 1.0e-300));
+    return stats;
+}
+
+std::vector<cdouble> axial_slab_initial_guess(
+    const MullerFmmOperator& op,
+    double refractive_index,
+    const Vec3& electric_polarization,
+    AxialSlabStartStats& stats)
+{
+    if (refractive_index <= 0.0)
+        throw std::invalid_argument(
+            "axial slab start requires a positive refractive index");
+    stats.z_min = 1.0e300;
+    stats.z_max = -1.0e300;
+    for (const Vec3& node : op.mesh.nodes) {
+        stats.z_min = std::min(stats.z_min, node.z);
+        stats.z_max = std::max(stats.z_max, node.z);
+    }
+    const double thickness = stats.z_max - stats.z_min;
+    if (thickness <= 0.0)
+        throw std::runtime_error(
+            "axial slab start found zero prism thickness");
+
+    const cdouble imaginary(0.0, 1.0);
+    const cdouble index(refractive_index, 0.0);
+    const cdouble reflection = (index - 1.0) / (index + 1.0);
+    const cdouble round_trip = std::exp(
+        2.0 * imaginary * op.k_interior * thickness);
+    stats.forward_amplitude =
+        (2.0 / (1.0 + index)) /
+        (1.0 - reflection * reflection * round_trip);
+    stats.backward_amplitude =
+        stats.forward_amplitude * reflection * round_trip;
+
+    const cdouble reflected =
+        stats.forward_amplitude +
+        stats.backward_amplitude - 1.0;
+    stats.entrance_e_continuity_error = std::abs(
+        (1.0 + reflected) -
+        (stats.forward_amplitude + stats.backward_amplitude));
+    stats.entrance_h_continuity_error = std::abs(
+        (1.0 - reflected) -
+        index * (stats.forward_amplitude -
+                 stats.backward_amplitude));
+    const cdouble forward_exit =
+        stats.forward_amplitude *
+        std::exp(imaginary * op.k_interior * thickness);
+    const cdouble backward_exit =
+        stats.backward_amplitude *
+        std::exp(-imaginary * op.k_interior * thickness);
+    stats.exit_eh_continuity_error = std::abs(
+        (forward_exit + backward_exit) -
+        index * (forward_exit - backward_exit));
+
+    const Vec3 propagation(0.0, 0.0, 1.0);
+    const Vec3 magnetic_polarization =
+        propagation.cross(electric_polarization);
+    const cdouble entrance_phase = std::exp(
+        imaginary * op.k_exterior * stats.z_min);
+    const auto fields =
+        [&](const MullerFrameSample& sample,
+            ComplexVec3& electric,
+            ComplexVec3& magnetic) {
+            const double distance = sample.position.z - stats.z_min;
+            const cdouble forward = entrance_phase *
+                stats.forward_amplitude *
+                std::exp(imaginary * op.k_interior * distance);
+            const cdouble backward = entrance_phase *
+                stats.backward_amplitude *
+                std::exp(-imaginary * op.k_interior * distance);
+            const cdouble electric_factor = forward + backward;
+            const cdouble magnetic_factor =
+                index * (forward - backward);
+            electric = {
+                electric_polarization.x * electric_factor,
+                electric_polarization.y * electric_factor,
+                electric_polarization.z * electric_factor
+            };
+            magnetic = {
+                magnetic_polarization.x * magnetic_factor,
+                magnetic_polarization.y * magnetic_factor,
+                magnetic_polarization.z * magnetic_factor
+            };
+        };
+    const TangentialField electric_current =
+        [&](const MullerFrameSample& sample) {
+            ComplexVec3 electric, magnetic;
+            fields(sample, electric, magnetic);
+            return real_cross_complex(sample.normal, magnetic);
+        };
+    const TangentialField magnetic_current =
+        [&](const MullerFrameSample& sample) {
+            ComplexVec3 electric, magnetic;
+            fields(sample, electric, magnetic);
+            return complex_cross_real(electric, sample.normal);
+        };
+
+    std::vector<cdouble> current_j;
+    std::vector<cdouble> current_m;
+    stats.electric_current = project_tangential_field(
+        op, electric_current, current_j);
+    stats.magnetic_current = project_tangential_field(
+        op, magnetic_current, current_m);
+    std::vector<cdouble> result(op.system_dofs);
+    std::copy(
+        current_j.begin(), current_j.end(), result.begin());
+    std::copy(
+        current_m.begin(), current_m.end(),
+        result.begin() + op.current_dofs);
+    return result;
 }
 
 GmresResult solve_gmres(
@@ -2062,6 +2349,116 @@ std::vector<AveragingOrientation> averaging_orientations(
     return ordered;
 }
 
+struct OrientationRecycleBasis {
+    int capacity = 0;
+    int vector_size = 0;
+    std::vector<std::vector<cdouble>> rhs_basis;
+    std::vector<std::vector<cdouble>> solution_basis;
+
+    explicit OrientationRecycleBasis(int requested_capacity)
+        : capacity(requested_capacity)
+    {
+    }
+
+    bool make_guess(
+        const std::vector<cdouble>& rhs,
+        std::vector<cdouble>& guess,
+        double& projected_residual) const
+    {
+        if (rhs_basis.empty())
+            return false;
+        guess.assign(rhs.size(), cdouble(0.0));
+        std::vector<cdouble> remaining = rhs;
+        for (size_t basis = 0; basis < rhs_basis.size(); basis++) {
+            const cdouble coefficient = inner_product(
+                rhs_basis[basis].data(), rhs.data(),
+                static_cast<int>(rhs.size()));
+#pragma omp parallel for schedule(static)
+            for (int index = 0;
+                 index < static_cast<int>(rhs.size()); index++) {
+                guess[index] +=
+                    coefficient * solution_basis[basis][index];
+                remaining[index] -=
+                    coefficient * rhs_basis[basis][index];
+            }
+        }
+        const double rhs_norm_squared = std::max(
+            0.0,
+            inner_product(
+                rhs.data(), rhs.data(),
+                static_cast<int>(rhs.size())).real());
+        const double remaining_norm_squared = std::max(
+            0.0,
+            inner_product(
+                remaining.data(), remaining.data(),
+                static_cast<int>(remaining.size())).real());
+        projected_residual = rhs_norm_squared > 0.0
+            ? std::sqrt(
+                remaining_norm_squared / rhs_norm_squared)
+            : 0.0;
+        return true;
+    }
+
+    bool add(
+        const std::vector<cdouble>& rhs,
+        const std::vector<cdouble>& solution)
+    {
+        if (capacity <= 0 ||
+            rhs.size() != solution.size())
+            return false;
+        if (rhs_basis.size() >= static_cast<size_t>(capacity)) {
+            rhs_basis.erase(rhs_basis.begin());
+            solution_basis.erase(solution_basis.begin());
+        }
+        if (vector_size == 0)
+            vector_size = static_cast<int>(rhs.size());
+        if (static_cast<int>(rhs.size()) != vector_size)
+            return false;
+
+        std::vector<cdouble> orthogonal_rhs = rhs;
+        std::vector<cdouble> orthogonal_solution = solution;
+        for (int pass = 0; pass < 2; pass++) {
+            for (size_t basis = 0;
+                 basis < rhs_basis.size(); basis++) {
+                const cdouble coefficient = inner_product(
+                    rhs_basis[basis].data(),
+                    orthogonal_rhs.data(), vector_size);
+#pragma omp parallel for schedule(static)
+                for (int index = 0;
+                     index < vector_size; index++) {
+                    orthogonal_rhs[index] -=
+                        coefficient * rhs_basis[basis][index];
+                    orthogonal_solution[index] -=
+                        coefficient * solution_basis[basis][index];
+                }
+            }
+        }
+        const double original_norm_squared = std::max(
+            0.0,
+            inner_product(
+                rhs.data(), rhs.data(), vector_size).real());
+        const double orthogonal_norm_squared = std::max(
+            0.0,
+            inner_product(
+                orthogonal_rhs.data(),
+                orthogonal_rhs.data(), vector_size).real());
+        if (original_norm_squared <= 0.0 ||
+            orthogonal_norm_squared <=
+                1.0e-12 * original_norm_squared)
+            return false;
+        const double inverse_norm =
+            1.0 / std::sqrt(orthogonal_norm_squared);
+#pragma omp parallel for schedule(static)
+        for (int index = 0; index < vector_size; index++) {
+            orthogonal_rhs[index] *= inverse_norm;
+            orthogonal_solution[index] *= inverse_norm;
+        }
+        rhs_basis.push_back(std::move(orthogonal_rhs));
+        solution_basis.push_back(std::move(orthogonal_solution));
+        return true;
+    }
+};
+
 std::array<cdouble, 3> rotate_complex_vector(
     const Mat3& matrix,
     const cdouble* vector)
@@ -2098,6 +2495,7 @@ struct OrientationCheckpointHeader {
 bool load_orientation_checkpoint(
     const std::string& path,
     std::uint64_t signature,
+    bool allow_signature_mismatch,
     int ntheta,
     int system_dofs,
     OrientationCheckpointHeader& header,
@@ -2114,11 +2512,18 @@ bool load_orientation_checkpoint(
     if (!input ||
         std::memcmp(header.magic, expected_magic, 16) != 0 ||
         header.version != 1 ||
-        header.signature != signature ||
+        (!allow_signature_mismatch && header.signature != signature) ||
         header.ntheta != ntheta ||
         header.system_dofs != system_dofs ||
         header.next_orientation < 0)
         return false;
+    if (header.signature != signature) {
+        std::fprintf(
+            stderr,
+            "  [orientation checkpoint] replaying a migrated operator "
+            "signature: %s\n",
+            path.c_str());
+    }
     averaged_mueller.resize(static_cast<size_t>(16) * ntheta);
     previous_x.resize(system_dofs);
     previous_y.resize(system_dofs);
@@ -2218,6 +2623,95 @@ std::uint64_t muller_operator_hash(const MullerFmmOperator& fmm)
     return hash;
 }
 
+int farfield_spectral_alpha_count(int requested_count, double ka)
+{
+    const char* value = std::getenv("BEM_FARFIELD_SPECTRAL_ALPHA");
+    if (value == nullptr)
+        return requested_count;
+    int count = std::atoi(value);
+    if (std::strcmp(value, "auto") == 0) {
+        const int required = static_cast<int>(
+            std::ceil(2.0 * (ka + 12.0)));
+        count = std::max(16, 16 * ((required + 15) / 16));
+    }
+    return count >= 4 && count < requested_count
+        ? count : requested_count;
+}
+
+std::vector<cdouble> periodic_spectral_interpolate(
+    const std::vector<cdouble>& coarse,
+    int coarse_count,
+    int fine_count,
+    int values_per_angle)
+{
+    if (coarse_count == fine_count)
+        return coarse;
+    if (coarse_count < 2 || fine_count < coarse_count ||
+        coarse.size() !=
+            static_cast<size_t>(coarse_count) * values_per_angle)
+        throw std::invalid_argument(
+            "invalid periodic spectral interpolation dimensions");
+
+    std::vector<cdouble> forward(
+        static_cast<size_t>(coarse_count) * coarse_count);
+    std::vector<cdouble> inverse(
+        static_cast<size_t>(fine_count) * coarse_count);
+    for (int mode_index = 0; mode_index < coarse_count; mode_index++) {
+        const int mode = mode_index < (coarse_count + 1) / 2
+            ? mode_index : mode_index - coarse_count;
+        for (int angle = 0; angle < coarse_count; angle++) {
+            const double phase =
+                -2.0 * M_PI * mode * angle /
+                static_cast<double>(coarse_count);
+            forward[
+                static_cast<size_t>(mode_index) * coarse_count + angle] =
+                std::polar(1.0 / coarse_count, phase);
+        }
+        for (int angle = 0; angle < fine_count; angle++) {
+            const double phase =
+                2.0 * M_PI * mode * angle /
+                static_cast<double>(fine_count);
+            inverse[
+                static_cast<size_t>(angle) * coarse_count + mode_index] =
+                std::polar(1.0, phase);
+        }
+    }
+
+    std::vector<cdouble> fine(
+        static_cast<size_t>(fine_count) * values_per_angle);
+#pragma omp parallel
+    {
+        std::vector<cdouble> coefficients(coarse_count);
+#pragma omp for schedule(static)
+        for (int value = 0; value < values_per_angle; value++) {
+            for (int mode = 0; mode < coarse_count; mode++) {
+                cdouble sum = 0.0;
+                const cdouble* weights =
+                    forward.data() +
+                    static_cast<size_t>(mode) * coarse_count;
+                for (int angle = 0; angle < coarse_count; angle++) {
+                    sum += weights[angle] * coarse[
+                        static_cast<size_t>(angle) * values_per_angle +
+                        value];
+                }
+                coefficients[mode] = sum;
+            }
+            for (int angle = 0; angle < fine_count; angle++) {
+                cdouble sum = 0.0;
+                const cdouble* weights =
+                    inverse.data() +
+                    static_cast<size_t>(angle) * coarse_count;
+                for (int mode = 0; mode < coarse_count; mode++)
+                    sum += weights[mode] * coefficients[mode];
+                fine[
+                    static_cast<size_t>(angle) * values_per_angle +
+                    value] = sum;
+            }
+        }
+    }
+    return fine;
+}
+
 int run_orientation_average(
     MullerFmmOperator& fmm,
     MullerMbjPreconditioner& mbj,
@@ -2232,6 +2726,8 @@ int run_orientation_average(
     int symmetry_order,
     bool warm_start,
     double warm_start_max_angle_degrees,
+    int recycle_rank,
+    bool paired_gpu_gmres,
     bool pfft_fgmres,
     int digits,
     int max_leaf,
@@ -2333,6 +2829,11 @@ int run_orientation_average(
     size_t completed_orientations = 0;
     std::vector<cdouble> previous_x;
     std::vector<cdouble> previous_y;
+    std::vector<cdouble> previous_rhs_x;
+    std::vector<cdouble> previous_rhs_y;
+    OrientationRecycleBasis recycle_basis(recycle_rank);
+    std::vector<cdouble> recycled_guess_x;
+    std::vector<cdouble> recycled_guess_y;
     Mat3 previous_rotation = {};
     bool have_previous_rotation = false;
     int total_iterations = 0;
@@ -2341,6 +2842,8 @@ int run_orientation_average(
     double solve_seconds = 0.0;
     double farfield_seconds = 0.0;
     int warm_started_solves = 0;
+    int recycled_solves = 0;
+    double recycle_projected_residual_sum = 0.0;
     int represented_orientations = adaptive_levels.empty()
         ? alpha_count * beta_count * gamma_count * symmetry_order
         : alpha_count *
@@ -2369,6 +2872,12 @@ int run_orientation_average(
         sizeof(warm_start_max_angle_degrees));
     hash_bytes(
         checkpoint_signature, &warm_start, sizeof(warm_start));
+    hash_bytes(
+        checkpoint_signature, &recycle_rank,
+        sizeof(recycle_rank));
+    hash_bytes(
+        checkpoint_signature, &paired_gpu_gmres,
+        sizeof(paired_gpu_gmres));
     hash_bytes(
         checkpoint_signature, &pfft_fgmres, sizeof(pfft_fgmres));
     hash_bytes(
@@ -2423,8 +2932,15 @@ int run_orientation_average(
     hash_bytes(
         checkpoint_signature, &fmm.system_dofs,
         sizeof(fmm.system_dofs));
+    const char* replay_checkpoint_value =
+        std::getenv("BEM_FARFIELD_REPLAY_CHECKPOINT");
+    const bool replay_farfield =
+        replay_checkpoint_value != nullptr &&
+        replay_checkpoint_value[0] != '\0';
     const std::string orientation_checkpoint_path =
-        std::string(output_path) + ".orient.checkpoint";
+        replay_farfield
+            ? std::string(replay_checkpoint_value)
+            : std::string(output_path) + ".orient.checkpoint";
     const std::string adaptive_done_path =
         std::string(output_path) + ".adaptive.done";
     if (!adaptive_levels.empty()) {
@@ -2469,11 +2985,12 @@ int run_orientation_average(
     int orientation_start = 0;
     double previous_loop_seconds = 0.0;
     bool resumed = false;
-    if (checkpoint_enabled) {
+    if (checkpoint_enabled || replay_farfield) {
         OrientationCheckpointHeader checkpoint;
         if (load_orientation_checkpoint(
                 orientation_checkpoint_path,
                 checkpoint_signature,
+                replay_farfield,
                 ntheta,
                 fmm.system_dofs,
                 checkpoint,
@@ -2504,6 +3021,30 @@ int run_orientation_average(
                 "  [orientation checkpoint] resumed at %d/%zu from %s\n",
                 orientation_start, orientations.size(),
                 orientation_checkpoint_path.c_str());
+            if (replay_farfield) {
+                if (orientations.size() != 1 || orientation_start != 1)
+                    throw std::runtime_error(
+                        "far-field checkpoint replay requires one completed "
+                        "base orientation");
+                orientation_start = 0;
+                std::fill(
+                    averaged_mueller.begin(),
+                    averaged_mueller.end(), 0.0);
+                total_iterations = 0;
+                maximum_orientation_iterations = 0;
+                warm_started_solves = 0;
+                inner_applications = 0;
+                inner_iterations = 0;
+                maximum_residual = 0.0;
+                solve_seconds = 0.0;
+                farfield_seconds = 0.0;
+                inner_seconds = 0.0;
+                previous_loop_seconds = 0.0;
+                previous_rotation = orientations[0].RT;
+                have_previous_rotation = true;
+                std::printf(
+                    "  [farfield replay] reusing converged X/Y currents\n");
+            }
         }
     }
     if (!adaptive_levels.empty()) {
@@ -2578,6 +3119,30 @@ int run_orientation_average(
                 orientation_start, orientations.size(),
                 accepted_adaptive_level);
     }
+    if (orientation_start > 0 && recycle_rank > 0 &&
+        previous_x.size() == static_cast<size_t>(fmm.system_dofs) &&
+        previous_y.size() == static_cast<size_t>(fmm.system_dofs)) {
+        const AveragingOrientation& previous_orientation =
+            orientations[orientation_start - 1];
+        const Vec3 previous_propagation =
+            previous_orientation.RT * Vec3(0.0, 0.0, 1.0);
+        const Vec3 previous_electric_x =
+            previous_orientation.RT * Vec3(1.0, 0.0, 0.0);
+        const Vec3 previous_electric_y =
+            previous_orientation.RT * Vec3(0.0, 1.0, 0.0);
+        const std::vector<cdouble> recovered_rhs_x =
+            muller_nodal_planewave_rhs(
+                fmm.mesh, wave_number,
+                previous_electric_x, previous_propagation, 13);
+        const std::vector<cdouble> recovered_rhs_y =
+            muller_nodal_planewave_rhs(
+                fmm.mesh, wave_number,
+                previous_electric_y, previous_propagation, 13);
+        recycle_basis.add(recovered_rhs_x, previous_x);
+        recycle_basis.add(recovered_rhs_y, previous_y);
+        previous_rhs_x = recovered_rhs_x;
+        previous_rhs_y = recovered_rhs_y;
+    }
 
     for (size_t orientation_index =
              static_cast<size_t>(orientation_start);
@@ -2612,7 +3177,7 @@ int run_orientation_average(
                       std::sqrt(std::max(0.0, neighbor_distance) / 8.0)))
                 : M_PI;
         const bool use_neighbor_guess =
-            warm_start && have_previous_rotation &&
+            (replay_farfield || warm_start) && have_previous_rotation &&
             neighbor_angle <=
                 warm_start_max_angle_degrees * M_PI / 180.0;
         const std::vector<cdouble>* guess_x =
@@ -2623,6 +3188,54 @@ int run_orientation_average(
             use_neighbor_guess && previous_y.size() ==
                 static_cast<size_t>(fmm.system_dofs)
                 ? &previous_y : nullptr;
+        const auto relative_rhs_distance =
+            [](const std::vector<cdouble>& current,
+               const std::vector<cdouble>& previous) {
+                if (current.size() != previous.size())
+                    return 1.0;
+                double difference_squared = 0.0;
+                double current_squared = 0.0;
+#pragma omp parallel for reduction(+:difference_squared,current_squared) schedule(static)
+                for (int index = 0;
+                     index < static_cast<int>(current.size()); index++) {
+                    difference_squared +=
+                        std::norm(current[index] - previous[index]);
+                    current_squared += std::norm(current[index]);
+                }
+                return std::sqrt(
+                    difference_squared /
+                    std::max(current_squared, 1.0e-300));
+            };
+        const double neighbor_residual_x =
+            guess_x != nullptr
+                ? relative_rhs_distance(rhs_x, previous_rhs_x)
+                : 1.0;
+        const double neighbor_residual_y =
+            guess_y != nullptr
+                ? relative_rhs_distance(rhs_y, previous_rhs_y)
+                : 1.0;
+        double projected_residual_x = 1.0;
+        double projected_residual_y = 1.0;
+        if (recycle_basis.make_guess(
+                rhs_x, recycled_guess_x,
+                projected_residual_x) &&
+            projected_residual_x <
+                0.98 * neighbor_residual_x) {
+            guess_x = &recycled_guess_x;
+            recycled_solves++;
+            recycle_projected_residual_sum +=
+                projected_residual_x;
+        }
+        if (recycle_basis.make_guess(
+                rhs_y, recycled_guess_y,
+                projected_residual_y) &&
+            projected_residual_y <
+                0.98 * neighbor_residual_y) {
+            guess_y = &recycled_guess_y;
+            recycled_solves++;
+            recycle_projected_residual_sum +=
+                projected_residual_y;
+        }
         warm_started_solves += (guess_x != nullptr) + (guess_y != nullptr);
 
         char label_x[96];
@@ -2647,6 +3260,41 @@ int run_orientation_average(
                 tolerance, maximum_iterations,
                 pfft_outer_restart, label_y, guess_y);
             fmm.select_fmm_backend();
+        } else if (paired_gpu_gmres) {
+            solution_x.solution = guess_x != nullptr
+                ? *guess_x
+                : std::vector<cdouble>(
+                      static_cast<size_t>(fmm.system_dofs),
+                      cdouble(0.0));
+            solution_y.solution = guess_y != nullptr
+                ? *guess_y
+                : std::vector<cdouble>(
+                      static_cast<size_t>(fmm.system_dofs),
+                      cdouble(0.0));
+            const MullerPairedGmresResult paired =
+                solve_muller_paired_gmres_device(
+                    fmm, mbj,
+                    rhs_x.data(), rhs_y.data(),
+                    solution_x.solution.data(),
+                    solution_y.solution.data(),
+                    gmres_restart, tolerance,
+                    maximum_iterations, true);
+            solution_x.iterations = paired.iterations;
+            solution_y.iterations = paired.iterations;
+            solution_x.initial_operator_residual =
+                paired.initial_residual_x;
+            solution_y.initial_operator_residual =
+                paired.initial_residual_y;
+            solution_x.projected_residual =
+                paired.final_residual_x;
+            solution_y.projected_residual =
+                paired.final_residual_y;
+            solution_x.operator_residual =
+                paired.final_residual_x;
+            solution_y.operator_residual =
+                paired.final_residual_y;
+            solution_x.seconds = 0.5 * paired.seconds;
+            solution_y.seconds = 0.5 * paired.seconds;
         } else {
             solution_x = solve_gmres(
                 current_action, rhs_x.data(), fmm.system_dofs,
@@ -2657,8 +3305,12 @@ int run_orientation_average(
                 tolerance, maximum_iterations, gmres_restart,
                 &mbj, label_y, guess_y);
         }
+        recycle_basis.add(rhs_x, solution_x.solution);
+        recycle_basis.add(rhs_y, solution_y.solution);
         previous_x = solution_x.solution;
         previous_y = solution_y.solution;
+        previous_rhs_x = rhs_x;
+        previous_rhs_y = rhs_y;
         previous_rotation = orientation.RT;
         have_previous_rotation = true;
         const int orientation_iterations =
@@ -2676,8 +3328,10 @@ int run_orientation_average(
 
         const auto farfield_start =
             std::chrono::steady_clock::now();
+        const int farfield_alpha_count =
+            farfield_spectral_alpha_count(alpha_count, ka);
         std::vector<Vec3> particle_directions(
-            static_cast<size_t>(alpha_count) * ntheta);
+            static_cast<size_t>(farfield_alpha_count) * ntheta);
         std::vector<Mat3> rotations(alpha_count);
         std::vector<double> orientation_mueller(
             averaged_mueller.size(), 0.0);
@@ -2690,7 +3344,15 @@ int run_orientation_average(
                 euler_rotation(
                     alpha, orientation.beta, orientation.gamma);
             rotations[alpha_index] = rotation;
-            const Mat3 inverse = rotation.T();
+        }
+        for (int alpha_index = 0;
+             alpha_index < farfield_alpha_count; alpha_index++) {
+            const double alpha =
+                2.0 * M_PI * alpha_index /
+                static_cast<double>(farfield_alpha_count);
+            const Mat3 inverse =
+                euler_rotation(
+                    alpha, orientation.beta, orientation.gamma).T();
             for (int angle = 0; angle < ntheta; angle++) {
                 particle_directions[
                     static_cast<size_t>(alpha_index) * ntheta +
@@ -2704,6 +3366,18 @@ int run_orientation_average(
             solution_x.solution.data(),
             solution_y.solution.data(),
             particle_directions, field_x, field_y);
+        if (farfield_alpha_count != alpha_count) {
+            field_x = periodic_spectral_interpolate(
+                field_x, farfield_alpha_count, alpha_count,
+                3 * ntheta);
+            field_y = periodic_spectral_interpolate(
+                field_y, farfield_alpha_count, alpha_count,
+                3 * ntheta);
+            std::printf(
+                "  [farfield] angular spectral interpolation: "
+                "%d -> %d alpha samples\n",
+                farfield_alpha_count, alpha_count);
+        }
 
         const cdouble amplitude_scale(0.0, -ka);
         for (int alpha_index = 0;
@@ -2792,7 +3466,7 @@ int run_orientation_average(
                 solution_x.operator_residual,
                 solution_y.operator_residual));
         std::fflush(stdout);
-        if (checkpoint_enabled) {
+        if (checkpoint_enabled && !replay_farfield) {
             OrientationCheckpointHeader checkpoint = {};
             const char magic[16] = "BEM_ORIENT_CP1";
             std::memcpy(checkpoint.magic, magic, 16);
@@ -2981,6 +3655,17 @@ int run_orientation_average(
            << warm_start_max_angle_degrees
            << ", \"warm_started_solves\": "
            << warm_started_solves
+           << ", \"recycle_rank_requested\": "
+           << recycle_rank
+           << ", \"recycle_rank_built\": "
+           << recycle_basis.rhs_basis.size()
+           << ", \"recycled_solves\": "
+           << recycled_solves
+           << ", \"mean_projected_rhs_residual\": "
+           << (recycled_solves > 0
+                   ? recycle_projected_residual_sum /
+                       static_cast<double>(recycled_solves)
+                   : 1.0)
            << ", \"resumed\": "
            << (resumed ? "true" : "false")
            << ", \"checkpoint\": ";
@@ -3006,6 +3691,8 @@ int run_orientation_average(
            << maximum_residual << "},\n"
            << "  \"pfft_inner\": {\"enabled\": "
            << (pfft_fgmres ? "true" : "false")
+           << ", \"paired_gpu_gmres\": "
+           << (paired_gpu_gmres ? "true" : "false")
            << ", \"applications\": " << inner_applications
            << ", \"iterations\": " << inner_iterations
            << ", \"seconds\": " << inner_seconds << "},\n"
@@ -3052,6 +3739,7 @@ int run_orientation_average(
         completed_orientations, represented_orientations,
         total_iterations, solve_seconds, farfield_seconds,
         maximum_residual, output_path);
+    mbj.cleanup_device();
     fmm.cleanup();
     return maximum_residual <= 2.0 * tolerance ? 0 : 1;
 }
@@ -3064,7 +3752,7 @@ int main(int argc, char** argv)
     int digits = 5;
     int regular_quadrature = 7;
     int duffy_order = 4;
-    int max_leaf = 64;
+    int max_leaf = 32;
     int fmm_near_radius = 3;
     int pfft_order = 2;
     double pfft_correction_radius = 2.0;
@@ -3099,6 +3787,7 @@ int main(int argc, char** argv)
     bool use_pfft = false;
     bool hybrid_pfft_fmm = false;
     bool pfft_fgmres = false;
+    bool axial_slab_start = false;
     bool near_template_reuse = true;
     int orient_average_alpha = 0;
     int orient_average_beta = 0;
@@ -3113,6 +3802,8 @@ int main(int argc, char** argv)
     double orient_adaptive_component_tolerance = 0.10;
     bool orient_warm_start = true;
     double orient_warm_max_angle_degrees = 25.0;
+    int orient_recycle_rank = 0;
+    bool orient_paired_gpu_gmres = true;
 #ifdef BEM_DEFAULT_FMM_NEAR_FP32
     bool fmm_near_fp32 = true;
 #else
@@ -3219,6 +3910,9 @@ int main(int argc, char** argv)
             pfft_fgmres = true;
             use_pfft = true;
         }
+        else if (std::strcmp(
+                     argv[i], "--axial-slab-initial-guess") == 0)
+            axial_slab_start = true;
         else if (std::strcmp(argv[i], "--operator-backend") == 0 &&
                  i + 1 < argc) {
             const char* backend = argv[++i];
@@ -3319,6 +4013,16 @@ int main(int argc, char** argv)
                      argv[i], "--orient-warm-max-angle") == 0 &&
                  i + 1 < argc)
             orient_warm_max_angle_degrees = std::atof(argv[++i]);
+        else if (std::strcmp(
+                     argv[i], "--orient-recycle-rank") == 0 &&
+                 i + 1 < argc)
+            orient_recycle_rank = std::atoi(argv[++i]);
+        else if (std::strcmp(
+                     argv[i], "--orient-paired-gpu-gmres") == 0)
+            orient_paired_gpu_gmres = true;
+        else if (std::strcmp(
+                     argv[i], "--no-orient-paired-gpu-gmres") == 0)
+            orient_paired_gpu_gmres = false;
         else if (std::strcmp(argv[i], "--cyclic-polarization") == 0)
             cyclic_polarization = true;
         else if (std::strcmp(
@@ -3413,6 +4117,22 @@ int main(int argc, char** argv)
         use_pfft = true;
     if (!prism_mode && !cube_mode && !sphere_mode && !obj_mode) {
         std::fprintf(stderr, "--shape must be sphere, cube, prism, or obj\n");
+        return 2;
+    }
+    if (axial_slab_start && !polygon_symmetry_mode) {
+        std::fprintf(
+            stderr,
+            "--axial-slab-initial-guess requires a prism or cube\n");
+        return 2;
+    }
+    if (axial_slab_start &&
+        (orient_average_alpha > 0 ||
+         orient_average_beta > 0 ||
+         orient_average_gamma > 0)) {
+        std::fprintf(
+            stderr,
+            "--axial-slab-initial-guess is currently limited to the "
+            "fixed axial orientation\n");
         return 2;
     }
     if (auto_polarization_symmetry) {
@@ -3545,6 +4265,12 @@ int main(int argc, char** argv)
     }
     if (ntheta < 2) {
         std::fprintf(stderr, "--ntheta must be at least 2\n");
+        return 2;
+    }
+    if (orient_recycle_rank < 0 || orient_recycle_rank > 128) {
+        std::fprintf(
+            stderr,
+            "--orient-recycle-rank must be in [0,128]\n");
         return 2;
     }
     const bool orientation_average =
@@ -3699,6 +4425,8 @@ int main(int argc, char** argv)
         normalize_mesh(mesh);
         for (int subdivision = 0; subdivision < refinement; subdivision++)
             mesh = subdivide_flat(mesh);
+        if (edge_refine > 0)
+            refine_feature_edges(mesh, feature_angle, edge_refine);
     } else {
         mesh = icosphere(1.0, refinement);
     }
@@ -3737,7 +4465,29 @@ int main(int argc, char** argv)
         const int depth5_safe_leaf = static_cast<int>(
             (combined_quadrature_points + depth5_boxes - 1) /
             depth5_boxes);
-        if (depth6_order < depth5_order &&
+        const char* allow_depth6_environment =
+            std::getenv("BEM_FMM_ALLOW_DEPTH6");
+        const bool allow_depth6 =
+            allow_depth6_environment != nullptr &&
+            std::strcmp(allow_depth6_environment, "0") != 0;
+        if (allow_depth6) {
+            const char* order_depth_environment =
+                std::getenv("BEM_FMM_ORDER_REFERENCE_DEPTH");
+            const int order_reference_depth =
+                order_depth_environment != nullptr
+                    ? std::atoi(order_depth_environment)
+                    : 0;
+            if (order_reference_depth <= 0 ||
+                order_reference_depth > 5) {
+                setenv(
+                    "BEM_FMM_ORDER_REFERENCE_DEPTH", "5", 1);
+                std::printf(
+                    "  [FMM accuracy guard] depth 6 uses the "
+                    "depth-5 truncation order floor\n");
+            }
+        }
+        if (!allow_depth6 &&
+            depth6_order < depth5_order &&
             max_leaf < depth5_safe_leaf) {
             std::printf(
                 "  [FMM accuracy guard] max-leaf %d -> %d to keep "
@@ -3846,6 +4596,9 @@ int main(int argc, char** argv)
     hash_bytes(
         checkpoint_signature, &fmm.system_dofs,
         sizeof(fmm.system_dofs));
+    hash_bytes(
+        checkpoint_signature, &axial_slab_start,
+        sizeof(axial_slab_start));
     const std::size_t quadrature_points =
         fmm.quadrature.size();
     hash_bytes(
@@ -4096,6 +4849,52 @@ int main(int argc, char** argv)
             refinement - 1, refinement, coarse_solution.size(),
             coarse_initial_guess.size());
     }
+    std::vector<cdouble> axial_slab_guess;
+    std::vector<cdouble> axial_slab_parallel_guess;
+    AxialSlabStartStats axial_slab_stats;
+    AxialSlabStartStats axial_slab_parallel_stats;
+    double axial_slab_projection_seconds = 0.0;
+    if (axial_slab_start) {
+        const auto projection_start =
+            std::chrono::steady_clock::now();
+        axial_slab_guess = axial_slab_initial_guess(
+            fmm, refractive_real, Vec3(1.0, 0.0, 0.0),
+            axial_slab_stats);
+        if (physical_check) {
+            axial_slab_parallel_guess = axial_slab_initial_guess(
+                fmm, refractive_real, Vec3(0.0, 1.0, 0.0),
+                axial_slab_parallel_stats);
+        }
+        axial_slab_projection_seconds =
+            std::chrono::duration<double>(
+                std::chrono::steady_clock::now() -
+                projection_start).count();
+        std::printf(
+            "  [axial slab start] A=(%.6g%+.6gi), "
+            "B=(%.6g%+.6gi), z=[%.6g, %.6g]\n",
+            axial_slab_stats.forward_amplitude.real(),
+            axial_slab_stats.forward_amplitude.imag(),
+            axial_slab_stats.backward_amplitude.real(),
+            axial_slab_stats.backward_amplitude.imag(),
+            axial_slab_stats.z_min, axial_slab_stats.z_max);
+        std::printf(
+            "  [axial slab start] boundary errors E %.3e, H %.3e, "
+            "exit %.3e; projection J %.3e, M %.3e in %.3fs\n",
+            axial_slab_stats.entrance_e_continuity_error,
+            axial_slab_stats.entrance_h_continuity_error,
+            axial_slab_stats.exit_eh_continuity_error,
+            axial_slab_stats.electric_current.relative_l2_error,
+            axial_slab_stats.magnetic_current.relative_l2_error,
+            axial_slab_projection_seconds);
+    }
+    const std::vector<cdouble>* primary_initial_guess =
+        axial_slab_guess.empty()
+            ? (coarse_initial_guess.empty()
+                   ? nullptr : &coarse_initial_guess)
+            : &axial_slab_guess;
+    const std::vector<cdouble>* parallel_initial_guess =
+        axial_slab_parallel_guess.empty()
+            ? nullptr : &axial_slab_parallel_guess;
     const Matvec action = [&](const cdouble* input, cdouble* output) {
         fmm.matvec(input, output);
     };
@@ -4110,6 +4909,24 @@ int main(int argc, char** argv)
             fmm.matvec(input, output);
         };
     if (orientation_average) {
+        if (pfft_fgmres || !fmm.device_matvec_available() ||
+            mbj.coarse_rank != 0) {
+            if (orient_paired_gpu_gmres) {
+                std::printf(
+                    "  [orientation] paired GPU GMRES unavailable for "
+                    "this backend/preconditioner; using existing solver\n");
+            }
+            orient_paired_gpu_gmres = false;
+        }
+        if (orient_paired_gpu_gmres) {
+            mbj.upload_device();
+            if (!mbj.device_apply_available()) {
+                std::printf(
+                    "  [orientation] MBJ GPU upload unavailable; "
+                    "using existing solver\n");
+                orient_paired_gpu_gmres = false;
+            }
+        }
         return run_orientation_average(
             fmm, mbj, wave_number, ka, refractive_real,
             refinement, prism_sides,
@@ -4119,6 +4936,8 @@ int main(int argc, char** argv)
             orient_symmetry_order,
             orient_warm_start,
             orient_warm_max_angle_degrees,
+            orient_recycle_rank,
+            orient_paired_gpu_gmres,
             pfft_fgmres,
             digits,
             max_leaf,
@@ -4240,7 +5059,8 @@ int main(int argc, char** argv)
         baseline = solve_gmres(
             action, rhs.data(), fmm.system_dofs,
             tolerance, maximum_iterations, gmres_restart,
-            nullptr, "baseline", nullptr, nullptr, nullptr, nullptr,
+            nullptr, "baseline", primary_initial_guess,
+            nullptr, nullptr, nullptr,
             solver_checkpoint("baseline"));
     }
     std::vector<cdouble> recycled_parallel_guess;
@@ -4262,7 +5082,8 @@ int main(int argc, char** argv)
         hybrid_pfft_result = solve_gmres(
             action, rhs.data(), fmm.system_dofs,
             hybrid_pfft_tolerance, maximum_iterations, gmres_restart,
-            &mbj, "pFFT-MBJ", nullptr, nullptr, nullptr, nullptr,
+            &mbj, "pFFT-MBJ", primary_initial_guess,
+            nullptr, nullptr, nullptr,
             solver_checkpoint("pFFT-MBJ"));
         hybrid_fmm_switch_setup_seconds =
             fmm.switch_pfft_to_fmm(digits, max_leaf);
@@ -4319,7 +5140,7 @@ int main(int argc, char** argv)
             exact_action, pfft_inverse, rhs.data(), fmm.system_dofs,
             tolerance, maximum_iterations, pfft_outer_restart,
             "FMM-pFFT-FGMRES",
-            coarse_initial_guess.empty() ? nullptr : &coarse_initial_guess,
+            primary_initial_guess,
             nullptr, nullptr, nullptr,
             solver_checkpoint("FMM-pFFT-FGMRES"));
         first_pfft_inner_applications = pfft_inner_applications;
@@ -4331,7 +5152,7 @@ int main(int argc, char** argv)
             action, rhs.data(), fmm.system_dofs,
             tolerance, maximum_iterations, gmres_restart,
             &mbj, "MBJ",
-            coarse_initial_guess.empty() ? nullptr : &coarse_initial_guess,
+            primary_initial_guess,
             symmetry_polarization && !cyclic_exact_geometry
                 ? rhs_parallel.data() : nullptr,
             symmetry_polarization && !cyclic_exact_geometry
@@ -4549,7 +5370,8 @@ int main(int argc, char** argv)
                         rhs_parallel.data(), fmm.system_dofs,
                         tolerance, maximum_iterations,
                         pfft_outer_restart,
-                        "FMM-pFFT-parallel", nullptr,
+                        "FMM-pFFT-parallel",
+                        parallel_initial_guess,
                         nullptr, nullptr, nullptr,
                         solver_checkpoint("FMM-pFFT-parallel"));
                 parallel_pfft_inner_applications =
@@ -4562,7 +5384,8 @@ int main(int argc, char** argv)
                 parallel_preconditioned = solve_gmres(
                     action, rhs_parallel.data(), fmm.system_dofs,
                     tolerance, maximum_iterations, gmres_restart,
-                    &mbj, "MBJ-parallel", nullptr, nullptr, nullptr,
+                    &mbj, "MBJ-parallel",
+                    parallel_initial_guess, nullptr, nullptr,
                     nullptr, solver_checkpoint("MBJ-parallel"));
             }
         }
@@ -4912,6 +5735,8 @@ int main(int argc, char** argv)
                << ", \"resumed_iterations\": "
                << baseline.resumed_iterations
                << ", \"solve_s\": " << baseline.seconds
+               << ", \"initial_fmm_residual\": "
+               << baseline.initial_operator_residual
                << ", \"fmm_residual\": "
                << baseline.operator_residual
                << ", \"dense_residual\": ";
@@ -4931,6 +5756,8 @@ int main(int argc, char** argv)
            << ", \"resumed_iterations\": "
            << preconditioned.resumed_iterations
            << ", \"solve_s\": " << preconditioned.seconds
+           << ", \"initial_fmm_residual\": "
+           << preconditioned.initial_operator_residual
            << ", \"fmm_residual\": "
            << preconditioned.operator_residual
            << ", \"dense_residual\": ";
@@ -4994,6 +5821,44 @@ int main(int argc, char** argv)
             << first_pfft_inner_iterations
             << ", \"inner_solve_s\": "
             << first_pfft_inner_seconds
+            << "},\n";
+    }
+    output
+           << "  \"axial_slab_initial_guess\": ";
+    if (!axial_slab_start) {
+        output << "null,\n";
+    } else {
+        output
+            << "{\"projection_s\": "
+            << axial_slab_projection_seconds
+            << ", \"z_min\": " << axial_slab_stats.z_min
+            << ", \"z_max\": " << axial_slab_stats.z_max
+            << ", \"forward_amplitude\": ["
+            << axial_slab_stats.forward_amplitude.real() << ", "
+            << axial_slab_stats.forward_amplitude.imag() << "]"
+            << ", \"backward_amplitude\": ["
+            << axial_slab_stats.backward_amplitude.real() << ", "
+            << axial_slab_stats.backward_amplitude.imag() << "]"
+            << ", \"entrance_e_continuity_error\": "
+            << axial_slab_stats.entrance_e_continuity_error
+            << ", \"entrance_h_continuity_error\": "
+            << axial_slab_stats.entrance_h_continuity_error
+            << ", \"exit_eh_continuity_error\": "
+            << axial_slab_stats.exit_eh_continuity_error
+            << ", \"j_projection_iterations\": "
+            << axial_slab_stats.electric_current.iterations
+            << ", \"j_projection_residual\": "
+            << axial_slab_stats.electric_current.relative_residual
+            << ", \"j_projection_l2_error\": "
+            << axial_slab_stats.electric_current.relative_l2_error
+            << ", \"m_projection_iterations\": "
+            << axial_slab_stats.magnetic_current.iterations
+            << ", \"m_projection_residual\": "
+            << axial_slab_stats.magnetic_current.relative_residual
+            << ", \"m_projection_l2_error\": "
+            << axial_slab_stats.magnetic_current.relative_l2_error
+            << ", \"initial_fmm_residual\": "
+            << preconditioned.initial_operator_residual
             << "},\n";
     }
     output

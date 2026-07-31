@@ -3,6 +3,8 @@
 #include <cuda_runtime.h>
 
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <stdexcept>
 #include <type_traits>
 
@@ -314,6 +316,7 @@ __global__ void farfield_kernel(
     }
 }
 
+template <bool RealWaveNumber, bool FastPhase, int BlockSize>
 __global__ void farfield_pair_kernel(
     const double* positions,
     int point_count,
@@ -372,8 +375,20 @@ __global__ void farfield_pair_kernel(
             rz * positions[3 * point + 2];
         double sine;
         double cosine;
-        sincos(-k_real * dot, &sine, &cosine);
-        const double growth = exp(k_imaginary * dot);
+        if (FastPhase) {
+            float sine_fp32;
+            float cosine_fp32;
+            sincosf(
+                -static_cast<float>(k_real * dot),
+                &sine_fp32, &cosine_fp32);
+            sine = static_cast<double>(sine_fp32);
+            cosine = static_cast<double>(cosine_fp32);
+        } else {
+            sincos(-k_real * dot, &sine, &cosine);
+        }
+        const double growth = RealWaveNumber
+            ? 1.0
+            : exp(k_imaginary * dot);
         const double2 phase =
             make_double2(growth * cosine, growth * sine);
         for (int component = 0; component < 12; component++) {
@@ -387,7 +402,7 @@ __global__ void farfield_pair_kernel(
         }
     }
 
-    __shared__ double2 shared[12][128];
+    __shared__ double2 shared[12][BlockSize];
     for (int component = 0; component < 12; component++)
         shared[component][threadIdx.x] = sums[component];
     __syncthreads();
@@ -433,6 +448,148 @@ __global__ void farfield_pair_kernel(
                 complex_scale(shared[offset + 4][0], rx),
                 complex_scale(shared[offset + 3][0], ry))
         };
+        for (int axis = 0; axis < 3; axis++) {
+            output[
+                3 * (polarization * direction_count + direction) + axis] =
+                complex_mul(
+                    prefactor,
+                    complex_sub(
+                        j_perpendicular[axis], r_cross_m[axis]));
+        }
+    }
+}
+
+template <int BlockSize>
+__global__ void farfield_pair_fp32_accum_kernel(
+    const double* positions,
+    int point_count,
+    const double* directions,
+    int direction_count,
+    const double* x_jx_re,
+    const double* x_jx_im,
+    const double* x_jy_re,
+    const double* x_jy_im,
+    const double* x_jz_re,
+    const double* x_jz_im,
+    const double* x_mx_re,
+    const double* x_mx_im,
+    const double* x_my_re,
+    const double* x_my_im,
+    const double* x_mz_re,
+    const double* x_mz_im,
+    const double* y_jx_re,
+    const double* y_jx_im,
+    const double* y_jy_re,
+    const double* y_jy_im,
+    const double* y_jz_re,
+    const double* y_jz_im,
+    const double* y_mx_re,
+    const double* y_mx_im,
+    const double* y_my_re,
+    const double* y_my_im,
+    const double* y_mz_re,
+    const double* y_mz_im,
+    double k_real,
+    double2* output)
+{
+    const int direction = blockIdx.x;
+    if (direction >= direction_count)
+        return;
+    const double rx = directions[3 * direction];
+    const double ry = directions[3 * direction + 1];
+    const double rz = directions[3 * direction + 2];
+    const double* current_re[12] = {
+        x_jx_re, x_jy_re, x_jz_re, x_mx_re, x_my_re, x_mz_re,
+        y_jx_re, y_jy_re, y_jz_re, y_mx_re, y_my_re, y_mz_re
+    };
+    const double* current_im[12] = {
+        x_jx_im, x_jy_im, x_jz_im, x_mx_im, x_my_im, x_mz_im,
+        y_jx_im, y_jy_im, y_jz_im, y_mx_im, y_my_im, y_mz_im
+    };
+    float2 sums[12];
+#pragma unroll
+    for (int component = 0; component < 12; component++)
+        sums[component] = make_float2(0.0f, 0.0f);
+    for (int point = threadIdx.x;
+         point < point_count; point += blockDim.x) {
+        const double dot =
+            rx * positions[3 * point] +
+            ry * positions[3 * point + 1] +
+            rz * positions[3 * point + 2];
+        float sine;
+        float cosine;
+        sincosf(
+            -static_cast<float>(k_real * dot),
+            &sine, &cosine);
+#pragma unroll
+        for (int component = 0; component < 12; component++) {
+            const float current_real =
+                static_cast<float>(current_re[component][point]);
+            const float current_imaginary =
+                static_cast<float>(current_im[component][point]);
+            sums[component].x +=
+                cosine * current_real - sine * current_imaginary;
+            sums[component].y +=
+                cosine * current_imaginary + sine * current_real;
+        }
+    }
+
+    __shared__ float2 shared[12][BlockSize];
+#pragma unroll
+    for (int component = 0; component < 12; component++)
+        shared[component][threadIdx.x] = sums[component];
+    __syncthreads();
+    for (int stride = blockDim.x / 2;
+         stride > 0; stride /= 2) {
+        if (threadIdx.x < stride) {
+#pragma unroll
+            for (int component = 0; component < 12; component++) {
+                shared[component][threadIdx.x].x +=
+                    shared[component][threadIdx.x + stride].x;
+                shared[component][threadIdx.x].y +=
+                    shared[component][threadIdx.x + stride].y;
+            }
+        }
+        __syncthreads();
+    }
+    if (threadIdx.x != 0)
+        return;
+
+    double2 reduced[12];
+#pragma unroll
+    for (int component = 0; component < 12; component++) {
+        reduced[component] = make_double2(
+            static_cast<double>(shared[component][0].x),
+            static_cast<double>(shared[component][0].y));
+    }
+    const double2 prefactor = make_double2(0.0, -k_real * INV4PI);
+    for (int polarization = 0; polarization < 2; polarization++) {
+        const int offset = 6 * polarization;
+        const double2 r_dot_j = complex_add(
+            complex_add(
+                complex_scale(reduced[offset], rx),
+                complex_scale(reduced[offset + 1], ry)),
+            complex_scale(reduced[offset + 2], rz));
+        const double2 j_perpendicular[3] = {
+            complex_sub(
+                reduced[offset], complex_scale(r_dot_j, rx)),
+            complex_sub(
+                reduced[offset + 1], complex_scale(r_dot_j, ry)),
+            complex_sub(
+                reduced[offset + 2], complex_scale(r_dot_j, rz))
+        };
+        const double2 r_cross_m[3] = {
+            complex_sub(
+                complex_scale(reduced[offset + 5], ry),
+                complex_scale(reduced[offset + 4], rz)),
+            complex_sub(
+                complex_scale(reduced[offset + 3], rz),
+                complex_scale(reduced[offset + 5], rx)),
+            complex_sub(
+                complex_scale(reduced[offset + 4], rx),
+                complex_scale(reduced[offset + 3], ry))
+        };
+#pragma unroll
         for (int axis = 0; axis < 3; axis++) {
             output[
                 3 * (polarization * direction_count + direction) + axis] =
@@ -596,6 +753,7 @@ __global__ void correction_kernel(
 
 __global__ void combine_muller_kernel(
     int current_dofs,
+    int input_offset,
     const double* mass_re,
     const double* mass_im,
     const double* k1_re,
@@ -612,8 +770,8 @@ __global__ void combine_muller_kernel(
     const int row = blockIdx.x * blockDim.x + threadIdx.x;
     if (row >= current_dofs)
         return;
-    const int j = row;
-    const int m = current_dofs + row;
+    const int j = input_offset + row;
+    const int m = input_offset + current_dofs + row;
     const double2 k1_j = load_split(k1_re, k1_im, j);
     const double2 k1_m = load_split(k1_re, k1_im, m);
     const double2 mass_j = load_split(mass_re, mass_im, j);
@@ -699,6 +857,10 @@ void MullerGpuAssembly::init(
     regular_points = static_cast<int>(regular_counts.size());
     mass_points = static_cast<int>(mass_counts.size());
     correction_count = static_cast<int>(correction_entries.size());
+    const char* four_field_value = std::getenv("BEM_FMM_FOUR_FIELD");
+    system_slots = four_field_value != nullptr &&
+        std::strcmp(four_field_value, "0") != 0
+        ? 4 : 2;
 
     allocate_and_upload(
         &d_regular_counts, regular_counts, "upload regular counts");
@@ -752,12 +914,15 @@ void MullerGpuAssembly::init(
     d_correction_k2_mu = correction_k2_mu_device;
 
     cuda_check(
-        cudaMalloc(&d_input, 2 * current_dofs * sizeof(double2)),
+        cudaMalloc(
+            &d_input,
+            static_cast<size_t>(system_slots) * current_dofs *
+                sizeof(double2)),
         "allocate Muller input");
     cuda_check(
         cudaMalloc(&d_output, 2 * current_dofs * sizeof(double2)),
         "allocate Muller output");
-    for (int component = 0; component < 3; component++) {
+    for (int component = 0; component < 3 * system_slots; component++) {
         cuda_check(
             cudaMalloc(
                 reinterpret_cast<void**>(&d_charge_re[component]),
@@ -770,7 +935,7 @@ void MullerGpuAssembly::init(
             "allocate Muller charge imaginary");
     }
     const size_t current_bytes =
-        static_cast<size_t>(2 * current_dofs) * sizeof(double);
+        static_cast<size_t>(system_slots * current_dofs) * sizeof(double);
     double** arrays[] = {
         &d_mass_re, &d_mass_im, &d_k1_re, &d_k1_im,
         &d_k2_epsilon_re, &d_k2_epsilon_im,
@@ -814,7 +979,7 @@ void MullerGpuAssembly::upload_system_input(
             cudaMemcpyHostToDevice),
         "upload Muller system vector");
     const size_t bytes =
-        static_cast<size_t>(2 * current_dofs) * sizeof(double);
+        static_cast<size_t>(system_slots * current_dofs) * sizeof(double);
     double* arrays[] = {
         d_mass_re, d_mass_im, d_k1_re, d_k1_im,
         d_k2_epsilon_re, d_k2_epsilon_im,
@@ -824,10 +989,71 @@ void MullerGpuAssembly::upload_system_input(
         cuda_check(cudaMemset(array, 0, bytes), "clear Muller work array");
 }
 
+void MullerGpuAssembly::upload_system_input_pair_device(
+    const void* device_input_x, const void* device_input_y)
+{
+    if (!initialized || device_input_x == nullptr || device_input_y == nullptr)
+        throw std::runtime_error(
+            "Muller GPU paired device inputs are not available");
+    if (system_slots < 4)
+        throw std::runtime_error(
+            "Muller four-field buffers were not requested at initialization");
+    const size_t system_bytes =
+        static_cast<size_t>(2 * current_dofs) * sizeof(double2);
+    cuda_check(
+        cudaMemcpyAsync(
+            d_input, device_input_x, system_bytes,
+            cudaMemcpyDeviceToDevice),
+        "copy first Muller device system vector");
+    cuda_check(
+        cudaMemcpyAsync(
+            static_cast<double2*>(d_input) + 2 * current_dofs,
+            device_input_y, system_bytes,
+            cudaMemcpyDeviceToDevice),
+        "copy second Muller device system vector");
+    const size_t bytes =
+        static_cast<size_t>(system_slots * current_dofs) * sizeof(double);
+    double* arrays[] = {
+        d_mass_re, d_mass_im, d_k1_re, d_k1_im,
+        d_k2_epsilon_re, d_k2_epsilon_im,
+        d_k2_mu_re, d_k2_mu_im
+    };
+    for (double* array : arrays)
+        cuda_check(
+            cudaMemsetAsync(array, 0, bytes),
+            "clear paired Muller device work array");
+}
+
+void MullerGpuAssembly::upload_system_input_device(
+    const void* device_input)
+{
+    if (!initialized || device_input == nullptr)
+        throw std::runtime_error(
+            "Muller GPU assembly device input is not available");
+    cuda_check(
+        cudaMemcpyAsync(
+            d_input, device_input,
+            static_cast<size_t>(2 * current_dofs) * sizeof(double2),
+            cudaMemcpyDeviceToDevice),
+        "copy Muller device system vector");
+    const size_t bytes =
+        static_cast<size_t>(2 * current_dofs) * sizeof(double);
+    double* arrays[] = {
+        d_mass_re, d_mass_im, d_k1_re, d_k1_im,
+        d_k2_epsilon_re, d_k2_epsilon_im,
+        d_k2_mu_re, d_k2_mu_im
+    };
+    for (double* array : arrays) {
+        cuda_check(
+            cudaMemsetAsync(array, 0, bytes),
+            "clear Muller device work array");
+    }
+}
+
 void MullerGpuAssembly::project_charges_and_mass(
     int input_offset, int slot)
 {
-    if (!initialized || slot < 0 || slot > 1)
+    if (!initialized || slot < 0 || slot >= system_slots)
         throw std::invalid_argument("invalid Muller GPU assembly slot");
     const int block = 256;
     const int regular_grid = (regular_points + block - 1) / block;
@@ -839,9 +1065,9 @@ void MullerGpuAssembly::project_charges_and_mass(
         d_regular_values,
         d_regular_weights,
         regular_points,
-        d_charge_re[0], d_charge_im[0],
-        d_charge_re[1], d_charge_im[1],
-        d_charge_re[2], d_charge_im[2]);
+        d_charge_re[3 * slot], d_charge_im[3 * slot],
+        d_charge_re[3 * slot + 1], d_charge_im[3 * slot + 1],
+        d_charge_re[3 * slot + 2], d_charge_im[3 * slot + 2]);
     cuda_check(cudaGetLastError(), "project Muller charges");
     const int mass_grid = (mass_points + block - 1) / block;
     mass_kernel<<<mass_grid, block>>>(
@@ -861,16 +1087,22 @@ void MullerGpuAssembly::project_charges_and_mass(
         "synchronize Muller projection");
 }
 
-const double* MullerGpuAssembly::charge_re(int component) const
+const double* MullerGpuAssembly::charge_re(
+    int component, int slot) const
 {
-    return component >= 0 && component < 3
-        ? d_charge_re[component] : nullptr;
+    const int index = 3 * slot + component;
+    return component >= 0 && component < 3 &&
+           slot >= 0 && slot < system_slots
+        ? d_charge_re[index] : nullptr;
 }
 
-const double* MullerGpuAssembly::charge_im(int component) const
+const double* MullerGpuAssembly::charge_im(
+    int component, int slot) const
 {
-    return component >= 0 && component < 3
-        ? d_charge_im[component] : nullptr;
+    const int index = 3 * slot + component;
+    return component >= 0 && component < 3 &&
+           slot >= 0 && slot < system_slots
+        ? d_charge_im[index] : nullptr;
 }
 
 void MullerGpuAssembly::assemble_media_and_correction(
@@ -881,10 +1113,56 @@ void MullerGpuAssembly::assemble_media_and_correction(
     std::complex<double> mu_exterior,
     std::complex<double> mu_interior,
     int input_offset,
-    int slot)
+    int slot,
+    int fmm_result_slot)
 {
-    if (!initialized || slot < 0 || slot > 1)
+    if (!initialized || slot < 0 || slot >= system_slots ||
+        fmm_result_slot < 0 || fmm_result_slot > 3)
         throw std::invalid_argument("invalid Muller GPU assembly slot");
+    const double* exterior_curl_re_slots[4] = {
+        exterior.d_grad_re, exterior.d_grad2_re,
+        exterior.d_grad3_re, exterior.d_grad4_re
+    };
+    const double* exterior_curl_im_slots[4] = {
+        exterior.d_grad_im, exterior.d_grad2_im,
+        exterior.d_grad3_im, exterior.d_grad4_im
+    };
+    const double* exterior_hessian_re_slots[4] = {
+        exterior.d_hess_re, exterior.d_hess2_re,
+        exterior.d_hess3_re, exterior.d_hess4_re
+    };
+    const double* exterior_hessian_im_slots[4] = {
+        exterior.d_hess_im, exterior.d_hess2_im,
+        exterior.d_hess3_im, exterior.d_hess4_im
+    };
+    const double* interior_curl_re_slots[4] = {
+        interior.d_grad_re, interior.d_grad2_re,
+        interior.d_grad3_re, interior.d_grad4_re
+    };
+    const double* interior_curl_im_slots[4] = {
+        interior.d_grad_im, interior.d_grad2_im,
+        interior.d_grad3_im, interior.d_grad4_im
+    };
+    const double* interior_hessian_re_slots[4] = {
+        interior.d_hess_re, interior.d_hess2_re,
+        interior.d_hess3_re, interior.d_hess4_re
+    };
+    const double* interior_hessian_im_slots[4] = {
+        interior.d_hess_im, interior.d_hess2_im,
+        interior.d_hess3_im, interior.d_hess4_im
+    };
+    const double* exterior_curl_re = exterior_curl_re_slots[fmm_result_slot];
+    const double* exterior_curl_im = exterior_curl_im_slots[fmm_result_slot];
+    const double* exterior_hessian_re =
+        exterior_hessian_re_slots[fmm_result_slot];
+    const double* exterior_hessian_im =
+        exterior_hessian_im_slots[fmm_result_slot];
+    const double* interior_curl_re = interior_curl_re_slots[fmm_result_slot];
+    const double* interior_curl_im = interior_curl_im_slots[fmm_result_slot];
+    const double* interior_hessian_re =
+        interior_hessian_re_slots[fmm_result_slot];
+    const double* interior_hessian_im =
+        interior_hessian_im_slots[fmm_result_slot];
     const int block = 256;
     const int regular_grid = (regular_points + block - 1) / block;
     assemble_media_kernel<<<regular_grid, block>>>(
@@ -894,14 +1172,14 @@ void MullerGpuAssembly::assemble_media_and_correction(
         d_regular_normals,
         d_regular_weights,
         regular_points,
-        exterior.d_grad_re,
-        exterior.d_grad_im,
-        exterior.d_hess_re,
-        exterior.d_hess_im,
-        interior.d_grad_re,
-        interior.d_grad_im,
-        interior.d_hess_re,
-        interior.d_hess_im,
+        exterior_curl_re,
+        exterior_curl_im,
+        exterior_hessian_re,
+        exterior_hessian_im,
+        interior_curl_re,
+        interior_curl_im,
+        interior_hessian_re,
+        interior_hessian_im,
         to_double2(epsilon_exterior),
         to_double2(epsilon_interior),
         to_double2(mu_exterior),
@@ -946,14 +1224,42 @@ void MullerGpuAssembly::combine_and_download(
     std::complex<double> mu_interior,
     std::complex<double>* output)
 {
+    combine_to_device(
+        k_exterior,
+        epsilon_exterior,
+        epsilon_interior,
+        mu_exterior,
+        mu_interior,
+        d_output);
+    cuda_check(
+        cudaMemcpy(
+            output, d_output,
+            static_cast<size_t>(2 * current_dofs) * sizeof(double2),
+            cudaMemcpyDeviceToHost),
+        "download Muller system action");
+}
+
+void MullerGpuAssembly::combine_to_device(
+    std::complex<double> k_exterior,
+    std::complex<double> epsilon_exterior,
+    std::complex<double> epsilon_interior,
+    std::complex<double> mu_exterior,
+    std::complex<double> mu_interior,
+    void* device_output,
+    int system_slot)
+{
     if (!initialized)
         throw std::runtime_error("Muller GPU assembly is not initialized");
+    if (device_output == nullptr || system_slot < 0 ||
+        2 * system_slot + 1 >= system_slots)
+        throw std::invalid_argument("null Muller device output");
     const int block = 256;
     const int grid = (current_dofs + block - 1) / block;
     const std::complex<double> imaginary_over_k =
         std::complex<double>(0.0, 1.0) / k_exterior;
     combine_muller_kernel<<<grid, block>>>(
         current_dofs,
+        2 * system_slot * current_dofs,
         d_mass_re,
         d_mass_im,
         d_k1_re,
@@ -965,14 +1271,8 @@ void MullerGpuAssembly::combine_and_download(
         to_double2(imaginary_over_k),
         to_double2(0.5 * (epsilon_interior + epsilon_exterior)),
         to_double2(0.5 * (mu_interior + mu_exterior)),
-        static_cast<double2*>(d_output));
+        static_cast<double2*>(device_output));
     cuda_check(cudaGetLastError(), "combine Muller system action");
-    cuda_check(
-        cudaMemcpy(
-            output, d_output,
-            static_cast<size_t>(2 * current_dofs) * sizeof(double2),
-            cudaMemcpyDeviceToHost),
-        "download Muller system action");
 }
 
 void MullerGpuAssembly::farfield(
@@ -1128,7 +1428,6 @@ void MullerGpuAssembly::farfield_pair(
             cudaGetLastError(),
             "project paired Muller farfield currents");
     }
-
     const int direction_count = static_cast<int>(directions.size());
     if (direction_count > farfield_capacity) {
         cudaFree(d_farfield_directions);
@@ -1160,39 +1459,130 @@ void MullerGpuAssembly::farfield_pair(
             flat_directions.size() * sizeof(double),
             cudaMemcpyHostToDevice),
         "upload paired farfield directions");
-    const int reduction_block = 128;
-    farfield_pair_kernel<<<direction_count, reduction_block>>>(
-        d_mass_positions,
-        mass_points,
-        d_farfield_directions,
-        direction_count,
-        d_farfield_current_re[0][0],
-        d_farfield_current_im[0][0],
-        d_farfield_current_re[0][1],
-        d_farfield_current_im[0][1],
-        d_farfield_current_re[0][2],
-        d_farfield_current_im[0][2],
-        d_farfield_current_re[0][3],
-        d_farfield_current_im[0][3],
-        d_farfield_current_re[0][4],
-        d_farfield_current_im[0][4],
-        d_farfield_current_re[0][5],
-        d_farfield_current_im[0][5],
-        d_farfield_current_re[1][0],
-        d_farfield_current_im[1][0],
-        d_farfield_current_re[1][1],
-        d_farfield_current_im[1][1],
-        d_farfield_current_re[1][2],
-        d_farfield_current_im[1][2],
-        d_farfield_current_re[1][3],
-        d_farfield_current_im[1][3],
-        d_farfield_current_re[1][4],
-        d_farfield_current_im[1][4],
-        d_farfield_current_re[1][5],
-        d_farfield_current_im[1][5],
-        k_exterior.real(),
-        k_exterior.imag(),
-        static_cast<double2*>(d_farfield_output));
+    int reduction_block = 128;
+    const char* reduction_block_value =
+        std::getenv("BEM_FARFIELD_PAIR_THREADS");
+    if (reduction_block_value != nullptr)
+        reduction_block = std::atoi(reduction_block_value);
+    if (reduction_block != 64 && reduction_block != 128 &&
+        reduction_block != 256)
+        reduction_block = 128;
+#define LAUNCH_FARFIELD_PAIR(REAL_WAVE_NUMBER, FAST_PHASE, BLOCK)    \
+    farfield_pair_kernel<REAL_WAVE_NUMBER, FAST_PHASE, BLOCK>        \
+        <<<direction_count, BLOCK>>>(                                \
+            d_mass_positions,                                        \
+            mass_points,                                             \
+            d_farfield_directions,                                   \
+            direction_count,                                         \
+            d_farfield_current_re[0][0],                             \
+            d_farfield_current_im[0][0],                             \
+            d_farfield_current_re[0][1],                             \
+            d_farfield_current_im[0][1],                             \
+            d_farfield_current_re[0][2],                             \
+            d_farfield_current_im[0][2],                             \
+            d_farfield_current_re[0][3],                             \
+            d_farfield_current_im[0][3],                             \
+            d_farfield_current_re[0][4],                             \
+            d_farfield_current_im[0][4],                             \
+            d_farfield_current_re[0][5],                             \
+            d_farfield_current_im[0][5],                             \
+            d_farfield_current_re[1][0],                             \
+            d_farfield_current_im[1][0],                             \
+            d_farfield_current_re[1][1],                             \
+            d_farfield_current_im[1][1],                             \
+            d_farfield_current_re[1][2],                             \
+            d_farfield_current_im[1][2],                             \
+            d_farfield_current_re[1][3],                             \
+            d_farfield_current_im[1][3],                             \
+            d_farfield_current_re[1][4],                             \
+            d_farfield_current_im[1][4],                             \
+            d_farfield_current_re[1][5],                             \
+            d_farfield_current_im[1][5],                             \
+            k_exterior.real(),                                       \
+            k_exterior.imag(),                                       \
+            static_cast<double2*>(d_farfield_output))
+#define LAUNCH_FARFIELD_PAIR_FP32_ACCUM(BLOCK)                       \
+    farfield_pair_fp32_accum_kernel<BLOCK>                           \
+        <<<direction_count, BLOCK>>>(                                \
+            d_mass_positions,                                        \
+            mass_points,                                             \
+            d_farfield_directions,                                   \
+            direction_count,                                         \
+            d_farfield_current_re[0][0],                             \
+            d_farfield_current_im[0][0],                             \
+            d_farfield_current_re[0][1],                             \
+            d_farfield_current_im[0][1],                             \
+            d_farfield_current_re[0][2],                             \
+            d_farfield_current_im[0][2],                             \
+            d_farfield_current_re[0][3],                             \
+            d_farfield_current_im[0][3],                             \
+            d_farfield_current_re[0][4],                             \
+            d_farfield_current_im[0][4],                             \
+            d_farfield_current_re[0][5],                             \
+            d_farfield_current_im[0][5],                             \
+            d_farfield_current_re[1][0],                             \
+            d_farfield_current_im[1][0],                             \
+            d_farfield_current_re[1][1],                             \
+            d_farfield_current_im[1][1],                             \
+            d_farfield_current_re[1][2],                             \
+            d_farfield_current_im[1][2],                             \
+            d_farfield_current_re[1][3],                             \
+            d_farfield_current_im[1][3],                             \
+            d_farfield_current_re[1][4],                             \
+            d_farfield_current_im[1][4],                             \
+            d_farfield_current_re[1][5],                             \
+            d_farfield_current_im[1][5],                             \
+            k_exterior.real(),                                       \
+            static_cast<double2*>(d_farfield_output))
+    bool fast_phase_default = false;
+#ifdef BEM_DEFAULT_FMM_NEAR_FP32
+    fast_phase_default = true;
+#endif
+    const char* fast_phase_value =
+        std::getenv("BEM_FARFIELD_FAST_PHASE");
+    const bool fast_phase = fast_phase_value == nullptr
+        ? fast_phase_default
+        : std::strcmp(fast_phase_value, "0") != 0;
+    const char* fp32_accum_value =
+        std::getenv("BEM_FARFIELD_FP32_ACCUM");
+    bool fp32_accum_default = false;
+#ifdef BEM_DEFAULT_FMM_NEAR_FP32
+    fp32_accum_default = true;
+#endif
+    const bool fp32_accum = fp32_accum_value == nullptr
+        ? fp32_accum_default
+        : std::strcmp(fp32_accum_value, "0") != 0;
+    if (k_exterior.imag() == 0.0 && fast_phase && fp32_accum) {
+        if (reduction_block == 64)
+            LAUNCH_FARFIELD_PAIR_FP32_ACCUM(64);
+        else if (reduction_block == 256)
+            LAUNCH_FARFIELD_PAIR_FP32_ACCUM(256);
+        else
+            LAUNCH_FARFIELD_PAIR_FP32_ACCUM(128);
+    } else if (k_exterior.imag() == 0.0 && fast_phase) {
+        if (reduction_block == 64)
+            LAUNCH_FARFIELD_PAIR(true, true, 64);
+        else if (reduction_block == 256)
+            LAUNCH_FARFIELD_PAIR(true, true, 256);
+        else
+            LAUNCH_FARFIELD_PAIR(true, true, 128);
+    } else if (k_exterior.imag() == 0.0) {
+        if (reduction_block == 64)
+            LAUNCH_FARFIELD_PAIR(true, false, 64);
+        else if (reduction_block == 256)
+            LAUNCH_FARFIELD_PAIR(true, false, 256);
+        else
+            LAUNCH_FARFIELD_PAIR(true, false, 128);
+    } else {
+        if (reduction_block == 64)
+            LAUNCH_FARFIELD_PAIR(false, false, 64);
+        else if (reduction_block == 256)
+            LAUNCH_FARFIELD_PAIR(false, false, 256);
+        else
+            LAUNCH_FARFIELD_PAIR(false, false, 128);
+    }
+#undef LAUNCH_FARFIELD_PAIR
+#undef LAUNCH_FARFIELD_PAIR_FP32_ACCUM
     cuda_check(cudaGetLastError(), "evaluate paired Muller farfield");
 
     std::vector<std::complex<double>> combined(
@@ -1230,7 +1620,7 @@ void MullerGpuAssembly::cleanup()
     cudaFree(d_correction_k1);
     cudaFree(d_correction_k2_epsilon);
     cudaFree(d_correction_k2_mu);
-    for (int component = 0; component < 3; component++) {
+    for (int component = 0; component < 3 * system_slots; component++) {
         cudaFree(d_charge_re[component]);
         cudaFree(d_charge_im[component]);
         d_charge_re[component] = nullptr;
@@ -1281,6 +1671,7 @@ void MullerGpuAssembly::cleanup()
     d_k2_mu_im = nullptr;
     d_farfield_directions = nullptr;
     d_farfield_output = nullptr;
+    system_slots = 2;
     farfield_capacity = 0;
     correction_count = 0;
     current_dofs = 0;

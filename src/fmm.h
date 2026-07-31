@@ -47,6 +47,12 @@ struct HelmholtzFMM {
     // Allocated in init(), freed in cleanup()
     double* d_tgt_pts;        // (Nt*3)
     double* d_src_pts;        // (Ns*3)
+    float*  d_tgt_pts_fp32;   // mixed-precision near-field copy
+    float*  d_src_pts_fp32;
+    float*  d_dirs_fp32_cached;
+    float*  d_weights_fp32_cached;
+    float2* d_phase_cache_fp32; // reusable real-k leaf phases, Nt*L
+    float2* d_l2p_phase_cache_fp32; // direction-major phases, L*Nt
     int*    d_p2p_offsets;    // (Nt+1)
     int*    d_p2p_indices;    // (nnz)
 
@@ -59,6 +65,8 @@ struct HelmholtzFMM {
     // M2L transfers on GPU
     double* d_transfer_re;    // (n_unique * L)
     double* d_transfer_im;
+    float*  d_transfer_re_fp32;
+    float*  d_transfer_im_fp32;
     int*    d_m2l_tgt;        // per-level batch arrays (concatenated)
     int*    d_m2l_src;
     int*    d_m2l_tidx;
@@ -138,6 +146,8 @@ struct HelmholtzFMM {
     double* d_hess2_im = nullptr;
     double* d_hess3_re = nullptr;
     double* d_hess3_im = nullptr;
+    double* d_hess4_re = nullptr;
+    double* d_hess4_im = nullptr;
     double* d_multi3_re = nullptr;
     double* d_multi3_im = nullptr;
     double* d_multi4_re = nullptr;
@@ -146,6 +156,21 @@ struct HelmholtzFMM {
     double* d_local3_im = nullptr;
     double* d_local4_re = nullptr;
     double* d_local4_im = nullptr;
+    double* d_pair_multi_re = nullptr; // six vector components, 6*n_nodes*L
+    double* d_pair_multi_im = nullptr;
+    float* d_pair_multi_re_fp32 = nullptr;
+    float* d_pair_multi_im_fp32 = nullptr;
+    double* d_pair_local_re = nullptr;
+    double* d_pair_local_im = nullptr;
+    float* d_pair_local_re_fp32 = nullptr;
+    float* d_pair_local_im_fp32 = nullptr;
+    double* d_strict_pair_multi_re = nullptr;
+    double* d_strict_pair_multi_im = nullptr;
+    double* d_strict_pair_local_re = nullptr;
+    double* d_strict_pair_local_im = nullptr;
+    float* d_pair_charges_fp32 = nullptr; // 12 split-complex source arrays
+    int pair_workspace_fields = 0;
+    bool force_pair_fp64 = false;
 
     // Cached GPU arrays for run_tree() — allocated once in init(), reused every call
     double* d_node_centers_cached;   // (n_nodes*3)
@@ -158,6 +183,8 @@ struct HelmholtzFMM {
     int*    d_tgt_ids_cached;        // (h_tgt_ids_flat.size())
     int*    d_leaf_near_offsets_cached; // (n_leaves+1), neighbor leaf ordinals
     int*    d_leaf_near_ids_cached;     // flat neighbor leaf ordinals
+    int*    d_leaf_near_source_offsets_cached; // (n_leaves+1), expanded source IDs
+    int*    d_leaf_near_source_ids_cached;     // self + near sources per target leaf
 
     // Cached gradient workspace arrays
     double* d_gy_re_cached;          // (Nt) for gradient y component
@@ -189,12 +216,17 @@ struct HelmholtzFMM {
 
     bool initialized;
     bool batch4_allocated;
+    bool pair_l2p_allocated;
     bool near_field_fp32;
 
     HelmholtzFMM() : d_tgt_pts(0), d_src_pts(0),
+        d_tgt_pts_fp32(0), d_src_pts_fp32(0),
+        d_dirs_fp32_cached(0), d_weights_fp32_cached(0),
+        d_phase_cache_fp32(0), d_l2p_phase_cache_fp32(0),
         d_p2p_offsets(0), d_p2p_indices(0),
         d_multi_re(0), d_multi_im(0), d_local_re(0), d_local_im(0),
         d_transfer_re(0), d_transfer_im(0),
+        d_transfer_re_fp32(0), d_transfer_im_fp32(0),
         d_m2l_tgt(0), d_m2l_src(0), d_m2l_tidx(0),
         d_m2l_row_target(0), d_m2l_row_start(0), d_m2l_row_end(0),
         d_m2m_shift_re(0), d_m2m_shift_im(0), d_m2m_parent(0), d_m2m_child(0),
@@ -209,10 +241,20 @@ struct HelmholtzFMM {
         d_grad3_re(0), d_grad3_im(0), d_grad4_re(0), d_grad4_im(0),
         d_multi3_re(0), d_multi3_im(0), d_multi4_re(0), d_multi4_im(0),
         d_local3_re(0), d_local3_im(0), d_local4_re(0), d_local4_im(0),
+        d_pair_multi_re(0), d_pair_multi_im(0),
+        d_pair_multi_re_fp32(0), d_pair_multi_im_fp32(0),
+        d_pair_local_re(0), d_pair_local_im(0),
+        d_pair_local_re_fp32(0), d_pair_local_im_fp32(0),
+        d_strict_pair_multi_re(0), d_strict_pair_multi_im(0),
+        d_strict_pair_local_re(0), d_strict_pair_local_im(0),
+        d_pair_charges_fp32(0), pair_workspace_fields(0),
+        force_pair_fp64(false),
         d_node_centers_cached(0), d_dirs_cached(0), d_weights_cached(0),
         d_leaf_idx_cached(0), d_src_id_offsets_cached(0), d_src_ids_cached(0),
         d_tgt_id_offsets_cached(0), d_tgt_ids_cached(0),
         d_leaf_near_offsets_cached(0), d_leaf_near_ids_cached(0),
+        d_leaf_near_source_offsets_cached(0),
+        d_leaf_near_source_ids_cached(0),
         d_gy_re_cached(0), d_gy_im_cached(0), d_gz_re_cached(0), d_gz_im_cached(0),
         d_gx_re_tmp_cached(0), d_gx_im_tmp_cached(0),
         d_gy2_re_cached(0), d_gy2_im_cached(0), d_gz2_re_cached(0), d_gz2_im_cached(0),
@@ -222,14 +264,15 @@ struct HelmholtzFMM {
         d_gy4_re_cached(0), d_gy4_im_cached(0), d_gz4_re_cached(0), d_gz4_im_cached(0),
         d_gx4_re_tmp_cached(0), d_gx4_im_tmp_cached(0),
         d_complex_tmp1(0), d_complex_tmp2(0), initialized(false),
-        batch4_allocated(false),
+        batch4_allocated(false), pair_l2p_allocated(false),
         near_field_fp32(false) {}
 
     // Initialize: build tree, precompute transfers, upload to GPU
     void init(const double* targets, int n_tgt,
               const double* sources, int n_src,
               cdouble k_val, int digits = 3, int max_leaf = 64,
-              int near_radius = 1, bool request_batch4 = false);
+              int near_radius = 1, bool request_batch4 = false,
+              bool request_vector_pair = false);
 
     // Evaluate: y[i] = sum_j G(r_i, r_j) * q[j]
     // charges: host array (Ns), result: host array (Nt)
@@ -280,6 +323,53 @@ struct HelmholtzFMM {
         const double* charges_y_im,
         const double* charges_z_re,
         const double* charges_z_im);
+
+    // Evaluate two three-component source fields while sharing the far
+    // traversal, L2P, and geometry-heavy near interaction. The first result
+    // remains in d_grad/d_hess and the second in d_grad2/d_hess2.
+    void evaluate_vector_actions_pair_batch3_device(
+        const double* first_x_re,
+        const double* first_x_im,
+        const double* first_y_re,
+        const double* first_y_im,
+        const double* first_z_re,
+        const double* first_z_im,
+        const double* second_x_re,
+        const double* second_x_im,
+        const double* second_y_re,
+        const double* second_y_im,
+        const double* second_z_re,
+        const double* second_z_im);
+
+    bool strict_vector_pair_available() const;
+    void evaluate_vector_actions_pair_batch3_device_strict(
+        const double* first_x_re,
+        const double* first_x_im,
+        const double* first_y_re,
+        const double* first_y_im,
+        const double* first_z_re,
+        const double* first_z_im,
+        const double* second_x_re,
+        const double* second_x_im,
+        const double* second_y_re,
+        const double* second_y_im,
+        const double* second_z_re,
+        const double* second_z_im);
+
+    // Evaluate the J/M fields for two independent right-hand sides in one
+    // 12-channel far traversal. Results use grad/hess slots 1 through 4.
+    void evaluate_vector_actions_quad_batch3_device(
+        const double* const charges_re[12],
+        const double* const charges_im[12]);
+
+    bool vector_actions_pair_available() const {
+        return batch4_allocated;
+    }
+
+    bool vector_actions_quad_available() const {
+        return batch4_allocated && pair_workspace_fields >= 12 &&
+            d_hess4_re != nullptr && d_hess4_im != nullptr;
+    }
 
     // Evaluate both potential and gradient in a single tree traversal.
     // charges: host (Ns), pot_result: host (Nt), grad_result: host (Nt*3)

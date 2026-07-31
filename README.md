@@ -71,7 +71,7 @@ OMP_NUM_THREADS=16 bin/muller_nodal_fmm_demo_fp32 \
   --shape prism --sides 6 --aspect 1 \
   --ref 5 --ka 25 --ri 1.3 \
   --edge-mode hdiv --quad 7 --duffy-order 4 \
-  --digits 5 --max-leaf 64 --fmm-near-radius 3 \
+  --digits 5 --max-leaf 32 --fmm-near-radius 3 \
   --tol 1e-5 --max-iters 500 --gmres-restart 100 \
   --mbj-only --mbj-nodes 50 --mbj-overlap 0 \
   --near-correction-cache runs/prism_ka25_ref5/operator.near \
@@ -96,12 +96,18 @@ Use `--no-checkpoint` only for disposable benchmarks. Do not use
 `--allow-checkpoint-migration` unless an intentionally changed operator is
 being audited.
 
+The `--near-correction-cache` and `--mbj-cache` files in the command above are
+the useful persistent precomputation. On the Shape A `ref=2` case, a cold
+setup took `5.550 + 6.570 = 12.120 s` for the FMM operator and MBJ. Reusing
+both caches reduced this to `1.696 + 0.071 = 1.767 s` (`6.86x` faster setup)
+without changing the iterative operator or the converged result.
+
 ## Orientation Averaging
 
 The maintained wrapper runs the same solver for an Euler grid:
 
 ```bash
-KA=25 RI=1.3 REF=5 \
+KA=25 RI=1.3 REF=5 SOLVER=fmm RECYCLE_RANK=8 \
 ALPHA=8 BETA=8 GAMMA=4 NTHETA=181 THREADS=16 \
 OUT="$PWD/runs/prism_ka25_avg" \
 scripts/run_muller_orientation_average.sh
@@ -116,12 +122,38 @@ Only declare a symmetry that is preserved by the material and the actual mesh.
 After every base orientation, `OUT.orient.checkpoint` is replaced atomically.
 Restarting the same command continues at the next unfinished orientation.
 
+For a large alpha grid, an optional angular Fourier reconstruction reduces
+the direct far-field work while preserving complex phase:
+
+```bash
+BEM_FARFIELD_SPECTRAL_ALPHA=auto \
+  OMP_NUM_THREADS=16 bin/muller_nodal_fmm_demo_fp32 ... \
+  --orient-average 256 1 1 --ntheta 73
+```
+
+For 256 requested samples, replaying the same converged currents at `ka=25`
+and `30` accelerated the far-field stage by `2.49--3.12x` in `auto` mode on a
+prism, sphere, and asymmetric polyhedron. The worst Mueller error normalized
+by the global result peak was `6.9e-8`. One-step large-`ka` controls selected
+112 samples at `ka=40` and 144 at `ka=60`; their errors were respectively
+`1.3e-8` and `6.0e-6`. `auto` rounds the conservative bandwidth estimate
+`2*(ka+12)` to a multiple of 16 rather than a power of two. Reproduce the
+converged-current controls with `scripts/benchmark_farfield_spectral_replay.sh`.
+
+With `SOLVER=fmm`, both incident polarizations use GPU-resident FP64 Krylov
+vectors and GPU MBJ application; no Krylov vector is copied to the host between
+iterations. `RECYCLE_RANK=8` retains an updating basis from completed
+orientations and uses it only when its estimated initial residual is at least
+2% better than the neighboring-orientation solution. Set `RECYCLE_RANK=0` to
+disable it. `SOLVER=pfft` preserves the nested pFFT-FGMRES path and
+automatically falls back to its existing CPU-managed Krylov implementation.
+
 ## Precision Modes
 
-| Executable | FFT and selected near-field storage/work | Krylov vectors, MBJ, reductions |
+| Executable | Operator work | Krylov vectors, MBJ, reductions |
 |---|---|---|
 | `muller_nodal_fmm_demo` | FP64 | FP64 |
-| `muller_nodal_fmm_demo_fp32` | FP32 | FP64 |
+| `muller_nodal_fmm_demo_fp32` | FP32 FFT/near work and selected FMM accumulations | FP64 |
 
 The mixed build is not a pure FP32 solver. It reduces GPU memory and FFT cost
 while retaining FP64 solution vectors and convergence bookkeeping. Always
@@ -131,6 +163,102 @@ range.
 
 `--fmm-near-fp64` switches near interactions back to FP64 in the mixed binary.
 `--fmm-near-fp32` enables them explicitly in a compatible build.
+
+`BEM_MIXED_ITERATIVE_REFINEMENT=1` recomputes restart residuals with the full
+FP64 FMM operator and uses the mixed operator only for Krylov corrections. It
+is a validation/recovery mode: on the tested `ka=20` prism it increased solve
+time from 9.844 s to 17.204 s. Its dedicated FP64 pair buffers reduce strict
+residual cost but are allocated only in this mode. `BEM_FMM_FOUR_FIELD=1`
+enables the experimental joint 12-channel FMM traversal for both
+polarizations. Splitting its M2L accumulation into two six-channel launches
+reduced register pressure, but it was still 6% slower on the `ka=20` prism, so
+both features remain opt-in.
+
+### RTX 3090 Ti FMM tuning
+
+The Muller action contains two vector currents. They are processed together by
+default: one six-channel far traversal, one paired L2P kernel, and one paired
+near-field kernel reuse geometry and Green-function values for both currents.
+Set `BEM_FMM_PAIR_CURRENTS=0` before program startup only for a legacy timing or
+when the paired workspace does not fit. `BEM_FMM_PAIR_FAR=0` and
+`BEM_FMM_PAIR_L2P=0` isolate individual stages for diagnostics.
+
+The mixed build uses 512 threads for the paired near kernel, 256 for paired
+L2P, and 256 for the paired far traversal. The research driver defaults to
+`--max-leaf 32`. Hardware-tuning overrides are
+`BEM_FMM_P2P_PAIR_THREADS=64|128|256|512`,
+`BEM_FMM_L2P_PAIR_THREADS=64|128|256`, and
+`BEM_FMM_PAIR_FAR_THREADS=64|128|256|512`. The default 256-thread far block was
+fastest over a sustained ten-iteration RTX 3090 Ti run; 512 is retained only
+as a diagnostic override. `BEM_FMM_PROFILE_BATCH3=1` prints the far, L2P, and
+P2P stage times;
+profiling adds CUDA synchronization and must not be used for production timing.
+
+For a real wavenumber, the paired near kernel uses a dedicated formula without
+the unused attenuation and imaginary-wavenumber terms. The mixed build also
+enables an FP32 phase cache, direct FP32 multipole and M2L-transfer storage,
+FP32 local-expansion storage through M2L/L2L, and FP32 accumulation in the
+paired P2M, M2L, and L2P stages. It precomputes a balanced near-source index
+cache and uses 32 blocks per target leaf; it also keeps a direction-major L2P
+phase copy when memory permits. Assembled operator outputs, Krylov vectors,
+MBJ factors, and residual norms remain FP64. The controls
+`BEM_FMM_PHASE_CACHE=0`, `BEM_FMM_M2L_STORAGE_FP32=0`,
+`BEM_FMM_MULTI_STORAGE_FP32=0`, `BEM_FMM_LOCAL_STORAGE_FP32=0`,
+`BEM_FMM_M2L_FP32=0`, `BEM_FMM_L2P_FP32=0`, and
+`BEM_FMM_P2P_FAST_TRIG=0` provide stage-by-stage controls. The phase cache
+keeps 6144 MiB free by default; change this with
+`BEM_FMM_PHASE_CACHE_RESERVE_MB`.
+
+`BEM_FMM_FLAT_NEAR_SOURCES=0` disables the balanced source cache, and
+`BEM_FMM_L2P_TRANSPOSED_PHASE_CACHE=0` disables the additional L2P phase
+layout. If the direction-major copy does not fit, a warp-per-target L2P kernel
+uses the primary target-major table automatically. It saves about 4.43 GiB on
+the Shape A `ka=40, ref=3` case and was 1.086x faster than the previous
+non-transposed fallback, although it remains about 13% slower than the
+memory-rich transposed path. Force it with
+`BEM_FMM_L2P_WARP_PER_TARGET=1` or disable it with `=0`.
+Both caches have automatic memory fallbacks. On Shape A at `ka=40, ref=3`,
+the complete depth-5 action decreased from 2.279 s to 0.398 s (`5.73x`);
+the final mixed operator differed from dense assembly by `2.306e-6`.
+
+For orientation averaging on the same `ref=3` geometry, paired GPU GMRES
+reduced a fixed ten-step two-polarization solve from 8.780 s to 8.226 s
+(`1.067x`) while preserving the residual and all Mueller elements to
+`3.8e-9` relative scale. On a separate `ref=2` orientation grid, updating
+rank-8 recycling reduced 312 to 298 total iterations and 1.653 s to 1.570 s
+(`1.053x`). These gains are incremental to the FMM kernel speedups above, not
+additional factors of five.
+
+Keep `--fmm-near-radius 3` for strict calculations. Radius 2 was accurate to
+about `2e-6` in low-contrast dense checks, but produced about `8e-3` operator
+error for the tested `ka=20, m=3` prism. It is therefore an explicitly
+validated low-contrast experiment, not a general speed option.
+
+On the Shape A OBJ microbenchmark, the full optimization sequence reduced the
+steady `ref=2` action from 1.086 s to 0.203--0.213 s (`5.1--5.3x`) and the
+three-step solve from 6.73 s to 1.328 s (`5.07x`). Measured GPU memory was
+2376 MiB. An optional depth-6 tree with the strict depth-5 expansion-order
+floor reduced the `ref=3` steady action from 10.39 s to 1.713 s (`6.06x`) and
+the one-step solve from 21.60 s to 3.674 s (`5.88x`), while using 13134 MiB.
+The depth-6 mode is therefore useful only when the larger workspace fits.
+A hard `ka=20, m=3` prism check had relative operator error `2.18e-6`
+against dense assembly.
+
+The driver keeps the conservative depth-5 guard by default. To opt into the
+validated depth-6 configuration, set `BEM_FMM_ALLOW_DEPTH6=1` and use
+`--max-leaf 16`; the driver automatically preserves the depth-5 expansion
+order. Native depth-6 orders were rejected because they changed the tested
+operator by about 2%.
+
+For a tested low-contrast `ka=20, m=1.3` prism, the explicitly selected
+combination `--fmm-near-radius 2 --digits 6` reduced a three-step `ref=2`
+microbenchmark from 1.531 s to 1.393 s while a dense small-mesh check gave
+operator error `1.23e-6`. It used about 604 MiB more GPU memory. To test
+orders above the conservative Muller cap of five, set
+`BEM_MULLER_FMM_DIGITS_CAP=6`; never reuse this setting for a new parameter
+range without a radius-3 or dense control.
+See [`docs/fmm_optimization_3090ti.md`](docs/fmm_optimization_3090ti.md) for
+the sweep, accuracy controls, and rejected variants.
 
 ## Geometry and Discretization
 
@@ -148,6 +276,10 @@ that the discrete system was solved; it does not prove mesh convergence.
 
 For OBJ files, use a closed, consistently oriented, manifold triangular
 surface. Inspect the generated mesh and compare at least two refinement levels.
+`--edge-refine N --feature-angle F` now also creates a conforming local
+refinement band around OBJ edges whose adjacent face normals differ by at
+least `F` degrees. It resolves edge singularities; it does not replace the
+global `--ref` required to resolve the wavelength.
 
 ## Main Muller Options
 
@@ -156,6 +288,8 @@ surface. Inspect the generated mesh and compare at least two refinement levels.
 | `--ka F` | equal-volume size parameter |
 | `--ri F` | real refractive index used by this driver |
 | `--ref N` | surface refinement level |
+| `--edge-refine N` | local sharp-edge refinement passes |
+| `--feature-angle F` | dihedral threshold for local edge refinement |
 | `--tol F` | requested relative linear residual |
 | `--digits N` | FMM expansion-accuracy target |
 | `--quad N` | regular surface quadrature order |

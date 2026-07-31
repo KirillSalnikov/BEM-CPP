@@ -92,6 +92,8 @@ Mesh structured_cube(int refinements, double equiv_radius);
 Mesh load_obj(const char* filename);
 bool write_mesh_obj(const char* filename, const Mesh& mesh);
 Mesh subdivide_flat(const Mesh& m);
+double refine_feature_edges(
+    Mesh& mesh, double feature_angle_degrees, int passes);
 double mesh_volume(const Mesh& m);
 double normalize_mesh(Mesh& m);
 double mesh_dmax(const Mesh& m);
