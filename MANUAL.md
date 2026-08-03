@@ -1,6 +1,6 @@
 # BEM-CPP Operational Manual
 
-This manual describes release `0.1.0-alpha.4`. Automatic hierarchy selection
+This manual describes release `0.1.0-alpha.5`. Automatic hierarchy selection
 is available for large built-in meshes, but published speed and physical-error
 claims remain limited to the explicitly documented regular-prism controls.
 For every new shape, refractive index, or refinement range, compare two meshes
@@ -418,9 +418,8 @@ Mueller result within a `3.28e-8` normalized relative L2 difference.
 `ka=80`, `m=1.3`, and `ref=6`. It uses three outer FGMRES steps and accepts a
 projected residual without a final accurate-operator check. Its historical
 34.44 s comparison used the withdrawn uniform high-frequency FMM reference;
-therefore the former `0.388%` number is not a current accuracy guarantee. Use
-`physical-fast` for the checked fast physical result. The launcher rejects
-`preview` outside this fixed case.
+therefore the former `0.388%` number is not a current accuracy guarantee. The
+launcher rejects `preview` outside this fixed case.
 
 `physical-fast` is the corresponding physical-result profile for the same
 regular prism at `ka=60`, `80`, or `111`, `m=1.3`, and `ref=6`. It
@@ -439,10 +438,19 @@ L2 difference of all Mueller elements from the strict BEM reference is
 `7.780e-5` (0.00778%). This is a physical-observable acceptance profile, not a
 replacement for `standard` when a `1e-5` linear residual is mandatory.
 
-The cold measurements at `ka=60/80/111` are 246.22/281.43/455.48 s, giving
-`4.13x/11.67x/34.01x` over the saved ADDA-OCL FP32 baselines. The `ka=111`
-speed is an operator result, not a 1% discretization claim: `ref=6` provides
-only 5.25 nodes per internal wavelength there.
+The cold BEM measurements at `ka=60/80/111` are 246.22/281.43/455.48 s. The
+saved ADDA-OCL FP32 times are 1017.74/3285.41/15489.34 s, but the two columns
+must not be divided and reported as speedups: BEM finished at exact-operator
+residuals `2.277e-3/3.424e-3/1.692e-3`, while ADDA requested `1e-4`. At
+`ka=111`, `ref=6` provides only 5.25 nodes per internal wavelength.
+
+No equal-accuracy speedup over ADDA is currently claimed. The older nominal
+`1e-5` comparison used ADDA runs without an independent final-residual
+recalculation and optimized BEM runs that trusted exact prism symmetry for the
+second polarization. It is retained as diagnostic history, not release
+evidence. A new benchmark must use the same residual target, independently
+recalculate both residuals, produce the same angular output, and establish
+discretization convergence in each method.
 
 `memory` has the same mesh rule, residual target, quadrature, mixed precision,
 pFFT-FGMRES policy, and angular controls as `standard`. In addition to the
@@ -566,10 +574,11 @@ change that can be obtained by continuing GMRES on the old operator.
 The previous 255.56 s benchmark and its reported `9.26e-6` residual used the
 old uniform high-frequency FMM operator. Its checkpoint has a `1.24e-1`
 residual under the corrected two-band operator. Therefore the old `9.90x` BEM
-and `12.86x` ADDA speedup claims are withdrawn. The checked replacement is the
-`physical-fast` pipeline: 282.54 s cold versus 3285.48 s for ADDA-OCL FP32
-`dpl=15`, or `11.63x`, with an exact-operator residual of `3.424e-3` and a
-`0.00778%` weighted full-Mueller difference from the strict BEM result.
+and `12.86x` ADDA speedup claims are withdrawn. The `physical-fast` pipeline
+is retained as a case-specific observable comparison: 282.54 s cold, an
+exact-operator residual of `3.424e-3`, and a `0.00778%` weighted full-Mueller
+difference from the strict BEM result. Its ADDA run used a different residual
+criterion, so the wall-time ratio is not an acceleration claim.
 
 The `./bem run` frontend selects this exact-prism reconstruction automatically
 for `quick`, `standard`, and `memory`. Pass `--independent-polarizations` to

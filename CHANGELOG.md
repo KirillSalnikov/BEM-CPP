@@ -5,6 +5,18 @@ Semantic Versioning while its public interfaces are stabilizing.
 
 ## Unreleased
 
+## [0.1.0-alpha.5] - 2026-08-03
+
+### Fixed
+
+- removed cross-program acceleration claims that compared BEM and ADDA runs
+  with different residual criteria;
+- documented that equal-accuracy ADDA acceleration remains unproven until
+  both final residuals are independently recalculated and both discretizations
+  pass convergence checks;
+- added a documentation regression check that rejects the withdrawn headline
+  ratios from the primary README and manual.
+
 ## [0.1.0-alpha.4] - 2026-08-03
 
 ### Fixed
@@ -105,3 +117,4 @@ Semantic Versioning while its public interfaces are stabilizing.
 [0.1.0-alpha.2]: https://github.com/KirillSalnikov/BEM-CPP/releases/tag/v0.1.0-alpha.2
 [0.1.0-alpha.3]: https://github.com/KirillSalnikov/BEM-CPP/releases/tag/v0.1.0-alpha.3
 [0.1.0-alpha.4]: https://github.com/KirillSalnikov/BEM-CPP/releases/tag/v0.1.0-alpha.4
+[0.1.0-alpha.5]: https://github.com/KirillSalnikov/BEM-CPP/releases/tag/v0.1.0-alpha.5

@@ -1,6 +1,6 @@
 # BEM-CPP
 
-Current release: `0.1.0-alpha.4`. The command-line and file formats may still
+Current release: `0.1.0-alpha.5`. The command-line and file formats may still
 change before `1.0`; numerical results must include independent convergence
 checks described below.
 
@@ -111,8 +111,8 @@ The available quality levels are:
 
 | Profile | Intended use | Numerical and angular control |
 |---|---|---|
-| `preview` | historical rapid inspection of the `ka=80`, `m=1.3`, `ref=6` regular prism | projected-residual output only; its former reference used the withdrawn uniform high-frequency FMM operator, so use `physical-fast` for a checked result |
-| `physical-fast` | physically validated `ka=60/80/111`, `m=1.3`, `ref=6` regular-prism result | three preview steps followed by accurate banded-FMM corrections; residual target `4e-3` and 181 angles |
+| `preview` | historical rapid inspection of the `ka=80`, `m=1.3`, `ref=6` regular prism | projected-residual output only; its former reference used the withdrawn uniform high-frequency FMM operator |
+| `physical-fast` | case-specific observable-matching experiment for the `ka=60/80/111`, `m=1.3`, `ref=6` regular prism | three preview steps followed by accurate banded-FMM corrections; residual target `4e-3`, so this is not an equal-tolerance benchmark |
 | `quick` | exploratory runs only | mixed precision, residual `1e-3`, 181 scattering angles; adaptive two-stage fixed-orientation path for sufficiently large built-in meshes |
 | `standard` | normal calculations | mixed precision, residual `1e-5`; the automatic two-stage path does not relax this target |
 | `memory` | standard-accuracy runs near the GPU-memory limit | same residual as `standard`; sequential electric/magnetic FMM currents reduce peak memory |
@@ -122,32 +122,30 @@ The case-specific preview is intentionally separate from `quick` and
 `standard`: it is not a residual-converged result and is rejected for any
 unvalidated geometry or parameters. Its historical 34.44 s validation used
 the now-withdrawn uniform high-frequency FMM result as the reference. Do not
-use the former `0.388%` difference as a current accuracy claim; the checked
-replacement is `physical-fast` below.
+use the former `0.388%` difference as a current accuracy claim.
 
 ```bash
 ./bem run --shape prism --ka 80 --ri 1.3 --quality preview
 ```
 
-For the physically validated fast result rather than a projected-residual
-preview, run the complete two-stage pipeline with one command:
+For the case-specific physical-observable experiment, run the complete
+two-stage pipeline with one command:
 
 ```bash
 ./bem run --shape prism --sides 6 --aspect 1 --ka 80 --ri 1.3 \
   --ref 6 --quality physical-fast --out runs/prism_ka80_physical_fast
 ```
 
-The measured cold pipeline took 282.54 s including cache construction, versus
-3285.48 s for the saved ADDA-OCL FP32 `dpl=15` calculation: `11.63x` less wall
-time. This acceptance is based on the directly validated Mueller matrix; the
-final exact-operator residual is `3.424e-3`, not `1e-5`.
+At `ka=80` the measured cold pipeline took 282.54 s including cache
+construction, while a saved ADDA-OCL FP32 run took 3285.48 s. These times are
+not an acceleration benchmark: the BEM exact-operator residual was
+`3.424e-3`, whereas ADDA requested `1e-4`. At `ka=111`, `ref=6` also has only
+5.25 nodes per internal wavelength and differs from ADDA by 2.79%.
 
-The same `physical-fast` command is validated at `ka=60` and `ka=111` with
-the other parameters unchanged. The measured cold speedups over the saved
-ADDA-OCL FP32 `dpl=15` runs are `4.13x`, `11.67x`, and `34.01x` at
-`ka=60`, `80`, and `111`, respectively. At `ka=111`, `ref=6` has only 5.25
-nodes per internal wavelength and differs from ADDA by 2.79%; use a finer
-mesh when 1% physical agreement is required.
+No equal-accuracy speedup over ADDA is currently claimed. A valid claim
+requires both programs to use the same residual target, independently
+recalculate the final residual, produce the same angular output, and pass
+their own discretization-convergence studies.
 
 For fixed-orientation `./bem run`, `quick`, `standard`, and `memory` select
 two-stage checkpoint migration on built-in sphere, cube, and prism meshes
@@ -164,11 +162,12 @@ atomically. A banded-pFFT alternative was tested at `ka=20` and `ka=60`, but
 was respectively `1.05x` and `1.80x` slower in total wall time, so it is not
 selected automatically.
 
-An end-to-end cold `quick` check at `ka=60` completed in 169.58 s, reached a
-verified `6.851e-4` residual, and was `6.00x` faster than the saved ADDA run.
-Its normalized Mueller matrix differed from the quadrature-7 physical-fast
-result by `0.0131%`. A separate `standard` continuation reached `8.429e-6`;
-its normalized Mueller difference from the strict BEM result was `3.28e-8`.
+An end-to-end cold `quick` check at `ka=60` completed in 169.58 s and reached
+a verified `6.851e-4` residual. Its normalized Mueller matrix differed from
+the quadrature-7 physical-fast result by `0.0131%`. A separate `standard`
+continuation reached `8.429e-6`; its normalized Mueller difference from the
+strict BEM result was `3.28e-8`. The saved ADDA run used a different residual
+criterion, so no cross-program speedup is inferred from these timings.
 
 The first invocation builds reusable case caches under
 `~/.cache/bem-cpp/preview_prism_ka80_m1p3_ref6`; later output directories reuse
@@ -341,10 +340,10 @@ An earlier benchmark claimed 255.56 s and a `9.26e-6` residual for this
 `ka=80`, `m=1.3`, `ref=6` prism. That residual belonged to the old uniform FMM
 operator. Rechecking its checkpoint with the corrected high-frequency
 two-band operator gave `1.24e-1`, so the old `9.90x` BEM and `12.86x` ADDA
-claims are withdrawn. The reproducible replacement is the `physical-fast`
-profile above: 282.54 s cold, `3.424e-3` exact-operator residual, and a directly
-measured `0.00778%` weighted full-Mueller difference from the strict BEM
-reference.
+claims are withdrawn. The `physical-fast` profile is retained only as a
+case-specific observable-matching experiment: 282.54 s cold, `3.424e-3`
+exact-operator residual, and a directly measured `0.00778%` weighted
+full-Mueller difference from the strict BEM reference.
 
 Use `--no-checkpoint` only for disposable benchmarks. Do not use
 `--allow-checkpoint-migration` unless an intentionally changed operator is
@@ -725,7 +724,7 @@ examples/run_small_sphere_mie_check.sh
 ```
 
 The measured alpha-release reference and its acceptance thresholds are stored
-in [`reference/v0.1.0-alpha.4/small_sphere.json`](reference/v0.1.0-alpha.4/small_sphere.json).
+in [`reference/v0.1.0-alpha.5/small_sphere.json`](reference/v0.1.0-alpha.5/small_sphere.json).
 The same directory contains the raw solver output, validation log, and their
 SHA-256 checksums.
 

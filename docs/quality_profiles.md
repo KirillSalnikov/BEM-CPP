@@ -285,12 +285,16 @@ the accurate two- or three-band FMM operator. The final Mueller matrix uses
 ```
 
 The measured cold run, including near-operator and MBJ cache construction,
-took 282.54 s versus 3285.48 s for the saved ADDA-OCL FP32 `dpl=15`
-baseline, or 11.63x less wall time. Its exact-operator residual was
-`3.424e-3`. Against the fully converged BEM reference, the solid-angle
-weighted relative L2 difference of the complete Mueller matrix was
-`7.780e-5` (0.00778%), and the largest absolute element difference divided by
-forward `M11` was `8.248e-5` (0.00825%).
+took 282.54 s. A saved ADDA-OCL FP32 `dpl=15` run took 3285.48 s, but the two
+times are not an acceleration benchmark: the BEM exact-operator residual was
+`3.424e-3`, whereas ADDA requested `1e-4`. Against the fully converged BEM
+reference, the solid-angle weighted relative L2 difference of the complete
+Mueller matrix was `7.780e-5` (0.00778%), and the largest absolute element
+difference divided by forward `M11` was `8.248e-5` (0.00825%).
+
+No equal-accuracy speedup over ADDA is currently claimed. A valid comparison
+must independently recalculate both final residuals, use the same target and
+angular output, and establish discretization convergence for both methods.
 
 This profile is not a `1e-5` linear-residual result and is not enabled outside
 the validated particle and parameter set. Use `standard` when a `1e-5`

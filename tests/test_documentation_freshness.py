@@ -16,6 +16,7 @@ def read(relative: str) -> str:
 def main() -> int:
     version = read("VERSION").strip()
     documents = {name: read(name) for name in PRIMARY_DOCUMENTS}
+    documents["docs/quality_profiles.md"] = read("docs/quality_profiles.md")
 
     assert f"Current release: `{version}`" in documents["README.md"]
     assert f"release `{version}`" in documents["MANUAL.md"]
@@ -40,6 +41,14 @@ def main() -> int:
     assert "./bem run --shape prism --ka 25 --ri 1.3" in documents["README.md"]
     assert "./bem run --shape prism --ka 25 --ri 1.3" in documents["MANUAL.tex"]
     assert "scripts/release_audit.sh --gpu" in documents["MANUAL.tex"]
+
+    for name in ("README.md", "MANUAL.md", "docs/quality_profiles.md"):
+        assert "No equal-accuracy speedup over ADDA is currently claimed." in documents[name]
+        for misleading_claim in ("`4.13x`", "`11.63x`", "`11.67x`", "`34.01x`", "`6.00x`"):
+            assert misleading_claim not in documents[name], (name, misleading_claim)
+
+    assert "ускорение BEM относительно ADDA" in documents["MANUAL.tex"]
+    assert "не заявляется" in documents["MANUAL.tex"]
 
     documented = set(re.findall(r"--[a-z][a-z0-9-]*", joined))
     implementation = "\n".join(
