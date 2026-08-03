@@ -1,12 +1,13 @@
 # BEM-CPP
 
-Current release: `0.1.0-alpha.3`. The command-line and file formats may still
+Current release: `0.1.0-alpha.4`. The command-line and file formats may still
 change before `1.0`; numerical results must include independent convergence
 checks described below.
 
 This release includes the automatic hierarchy and restart work from alpha.2,
-fixes host-only CI on machines without a CUDA toolkit, and audits the primary
-manual against the current `./bem` interface. The experimental banded-pFFT
+the CUDA-independent host audit from alpha.3, and a release audit that works
+both in a Git checkout and in the published source archive. The primary manual
+is checked against the current `./bem` interface. The experimental banded-pFFT
 averaging path remains opt-in because validation found it slower than the
 default paired GPU solve.
 
@@ -724,7 +725,7 @@ examples/run_small_sphere_mie_check.sh
 ```
 
 The measured alpha-release reference and its acceptance thresholds are stored
-in [`reference/v0.1.0-alpha.3/small_sphere.json`](reference/v0.1.0-alpha.3/small_sphere.json).
+in [`reference/v0.1.0-alpha.4/small_sphere.json`](reference/v0.1.0-alpha.4/small_sphere.json).
 The same directory contains the raw solver output, validation log, and their
 SHA-256 checksums.
 

@@ -5,6 +5,17 @@ Semantic Versioning while its public interfaces are stabilizing.
 
 ## Unreleased
 
+## [0.1.0-alpha.4] - 2026-08-03
+
+### Fixed
+
+- the release metadata audit now works both in a Git checkout and in the
+  published source archive, which intentionally has no `.git` directory.
+
+### Validation
+
+- the complete host audit passes directly from the packaged source archive.
+
 ## [0.1.0-alpha.3] - 2026-08-03
 
 ### Added
@@ -93,3 +104,4 @@ Semantic Versioning while its public interfaces are stabilizing.
 [0.1.0-alpha.1]: https://github.com/KirillSalnikov/BEM-CPP/releases/tag/v0.1.0-alpha.1
 [0.1.0-alpha.2]: https://github.com/KirillSalnikov/BEM-CPP/releases/tag/v0.1.0-alpha.2
 [0.1.0-alpha.3]: https://github.com/KirillSalnikov/BEM-CPP/releases/tag/v0.1.0-alpha.3
+[0.1.0-alpha.4]: https://github.com/KirillSalnikov/BEM-CPP/releases/tag/v0.1.0-alpha.4

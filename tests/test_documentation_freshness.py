@@ -27,9 +27,8 @@ def main() -> int:
     assert "/path/to/BEM-CUDA" not in joined
     assert "BEM-CUDA" not in documents["README.md"]
     assert "BEM-CUDA" not in documents["MANUAL.md"]
-    assert "Назначение BEM-CUDA" not in documents["MANUAL.tex"]
-    assert documents["MANUAL.tex"].count("BEM-CUDA") == 1
-    assert "На нескольких архивных растровых графиках" in documents["MANUAL.tex"]
+    assert "BEM-CUDA" not in documents["MANUAL.tex"]
+    assert "Архивные растровые графики" in documents["MANUAL.tex"]
 
     manual_assets = "\n".join(
         path.read_text(encoding="utf-8", errors="ignore")

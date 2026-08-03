@@ -55,11 +55,20 @@ def main() -> int:
         assert f'add_parser("{command}"' in launcher
 
     checked_suffixes = {".md", ".py", ".sh", ".cpp", ".cu", ".h", ".yml"}
-    tracked = subprocess.check_output(
-        ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
-        cwd=ROOT,
-        text=True,
-    ).splitlines()
+    try:
+        tracked = subprocess.check_output(
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+            cwd=ROOT,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).splitlines()
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        # Release archives intentionally contain no .git directory.
+        tracked = [
+            str(path.relative_to(ROOT))
+            for path in ROOT.rglob("*")
+            if path.is_file()
+        ]
     for relative in tracked:
         path = ROOT / relative
         if path.suffix not in checked_suffixes and path.name != "Makefile":
