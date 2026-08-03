@@ -1,8 +1,14 @@
 # BEM-CPP
 
-Current release: `0.1.0-alpha.1`. The command-line and file formats may still
+Current release: `0.1.0-alpha.2`. The command-line and file formats may still
 change before `1.0`; numerical results must include independent convergence
 checks described below.
+
+This release adds automatic hierarchy selection for large built-in particles,
+free-VRAM and checkpoint-space admission checks, resumable two-stage runs, and
+clear orientation-averaging provenance. The experimental banded-pFFT averaging
+path remains opt-in because validation found it slower than the default paired
+GPU solve.
 
 GPU-accelerated boundary-element solvers for electromagnetic scattering by
 homogeneous dielectric particles. The repository contains two independent
@@ -718,7 +724,9 @@ examples/run_small_sphere_mie_check.sh
 ```
 
 The measured alpha-release reference and its acceptance thresholds are stored
-in [`reference/v0.1.0-alpha.1/small_sphere.json`](reference/v0.1.0-alpha.1/small_sphere.json).
+in [`reference/v0.1.0-alpha.2/small_sphere.json`](reference/v0.1.0-alpha.2/small_sphere.json).
+The same directory contains the raw solver output, validation log, and their
+SHA-256 checksums.
 
 A strict physical study additionally requires:
 

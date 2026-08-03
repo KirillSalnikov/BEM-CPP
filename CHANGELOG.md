@@ -5,6 +5,8 @@ Semantic Versioning while its public interfaces are stabilizing.
 
 ## Unreleased
 
+## [0.1.0-alpha.2] - 2026-08-03
+
 ### Added
 
 - adaptive two-stage planning for large fixed-orientation sphere, cube, and
@@ -28,7 +30,10 @@ Semantic Versioning while its public interfaces are stabilizing.
 - banded-pFFT orientation averaging passed residual and Mueller checks at
   `ka=20` and `ka=60`, but was slower than paired GPU-GMRES and therefore was
   not enabled by default;
-- the host release audit and CUDA Muller FMM operator test pass.
+- the complete host and CUDA release audit passes on the release machine;
+- the mixed-precision `ka=1`, `m=1.3` sphere reaches a maximum true residual
+  of `7.705e-6`, a solid-angle-weighted `M11` relative L2 error of `3.2276%`
+  against Mie theory, and a `4.3028%` main normalized Mueller error.
 
 ## [0.1.0-alpha.1] - 2026-07-31
 
@@ -63,3 +68,4 @@ Semantic Versioning while its public interfaces are stabilizing.
 - historical large benchmarks require separately retained `runs/` artifacts.
 
 [0.1.0-alpha.1]: https://github.com/KirillSalnikov/BEM-CPP/releases/tag/v0.1.0-alpha.1
+[0.1.0-alpha.2]: https://github.com/KirillSalnikov/BEM-CPP/releases/tag/v0.1.0-alpha.2
