@@ -11,7 +11,7 @@ authors:
 repository-code: https://github.com/KirillSalnikov/BEM-CPP
 url: https://github.com/KirillSalnikov/BEM-CPP
 license: MIT
-version: 0.1.0-alpha.2
+version: 0.1.0-alpha.3
 date-released: 2026-08-03
 keywords:
   - boundary element method

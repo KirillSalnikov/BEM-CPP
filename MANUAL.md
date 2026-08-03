@@ -1,6 +1,6 @@
 # BEM-CPP Operational Manual
 
-This manual describes release `0.1.0-alpha.2`. Automatic hierarchy selection
+This manual describes release `0.1.0-alpha.3`. Automatic hierarchy selection
 is available for large built-in meshes, but published speed and physical-error
 claims remain limited to the explicitly documented regular-prism controls.
 For every new shape, refractive index, or refinement range, compare two meshes

@@ -1,0 +1,46 @@
+  [Muller] Near-correction templates: 2424 unique for 4100 adjacent pairs (1.7x reuse)
+  [Octree] Near pairs: 3080, Far (M2L) pairs: 0
+  [Octree] 65 nodes, 56 leaves, depth=2, 4480 points, near-radius=3
+  [SphereQuad] p=10, L=242 (11 theta x 22 phi)
+  [FMM] Precomputing M2L transfers...
+  [FMM] 0 unique transfers, 0 total M2L pairs
+  [FMM] Uploading to GPU...
+  [FMM] FP32 phase cache: 4.1 MiB + transposed L2P copy
+  [FMM] Flat near-source cache: 0.5 MiB (125440 source references)
+  [FMM] Init complete: p=10 L=242, 65 nodes, 1.8ms
+  [Octree] Near pairs: 3080, Far (M2L) pairs: 0
+  [Octree] 65 nodes, 56 leaves, depth=2, 4480 points, near-radius=3
+  [SphereQuad] p=10, L=242 (11 theta x 22 phi)
+  [FMM] Precomputing M2L transfers...
+  [FMM] 0 unique transfers, 0 total M2L pairs
+  [FMM] Uploading to GPU...
+  [FMM] FP32 phase cache: 4.1 MiB + transposed L2P copy
+  [FMM] Flat near-source cache: 0.5 MiB (125440 source references)
+  [FMM] Init complete: p=10 L=242, 65 nodes, 1.0ms
+  [Muller] GPU-resident operator assembly enabled (2240 regular, 4160 mass points)
+  [MBJ 1] projected residual 2.353e-01; matvec 0.002s, preconditioner 0.000s, orthogonalization 0.000s, iteration 0.002s
+  [MBJ 10] exact operator residual 7.705e-06; verification matvec 0.001s
+  [MBJ-parallel 1] projected residual 2.354e-01; matvec 0.001s, preconditioner 0.000s, orthogonalization 0.000s, iteration 0.001s
+  [MBJ-parallel 10] exact operator residual 7.544e-06; verification matvec 0.002s
+Muller fmm solve: MBJ 10 it 0.016s
+  second polarization: 10 it 0.016s, residual 7.544e-06; far field 0.000s (73 angles)
+  geometry: sphere, feature-edge segments=0, smooth patches=1, duplicated P2 nodes=0
+  setup: fmm 0.790s, local MBJ 1.677s (assembly 1.670s, LU 0.006s, coarse 0.000s rank 0, 4 threads; dense validation 0.000s, disabled)
+  out=runs/release_small_sphere_alpha3/result.json
+
+Mie check: full Mueller matrix
+  absolute metrics use solid-angle weights
+  absolute M11 rel L2 = 3.2276e-02
+  M11(0) BEM/Mie     = 0.98094979
+  normalization = each matrix divided by M11(theta=0)
+  max main floor2 err = 4.3028e-02
+  worst component     = M31 (1.7028e-01)
+
+  theta       BEM M11       Mie M11      rel err
+     0.0   1.00000e+00   1.00000e+00  0.000e+00
+    30.0   8.27003e-01   8.32932e-01  7.118e-03
+    60.0   5.02334e-01   5.14323e-01  2.331e-02
+    90.0   3.16223e-01   3.24136e-01  2.441e-02
+   120.0   3.13249e-01   3.15166e-01  6.083e-03
+   150.0   3.75231e-01   3.75027e-01  5.462e-04
+   180.0   4.05732e-01   4.05262e-01  1.160e-03

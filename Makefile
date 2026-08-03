@@ -16,10 +16,11 @@ FP32_PRECISION_FLAGS ?= -DBEM_DEFAULT_FMM_NEAR_FP32 -DBEM_PFFT_FP32 \
 
 CUDA_TARGET ?= $(if $(wildcard $(CUDA_HOME)/targets/x86_64-linux/include),$(CUDA_HOME)/targets/x86_64-linux,$(CUDA_HOME))
 CUDA_LIB_DIRS = $(CUDA_TARGET)/lib $(CUDA_HOME)/lib/x86_64-linux-gnu $(CUDA_HOME)/lib64 $(CUDA_HOME)/lib
+HOST_CUDA_INCLUDE := $(if $(wildcard $(CUDA_TARGET)/include/cuda_runtime.h),-I$(CUDA_TARGET)/include,-Itests/host_cuda_stubs)
 
 VERSION_FLAGS = -DBEM_VERSION=\"$(VERSION)\"
 NVFLAGS = $(ARCH) -ccbin $(CXX) $(NVCC_EXTRA_FLAGS) $(VERSION_FLAGS) -O3 -I$(CUDA_TARGET)/include -Xcompiler "$(HOST_OPT) -Wall -Wno-unknown-pragmas -std=c++11" -std=c++11
-CXXFLAGS = $(HOST_OPT) -Wall -std=c++11 $(VERSION_FLAGS) -I$(CUDA_TARGET)/include
+CXXFLAGS = $(HOST_OPT) -Wall -std=c++11 $(VERSION_FLAGS) $(HOST_CUDA_INCLUDE)
 LDFLAGS = $(addprefix -L,$(CUDA_LIB_DIRS)) -lcudart -lcufft -lcusparse -lm -lstdc++
 HOST_TEST_DIR = tests
 CUDA_HESSIAN_CHECK = $(HOST_TEST_DIR)/fmm_hessian_check

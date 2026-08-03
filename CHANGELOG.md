@@ -5,6 +5,29 @@ Semantic Versioning while its public interfaces are stabilizing.
 
 ## Unreleased
 
+## [0.1.0-alpha.3] - 2026-08-03
+
+### Added
+
+- CUDA-independent compatibility headers for the host-only audit on clean
+  GitHub Actions runners;
+- an automated freshness check that keeps the release number, primary entry
+  point, documented options, and reference-data link synchronized.
+
+### Changed
+
+- the PDF manual now consistently identifies BEM-CPP, uses the current
+  `./bem` launcher and quality profiles, and distinguishes historical V100
+  measurements from the RTX 3090 Ti release environment;
+- current orientation-averaging documentation now describes adaptive nested
+  beta/gamma refinement, exact prism symmetry reuse, per-orientation restart,
+  and one operator setup per schedule.
+
+### Validation
+
+- the complete host audit passes with no CUDA toolkit installed;
+- the full CUDA audit and physical Mie gate pass on the release machine.
+
 ## [0.1.0-alpha.2] - 2026-08-03
 
 ### Added
@@ -69,3 +92,4 @@ Semantic Versioning while its public interfaces are stabilizing.
 
 [0.1.0-alpha.1]: https://github.com/KirillSalnikov/BEM-CPP/releases/tag/v0.1.0-alpha.1
 [0.1.0-alpha.2]: https://github.com/KirillSalnikov/BEM-CPP/releases/tag/v0.1.0-alpha.2
+[0.1.0-alpha.3]: https://github.com/KirillSalnikov/BEM-CPP/releases/tag/v0.1.0-alpha.3
