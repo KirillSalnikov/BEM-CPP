@@ -3,6 +3,33 @@
 All notable changes to BEM-CPP are documented in this file. The project uses
 Semantic Versioning while its public interfaces are stabilizing.
 
+## Unreleased
+
+### Added
+
+- adaptive two-stage planning for large fixed-orientation sphere, cube, and
+  prism calculations, with the hierarchy derived from mesh refinement and
+  electrical density;
+- atomic `execution_state.json` pipeline status and checkpoint disk-space
+  estimates;
+- GPU far-field projection for the experimental host-assembled banded FMM.
+
+### Changed
+
+- resource admission now checks currently free VRAM, profile-specific safety
+  margins, and temporary disk space required by atomic checkpoints;
+- orientation plans explicitly record that one prepared operator is reused
+  and that restart granularity is one completed base orientation;
+- `bem resume` preserves sequential-current memory policies from the original
+  two-stage plan.
+
+### Validation
+
+- banded-pFFT orientation averaging passed residual and Mueller checks at
+  `ka=20` and `ka=60`, but was slower than paired GPU-GMRES and therefore was
+  not enabled by default;
+- the host release audit and CUDA Muller FMM operator test pass.
+
 ## [0.1.0-alpha.1] - 2026-07-31
 
 ### Added

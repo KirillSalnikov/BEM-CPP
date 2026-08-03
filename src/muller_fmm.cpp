@@ -1309,6 +1309,28 @@ void MullerFmmOperator::init(
         gpu_operator_assembly_requested =
             std::strcmp(gpu_assembly_env, "0") != 0;
     }
+    const char* banded_split_environment =
+        std::getenv("BEM_FMM_BANDED_SPLIT_DEPTH");
+    banded_fmm_split_depth = banded_split_environment
+        ? std::max(0, std::atoi(banded_split_environment))
+        : 0;
+    banded_fmm = !use_pfft && banded_fmm_split_depth > 0;
+    const char* banded_leaf_environment =
+        std::getenv("BEM_FMM_BANDED_COARSE_MAX_LEAF");
+    banded_fmm_coarse_max_leaf = banded_leaf_environment
+        ? std::max(1, std::atoi(banded_leaf_environment))
+        : 4096;
+    const char* banded_middle_leaf_environment =
+        std::getenv("BEM_FMM_BANDED_MIDDLE_MAX_LEAF");
+    banded_fmm_middle_max_leaf = banded_middle_leaf_environment
+        ? std::max(1, std::atoi(banded_middle_leaf_environment))
+        : std::max(1, banded_fmm_coarse_max_leaf / 8);
+    if (banded_fmm && gpu_operator_assembly_requested) {
+        std::fprintf(
+            stderr,
+            "  [Muller] Banded FMM uses host Galerkin assembly "
+            "with GPU far-field projection\n");
+    }
     fmm_near_radius = std::max(1, fmm_near_radius_value);
     near_correction_template_reuse = near_template_reuse_value;
     near_correction_pairs = 0;
@@ -1508,14 +1530,44 @@ void MullerFmmOperator::init(
         const char* pair_currents =
             std::getenv("BEM_FMM_PAIR_CURRENTS");
         const bool request_pair_workspace =
-            pair_currents == nullptr ||
-            std::strcmp(pair_currents, "0") != 0;
+            !banded_fmm && (pair_currents == nullptr ||
+            std::strcmp(pair_currents, "0") != 0);
         if (stable_fmm_digits != fmm_digits) {
             std::fprintf(
                 stderr,
                 "  [Muller] Requested FMM digits=%d; using digits=%d "
                 "for stable surface derivatives\n",
                 fmm_digits, stable_fmm_digits);
+        }
+        fmm_exterior.configure_interaction_band(
+            1, std::numeric_limits<int>::max(), true);
+        fmm_interior.configure_interaction_band(
+            1, std::numeric_limits<int>::max(), true);
+        if (banded_fmm) {
+            const double fine_depth_ratio =
+                2.0 * point_count / std::max(1, max_leaf);
+            const int predicted_fine_depth = fine_depth_ratio > 1.0
+                ? std::min(6, std::max(1, static_cast<int>(
+                    std::ceil(
+                        std::log(fine_depth_ratio) /
+                        std::log(8.0)))))
+                : 0;
+            if (predicted_fine_depth >
+                    banded_fmm_split_depth + 2) {
+                throw std::runtime_error(
+                    "banded FMM currently supports at most two levels "
+                    "above the coarse split");
+            }
+            banded_fmm_middle = predicted_fine_depth ==
+                banded_fmm_split_depth + 2;
+            fmm_exterior.configure_interaction_band(
+                banded_fmm_split_depth +
+                    (banded_fmm_middle ? 2 : 1),
+                std::numeric_limits<int>::max(), true);
+            fmm_interior.configure_interaction_band(
+                banded_fmm_split_depth +
+                    (banded_fmm_middle ? 2 : 1),
+                std::numeric_limits<int>::max(), true);
         }
         fmm_exterior.init(
             points.data(), point_count,
@@ -1529,6 +1581,93 @@ void MullerFmmOperator::init(
             fmm_near_radius, true, request_pair_workspace);
         fmm_exterior.near_field_fp32 = fmm_near_fp32;
         fmm_interior.near_field_fp32 = fmm_near_fp32;
+        if (banded_fmm) {
+            if (fmm_exterior.tree.max_level <=
+                    banded_fmm_split_depth ||
+                fmm_interior.tree.max_level <=
+                    banded_fmm_split_depth) {
+                throw std::runtime_error(
+                    "banded FMM split must be shallower than the fine tree");
+            }
+            fmm_exterior_coarse.configure_interaction_band(
+                1, banded_fmm_split_depth, false);
+            fmm_interior_coarse.configure_interaction_band(
+                1, banded_fmm_split_depth, false);
+            const char* coarse_order_depth = std::getenv(
+                "BEM_FMM_BANDED_COARSE_ORDER_REFERENCE_DEPTH");
+            if (coarse_order_depth != nullptr) {
+                const int depth = std::atoi(coarse_order_depth);
+                fmm_exterior_coarse.configure_order_reference_depth(depth);
+                fmm_interior_coarse.configure_order_reference_depth(depth);
+            }
+            fmm_exterior_coarse.init(
+                points.data(), point_count,
+                points.data(), point_count,
+                k_exterior, stable_fmm_digits,
+                banded_fmm_coarse_max_leaf,
+                fmm_near_radius, true, false);
+            fmm_interior_coarse.init(
+                points.data(), point_count,
+                points.data(), point_count,
+                k_interior, stable_fmm_digits,
+                banded_fmm_coarse_max_leaf,
+                fmm_near_radius, true, false);
+            if (banded_fmm_middle) {
+                fmm_exterior_middle.configure_interaction_band(
+                    banded_fmm_split_depth + 1,
+                    banded_fmm_split_depth + 1, false);
+                fmm_interior_middle.configure_interaction_band(
+                    banded_fmm_split_depth + 1,
+                    banded_fmm_split_depth + 1, false);
+                fmm_exterior_middle.init(
+                    points.data(), point_count,
+                    points.data(), point_count,
+                    k_exterior, stable_fmm_digits,
+                    banded_fmm_middle_max_leaf,
+                    fmm_near_radius, true, false);
+                fmm_interior_middle.init(
+                    points.data(), point_count,
+                    points.data(), point_count,
+                    k_interior, stable_fmm_digits,
+                    banded_fmm_middle_max_leaf,
+                    fmm_near_radius, true, false);
+                if (fmm_exterior_middle.tree.max_level !=
+                        banded_fmm_split_depth + 1 ||
+                    fmm_interior_middle.tree.max_level !=
+                        banded_fmm_split_depth + 1) {
+                    throw std::runtime_error(
+                        "BEM_FMM_BANDED_MIDDLE_MAX_LEAF must produce "
+                        "a tree one level deeper than the coarse split");
+                }
+            }
+            if (fmm_exterior_coarse.tree.max_level !=
+                    banded_fmm_split_depth ||
+                fmm_interior_coarse.tree.max_level !=
+                    banded_fmm_split_depth) {
+                throw std::runtime_error(
+                    "BEM_FMM_BANDED_COARSE_MAX_LEAF must produce a "
+                    "coarse tree whose depth equals "
+                    "BEM_FMM_BANDED_SPLIT_DEPTH");
+            }
+            if (banded_fmm_middle) {
+                std::printf(
+                    "  [Muller] Banded FMM: fine M2L level %d, "
+                    "middle level %d, coarse levels 1..%d; "
+                    "max-leaf %d/%d/%d\n",
+                    fmm_exterior.tree.max_level,
+                    banded_fmm_split_depth + 1,
+                    banded_fmm_split_depth,
+                    max_leaf, banded_fmm_middle_max_leaf,
+                    banded_fmm_coarse_max_leaf);
+            } else {
+                std::printf(
+                    "  [Muller] Banded FMM: fine M2L level %d, "
+                    "coarse levels 1..%d; max-leaf %d/%d\n",
+                    fmm_exterior.tree.max_level,
+                    banded_fmm_split_depth,
+                    max_leaf, banded_fmm_coarse_max_leaf);
+            }
+        }
     }
     fmm_engine_setup_seconds =
         std::chrono::duration<double>(
@@ -1546,12 +1685,34 @@ void MullerFmmOperator::init(
     curl_interior.resize((size_t)point_count * 3);
     hessian_action_exterior.resize((size_t)point_count * 3);
     hessian_action_interior.resize((size_t)point_count * 3);
+    if (banded_fmm) {
+        curl_exterior_coarse.resize((size_t)point_count * 3);
+        curl_interior_coarse.resize((size_t)point_count * 3);
+        hessian_action_exterior_coarse.resize((size_t)point_count * 3);
+        hessian_action_interior_coarse.resize((size_t)point_count * 3);
+        if (banded_fmm_middle) {
+            curl_exterior_middle.resize((size_t)point_count * 3);
+            curl_interior_middle.resize((size_t)point_count * 3);
+            hessian_action_exterior_middle.resize(
+                (size_t)point_count * 3);
+            hessian_action_interior_middle.resize(
+                (size_t)point_count * 3);
+        }
+    }
     mass_work.resize(current_dofs);
     k1_work.resize(current_dofs);
     k2_epsilon_work.resize(current_dofs);
     k2_mu_work.resize(current_dofs);
-    if (!use_pfft && gpu_operator_assembly_requested)
+    if (!use_pfft && gpu_operator_assembly_requested) {
         prepare_gpu_assembly();
+        if (banded_fmm) {
+            // The current GPU assembly path evaluates one uniform FMM tree.
+            // Keep its projection buffers for batched far fields, but retain
+            // the host Galerkin path that combines all FMM bands for matvecs.
+            gpu_operator_assembly = false;
+            gpu_operator_assembly_requested = false;
+        }
+    }
 }
 
 void MullerFmmOperator::prepare_gpu_assembly()
@@ -1653,7 +1814,7 @@ void MullerFmmOperator::farfield(
     const std::vector<Vec3>& directions,
     std::vector<cdouble>& field)
 {
-    if (!gpu_operator_assembly)
+    if (!gpu_assembly.initialized)
         throw std::runtime_error(
             "GPU farfield requires GPU operator assembly");
     gpu_assembly.farfield(
@@ -1667,7 +1828,7 @@ void MullerFmmOperator::farfield_pair(
     std::vector<cdouble>& field_x,
     std::vector<cdouble>& field_y)
 {
-    if (!gpu_operator_assembly)
+    if (!gpu_assembly.initialized)
         throw std::runtime_error(
             "GPU paired farfield requires GPU operator assembly");
     gpu_assembly.farfield_pair(
@@ -1935,12 +2096,63 @@ void MullerFmmOperator::apply_current_operators(
                 charges[0].data(), charges[1].data(), charges[2].data(),
                 curl_exterior.data(),
                 hessian_action_exterior.data());
+            if (banded_fmm) {
+                if (banded_fmm_middle) {
+                    fmm_exterior_middle.evaluate_vector_actions_batch3(
+                        charges[0].data(), charges[1].data(),
+                        charges[2].data(),
+                        curl_exterior_middle.data(),
+                        hessian_action_exterior_middle.data());
+                }
+                fmm_exterior_coarse.evaluate_vector_actions_batch3(
+                    charges[0].data(), charges[1].data(), charges[2].data(),
+                    curl_exterior_coarse.data(),
+                    hessian_action_exterior_coarse.data());
+                for (size_t index = 0;
+                     index < curl_exterior.size(); index++) {
+                    curl_exterior[index] +=
+                        curl_exterior_coarse[index];
+                    hessian_action_exterior[index] +=
+                        hessian_action_exterior_coarse[index];
+                    if (banded_fmm_middle) {
+                        curl_exterior[index] +=
+                            curl_exterior_middle[index];
+                        hessian_action_exterior[index] +=
+                            hessian_action_exterior_middle[index];
+                    }
+                }
+            }
         };
         const auto evaluate_interior = [&]() {
             fmm_interior.evaluate_vector_actions_batch3(
                 charges[0].data(), charges[1].data(), charges[2].data(),
                 curl_interior.data(),
                 hessian_action_interior.data());
+            if (banded_fmm) {
+                if (banded_fmm_middle) {
+                    fmm_interior_middle.evaluate_vector_actions_batch3(
+                        charges[0].data(), charges[1].data(),
+                        charges[2].data(),
+                        curl_interior_middle.data(),
+                        hessian_action_interior_middle.data());
+                }
+                fmm_interior_coarse.evaluate_vector_actions_batch3(
+                    charges[0].data(), charges[1].data(), charges[2].data(),
+                    curl_interior_coarse.data(),
+                    hessian_action_interior_coarse.data());
+                for (size_t index = 0;
+                     index < curl_interior.size(); index++) {
+                    curl_interior[index] += curl_interior_coarse[index];
+                    hessian_action_interior[index] +=
+                        hessian_action_interior_coarse[index];
+                    if (banded_fmm_middle) {
+                        curl_interior[index] +=
+                            curl_interior_middle[index];
+                        hessian_action_interior[index] +=
+                            hessian_action_interior_middle[index];
+                    }
+                }
+            }
         };
         const char* concurrent_media =
             std::getenv("BEM_FMM_CONCURRENT_MEDIA");
@@ -2282,6 +2494,51 @@ void MullerFmmOperator::matvec_batch2_device_strict(
     set_fmm_near_fp32(previous_near_fp32);
 }
 
+void MullerFmmOperator::matvec_strict(
+    const cdouble* input, cdouble* output)
+{
+    if (!device_matvec_available()) {
+        if (use_pfft || !fmm_exterior.initialized ||
+            !fmm_interior.initialized) {
+            throw std::runtime_error(
+                "strict Muller matvec requires the FMM backend");
+        }
+        const bool previous_near_fp32 = fmm_near_fp32;
+        set_fmm_near_fp32(false);
+        try {
+            matvec(input, output);
+        } catch (...) {
+            set_fmm_near_fp32(previous_near_fp32);
+            throw;
+        }
+        set_fmm_near_fp32(previous_near_fp32);
+        return;
+    }
+    const bool previous_near_fp32 = fmm_near_fp32;
+    set_fmm_near_fp32(false);
+    try {
+        gpu_assembly.upload_system_input(input);
+        if (fmm_exterior.strict_vector_pair_available() &&
+            fmm_interior.strict_vector_pair_available()) {
+            apply_current_operator_pair_gpu(true);
+        } else {
+            apply_current_operators_gpu(0, 0);
+            apply_current_operators_gpu(current_dofs, 1);
+        }
+        gpu_assembly.combine_and_download(
+            k_exterior,
+            epsilon_exterior,
+            epsilon_interior,
+            mu_exterior,
+            mu_interior,
+            output);
+    } catch (...) {
+        set_fmm_near_fp32(previous_near_fp32);
+        throw;
+    }
+    set_fmm_near_fp32(previous_near_fp32);
+}
+
 void MullerFmmOperator::matvec(
     const cdouble* input, cdouble* output)
 {
@@ -2367,11 +2624,19 @@ double MullerFmmOperator::switch_pfft_to_fmm(
     const int point_count = static_cast<int>(quadrature.size());
     const int stable_fmm_digits =
         std::min(fmm_digits, muller_fmm_digits_cap());
+    banded_fmm = banded_fmm_split_depth > 0;
+    banded_fmm_middle = false;
+    if (banded_fmm && gpu_operator_assembly_requested) {
+        std::fprintf(
+            stderr,
+            "  [Muller] Banded FMM uses host Galerkin assembly "
+            "with GPU far-field projection\n");
+    }
     const char* pair_currents =
         std::getenv("BEM_FMM_PAIR_CURRENTS");
     const bool request_pair_workspace =
-        pair_currents == nullptr ||
-        std::strcmp(pair_currents, "0") != 0;
+        !banded_fmm && (pair_currents == nullptr ||
+        std::strcmp(pair_currents, "0") != 0);
     if (stable_fmm_digits != fmm_digits) {
         std::fprintf(
             stderr,
@@ -2379,21 +2644,164 @@ double MullerFmmOperator::switch_pfft_to_fmm(
             "for stable surface derivatives\n",
             fmm_digits, stable_fmm_digits);
     }
-    fmm_exterior.init(
-        points.data(), point_count,
-        points.data(), point_count,
-        k_exterior, stable_fmm_digits, max_leaf,
-        fmm_near_radius, true, request_pair_workspace);
-    fmm_interior.init(
-        points.data(), point_count,
-        points.data(), point_count,
-        k_interior, stable_fmm_digits, max_leaf,
-        fmm_near_radius, true, request_pair_workspace);
+    fmm_exterior.configure_interaction_band(
+        1, std::numeric_limits<int>::max(), true);
+    fmm_interior.configure_interaction_band(
+        1, std::numeric_limits<int>::max(), true);
+    if (banded_fmm) {
+        const double fine_depth_ratio =
+            2.0 * point_count / std::max(1, max_leaf);
+        const int predicted_fine_depth = fine_depth_ratio > 1.0
+            ? std::min(6, std::max(1, static_cast<int>(
+                std::ceil(
+                    std::log(fine_depth_ratio) /
+                    std::log(8.0)))))
+            : 0;
+        if (predicted_fine_depth > banded_fmm_split_depth + 2) {
+            throw std::runtime_error(
+                "banded FMM currently supports at most two levels "
+                "above the coarse split");
+        }
+        banded_fmm_middle = predicted_fine_depth ==
+            banded_fmm_split_depth + 2;
+        fmm_exterior.configure_interaction_band(
+            banded_fmm_split_depth +
+                (banded_fmm_middle ? 2 : 1),
+            std::numeric_limits<int>::max(), true);
+        fmm_interior.configure_interaction_band(
+            banded_fmm_split_depth +
+                (banded_fmm_middle ? 2 : 1),
+            std::numeric_limits<int>::max(), true);
+    }
+    const auto initialize_exterior = [&]() {
+        fmm_exterior.init(
+            points.data(), point_count,
+            points.data(), point_count,
+            k_exterior, stable_fmm_digits, max_leaf,
+            fmm_near_radius, true, request_pair_workspace);
+    };
+    const auto initialize_interior = [&]() {
+        fmm_interior.init(
+            points.data(), point_count,
+            points.data(), point_count,
+            k_interior, stable_fmm_digits, max_leaf,
+            fmm_near_radius, true, request_pair_workspace);
+    };
+    const char* interior_first_environment =
+        std::getenv("BEM_FMM_INTERIOR_FIRST");
+    const bool initialize_interior_first =
+        interior_first_environment != nullptr &&
+        std::strcmp(interior_first_environment, "0") != 0;
+    if (initialize_interior_first) {
+        initialize_interior();
+        initialize_exterior();
+    } else {
+        initialize_exterior();
+        initialize_interior();
+    }
     fmm_exterior.near_field_fp32 = fmm_near_fp32;
     fmm_interior.near_field_fp32 = fmm_near_fp32;
+    if (banded_fmm) {
+        if (fmm_exterior.tree.max_level <= banded_fmm_split_depth ||
+            fmm_interior.tree.max_level <= banded_fmm_split_depth) {
+            throw std::runtime_error(
+                "banded FMM split must be shallower than the fine tree");
+        }
+        fmm_exterior_coarse.configure_interaction_band(
+            1, banded_fmm_split_depth, false);
+        fmm_interior_coarse.configure_interaction_band(
+            1, banded_fmm_split_depth, false);
+        const char* coarse_order_depth = std::getenv(
+            "BEM_FMM_BANDED_COARSE_ORDER_REFERENCE_DEPTH");
+        if (coarse_order_depth != nullptr) {
+            const int depth = std::atoi(coarse_order_depth);
+            fmm_exterior_coarse.configure_order_reference_depth(depth);
+            fmm_interior_coarse.configure_order_reference_depth(depth);
+        }
+        fmm_exterior_coarse.init(
+            points.data(), point_count,
+            points.data(), point_count,
+            k_exterior, stable_fmm_digits,
+            banded_fmm_coarse_max_leaf,
+            fmm_near_radius, true, false);
+        fmm_interior_coarse.init(
+            points.data(), point_count,
+            points.data(), point_count,
+            k_interior, stable_fmm_digits,
+            banded_fmm_coarse_max_leaf,
+            fmm_near_radius, true, false);
+        if (banded_fmm_middle) {
+            fmm_exterior_middle.configure_interaction_band(
+                banded_fmm_split_depth + 1,
+                banded_fmm_split_depth + 1, false);
+            fmm_interior_middle.configure_interaction_band(
+                banded_fmm_split_depth + 1,
+                banded_fmm_split_depth + 1, false);
+            fmm_exterior_middle.init(
+                points.data(), point_count,
+                points.data(), point_count,
+                k_exterior, stable_fmm_digits,
+                banded_fmm_middle_max_leaf,
+                fmm_near_radius, true, false);
+            fmm_interior_middle.init(
+                points.data(), point_count,
+                points.data(), point_count,
+                k_interior, stable_fmm_digits,
+                banded_fmm_middle_max_leaf,
+                fmm_near_radius, true, false);
+            if (fmm_exterior_middle.tree.max_level !=
+                    banded_fmm_split_depth + 1 ||
+                fmm_interior_middle.tree.max_level !=
+                    banded_fmm_split_depth + 1) {
+                throw std::runtime_error(
+                    "BEM_FMM_BANDED_MIDDLE_MAX_LEAF must produce "
+                    "a tree one level deeper than the coarse split");
+            }
+        }
+        if (fmm_exterior_coarse.tree.max_level !=
+                banded_fmm_split_depth ||
+            fmm_interior_coarse.tree.max_level !=
+                banded_fmm_split_depth) {
+            throw std::runtime_error(
+                "BEM_FMM_BANDED_COARSE_MAX_LEAF must produce a "
+                "coarse tree whose depth equals "
+                "BEM_FMM_BANDED_SPLIT_DEPTH");
+        }
+        curl_exterior_coarse.resize((size_t)point_count * 3);
+        curl_interior_coarse.resize((size_t)point_count * 3);
+        hessian_action_exterior_coarse.resize((size_t)point_count * 3);
+        hessian_action_interior_coarse.resize((size_t)point_count * 3);
+        if (banded_fmm_middle) {
+            curl_exterior_middle.resize((size_t)point_count * 3);
+            curl_interior_middle.resize((size_t)point_count * 3);
+            hessian_action_exterior_middle.resize((size_t)point_count * 3);
+            hessian_action_interior_middle.resize((size_t)point_count * 3);
+            std::printf(
+                "  [Muller] Banded FMM switch: fine M2L level %d, "
+                "middle level %d, coarse levels 1..%d; "
+                "max-leaf %d/%d/%d\n",
+                fmm_exterior.tree.max_level,
+                banded_fmm_split_depth + 1,
+                banded_fmm_split_depth,
+                max_leaf, banded_fmm_middle_max_leaf,
+                banded_fmm_coarse_max_leaf);
+        } else {
+            std::printf(
+                "  [Muller] Banded FMM switch: fine M2L level %d, "
+                "coarse levels 1..%d; max-leaf %d/%d\n",
+                fmm_exterior.tree.max_level,
+                banded_fmm_split_depth,
+                max_leaf, banded_fmm_coarse_max_leaf);
+        }
+    }
     use_pfft = false;
-    if (gpu_operator_assembly_requested)
+    if (gpu_operator_assembly_requested) {
         prepare_gpu_assembly();
+        if (banded_fmm) {
+            gpu_operator_assembly = false;
+            gpu_operator_assembly_requested = false;
+        }
+    }
     return std::chrono::duration<double>(
         std::chrono::steady_clock::now() - start).count();
 #endif
@@ -2426,6 +2834,14 @@ void MullerFmmOperator::set_fmm_near_fp32(bool enabled)
     fmm_near_fp32 = enabled;
     fmm_exterior.near_field_fp32 = enabled;
     fmm_interior.near_field_fp32 = enabled;
+    if (banded_fmm) {
+        fmm_exterior_coarse.near_field_fp32 = enabled;
+        fmm_interior_coarse.near_field_fp32 = enabled;
+        if (banded_fmm_middle) {
+            fmm_exterior_middle.near_field_fp32 = enabled;
+            fmm_interior_middle.near_field_fp32 = enabled;
+        }
+    }
 }
 
 void MullerFmmOperator::apply_current_operators_direct(
@@ -2625,11 +3041,27 @@ void MullerFmmOperator::cleanup()
         fmm_exterior.cleanup();
     if (fmm_interior.initialized)
         fmm_interior.cleanup();
+    if (fmm_exterior_coarse.initialized)
+        fmm_exterior_coarse.cleanup();
+    if (fmm_interior_coarse.initialized)
+        fmm_interior_coarse.cleanup();
+    if (fmm_exterior_middle.initialized)
+        fmm_exterior_middle.cleanup();
+    if (fmm_interior_middle.initialized)
+        fmm_interior_middle.cleanup();
     current_dofs = 0;
     system_dofs = 0;
     quadrature.clear();
     mass_quadrature.clear();
     correction = MullerNearCorrection();
+    curl_exterior_coarse.clear();
+    curl_interior_coarse.clear();
+    hessian_action_exterior_coarse.clear();
+    hessian_action_interior_coarse.clear();
+    curl_exterior_middle.clear();
+    curl_interior_middle.clear();
+    hessian_action_exterior_middle.clear();
+    hessian_action_interior_middle.clear();
     assembly_colors.clear();
     regular_points_per_element = 0;
     mass_points_per_element = 0;
@@ -2645,6 +3077,11 @@ void MullerFmmOperator::cleanup()
     use_pfft = false;
     gpu_operator_assembly = false;
     gpu_operator_assembly_requested = false;
+    banded_fmm = false;
+    banded_fmm_middle = false;
+    banded_fmm_split_depth = 0;
+    banded_fmm_coarse_max_leaf = 0;
+    banded_fmm_middle_max_leaf = 0;
     pfft_interpolation_order = 2;
 }
 

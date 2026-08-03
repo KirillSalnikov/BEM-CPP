@@ -1,6 +1,7 @@
 #include "fmm.h"
 #include "gpu_select.h"
 #include <cuda_runtime.h>
+#include <cuda_fp16.h>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -168,6 +169,52 @@ __global__ void build_leaf_phase_cache_fp32_kernel(
             l2p_phase_cache[
                 (size_t)direction * point_count +
                 start + point_in_leaf] = value;
+    }
+}
+
+__global__ void build_leaf_phase_cache_fp16_kernel(
+    const double* __restrict__ points,
+    const double* __restrict__ dirs,
+    double k_re,
+    __half2* __restrict__ phase_cache,
+    const int* __restrict__ leaf_indices,
+    const int* __restrict__ point_id_offsets,
+    const int* __restrict__ point_ids,
+    const double* __restrict__ node_centers,
+    int cached_directions, int n_leaves)
+{
+    const int leaf = blockIdx.x;
+    if (leaf >= n_leaves)
+        return;
+    const int node = leaf_indices[leaf];
+    const int start = point_id_offsets[leaf];
+    const int count = point_id_offsets[leaf + 1] - start;
+    const double cx = node_centers[3 * node];
+    const double cy = node_centers[3 * node + 1];
+    const double cz = node_centers[3 * node + 2];
+    const int entry_count = count * cached_directions;
+    for (int entry = threadIdx.x;
+         entry < entry_count;
+         entry += blockDim.x) {
+        const int point_in_leaf = entry / cached_directions;
+        const int direction =
+            entry - point_in_leaf * cached_directions;
+        const int point = point_ids[start + point_in_leaf];
+        const double rx = points[3 * point] - cx;
+        const double ry = points[3 * point + 1] - cy;
+        const double rz = points[3 * point + 2] - cz;
+        const double dot =
+            dirs[3 * direction] * rx +
+            dirs[3 * direction + 1] * ry +
+            dirs[3 * direction + 2] * rz;
+        double phase_sine = 0;
+        double phase_cosine = 0;
+        sincos(k_re * dot, &phase_sine, &phase_cosine);
+        phase_cache[
+            (size_t)point * cached_directions + direction] =
+            __floats2half2_rn(
+                static_cast<float>(phase_cosine),
+                static_cast<float>(phase_sine));
     }
 }
 
@@ -768,6 +815,52 @@ __global__ void m2l_kernel_batch3_target_rows(
         l2_im[local_base + l] += a2i;
         l3_re[local_base + l] += a3r;
         l3_im[local_base + l] += a3i;
+    }
+}
+
+__global__ void m2l_kernel_batch3_atomic(
+    const int* __restrict__ target_indices,
+    const int* __restrict__ source_indices,
+    const int* __restrict__ transfer_indices,
+    const double* __restrict__ transfer_re,
+    const double* __restrict__ transfer_im,
+    const double* __restrict__ multi1_re,
+    const double* __restrict__ multi1_im,
+    const double* __restrict__ multi2_re,
+    const double* __restrict__ multi2_im,
+    const double* __restrict__ multi3_re,
+    const double* __restrict__ multi3_im,
+    double* __restrict__ local1_re,
+    double* __restrict__ local1_im,
+    double* __restrict__ local2_re,
+    double* __restrict__ local2_im,
+    double* __restrict__ local3_re,
+    double* __restrict__ local3_im,
+    int L, int pair_count, int pair_offset)
+{
+    const int pair = blockIdx.x + pair_offset;
+    if (pair >= pair_offset + pair_count)
+        return;
+    const int transfer_base = transfer_indices[pair] * L;
+    const int source_base = source_indices[pair] * L;
+    const int local_base = target_indices[pair] * L;
+    for (int l = threadIdx.x; l < L; l += blockDim.x) {
+        const double tr = transfer_re[transfer_base + l];
+        const double ti = transfer_im[transfer_base + l];
+#define ACCUMULATE_ATOMIC_M2L3(MULTI_RE, MULTI_IM, LOCAL_RE, LOCAL_IM) \
+        do { \
+            const double mr = (MULTI_RE)[source_base + l]; \
+            const double mi = (MULTI_IM)[source_base + l]; \
+            atomicAdd(&(LOCAL_RE)[local_base + l], tr * mr - ti * mi); \
+            atomicAdd(&(LOCAL_IM)[local_base + l], tr * mi + ti * mr); \
+        } while (0)
+        ACCUMULATE_ATOMIC_M2L3(
+            multi1_re, multi1_im, local1_re, local1_im);
+        ACCUMULATE_ATOMIC_M2L3(
+            multi2_re, multi2_im, local2_re, local2_im);
+        ACCUMULATE_ATOMIC_M2L3(
+            multi3_re, multi3_im, local3_re, local3_im);
+#undef ACCUMULATE_ATOMIC_M2L3
     }
 }
 
@@ -2252,10 +2345,22 @@ __device__ __forceinline__ float warp_sum_float(float value)
 
 // A warp cooperates on one target. The target-major phase cache and the local
 // coefficients are consequently read in contiguous 32-value segments.
+__device__ __forceinline__ float2 phase_as_float2(float2 value)
+{
+    return value;
+}
+
+__device__ __forceinline__ float2 phase_as_float2(__half2 value)
+{
+    return __half22float2(value);
+}
+
+template <typename PhaseType>
 __global__ void l2p_vector_actions_pair_batch3_warp_fp32_kernel(
+    const double* __restrict__ target_points,
     const float* __restrict__ dirs,
     const float* __restrict__ weights,
-    const float2* __restrict__ phase_cache,
+    const PhaseType* __restrict__ phase_cache,
     const float* __restrict__ first_local_re,
     const float* __restrict__ first_local_im,
     const float* __restrict__ second_local_x_re,
@@ -2280,6 +2385,9 @@ __global__ void l2p_vector_actions_pair_batch3_warp_fp32_kernel(
     const int* __restrict__ leaf_indices,
     const int* __restrict__ tgt_id_offsets,
     const int* __restrict__ tgt_ids,
+    const double* __restrict__ node_centers,
+    float k_re,
+    int cached_directions,
     int L,
     int n_leaves)
 {
@@ -2293,6 +2401,9 @@ __global__ void l2p_vector_actions_pair_batch3_warp_fp32_kernel(
     const int start = tgt_id_offsets[leaf_id];
     const int end = tgt_id_offsets[leaf_id + 1];
     const int local_base = node * L;
+    const float cx = static_cast<float>(node_centers[3 * node]);
+    const float cy = static_cast<float>(node_centers[3 * node + 1]);
+    const float cz = static_cast<float>(node_centers[3 * node + 2]);
 
     const float* eval_first_x_re = first_local_re + local_base;
     const float* eval_first_x_im = first_local_im + local_base;
@@ -2314,6 +2425,9 @@ __global__ void l2p_vector_actions_pair_batch3_warp_fp32_kernel(
     for (int target = start + warp; target < end;
          target += warps_per_block) {
         const int tid = tgt_ids[target];
+        const float rx = static_cast<float>(target_points[3 * tid]) - cx;
+        const float ry = static_cast<float>(target_points[3 * tid + 1]) - cy;
+        const float rz = static_cast<float>(target_points[3 * tid + 2]) - cz;
         float first_curl_acc_re[3] = {0, 0, 0};
         float first_curl_acc_im[3] = {0, 0, 0};
         float first_action_acc_re[3] = {0, 0, 0};
@@ -2327,7 +2441,16 @@ __global__ void l2p_vector_actions_pair_batch3_warp_fp32_kernel(
             const float dx = dirs[3 * l];
             const float dy = dirs[3 * l + 1];
             const float dz = dirs[3 * l + 2];
-            const float2 phase = phase_cache[(size_t)tid * L + l];
+            float2 phase;
+            if (l < cached_directions) {
+                phase = phase_as_float2(
+                    phase_cache[
+                        (size_t)tid * cached_directions + l]);
+            } else {
+                const float angle =
+                    k_re * (dx * rx + dy * ry + dz * rz);
+                sincosf(angle, &phase.y, &phase.x);
+            }
             accumulate_l2p_vector_field<float>(
                 weights[l], phase.x, phase.y, dx, dy, dz,
                 eval_first_x_re[l], eval_first_x_im[l],
@@ -2643,21 +2766,23 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
     double leaf_hs = tree.nodes[tree.leaves[0]].half_size;
     double leaf_box_size = 2.0 * leaf_hs;
     double order_box_size = leaf_box_size;
-    const int order_reference_depth = bem_env_int(
-        "BEM_FMM_ORDER_REFERENCE_DEPTH", 0);
-    if (order_reference_depth > 0 &&
-        order_reference_depth <= 6) {
+    const int configured_order_reference_depth =
+        order_reference_depth > 0
+            ? order_reference_depth
+            : bem_env_int("BEM_FMM_ORDER_REFERENCE_DEPTH", 0);
+    if (configured_order_reference_depth > 0 &&
+        configured_order_reference_depth <= 6) {
         const double root_box_size =
             2.0 * tree.nodes.front().half_size;
         const double reference_box_size =
             root_box_size /
-            static_cast<double>(1 << order_reference_depth);
+            static_cast<double>(1 << configured_order_reference_depth);
         order_box_size =
             std::max(order_box_size, reference_box_size);
         if (order_box_size > leaf_box_size * (1.0 + 1.0e-12)) {
             std::printf(
                 "  [FMM] depth-%d order floor: leaf %.6g -> %.6g\n",
-                order_reference_depth,
+                configured_order_reference_depth,
                 leaf_box_size, order_box_size);
         }
     }
@@ -2731,6 +2856,10 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
     for (int level = 1; level <= tree.max_level; level++) {
         M2LBatch& batch = m2l_batches[level];
         batch.n_pairs = 0;
+
+        if (level < minimum_m2l_level ||
+            level > maximum_m2l_level)
+            continue;
 
         for (int ni : tree.level_nodes[level]) {
             const OctreeNode& node = tree.nodes[ni];
@@ -3459,7 +3588,9 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
         }
     }
     if (pair_l2p_allocated &&
-        bem_env_flag_enabled("BEM_MIXED_ITERATIVE_REFINEMENT")) {
+        bem_env_flag_enabled("BEM_MIXED_ITERATIVE_REFINEMENT") &&
+        bem_env_flag_enabled(
+            "BEM_FMM_STRICT_PAIR_WORKSPACE", true)) {
         const size_t strict_count =
             static_cast<size_t>(6) * n_nodes * L;
         const size_t strict_bytes = strict_count * sizeof(double);
@@ -3586,6 +3717,8 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
 
     d_phase_cache_fp32 = nullptr;
     d_l2p_phase_cache_fp32 = nullptr;
+    d_l2p_phase_cache_fp16 = nullptr;
+    l2p_phase_cache_fp16_directions = 0;
     bool matching_leaf_points =
         Nt == Ns && k.imag() == 0.0 && Nt > 0 &&
         std::memcmp(
@@ -3615,6 +3748,9 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
         request_vector_pair && matching_leaf_points &&
         bem_env_flag_enabled(
             "BEM_FMM_PHASE_CACHE", phase_cache_default);
+    const bool request_fp16_l2p_phase_cache =
+        request_phase_cache && bem_env_flag_enabled(
+            "BEM_FMM_L2P_PHASE_CACHE_FP16", false);
     if (request_phase_cache) {
         const size_t phase_bytes =
             (size_t)Nt * L * sizeof(float2);
@@ -3638,8 +3774,11 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
                 const bool request_warp_l2p =
                     bem_env_flag_enabled(
                         "BEM_FMM_L2P_WARP_PER_TARGET", false);
+                const bool request_fp32_l2p =
+                    bem_env_flag_enabled(
+                        "BEM_FMM_L2P_FP32", phase_cache_default);
                 const bool request_transpose =
-                    !request_warp_l2p &&
+                    request_fp32_l2p && !request_warp_l2p &&
                     bem_env_flag_enabled(
                         "BEM_FMM_L2P_TRANSPOSED_PHASE_CACHE",
                         transpose_default);
@@ -3677,9 +3816,69 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
             std::fprintf(
                 stderr,
                 "  [FMM] phase cache needs %.1f MiB, only %.1f MiB "
-                "free after reserve; using on-the-fly phases\n",
+                "free after reserve; %s\n",
                 phase_bytes / (1024.0 * 1024.0),
-                free_bytes / (1024.0 * 1024.0));
+                free_bytes / (1024.0 * 1024.0),
+                request_fp16_l2p_phase_cache
+                    ? "trying FP16 L2P cache"
+                    : "using on-the-fly phases");
+        }
+        if (d_phase_cache_fp32 == nullptr &&
+            request_fp16_l2p_phase_cache) {
+            CUDA_CHECK(cudaMemGetInfo(&free_bytes, &total_bytes));
+            const int fp16_budget_mb = std::max(
+                0, bem_env_int(
+                    "BEM_FMM_L2P_PHASE_CACHE_FP16_MB", 1024));
+            int cached_directions = L;
+            if (fp16_budget_mb > 0) {
+                const size_t budget_bytes =
+                    (size_t)fp16_budget_mb * 1024 * 1024;
+                cached_directions = std::min(
+                    L,
+                    static_cast<int>(
+                        budget_bytes /
+                        ((size_t)Nt * sizeof(__half2))));
+                cached_directions =
+                    (cached_directions / 32) * 32;
+            }
+            const size_t half_phase_bytes =
+                (size_t)Nt * cached_directions * sizeof(__half2);
+            if (cached_directions >= 32 &&
+                half_phase_bytes + reserve_bytes <= free_bytes) {
+                __half2* half_cache = nullptr;
+                const cudaError_t half_error = cudaMalloc(
+                    &half_cache, half_phase_bytes);
+                if (half_error == cudaSuccess) {
+                    d_l2p_phase_cache_fp16 = half_cache;
+                    l2p_phase_cache_fp16_directions =
+                        cached_directions;
+                    build_leaf_phase_cache_fp16_kernel
+                        <<<n_leaves, 256>>>(
+                            d_tgt_pts, d_dirs_cached, k.real(),
+                            half_cache,
+                            d_leaf_idx_cached,
+                            d_tgt_id_offsets_cached,
+                            d_tgt_ids_cached,
+                            d_node_centers_cached,
+                            cached_directions, n_leaves);
+                    CUDA_CHECK(cudaGetLastError());
+                    CUDA_CHECK(cudaDeviceSynchronize());
+                    std::printf(
+                        "  [FMM] FP16 L2P phase cache: %.1f MiB "
+                        "(%d/%d directions)\n",
+                        half_phase_bytes / (1024.0 * 1024.0),
+                        cached_directions, L);
+                } else {
+                    cudaGetLastError();
+                }
+            } else {
+                std::fprintf(
+                    stderr,
+                    "  [FMM] FP16 L2P phase cache needs %.1f MiB, "
+                    "only %.1f MiB free after reserve\n",
+                    half_phase_bytes / (1024.0 * 1024.0),
+                    free_bytes / (1024.0 * 1024.0));
+            }
         }
     }
 
@@ -3900,14 +4099,16 @@ void HelmholtzFMM::run_tree_uploaded(int derivative_order)
         }
 
         // === P2P (potential) ===
-        launch_p2p_potential_leaf(d_tgt_pts, d_src_pts,
-            d_charges_re, d_charges_im,
-            d_tgt_id_offsets_cached, d_tgt_ids_cached,
-            d_src_id_offsets_cached, d_src_ids_cached,
-            d_leaf_near_offsets_cached, d_leaf_near_ids_cached,
-            n_leaves, k.real(), k.imag(),
-            d_result_re, d_result_im);
-        CUDA_CHECK(cudaGetLastError());
+        if (p2p_enabled) {
+            launch_p2p_potential_leaf(d_tgt_pts, d_src_pts,
+                d_charges_re, d_charges_im,
+                d_tgt_id_offsets_cached, d_tgt_ids_cached,
+                d_src_id_offsets_cached, d_src_ids_cached,
+                d_leaf_near_offsets_cached, d_leaf_near_ids_cached,
+                n_leaves, k.real(), k.imag(),
+                d_result_re, d_result_im);
+            CUDA_CHECK(cudaGetLastError());
+        }
     }
     if (derivative_order == 1 || derivative_order == 3) {
         // === L2P (gradient) ===
@@ -3937,14 +4138,17 @@ void HelmholtzFMM::run_tree_uploaded(int derivative_order)
         }
 
         // P2P gradient
-        launch_p2p_gradient_leaf(d_tgt_pts, d_src_pts,
-            d_charges_re, d_charges_im,
-            d_tgt_id_offsets_cached, d_tgt_ids_cached,
-            d_src_id_offsets_cached, d_src_ids_cached,
-            d_leaf_near_offsets_cached, d_leaf_near_ids_cached,
-            n_leaves, k.real(), k.imag(),
-            d_gx_re, d_gx_im, d_gy_re, d_gy_im, d_gz_re, d_gz_im);
-        CUDA_CHECK(cudaGetLastError());
+        if (p2p_enabled) {
+            launch_p2p_gradient_leaf(d_tgt_pts, d_src_pts,
+                d_charges_re, d_charges_im,
+                d_tgt_id_offsets_cached, d_tgt_ids_cached,
+                d_src_id_offsets_cached, d_src_ids_cached,
+                d_leaf_near_offsets_cached, d_leaf_near_ids_cached,
+                n_leaves, k.real(), k.imag(),
+                d_gx_re, d_gx_im, d_gy_re, d_gy_im,
+                d_gz_re, d_gz_im);
+            CUDA_CHECK(cudaGetLastError());
+        }
 
         // Repack gradient on GPU: 6 separate arrays -> interleaved [x0,y0,z0,x1,...]
         // d_gx_re aliases d_grad_re[0..Nt-1], so we need a temp copy of gx
@@ -3981,15 +4185,17 @@ void HelmholtzFMM::run_tree_uploaded(int derivative_order)
                 d_node_centers, L, n_leaves);
             CUDA_CHECK(cudaGetLastError());
         }
-        launch_p2p_hessian_leaf(
-            d_tgt_pts, d_src_pts,
-            d_charges_re, d_charges_im,
-            d_tgt_id_offsets_cached, d_tgt_ids_cached,
-            d_src_id_offsets_cached, d_src_ids_cached,
-            d_leaf_near_offsets_cached, d_leaf_near_ids_cached,
-            n_leaves, k.real(), k.imag(),
-            d_hess_re, d_hess_im);
-        CUDA_CHECK(cudaGetLastError());
+        if (p2p_enabled) {
+            launch_p2p_hessian_leaf(
+                d_tgt_pts, d_src_pts,
+                d_charges_re, d_charges_im,
+                d_tgt_id_offsets_cached, d_tgt_ids_cached,
+                d_src_id_offsets_cached, d_src_ids_cached,
+                d_leaf_near_offsets_cached, d_leaf_near_ids_cached,
+                n_leaves, k.real(), k.imag(),
+                d_hess_re, d_hess_im);
+            CUDA_CHECK(cudaGetLastError());
+        }
     }
 }
 
@@ -4171,29 +4377,31 @@ void HelmholtzFMM::evaluate_grad_hessian_batch3(
     }
     if (profile)
         CUDA_CHECK(cudaEventRecord(profile_events[4]));
-    launch_p2p_grad_hessian_batch3_leaf(
-        d_tgt_pts, d_src_pts,
-        d_charges_re, d_charges_im,
-        d_charges2_re, d_charges2_im,
-        d_charges3_re, d_charges3_im,
-        d_tgt_id_offsets_cached, d_tgt_ids_cached,
-        d_src_id_offsets_cached, d_src_ids_cached,
-        d_leaf_near_offsets_cached, d_leaf_near_ids_cached,
-        n_leaves, k.real(), k.imag(),
-        d_gx_re_tmp_cached, d_gx_im_tmp_cached,
-        d_gy_re_cached, d_gy_im_cached,
-        d_gz_re_cached, d_gz_im_cached,
-        d_gx2_re_tmp_cached, d_gx2_im_tmp_cached,
-        d_gy2_re_cached, d_gy2_im_cached,
-        d_gz2_re_cached, d_gz2_im_cached,
-        d_gx3_re_tmp_cached, d_gx3_im_tmp_cached,
-        d_gy3_re_cached, d_gy3_im_cached,
-        d_gz3_re_cached, d_gz3_im_cached,
-        d_hess_re, d_hess_im,
-        d_hess2_re, d_hess2_im,
-        d_hess3_re, d_hess3_im,
-        near_field_fp32);
-    CUDA_CHECK(cudaGetLastError());
+    if (p2p_enabled) {
+        launch_p2p_grad_hessian_batch3_leaf(
+            d_tgt_pts, d_src_pts,
+            d_charges_re, d_charges_im,
+            d_charges2_re, d_charges2_im,
+            d_charges3_re, d_charges3_im,
+            d_tgt_id_offsets_cached, d_tgt_ids_cached,
+            d_src_id_offsets_cached, d_src_ids_cached,
+            d_leaf_near_offsets_cached, d_leaf_near_ids_cached,
+            n_leaves, k.real(), k.imag(),
+            d_gx_re_tmp_cached, d_gx_im_tmp_cached,
+            d_gy_re_cached, d_gy_im_cached,
+            d_gz_re_cached, d_gz_im_cached,
+            d_gx2_re_tmp_cached, d_gx2_im_tmp_cached,
+            d_gy2_re_cached, d_gy2_im_cached,
+            d_gz2_re_cached, d_gz2_im_cached,
+            d_gx3_re_tmp_cached, d_gx3_im_tmp_cached,
+            d_gy3_re_cached, d_gy3_im_cached,
+            d_gz3_re_cached, d_gz3_im_cached,
+            d_hess_re, d_hess_im,
+            d_hess2_re, d_hess2_im,
+            d_hess3_re, d_hess3_im,
+            near_field_fp32);
+        CUDA_CHECK(cudaGetLastError());
+    }
     if (profile)
         CUDA_CHECK(cudaEventRecord(profile_events[5]));
 
@@ -4359,21 +4567,23 @@ void HelmholtzFMM::evaluate_vector_actions_batch3(
             d_leaf_idx_cached, d_tgt_id_offsets_cached, d_tgt_ids_cached,
             d_node_centers_cached, L, n_leaves);
         CUDA_CHECK(cudaGetLastError());
-        launch_p2p_vector_actions_batch3_leaf(
-            d_tgt_pts, d_src_pts,
-            d_charges_re, d_charges_im,
-            d_charges2_re, d_charges2_im,
-            d_charges3_re, d_charges3_im,
-            d_tgt_id_offsets_cached, d_tgt_ids_cached,
-            d_src_id_offsets_cached, d_src_ids_cached,
-            d_leaf_near_offsets_cached, d_leaf_near_ids_cached,
-            d_leaf_near_source_offsets_cached,
-            d_leaf_near_source_ids_cached,
-            n_leaves, k.real(), k.imag(),
-            d_grad_re, d_grad_im,
-            d_hess_re, d_hess_im,
-            near_field_fp32);
-        CUDA_CHECK(cudaGetLastError());
+        if (p2p_enabled) {
+            launch_p2p_vector_actions_batch3_leaf(
+                d_tgt_pts, d_src_pts,
+                d_charges_re, d_charges_im,
+                d_charges2_re, d_charges2_im,
+                d_charges3_re, d_charges3_im,
+                d_tgt_id_offsets_cached, d_tgt_ids_cached,
+                d_src_id_offsets_cached, d_src_ids_cached,
+                d_leaf_near_offsets_cached, d_leaf_near_ids_cached,
+                d_leaf_near_source_offsets_cached,
+                d_leaf_near_source_ids_cached,
+                n_leaves, k.real(), k.imag(),
+                d_grad_re, d_grad_im,
+                d_hess_re, d_hess_im,
+                near_field_fp32);
+            CUDA_CHECK(cudaGetLastError());
+        }
     }
     if (profile)
         CUDA_CHECK(cudaEventRecord(profile_events[3]));
@@ -5213,16 +5423,65 @@ void HelmholtzFMM::evaluate_vector_actions_pair_batch3_device(
                 d_phase_cache_fp32 != nullptr;
             const bool l2p_fp32 =
                 cache_phase && request_l2p_fp32;
+            const bool l2p_fp16_phase =
+                d_l2p_phase_cache_fp16 != nullptr &&
+                request_l2p_fp32;
             const bool warp_per_target =
-                pair_local_storage_fp32 && l2p_fp32 &&
+                pair_local_storage_fp32 &&
+                (l2p_fp32 || l2p_fp16_phase) &&
                 d_dirs_fp32_cached != nullptr &&
                 d_weights_fp32_cached != nullptr &&
                 bem_env_flag_enabled(
                     "BEM_FMM_L2P_WARP_PER_TARGET",
                     d_l2p_phase_cache_fp32 == nullptr);
-            if (warp_per_target)
-                l2p_vector_actions_pair_batch3_warp_fp32_kernel
+            if (warp_per_target && l2p_fp16_phase)
+                l2p_vector_actions_pair_batch3_warp_fp32_kernel<__half2>
                     <<<n_leaves, l2p_threads>>>(
+                        d_tgt_pts,
+                        d_dirs_fp32_cached,
+                        d_weights_fp32_cached,
+                        static_cast<const __half2*>(
+                            d_l2p_phase_cache_fp16),
+                        d_pair_local_re_fp32,
+                        d_pair_local_im_fp32,
+                        d_pair_local_re_fp32 + 3 * field_stride,
+                        d_pair_local_im_fp32 + 3 * field_stride,
+                        d_pair_local_re_fp32 + 4 * field_stride,
+                        d_pair_local_im_fp32 + 4 * field_stride,
+                        d_pair_local_re_fp32 + 5 * field_stride,
+                        d_pair_local_im_fp32 + 5 * field_stride,
+                        n_nodes * L,
+                        static_cast<float>(
+                            prefactor.real() * ik_val.real() -
+                            prefactor.imag() * ik_val.imag()),
+                        static_cast<float>(
+                            prefactor.real() * ik_val.imag() +
+                            prefactor.imag() * ik_val.real()),
+                        static_cast<float>(
+                            prefactor.real() *
+                                negative_k_squared.real() -
+                            prefactor.imag() *
+                                negative_k_squared.imag()),
+                        static_cast<float>(
+                            prefactor.real() *
+                                negative_k_squared.imag() +
+                            prefactor.imag() *
+                                negative_k_squared.real()),
+                        d_grad_re, d_grad_im,
+                        d_hess_re, d_hess_im,
+                        d_grad2_re, d_grad2_im,
+                        d_hess2_re, d_hess2_im,
+                        d_leaf_idx_cached,
+                        d_tgt_id_offsets_cached,
+                        d_tgt_ids_cached,
+                        d_node_centers_cached,
+                        static_cast<float>(k.real()),
+                        l2p_phase_cache_fp16_directions,
+                        L, n_leaves);
+            else if (warp_per_target)
+                l2p_vector_actions_pair_batch3_warp_fp32_kernel<float2>
+                    <<<n_leaves, l2p_threads>>>(
+                        d_tgt_pts,
                         d_dirs_fp32_cached,
                         d_weights_fp32_cached,
                         d_phase_cache_fp32,
@@ -5258,6 +5517,9 @@ void HelmholtzFMM::evaluate_vector_actions_pair_batch3_device(
                         d_leaf_idx_cached,
                         d_tgt_id_offsets_cached,
                         d_tgt_ids_cached,
+                        d_node_centers_cached,
+                        static_cast<float>(k.real()),
+                        L,
                         L, n_leaves);
             else if (pair_local_storage_fp32 && l2p_fp32 &&
                 d_l2p_phase_cache_fp32 != nullptr &&
@@ -5779,8 +6041,9 @@ void HelmholtzFMM::evaluate_vector_actions_quad_batch3_device(
         if (local_fp32 && d_dirs_fp32_cached != nullptr &&
             d_weights_fp32_cached != nullptr &&
             d_phase_cache_fp32 != nullptr) {
-            l2p_vector_actions_pair_batch3_warp_fp32_kernel
+            l2p_vector_actions_pair_batch3_warp_fp32_kernel<float2>
                 <<<n_leaves, 256>>>(
+                    d_tgt_pts,
                     d_dirs_fp32_cached, d_weights_fp32_cached,
                     d_phase_cache_fp32,
                     d_pair_local_re_fp32 +
@@ -5817,7 +6080,9 @@ void HelmholtzFMM::evaluate_vector_actions_quad_batch3_device(
                     grad_second_re, grad_second_im,
                     hess_second_re, hess_second_im,
                     d_leaf_idx_cached, d_tgt_id_offsets_cached,
-                    d_tgt_ids_cached, L, n_leaves);
+                    d_tgt_ids_cached, d_node_centers_cached,
+                    static_cast<float>(k.real()), L,
+                    L, n_leaves);
         } else {
             l2p_vector_actions_pair_batch3_kernel<
                 false, true, double, double>
@@ -6231,8 +6496,26 @@ void HelmholtzFMM::evaluate_batch3_far_uploaded()
     }
 
     for (int level = 1; level <= tree.max_level; level++) {
-        if (level < (int)m2l_row_level_info.size() &&
-            m2l_row_level_info[level].count > 0) {
+        if (!p2p_enabled) {
+            if (level >= (int)m2l_level_info.size() ||
+                m2l_level_info[level].count <= 0)
+                continue;
+            const int offset = m2l_level_info[level].offset;
+            const int count = m2l_level_info[level].count;
+            m2l_kernel_batch3_atomic<<<count, block_L>>>(
+                d_m2l_tgt, d_m2l_src, d_m2l_tidx,
+                d_transfer_re, d_transfer_im,
+                d_multi_re, d_multi_im,
+                d_multi2_re, d_multi2_im,
+                d_multi3_re, d_multi3_im,
+                d_local_re, d_local_im,
+                d_local2_re, d_local2_im,
+                d_local3_re, d_local3_im,
+                L, count, offset);
+        } else {
+            if (level >= (int)m2l_row_level_info.size() ||
+                m2l_row_level_info[level].count <= 0)
+                continue;
             const int offset = m2l_row_level_info[level].offset;
             const int count = m2l_row_level_info[level].count;
             m2l_kernel_batch3_target_rows<<<count, block_L>>>(
@@ -6246,8 +6529,8 @@ void HelmholtzFMM::evaluate_batch3_far_uploaded()
                 d_local2_re, d_local2_im,
                 d_local3_re, d_local3_im,
                 L, count, offset);
-            CUDA_CHECK(cudaGetLastError());
         }
+        CUDA_CHECK(cudaGetLastError());
     }
 
     for (int level = 2; level <= tree.max_level; level++) {
@@ -6659,6 +6942,7 @@ void HelmholtzFMM::cleanup()
     cudaFree(d_dirs_fp32_cached); cudaFree(d_weights_fp32_cached);
     cudaFree(d_phase_cache_fp32);
     cudaFree(d_l2p_phase_cache_fp32);
+    cudaFree(d_l2p_phase_cache_fp16);
     cudaFree(d_p2p_offsets); cudaFree(d_p2p_indices);
     cudaFree(d_multi_re); cudaFree(d_multi_im);
     cudaFree(d_local_re); cudaFree(d_local_im);
@@ -6796,6 +7080,8 @@ void HelmholtzFMM::cleanup()
     d_weights_fp32_cached = nullptr;
     d_phase_cache_fp32 = nullptr;
     d_l2p_phase_cache_fp32 = nullptr;
+    d_l2p_phase_cache_fp16 = nullptr;
+    l2p_phase_cache_fp16_directions = 0;
     d_m2l_row_target = nullptr;
     d_m2l_row_start = nullptr;
     d_m2l_row_end = nullptr;

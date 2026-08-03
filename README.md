@@ -63,17 +63,25 @@ conversion, toolchain detection, and automated tests.
 
 The recommended entry point is `./bem`. It chooses the surface refinement,
 precision, solver, quadrature, cache paths, checkpoint paths, and output names
-from one of three reviewed profiles. A normal prism calculation needs only:
+from one of five reviewed profiles. A normal prism calculation needs only:
 
 ```bash
 ./bem run --shape prism --ka 25 --ri 1.3
 ```
 
 The default `standard` profile targets a `1e-5` true residual, computes both
-incident polarizations, and writes the complete Mueller matrix. It uses the
-stable mixed-precision FMM+MBJ path for `ka<10` and automatically enables the
-faster nested pFFT-FGMRES path for `ka>=10`, where it has been validated on
-normal and large meshes. The executable is built automatically when absent.
+incident polarizations, and writes the complete Mueller matrix. It evaluates
+the L2P stage and restart residuals in FP64 while retaining mixed precision in
+the remaining FMM work. Redundant phase and flattened near-source performance
+caches are disabled by default after validation showed a 25.6% memory saving
+without a measurable wall-time penalty. It uses
+FMM+MBJ for `ka<10` and automatically enables the faster nested pFFT-FGMRES
+path for `ka>=10`. The executable is built automatically when absent.
+For this nested path, the loose inner pFFT solve trusts its projected residual,
+while convergence is accepted only from the independently recomputed outer
+FMM residual. The default outer restart is 40.
+The inner tolerance is `0.04` below 500000 unknowns and `0.08` for larger
+systems; `--pfft-inner-tol` remains an explicit override.
 
 Use the same interface for orientation averaging:
 
@@ -85,7 +93,10 @@ Use the same interface for orientation averaging:
 Beta/gamma refinement is adaptive by default in every quality profile. The
 solver increases a nested angular level until the Mueller curve, its integral,
 and the normalized matrix components meet the profile tolerances. For a
-regular prism, its rotational symmetry is selected automatically. Supplying
+regular prism or cube, both axial rotational symmetry and exact dihedral
+beta-mirror reuse are selected automatically when the uniform alpha count is
+even. The full quadrature and its weights are preserved, but only one member
+of each equivalent orientation pair is solved. Supplying
 `--beta` or `--gamma`, or using `--fixed-grid`, deliberately selects the old
 fixed-grid mode.
 
@@ -93,12 +104,119 @@ The available quality levels are:
 
 | Profile | Intended use | Numerical and angular control |
 |---|---|---|
-| `quick` | exploratory runs only | mixed precision, residual `1e-3`, at least `ref=2`, adaptive `J=1..3` |
-| `standard` | normal calculations | mixed precision, adaptive pFFT, residual `1e-5`, adaptive `J=2..4` |
+| `preview` | historical rapid inspection of the `ka=80`, `m=1.3`, `ref=6` regular prism | projected-residual output only; its former reference used the withdrawn uniform high-frequency FMM operator, so use `physical-fast` for a checked result |
+| `physical-fast` | physically validated `ka=60/80/111`, `m=1.3`, `ref=6` regular-prism result | three preview steps followed by accurate banded-FMM corrections; residual target `4e-3` and 181 angles |
+| `quick` | exploratory runs only | mixed precision, residual `1e-3`, 181 scattering angles; adaptive two-stage fixed-orientation path for sufficiently large built-in meshes |
+| `standard` | normal calculations | mixed precision, residual `1e-5`; the automatic two-stage path does not relax this target |
+| `memory` | standard-accuracy runs near the GPU-memory limit | same residual as `standard`; sequential electric/magnetic FMM currents reduce peak memory |
 | `strict` | publication control | FP64, residual `1e-6`, adaptive `J=2..5`, two successive meshes |
+
+The case-specific preview is intentionally separate from `quick` and
+`standard`: it is not a residual-converged result and is rejected for any
+unvalidated geometry or parameters. Its historical 34.44 s validation used
+the now-withdrawn uniform high-frequency FMM result as the reference. Do not
+use the former `0.388%` difference as a current accuracy claim; the checked
+replacement is `physical-fast` below.
+
+```bash
+./bem run --shape prism --ka 80 --ri 1.3 --quality preview
+```
+
+For the physically validated fast result rather than a projected-residual
+preview, run the complete two-stage pipeline with one command:
+
+```bash
+./bem run --shape prism --sides 6 --aspect 1 --ka 80 --ri 1.3 \
+  --ref 6 --quality physical-fast --out runs/prism_ka80_physical_fast
+```
+
+The measured cold pipeline took 282.54 s including cache construction, versus
+3285.48 s for the saved ADDA-OCL FP32 `dpl=15` calculation: `11.63x` less wall
+time. This acceptance is based on the directly validated Mueller matrix; the
+final exact-operator residual is `3.424e-3`, not `1e-5`.
+
+The same `physical-fast` command is validated at `ka=60` and `ka=111` with
+the other parameters unchanged. The measured cold speedups over the saved
+ADDA-OCL FP32 `dpl=15` runs are `4.13x`, `11.67x`, and `34.01x` at
+`ka=60`, `80`, and `111`, respectively. At `ka=111`, `ref=6` has only 5.25
+nodes per internal wavelength and differs from ADDA by 2.79%; use a finer
+mesh when 1% physical agreement is required.
+
+For fixed-orientation `./bem run`, `quick`, `standard`, and `memory` select
+two-stage checkpoint migration on built-in sphere, cube, and prism meshes
+when `ka>=60`, `ref>=4`, the estimated system has at least 100,000 unknowns,
+and no expert pFFT hierarchy override was supplied. Split depth and leaf sizes
+are derived from refinement and electrical density rather than a table of
+three `ka` values. Each profile keeps its own final residual target. Pass
+`--single-stage` for a diagnostic control using the previous solver path.
+
+`./bem average` deliberately keeps the paired GPU-GMRES path. The geometry,
+operator, MBJ factors, and GPU far-field buffers are constructed once and
+reused for every base orientation; completed orientations are checkpointed
+atomically. A banded-pFFT alternative was tested at `ka=20` and `ka=60`, but
+was respectively `1.05x` and `1.80x` slower in total wall time, so it is not
+selected automatically.
+
+An end-to-end cold `quick` check at `ka=60` completed in 169.58 s, reached a
+verified `6.851e-4` residual, and was `6.00x` faster than the saved ADDA run.
+Its normalized Mueller matrix differed from the quadrature-7 physical-fast
+result by `0.0131%`. A separate `standard` continuation reached `8.429e-6`;
+its normalized Mueller difference from the strict BEM result was `3.28e-8`.
+
+The first invocation builds reusable case caches under
+`~/.cache/bem-cpp/preview_prism_ka80_m1p3_ref6`; later output directories reuse
+them. Set `BEM_CACHE_DIR` to relocate this cache. Use `standard` or `strict`
+when a verified FMM residual or publication result is required.
+
+A separate fixed-`ref=6`, `m=1.3` study checked the same strategy at
+`ka=20,30,60,80,111`. The first four cases remained below 1% full-Mueller
+difference in 15.76--34.44 s. The three-step `ka=111` candidate was rejected
+at 45.7% error, so the launcher does not extrapolate `preview` to that size.
+See `runs/preview_size_sweep_20260803/preview_size_sweep.pdf` and regenerate it
+with `scripts/report_preview_size_sweep.py`.
+
+Use the memory-saving profile without changing the discretization or target
+residual:
+
+```bash
+./bem run --shape prism --ka 60 --ri 1.3 --quality memory --ref 6
+```
+
+On the completed `ka=20, ref=5` control, the new `standard` reduced peak
+allocation from the former cached value of 5272 MiB to 3924 MiB (25.6%) with
+no measurable wall-time penalty. `memory` reduced it further to 2724 MiB:
+30.6% below the new default and 48.3% below the former default. Its full wall
+time was only 1.142x the new `standard` time. The normalized full-Mueller
+difference was `2.261e-12`. The exact FMM operator, pFFT inner operator, MBJ
+factors, quadrature, and FP64 true-residual check remain unchanged.
+For `ka=60, ref=6`, the launcher estimates about 15.34 GiB for the new
+`standard` policy and 12.02 GiB for `memory`; these estimates are conservative
+and the actual allocation depends on the FMM tree.
+It cannot make a mesh whose irreducible operator storage exceeds GPU memory
+fit; in particular, automatic `ref=7` at `ka=60` remains too large for 24 GiB.
+Before starting, `bem` compares the estimate with both total and currently
+free VRAM. Sequential-current plans may use up to 92% of total memory while
+retaining a 0.75 GiB free-memory reserve; other plans use an 85% ceiling. It
+also checks free disk space for two simultaneous checkpoint images, because
+atomic replacement briefly retains the old and new files.
 
 Measured cross-profile accuracy and cold-start timings are documented in
 [Quality-profile validation](docs/quality_profiles.md).
+
+Reproduce the expanded orientation matrix (multiple shapes, sizes, and
+refractive indices) and rebuild its JSON/CSV/Markdown/PNG report with:
+
+```bash
+scripts/validate_orientation_profiles.py run --keep-going
+scripts/validate_orientation_profiles.py report
+```
+
+Completed cases are skipped on restart. Failed stress controls remain marked
+as failures and are excluded from cross-profile accuracy comparisons.
+
+For orientation averages with `m>=2.5`, `standard` also selects MBJ100. This
+is based on the eight-sided-prism stress control; MBJ50 remains selected below
+that threshold because MBJ100 did not improve the `m=2` cube.
 
 Inspect the presets or the exact planned command without running it:
 
@@ -109,7 +227,8 @@ Inspect the presets or the exact planned command without running it:
 ```
 
 Each output directory contains `effective_config.json`, executable
-`command.sh`, `run.log`, `result.json`, and `validation.json`. Interrupted
+`command.sh`, `run.log`, `execution_state.json`, `result.json`, and
+`validation.json`. Interrupted
 work is resumed with the directory printed at startup:
 
 ```bash
@@ -124,10 +243,12 @@ size is unknown. The launcher refuses an estimated GPU allocation above 85%
 of available memory unless the expert override `--allow-memory-risk` is given.
 
 For a built-in shape the initial level is
-`ceil(log2(P * ka * L0 / (2*pi)))`, bounded by the profile minimum. Here `P`
-is the target points per exterior wavelength and `L0` is the longest initial
-edge scale. Thus `ref` grows logarithmically with particle size, while the
-number of surface elements grows by approximately four per added level.
+`ceil(log2(P * ka * L0 * max(1, |m|) / (2*pi)))`, bounded by the profile
+minimum. Here `P` is the target points per shortest wavelength, `m` is the
+relative refractive index, and `L0` is the longest initial edge scale. For
+`|m|>1`, the shortest wavelength is the internal wavelength. Thus `ref` grows
+logarithmically with both particle size and refractive index, while the number
+of surface elements grows by approximately four per added level.
 Override the target with `--points-per-wavelength`; an explicit `--ref` always
 wins. The `strict` profile then adds a second calculation at `ref+1`.
 
@@ -189,10 +310,11 @@ OMP_NUM_THREADS=16 bin/muller_nodal_fmm_demo_fp32 \
   --mbj-cache runs/prism_ka25_ref5/mbj50.cache \
   --pfft-fgmres \
   --pfft-inner-tol 4e-2 --pfft-inner-iters auto \
-  --pfft-outer-restart 32 \
+  --pfft-outer-restart 40 \
   --pfft-order 2 --pfft-correction-radius 0 \
   --pfft-grid-safety 1 \
   --physical-check --ntheta 181 \
+  --cyclic-polarization --cyclic-exact-geometry \
   --no-dense-validation \
   --iteration-log runs/prism_ka25_ref5/iterations.csv \
   --out runs/prism_ka25_ref5/result.json
@@ -202,6 +324,20 @@ The output path also defines the default checkpoint prefix. Repeating the
 same command resumes compatible interrupted solves. Operator, geometry,
 material, precision, and right-hand-side signatures are checked before a
 checkpoint is accepted.
+
+The public `./bem run` launcher adds the three cyclic-polarization flags
+automatically for a built-in regular prism in `quick`, `standard`, and
+`memory` modes. Use `--independent-polarizations` for an explicit two-solve
+control. The `strict` profile always uses independent polarizations.
+
+An earlier benchmark claimed 255.56 s and a `9.26e-6` residual for this
+`ka=80`, `m=1.3`, `ref=6` prism. That residual belonged to the old uniform FMM
+operator. Rechecking its checkpoint with the corrected high-frequency
+two-band operator gave `1.24e-1`, so the old `9.90x` BEM and `12.86x` ADDA
+claims are withdrawn. The reproducible replacement is the `physical-fast`
+profile above: 282.54 s cold, `3.424e-3` exact-operator residual, and a directly
+measured `0.00778%` weighted full-Mueller difference from the strict BEM
+reference.
 
 Use `--no-checkpoint` only for disposable benchmarks. Do not use
 `--allow-checkpoint-migration` unless an intentionally changed operator is
@@ -215,8 +351,9 @@ without changing the iterative operator or the converged result.
 
 ## Orientation Averaging
 
-The recommended adaptive calculation uses the same three quality profiles as
-a single-orientation run:
+The recommended adaptive calculation uses the four general-purpose profiles
+(`quick`, `standard`, `memory`, and `strict`). The case-specific `preview`
+profile does not support orientation averaging:
 
 ```bash
 ./bem average --shape prism --ka 25 --ri 1.3 \
@@ -309,10 +446,12 @@ range.
 `--fmm-near-fp32` enables them explicitly in a compatible build.
 
 `BEM_MIXED_ITERATIVE_REFINEMENT=1` recomputes restart residuals with the full
-FP64 FMM operator and uses the mixed operator only for Krylov corrections. It
-is a validation/recovery mode: on the tested `ka=20` prism it increased solve
-time from 9.844 s to 17.204 s. Its dedicated FP64 pair buffers reduce strict
-residual cost but are allocated only in this mode. `BEM_FMM_FOUR_FIELD=1`
+FP64 FMM operator and uses the mixed operator only for Krylov corrections.
+The `standard` orientation profile enables it automatically together with
+FP64 L2P evaluation; this avoids the approximately `2e-5` residual floor seen
+with FP32 L2P on sharp meshes. On the tested `ka=20` prism, refinement
+increased solve time from 9.844 s to 17.204 s. Its dedicated FP64 pair buffers
+are allocated only in this mode. `BEM_FMM_FOUR_FIELD=1`
 enables the experimental joint 12-channel FMM traversal for both
 polarizations. Splitting its M2L accumulation into two six-channel launches
 reduced register pressure, but it was still 6% slower on the `ka=20` prism, so
@@ -344,7 +483,7 @@ enables an FP32 phase cache, direct FP32 multipole and M2L-transfer storage,
 FP32 local-expansion storage through M2L/L2L, and FP32 accumulation in the
 paired P2M, M2L, and L2P stages. It precomputes a balanced near-source index
 cache and uses 32 blocks per target leaf; it also keeps a direction-major L2P
-phase copy when memory permits. Assembled operator outputs, Krylov vectors,
+phase copy when FP32 L2P is active and memory permits. Assembled operator outputs, Krylov vectors,
 MBJ factors, and residual norms remain FP64. The controls
 `BEM_FMM_PHASE_CACHE=0`, `BEM_FMM_M2L_STORAGE_FP32=0`,
 `BEM_FMM_MULTI_STORAGE_FP32=0`, `BEM_FMM_LOCAL_STORAGE_FP32=0`,
@@ -364,6 +503,17 @@ memory-rich transposed path. Force it with
 Both caches have automatic memory fallbacks. On Shape A at `ka=40, ref=3`,
 the complete depth-5 action decreased from 2.279 s to 0.398 s (`5.73x`);
 the final mixed operator differed from dense assembly by `2.306e-6`.
+
+When no complete phase table fits, set
+`BEM_FMM_L2P_PHASE_CACHE_FP16=1` and cap each medium with
+`BEM_FMM_L2P_PHASE_CACHE_FP16_MB=1024`. Only that cached part of L2P phases is
+stored in FP16; uncached phases, local coefficients, accumulation, and
+operator outputs keep their normal precision. At `ka=111, ref=6`, two 919 MiB
+partial tables reduced a three-step wall time from 36.87 s to 30.61 s and
+changed the full Mueller matrix by only `9.21e-4%`.
+`BEM_FMM_STRICT_PAIR_WORKSPACE=0` avoids eagerly reserving the paired FP64
+restart workspace on memory-bound refinement runs; strict residuals then
+evaluate the currents sequentially.
 
 For orientation averaging on the same `ref=3` geometry, paired GPU GMRES
 reduced a fixed ten-step two-polarization solve from 8.780 s to 8.226 s
@@ -393,6 +543,44 @@ validated depth-6 configuration, set `BEM_FMM_ALLOW_DEPTH6=1` and use
 `--max-leaf 16`; the driver automatically preserves the depth-5 expansion
 order. Native depth-6 orders were rejected because they changed the tested
 operator by about 2%.
+
+At very large `ka`, one global plane-wave order can also under-resolve coarse
+tree levels. On the `ka=111`, `m=1.3`, `ref=6` prism, the exact-C6 operator
+commutator was `7.58e-2` at depth 5 and `7.12e-6` in a depth-3
+`--max-leaf 4096` control. FP64 did not improve the depth-5 value. Use
+`--symmetry-operator-check-only` before interpreting a high-frequency
+symmetric run as strict; `fmm_expansion` in the JSON reports the actual depth,
+order, and direction count for both media. The depth-3 control is case-specific;
+large leaves also make the direct near field expensive.
+
+For diagnosis, `BEM_FMM_ORDER_REFERENCE_DEPTH=3` can retain a deeper tree
+while applying the order required by a depth-3 box. On the same `ka=111` case
+this reduced the commutator to `1.83e-5`, but consumed about 21.7 GiB before
+GPU operator assembly and therefore is not a production 24 GiB setting.
+
+An experimental memory-efficient alternative partitions the existing FMM
+interaction list by tree level. Fine interactions and the direct near field
+remain on the depth-5 tree, level 4 uses a depth-4 tree, and levels 1--3 use a
+depth-3 tree. Each band therefore stores only the angular order required by
+its box size; the three actions are added without interpolating expansion
+coefficients. On the same `ka=111, ref=6` prism this reduced the C6 commutator
+to `2.23e-6`. The fused three-field implementation used 12426 MiB after setup
+and evaluated the two commutator actions in 70.97 s, `3.30x` faster than the
+strict scalar-band control at 233.89 s. Enable the validated layout with:
+
+```bash
+BEM_FMM_BANDED_SPLIT_DEPTH=3 \
+BEM_FMM_BANDED_COARSE_MAX_LEAF=4096 \
+BEM_FMM_BANDED_MIDDLE_MAX_LEAF=512 \
+BEM_FMM_PAIR_CURRENTS=0 BEM_MULLER_GPU_ASSEMBLY=0 \
+bin/muller_nodal_fmm_demo_fp32 [normal solver options]
+```
+
+The split depths must match the generated fine, middle, and coarse trees; the
+program rejects inconsistent settings. The fused no-P2P bands were checked
+against both the scalar-band implementation and a small dense operator. The
+launcher now selects the measured layouts automatically only inside the
+validated fixed-prism envelope described above.
 
 For a tested low-contrast `ka=20, m=1.3` prism, the explicitly selected
 combination `--fmm-near-radius 2 --digits 6` reduced a three-step `ref=2`
@@ -446,11 +634,15 @@ global `--ref` required to resolve the wavelength.
 | `--checkpoint FILE` | override the default checkpoint prefix |
 | `--setup-only` | build operators and report memory without solving |
 | `--physical-check` | compute both polarizations and Mueller observables |
+| `--cyclic-polarization --cyclic-exact-geometry` | build a rotational candidate for the second polarization, verify its operator residual, and correct it when required |
+| `--trust-cyclic-exact-geometry` | experimental diagnostic only: skip that residual check; unsafe for production physics because an exact RHS mapping does not guarantee a commuting discrete operator |
+| `--symmetry-operator-check-only` | measure `||AT-TA||/||AT||` without a solve for a declared polarization symmetry |
+| `--symmetry-checkpoint FILE` | also test a saved solution and its symmetry-reconstructed polarization |
 | `--ntheta N` | scattering-angle sample count |
 
-The Muller research executable currently has no generated `--help` page.
-Unknown flags are not a substitute for documentation; use this README,
-[`MANUAL.md`](MANUAL.md), and the maintained wrapper scripts.
+The Muller research executable provides a concise `--help` page. Use this
+README and [`MANUAL.md`](MANUAL.md) for the numerical assumptions behind the
+options.
 
 ## Legacy PMCHWT Path
 

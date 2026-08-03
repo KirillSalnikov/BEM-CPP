@@ -62,7 +62,13 @@ void print_usage(const char* program)
         "  --quad 4|7|13 --duffy-order N   Surface quadrature controls\n"
         "  --mbj-only --mbj-nodes N        Use the MBJ-preconditioned solve only\n"
         "  --pfft-fgmres                   Use pFFT as an inner FGMRES operator\n"
+        "  --trust-final-projected-residual  Skip the final FMM check in fixed-step runs\n"
         "  --physical-check --ntheta N     Solve both polarizations and far field\n\n"
+        "  --cyclic-polarization           Reconstruct the second polarization\n"
+        "  --cyclic-exact-geometry         Verify cyclic reconstruction with FMM\n"
+        "  --trust-cyclic-exact-geometry   Accept exact mesh symmetry after checks\n"
+        "  --symmetry-operator-check       Measure ||AT-TA|| for the declared symmetry\n"
+        "  --symmetry-operator-check-only  Run the commutator diagnostic without a solve\n"
         "Orientation averaging:\n"
         "  --orient-average NA NB NG       Uniform Euler-angle grid\n"
         "  --orient-adaptive JMIN JMAX     Nested beta/gamma convergence levels\n"
@@ -72,6 +78,7 @@ void print_usage(const char* program)
         "  --orient-parts-dir DIRECTORY    Lossless adaptive restart samples\n"
         "  --orient-file FILE              Explicit orientation list\n"
         "  --orient-symmetry-order N       Declared exact rotational symmetry\n"
+        "  --orient-dihedral-symmetry      Reuse prism/cube beta-mirror samples\n"
         "  --orient-recycle-rank N         Cross-orientation recycling rank\n\n"
         "Persistence and output:\n"
         "  --out FILE                      Result JSON path\n"
@@ -80,6 +87,7 @@ void print_usage(const char* program)
         "  --near-correction-cache FILE    Exact local-correction cache\n"
         "  --mbj-cache FILE                MBJ factor cache\n"
         "  --iteration-log FILE            Per-iteration CSV log\n"
+        "  --symmetry-checkpoint FILE      Check a saved solution with the symmetry diagnostic\n"
         "  --setup-only                    Build operators without solving\n\n"
         "General:\n"
         "  -h, --help                      Show this help and exit\n"
@@ -197,6 +205,7 @@ struct GmresResult {
     double initial_operator_residual = 1.0;
     double projected_residual = 1.0;
     double operator_residual = 1.0;
+    bool operator_residual_verified = true;
     double seconds = 0.0;
     double recycle_seconds = 0.0;
     std::vector<cdouble> solution;
@@ -1332,7 +1341,8 @@ GmresResult solve_gmres(
         const std::vector<cdouble>&,
         std::vector<cdouble>&)>* recycle_base_transform = nullptr,
     const SolverCheckpointOptions& checkpoint =
-        SolverCheckpointOptions())
+        SolverCheckpointOptions(),
+    bool trust_final_projected_residual = false)
 {
     const auto start = std::chrono::steady_clock::now();
     const int maximum = std::min(n, maximum_iterations);
@@ -1598,28 +1608,44 @@ GmresResult solve_gmres(
         for (int i = 0; i < n; i++)
             result.solution[i] += preconditioned[i];
 
-        const auto exact_matvec_start =
-            std::chrono::steady_clock::now();
-        matvec(result.solution.data(), work.data());
-        const double exact_matvec_seconds =
-            std::chrono::duration<double>(
-                std::chrono::steady_clock::now() -
-                exact_matvec_start).count();
+        const bool accept_projected_residual =
+            trust_final_projected_residual &&
+            (projected_relative < tolerance ||
+             total_iterations >= maximum);
+        double exact_matvec_seconds = 0.0;
+        if (accept_projected_residual) {
+            operator_relative = projected_relative;
+        } else {
+            const auto exact_matvec_start =
+                std::chrono::steady_clock::now();
+            matvec(result.solution.data(), work.data());
+            exact_matvec_seconds =
+                std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() -
+                    exact_matvec_start).count();
 #pragma omp parallel for schedule(static)
-        for (int i = 0; i < n; i++)
-            residual[i] = rhs[i] - work[i];
-        operator_relative = norm(residual.data(), n) / rhs_norm;
+            for (int i = 0; i < n; i++)
+                residual[i] = rhs[i] - work[i];
+            operator_relative = norm(residual.data(), n) / rhs_norm;
+        }
         final_cycle_iterations = cycle_iterations;
         log_iteration(
             label, "cycle", total_iterations, projected_relative,
             operator_relative, exact_matvec_seconds, 0.0, 0.0,
             std::chrono::duration<double>(
                 std::chrono::steady_clock::now() - start).count());
-        std::printf(
-            "  [%s %d] exact operator residual %.3e; "
-            "verification matvec %.3fs\n",
-            label, total_iterations, operator_relative,
-            exact_matvec_seconds);
+        if (accept_projected_residual) {
+            std::printf(
+                "  [%s %d] projected residual accepted for "
+                "inner solve %.3e\n",
+                label, total_iterations, operator_relative);
+        } else {
+            std::printf(
+                "  [%s %d] exact operator residual %.3e; "
+                "verification matvec %.3fs\n",
+                label, total_iterations, operator_relative,
+                exact_matvec_seconds);
+        }
         save_solver_checkpoint(
             checkpoint, rhs_hash, total_iterations,
             operator_relative, result.solution);
@@ -1720,7 +1746,9 @@ GmresResult solve_flexible_gmres(
         const std::vector<cdouble>&,
         std::vector<cdouble>&)>* recycle_transform = nullptr,
     const SolverCheckpointOptions& checkpoint =
-        SolverCheckpointOptions())
+        SolverCheckpointOptions(),
+    const Matvec* verification_matvec = nullptr,
+    bool trust_final_projected_residual = false)
 {
     const auto start = std::chrono::steady_clock::now();
     const int maximum = std::min(n, maximum_iterations);
@@ -1740,6 +1768,15 @@ GmresResult solve_flexible_gmres(
     std::vector<cdouble> work(n), residual(n);
     const double rhs_norm = std::max(norm(rhs, n), 1.0e-300);
     const std::uint64_t rhs_hash = vector_hash(rhs, n);
+    const Matvec& residual_matvec =
+        verification_matvec != nullptr
+            ? *verification_matvec : matvec;
+    // A cheap mixed operator can slightly underpredict the independently
+    // verified residual.  A small safety margin usually avoids an entire
+    // extra restart and its expensive FP64 verification action.
+    const double projected_tolerance =
+        verification_matvec != nullptr
+            ? 0.9 * tolerance : tolerance;
 
     GmresResult result;
     std::vector<cdouble> checkpoint_solution;
@@ -1755,7 +1792,7 @@ GmresResult solve_flexible_gmres(
             throw std::invalid_argument(
                 "FGMRES initial guess has the wrong size");
         result.solution = *starting_guess;
-        matvec(result.solution.data(), work.data());
+        residual_matvec(result.solution.data(), work.data());
 #pragma omp parallel for schedule(static)
         for (int i = 0; i < n; i++)
             residual[i] = rhs[i] - work[i];
@@ -1949,7 +1986,7 @@ GmresResult solve_flexible_gmres(
                     label, total_iterations);
                 std::fflush(stdout);
             }
-            if (projected_relative < tolerance)
+            if (projected_relative < projected_tolerance)
                 break;
         }
 
@@ -1969,20 +2006,37 @@ GmresResult solve_flexible_gmres(
             result.solution[i] += update;
         }
 
-        matvec(result.solution.data(), work.data());
+        const bool accept_projected_residual =
+            trust_final_projected_residual &&
+            (projected_relative < projected_tolerance ||
+             total_iterations >= maximum);
+        if (accept_projected_residual) {
+            operator_relative = projected_relative;
+            result.operator_residual_verified = false;
+        } else {
+            residual_matvec(result.solution.data(), work.data());
 #pragma omp parallel for schedule(static)
-        for (int i = 0; i < n; i++)
-            residual[i] = rhs[i] - work[i];
-        operator_relative = norm(residual.data(), n) / rhs_norm;
+            for (int i = 0; i < n; i++)
+                residual[i] = rhs[i] - work[i];
+            operator_relative = norm(residual.data(), n) / rhs_norm;
+            result.operator_residual_verified = true;
+        }
         final_cycle_iterations = cycle_iterations;
         log_iteration(
             label, "cycle", total_iterations, projected_relative,
             operator_relative, 0.0, 0.0, 0.0,
             std::chrono::duration<double>(
                 std::chrono::steady_clock::now() - start).count());
-        std::printf(
-            "  [%s %d] exact operator residual %.3e\n",
-            label, total_iterations, operator_relative);
+        if (result.operator_residual_verified) {
+            std::printf(
+                "  [%s %d] exact operator residual %.3e\n",
+                label, total_iterations, operator_relative);
+        } else {
+            std::printf(
+                "  [%s %d] accepted projected residual %.3e "
+                "without final operator verification\n",
+                label, total_iterations, operator_relative);
+        }
         save_solver_checkpoint(
             checkpoint, rhs_hash, total_iterations,
             operator_relative, result.solution);
@@ -2002,7 +2056,7 @@ GmresResult solve_flexible_gmres(
         std::vector<cdouble> transformed(n);
         if (recycle_transform) {
             (*recycle_transform)(result.solution, *recycle_guess);
-            matvec(recycle_guess->data(), work.data());
+            residual_matvec(recycle_guess->data(), work.data());
 #pragma omp parallel for schedule(static)
             for (int i = 0; i < n; i++)
                 residual[i] = recycle_rhs[i] - work[i];
@@ -2092,6 +2146,68 @@ double dense_residual(
         rhs_squared += std::norm(rhs[row]);
     }
     return std::sqrt(residual_squared / rhs_squared);
+}
+
+double symmetry_operator_commutator(
+    const Matvec& matvec,
+    const std::function<void(
+        const std::vector<cdouble>&,
+        std::vector<cdouble>&)>& transform,
+    int size)
+{
+    std::vector<cdouble> probe(size);
+    for (int i = 0; i < size; i++) {
+        const double index = static_cast<double>(i + 1);
+        probe[i] = cdouble(
+            std::sin(0.013 * index) + 0.25 * std::cos(0.031 * index),
+            std::cos(0.017 * index) - 0.20 * std::sin(0.029 * index));
+    }
+
+    std::vector<cdouble> transformed_probe;
+    std::vector<cdouble> transformed_action;
+    std::vector<cdouble> action_probe(size);
+    std::vector<cdouble> action_transformed(size);
+    transform(probe, transformed_probe);
+    matvec(probe.data(), action_probe.data());
+    matvec(transformed_probe.data(), action_transformed.data());
+    transform(action_probe, transformed_action);
+
+    double difference_squared = 0.0;
+    double reference_squared = 0.0;
+    for (int i = 0; i < size; i++) {
+        difference_squared += std::norm(
+            action_transformed[i] - transformed_action[i]);
+        reference_squared += std::norm(action_transformed[i]);
+    }
+    return std::sqrt(
+        difference_squared / std::max(reference_squared, 1.0e-300));
+}
+
+double relative_operator_probe_difference(
+    const Matvec& first, const Matvec& reference, int size)
+{
+    std::vector<cdouble> probe(size);
+    for (int i = 0; i < size; i++) {
+        const double index = static_cast<double>(i + 1);
+        probe[i] = cdouble(
+            std::sin(0.013 * index) +
+                0.25 * std::cos(0.031 * index),
+            std::cos(0.017 * index) -
+                0.20 * std::sin(0.029 * index));
+    }
+    std::vector<cdouble> first_action(size);
+    std::vector<cdouble> reference_action(size);
+    first(probe.data(), first_action.data());
+    reference(probe.data(), reference_action.data());
+    double difference_squared = 0.0;
+    double reference_squared = 0.0;
+    for (int i = 0; i < size; i++) {
+        difference_squared += std::norm(
+            first_action[i] - reference_action[i]);
+        reference_squared += std::norm(reference_action[i]);
+    }
+    return std::sqrt(
+        difference_squared / std::max(reference_squared, 1.0e-300));
 }
 
 struct AveragingOrientation {
@@ -2307,6 +2423,7 @@ void build_nested_orientation_schedule(
     int minimum_level,
     int maximum_level,
     int symmetry_order,
+    bool dihedral_symmetry,
     std::vector<AveragingOrientation>& schedule,
     std::vector<NestedOrientationLevel>& levels)
 {
@@ -2320,9 +2437,21 @@ void build_nested_orientation_schedule(
             level, maximum_level, symmetry_order);
         std::vector<AveragingOrientation> additions;
         for (AveragingOrientation& orientation : entry.quadrature) {
-            orientation.persistent_index =
+            const int direct_index =
                 orientation.beta_master_index * master_gamma +
                 orientation.gamma_master_index;
+            orientation.persistent_index = direct_index;
+            if (dihedral_symmetry) {
+                const int mirrored_beta =
+                    master_gamma - orientation.beta_master_index;
+                const int mirrored_gamma =
+                    (master_gamma - orientation.gamma_master_index) %
+                    master_gamma;
+                const int mirrored_index =
+                    mirrored_beta * master_gamma + mirrored_gamma;
+                orientation.persistent_index =
+                    std::min(direct_index, mirrored_index);
+            }
             if (scheduled.emplace(
                     orientation.persistent_index,
                     schedule.size() + additions.size()).second)
@@ -2820,6 +2949,7 @@ int run_orientation_average(
     int beta_count,
     int gamma_count,
     int symmetry_order,
+    bool dihedral_symmetry,
     bool warm_start,
     double warm_start_max_angle_degrees,
     int recycle_rank,
@@ -2875,7 +3005,9 @@ int run_orientation_average(
                     pfft_action, inner_rhs, fmm.system_dofs,
                     pfft_inner_tolerance, pfft_inner_iterations,
                     pfft_inner_iterations, &mbj,
-                    "orient-pFFT-inner");
+                    "orient-pFFT-inner",
+                    nullptr, nullptr, nullptr, nullptr,
+                    SolverCheckpointOptions(), true);
                 std::copy(
                     inner.solution.begin(),
                     inner.solution.end(),
@@ -2885,7 +3017,7 @@ int run_orientation_average(
                 inner_seconds += inner.seconds;
             };
     }
-    if (!fmm.gpu_operator_assembly)
+    if (!fmm.gpu_operator_assembly && !fmm.banded_fmm)
         throw std::runtime_error(
             "orientation averaging requires GPU operator assembly");
 
@@ -2896,6 +3028,7 @@ int run_orientation_average(
             adaptive_minimum_level,
             adaptive_maximum_level,
             symmetry_order,
+            dihedral_symmetry,
             orientations,
             adaptive_levels);
     else
@@ -2964,6 +3097,9 @@ int run_orientation_average(
         checkpoint_signature, &symmetry_order,
         sizeof(symmetry_order));
     hash_bytes(
+        checkpoint_signature, &dihedral_symmetry,
+        sizeof(dihedral_symmetry));
+    hash_bytes(
         checkpoint_signature, &warm_start_max_angle_degrees,
         sizeof(warm_start_max_angle_degrees));
     hash_bytes(
@@ -3028,6 +3164,18 @@ int run_orientation_average(
     hash_bytes(
         checkpoint_signature, &fmm.system_dofs,
         sizeof(fmm.system_dofs));
+    hash_bytes(
+        checkpoint_signature, &fmm.banded_fmm,
+        sizeof(fmm.banded_fmm));
+    hash_bytes(
+        checkpoint_signature, &fmm.banded_fmm_split_depth,
+        sizeof(fmm.banded_fmm_split_depth));
+    hash_bytes(
+        checkpoint_signature, &fmm.banded_fmm_coarse_max_leaf,
+        sizeof(fmm.banded_fmm_coarse_max_leaf));
+    hash_bytes(
+        checkpoint_signature, &fmm.banded_fmm_middle_max_leaf,
+        sizeof(fmm.banded_fmm_middle_max_leaf));
     const char* replay_checkpoint_value =
         std::getenv("BEM_FARFIELD_REPLAY_CHECKPOINT");
     const bool replay_farfield =
@@ -3148,31 +3296,41 @@ int run_orientation_average(
             throw std::runtime_error(
                 "internal adaptive averaging requires "
                 "--orient-parts-dir for lossless restart");
-        int stored_prefix = 0;
+        int stored_samples = 0;
         for (const AveragingOrientation& orientation : orientations) {
             std::vector<double> sample;
-            if (!load_orientation_sample(
+            if (load_orientation_sample(
                     orientation_parts_directory,
                     orientation.persistent_index,
-                    averaged_mueller.size(),
-                    sample))
-                break;
-            orientation_samples[orientation.persistent_index] =
-                std::move(sample);
-            stored_prefix++;
-        }
-        if (stored_prefix != orientation_start) {
-            orientation_start = stored_prefix;
-            previous_x.clear();
-            previous_y.clear();
-            have_previous_rotation = false;
-            if (orientation_start > 0) {
-                previous_rotation =
-                    orientations[orientation_start - 1].RT;
-                have_previous_rotation = true;
+                    averaged_mueller.size(), sample)) {
+                orientation_samples[orientation.persistent_index] =
+                    std::move(sample);
+                stored_samples++;
             }
-            resumed = orientation_start > 0;
         }
+        size_t level_begin = 0;
+        for (const NestedOrientationLevel& level : adaptive_levels) {
+            std::stable_partition(
+                orientations.begin() + level_begin,
+                orientations.begin() + level.schedule_end,
+                [&](const AveragingOrientation& orientation) {
+                    return orientation_samples.find(
+                               orientation.persistent_index) !=
+                        orientation_samples.end();
+                });
+            level_begin = level.schedule_end;
+        }
+        int stored_prefix = 0;
+        while (stored_prefix < static_cast<int>(orientations.size()) &&
+               orientation_samples.find(
+                   orientations[stored_prefix].persistent_index) !=
+                   orientation_samples.end())
+            stored_prefix++;
+        orientation_start = stored_prefix;
+        previous_x.clear();
+        previous_y.clear();
+        have_previous_rotation = false;
+        resumed = orientation_start > 0;
         for (const NestedOrientationLevel& level : adaptive_levels) {
             if (level.schedule_end >
                 static_cast<size_t>(orientation_start))
@@ -3211,8 +3369,8 @@ int run_orientation_average(
         if (orientation_start > 0)
             std::printf(
                 "  [adaptive restart] restored %d/%zu orientation "
-                "samples through J=%d\n",
-                orientation_start, orientations.size(),
+                "samples (%d files) through J=%d\n",
+                orientation_start, orientations.size(), stored_samples,
                 accepted_adaptive_level);
     }
     if (orientation_start > 0 && recycle_rank > 0 &&
@@ -3421,6 +3579,21 @@ int run_orientation_average(
                 solution_x.operator_residual,
                 solution_y.operator_residual));
         solve_seconds += solution_x.seconds + solution_y.seconds;
+        const double orientation_residual = std::max(
+            solution_x.operator_residual,
+            solution_y.operator_residual);
+        if (!std::isfinite(orientation_residual) ||
+            orientation_residual > 2.0 * tolerance) {
+            std::fprintf(
+                stderr,
+                "orientation %zu failed the residual gate: %.3e > %.3e; "
+                "far field and orientation part were not written\n",
+                orientation_index + 1, orientation_residual,
+                2.0 * tolerance);
+            mbj.cleanup_device();
+            fmm.cleanup();
+            return 1;
+        }
 
         const auto farfield_start =
             std::chrono::steady_clock::now();
@@ -3737,7 +3910,9 @@ int run_orientation_average(
            << "  \"refinements\": " << refinement << ",\n"
            << "  \"system_dofs\": " << fmm.system_dofs << ",\n"
            << "  \"tolerance\": " << tolerance << ",\n"
-           << "  \"gpu_operator_assembly\": true,\n"
+           << "  \"gpu_operator_assembly\": "
+           << (fmm.gpu_operator_assembly ? "true" : "false")
+           << ",\n"
            << "  \"orientation\": {\"alpha_samples\": "
            << alpha_count
            << ", \"beta_nodes\": " << beta_count
@@ -3745,6 +3920,8 @@ int run_orientation_average(
            << gamma_count
            << ", \"rotational_symmetry_order\": "
            << symmetry_order
+           << ", \"dihedral_symmetry_reuse\": "
+           << (dihedral_symmetry ? "true" : "false")
            << ", \"solved_base_orientations\": "
            << completed_orientations
            << ", \"represented_full_orientations\": "
@@ -3885,6 +4062,10 @@ int run_main(int argc, char** argv)
     bool physical_check = false;
     bool cyclic_polarization = false;
     bool cyclic_exact_geometry = false;
+    bool trust_cyclic_exact_geometry = false;
+    bool symmetry_operator_check = false;
+    bool symmetry_operator_check_only = false;
+    const char* symmetry_checkpoint_path = nullptr;
     bool mirror_polarization = false;
     bool auto_polarization_symmetry = false;
     bool mirror_symmetric_mesh = false;
@@ -3894,12 +4075,14 @@ int run_main(int argc, char** argv)
     bool use_pfft = false;
     bool hybrid_pfft_fmm = false;
     bool pfft_fgmres = false;
+    bool trust_final_projected_residual = false;
     bool axial_slab_start = false;
     bool near_template_reuse = true;
     int orient_average_alpha = 0;
     int orient_average_beta = 0;
     int orient_average_gamma = 0;
     int orient_symmetry_order = 0;
+    bool orient_dihedral_symmetry = false;
     const char* orient_file = nullptr;
     const char* orient_parts_directory = nullptr;
     int orient_adaptive_minimum_level = 0;
@@ -4027,6 +4210,9 @@ int run_main(int argc, char** argv)
             use_pfft = true;
         }
         else if (std::strcmp(
+                     argv[i], "--trust-final-projected-residual") == 0)
+            trust_final_projected_residual = true;
+        else if (std::strcmp(
                      argv[i], "--axial-slab-initial-guess") == 0)
             axial_slab_start = true;
         else if (std::strcmp(argv[i], "--operator-backend") == 0 &&
@@ -4123,6 +4309,9 @@ int run_main(int argc, char** argv)
                  i + 1 < argc)
             orient_symmetry_order = std::atoi(argv[++i]);
         else if (std::strcmp(
+                     argv[i], "--orient-dihedral-symmetry") == 0)
+            orient_dihedral_symmetry = true;
+        else if (std::strcmp(
                      argv[i], "--orient-zero-start") == 0)
             orient_warm_start = false;
         else if (std::strcmp(
@@ -4144,6 +4333,21 @@ int run_main(int argc, char** argv)
         else if (std::strcmp(
                      argv[i], "--cyclic-exact-geometry") == 0)
             cyclic_exact_geometry = true;
+        else if (std::strcmp(
+                     argv[i], "--trust-cyclic-exact-geometry") == 0)
+            trust_cyclic_exact_geometry = true;
+        else if (std::strcmp(
+                     argv[i], "--symmetry-operator-check") == 0)
+            symmetry_operator_check = true;
+        else if (std::strcmp(
+                     argv[i], "--symmetry-operator-check-only") == 0) {
+            symmetry_operator_check = true;
+            symmetry_operator_check_only = true;
+        }
+        else if (std::strcmp(
+                     argv[i], "--symmetry-checkpoint") == 0 &&
+                 i + 1 < argc)
+            symmetry_checkpoint_path = argv[++i];
         else if (std::strcmp(argv[i], "--mirror-polarization") == 0)
             mirror_polarization = true;
         else if (std::strcmp(
@@ -4376,6 +4580,45 @@ int run_main(int argc, char** argv)
             "--cyclic-exact-geometry requires --cyclic-polarization\n");
         return 2;
     }
+    if (trust_cyclic_exact_geometry && !cyclic_exact_geometry) {
+        std::fprintf(
+            stderr,
+            "--trust-cyclic-exact-geometry requires "
+            "--cyclic-exact-geometry\n");
+        return 2;
+    }
+    if (symmetry_operator_check &&
+        !(cyclic_polarization || mirror_polarization ||
+          sphere_fivefold_polarization)) {
+        std::fprintf(
+            stderr,
+            "--symmetry-operator-check requires a polarization "
+            "symmetry mode\n");
+        return 2;
+    }
+    if (symmetry_operator_check_only && setup_only) {
+        std::fprintf(
+            stderr,
+            "--symmetry-operator-check-only cannot be combined with "
+            "--setup-only\n");
+        return 2;
+    }
+    if (symmetry_checkpoint_path && !symmetry_operator_check_only) {
+        std::fprintf(
+            stderr,
+            "--symmetry-checkpoint requires "
+            "--symmetry-operator-check-only\n");
+        return 2;
+    }
+    if (symmetry_operator_check && pfft_fgmres &&
+        !symmetry_operator_check_only) {
+        std::fprintf(
+            stderr,
+            "--symmetry-operator-check cannot be combined with "
+            "--pfft-fgmres during a solve; run the standalone "
+            "--symmetry-operator-check-only diagnostic instead\n");
+        return 2;
+    }
     if (cube_mode && edge_refine != 0) {
         std::fprintf(
             stderr,
@@ -4455,6 +4698,16 @@ int run_main(int argc, char** argv)
             "divide the regular-prism side count\n");
         return 2;
     }
+    if (orient_dihedral_symmetry &&
+        (!orientation_average || !polygon_symmetry_mode ||
+         orient_adaptive_maximum_level <= 0 ||
+         orient_average_alpha % 2 != 0)) {
+        std::fprintf(
+            stderr,
+            "--orient-dihedral-symmetry requires adaptive orientation "
+            "averaging of a regular prism or cube and an even alpha count\n");
+        return 2;
+    }
     if (pfft_order < 2 || pfft_order > 5) {
         std::fprintf(stderr, "--pfft-order must be in [2,5]\n");
         return 2;
@@ -4490,6 +4743,12 @@ int run_main(int argc, char** argv)
             stderr,
             "--hybrid-pfft-fmm and --pfft-fgmres are mutually "
             "exclusive\n");
+        return 2;
+    }
+    if (trust_final_projected_residual && !pfft_fgmres) {
+        std::fprintf(
+            stderr,
+            "--trust-final-projected-residual requires --pfft-fgmres\n");
         return 2;
     }
     if (regular_quadrature != 4 && regular_quadrature != 7 &&
@@ -4764,16 +5023,19 @@ int run_main(int argc, char** argv)
         };
     MullerMbjPreconditioner mbj;
     const auto mbj_setup_start = std::chrono::steady_clock::now();
-    if (mbj_cache_path) {
-        mbj.build_cached(
-            fmm, mbj_nodes, mbj_overlap, mbj_cache_path);
-    } else {
-        mbj.build(fmm, mbj_nodes, mbj_overlap);
+    if (!symmetry_operator_check_only) {
+        if (mbj_cache_path) {
+            mbj.build_cached(
+                fmm, mbj_nodes, mbj_overlap, mbj_cache_path);
+        } else {
+            mbj.build(fmm, mbj_nodes, mbj_overlap);
+        }
     }
     const double mbj_local_setup_seconds =
         std::chrono::duration<double>(
             std::chrono::steady_clock::now() - mbj_setup_start).count();
-    mbj.build_coarse(fmm, mbj_coarse_rank);
+    if (!symmetry_operator_check_only)
+        mbj.build_coarse(fmm, mbj_coarse_rank);
     const double mbj_coarse_setup_seconds = mbj.coarse_setup_seconds;
     size_t gpu_free_after = 0;
     size_t gpu_total_after = 0;
@@ -4854,11 +5116,24 @@ int run_main(int argc, char** argv)
                << "  \"fmm_max_leaf_points\": " << max_leaf << ",\n"
                << "  \"fmm_near_radius\": "
                << fmm_near_radius << ",\n"
+               << "  \"fmm_banded\": "
+               << (fmm.banded_fmm ? "true" : "false") << ",\n"
+               << "  \"fmm_banded_split_depth\": "
+               << fmm.banded_fmm_split_depth << ",\n"
+               << "  \"fmm_banded_coarse_max_leaf\": "
+               << fmm.banded_fmm_coarse_max_leaf << ",\n"
+               << "  \"fmm_banded_middle_max_leaf\": "
+               << fmm.banded_fmm_middle_max_leaf << ",\n"
                << "  \"fmm_near_precision\": \""
                << (fmm_near_fp32 ? "fp32" : "fp64") << "\",\n"
                << "  \"gmres_restart\": " << gmres_restart << ",\n"
                << "  \"cyclic_polarization_requested\": "
                << (cyclic_polarization ? "true" : "false") << ",\n"
+               << "  \"cyclic_exact_geometry_requested\": "
+               << (cyclic_exact_geometry ? "true" : "false") << ",\n"
+               << "  \"trust_cyclic_exact_geometry_requested\": "
+               << (trust_cyclic_exact_geometry ? "true" : "false")
+               << ",\n"
                << "  \"auto_polarization_symmetry_requested\": "
                << (auto_polarization_symmetry
                        ? "true" : "false") << ",\n"
@@ -5031,14 +5306,32 @@ int run_main(int argc, char** argv)
     const std::vector<cdouble>* parallel_initial_guess =
         axial_slab_parallel_guess.empty()
             ? nullptr : &axial_slab_parallel_guess;
+    const char* refinement_environment =
+        std::getenv("BEM_MIXED_ITERATIVE_REFINEMENT");
+    const bool strict_outer_action =
+        refinement_environment != nullptr &&
+        std::strcmp(refinement_environment, "0") != 0;
     const Matvec action = [&](const cdouble* input, cdouble* output) {
-        fmm.matvec(input, output);
+        if (strict_outer_action && !fmm.use_pfft)
+            fmm.matvec_strict(input, output);
+        else
+            fmm.matvec(input, output);
     };
     const Matvec exact_action =
         [&](const cdouble* input, cdouble* output) {
             fmm.select_fmm_backend();
+            if (strict_outer_action)
+                fmm.matvec_strict(input, output);
+            else
+                fmm.matvec(input, output);
+        };
+    const Matvec mixed_exact_action =
+        [&](const cdouble* input, cdouble* output) {
+            fmm.select_fmm_backend();
             fmm.matvec(input, output);
         };
+    const Matvec* strict_verification_action =
+        strict_outer_action ? &exact_action : nullptr;
     const Matvec pfft_action =
         [&](const cdouble* input, cdouble* output) {
             fmm.select_pfft_backend();
@@ -5070,6 +5363,7 @@ int run_main(int argc, char** argv)
             orient_average_beta,
             orient_average_gamma,
             orient_symmetry_order,
+            orient_dihedral_symmetry,
             orient_warm_start,
             orient_warm_max_angle_degrees,
             orient_recycle_rank,
@@ -5124,6 +5418,8 @@ int run_main(int argc, char** argv)
     std::function<void(
         const std::vector<cdouble>&,
         std::vector<cdouble>&)> symmetry_solution_transform;
+    double fmm_symmetry_commutator = -1.0;
+    double fmm_symmetry_commutator_seconds = 0.0;
     if (symmetry_polarization) {
         if (rotation_polarization) {
             symmetry_source_for_target =
@@ -5188,6 +5484,256 @@ int run_main(int argc, char** argv)
                         (transformed[i] - cosine * source[i]) / sine;
                 }
             };
+        if (symmetry_operator_check) {
+            const auto commutator_start =
+                std::chrono::steady_clock::now();
+            fmm_symmetry_commutator = symmetry_operator_commutator(
+                exact_action, symmetry_solution_vector_transform,
+                fmm.system_dofs);
+            fmm_symmetry_commutator_seconds =
+                std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() -
+                    commutator_start).count();
+            std::printf(
+                "  [%s symmetry] FMM operator commutator "
+                "||AT-TA||/||AT|| %.3e in %.3fs\n",
+                symmetry_name, fmm_symmetry_commutator,
+                fmm_symmetry_commutator_seconds);
+            if (symmetry_operator_check_only) {
+                double dense_commutator = -1.0;
+                double dense_operator_probe_difference = -1.0;
+                double checkpoint_primary_residual = -1.0;
+                double checkpoint_parallel_residual = -1.0;
+                if (symmetry_checkpoint_path) {
+                    std::vector<cdouble> checkpoint_solution;
+                    if (!load_checkpoint_solution(
+                            symmetry_checkpoint_path,
+                            checkpoint_solution)) {
+                        throw std::runtime_error(
+                            std::string("cannot load symmetry checkpoint ") +
+                            symmetry_checkpoint_path);
+                    }
+                    if (checkpoint_solution.size() !=
+                        static_cast<size_t>(fmm.system_dofs)) {
+                        throw std::runtime_error(
+                            "symmetry checkpoint has an incompatible "
+                            "number of unknowns");
+                    }
+                    const auto relative_residual =
+                        [&](const std::vector<cdouble>& solution,
+                            const std::vector<cdouble>& right_hand_side) {
+                            std::vector<cdouble> applied(fmm.system_dofs);
+                            exact_action(
+                                solution.data(), applied.data());
+                            double difference_squared = 0.0;
+                            double rhs_squared = 0.0;
+#pragma omp parallel for reduction(+:difference_squared,rhs_squared) schedule(static)
+                            for (int i = 0; i < fmm.system_dofs; i++) {
+                                difference_squared += std::norm(
+                                    right_hand_side[i] - applied[i]);
+                                rhs_squared +=
+                                    std::norm(right_hand_side[i]);
+                            }
+                            return std::sqrt(
+                                difference_squared /
+                                std::max(rhs_squared, 1.0e-300));
+                        };
+                    checkpoint_primary_residual = relative_residual(
+                        checkpoint_solution, rhs);
+                    std::vector<cdouble> parallel_solution;
+                    symmetry_solution_transform(
+                        checkpoint_solution, parallel_solution);
+                    checkpoint_parallel_residual = relative_residual(
+                        parallel_solution, rhs_parallel);
+                    std::printf(
+                        "  [%s symmetry] checkpoint residuals: "
+                        "primary %.3e, reconstructed parallel %.3e\n",
+                        symmetry_name, checkpoint_primary_residual,
+                        checkpoint_parallel_residual);
+                }
+                if (dense_validation) {
+                    MullerDenseSystem diagnostic_dense =
+                        assemble_muller_nodal_dense(
+                            mesh, wave_number, refractive_index,
+                            build_options, 7, 4);
+                    const Matvec dense_action =
+                        [&](const cdouble* input, cdouble* output) {
+#pragma omp parallel for schedule(static)
+                            for (int row = 0;
+                                 row < diagnostic_dense.system_dofs;
+                                 row++) {
+                                cdouble value(0.0);
+                                for (int column = 0;
+                                     column < diagnostic_dense.system_dofs;
+                                     column++) {
+                                    value += diagnostic_dense.matrix[
+                                        static_cast<size_t>(row) *
+                                            diagnostic_dense.system_dofs +
+                                        column] * input[column];
+                                }
+                                output[row] = value;
+                            }
+                        };
+                    dense_commutator = symmetry_operator_commutator(
+                        dense_action,
+                        symmetry_solution_vector_transform,
+                        diagnostic_dense.system_dofs);
+                    dense_operator_probe_difference =
+                        relative_operator_probe_difference(
+                            exact_action, dense_action,
+                            diagnostic_dense.system_dofs);
+                    std::printf(
+                        "  [%s symmetry] dense operator commutator "
+                        "||AT-TA||/||AT|| %.3e; "
+                        "FMM/dense probe difference %.3e\n",
+                        symmetry_name, dense_commutator,
+                        dense_operator_probe_difference);
+                }
+                std::ofstream diagnostic_output(output_path);
+                if (!diagnostic_output)
+                    throw std::runtime_error(
+                        std::string("cannot open result file ") +
+                        output_path);
+                size_t diagnostic_gpu_free = 0;
+                size_t diagnostic_gpu_total = 0;
+                const bool diagnostic_gpu_memory_valid =
+                    gpu_memory_before_valid &&
+                    cudaMemGetInfo(
+                        &diagnostic_gpu_free,
+                        &diagnostic_gpu_total) == cudaSuccess &&
+                    diagnostic_gpu_total == gpu_total_bytes;
+                const double diagnostic_gpu_delta_mb =
+                    diagnostic_gpu_memory_valid &&
+                    gpu_free_before >= diagnostic_gpu_free
+                        ? static_cast<double>(
+                            gpu_free_before - diagnostic_gpu_free) /
+                            (1024.0 * 1024.0)
+                        : -1.0;
+                diagnostic_output << std::setprecision(17)
+                    << "{\n"
+                    << "  \"software_version\": \"" << BEM_VERSION
+                    << "\",\n"
+                    << "  \"diagnostic\": "
+                    << "\"symmetry_operator_commutator\",\n"
+                    << "  \"shape\": \"" << shape << "\",\n"
+                    << "  \"ka\": " << ka << ",\n"
+                    << "  \"ri\": " << refractive_real << ",\n"
+                    << "  \"refinements\": " << refinement << ",\n"
+                    << "  \"system_dofs\": " << fmm.system_dofs
+                    << ",\n"
+                    << "  \"fmm_digits\": " << std::min(digits, 5)
+                    << ",\n"
+                    << "  \"fmm_digits_requested\": " << digits
+                    << ",\n"
+                    << "  \"fmm_expansion\": {\"exterior\": "
+                    << "{\"tree_depth\": "
+                    << fmm.fmm_exterior.tree.max_level
+                    << ", \"order\": " << fmm.fmm_exterior.p
+                    << ", \"directions\": "
+                    << fmm.fmm_exterior.L
+                    << "}, \"interior\": {\"tree_depth\": "
+                    << fmm.fmm_interior.tree.max_level
+                    << ", \"order\": " << fmm.fmm_interior.p
+                    << ", \"directions\": "
+                    << fmm.fmm_interior.L << "}},\n"
+                    << "  \"fmm_banded\": "
+                    << (fmm.banded_fmm ? "true" : "false")
+                    << ",\n"
+                    << "  \"fmm_bands\": ";
+                if (fmm.banded_fmm) {
+                    diagnostic_output
+                        << "{\"split_depth\": "
+                        << fmm.banded_fmm_split_depth
+                        << ", \"coarse_max_leaf\": "
+                        << fmm.banded_fmm_coarse_max_leaf
+                        << ", \"middle_max_leaf\": "
+                        << fmm.banded_fmm_middle_max_leaf
+                        << ", \"exterior_coarse\": {\"tree_depth\": "
+                        << fmm.fmm_exterior_coarse.tree.max_level
+                        << ", \"order\": "
+                        << fmm.fmm_exterior_coarse.p
+                        << ", \"directions\": "
+                        << fmm.fmm_exterior_coarse.L
+                        << "}, \"interior_coarse\": {\"tree_depth\": "
+                        << fmm.fmm_interior_coarse.tree.max_level
+                        << ", \"order\": "
+                        << fmm.fmm_interior_coarse.p
+                        << ", \"directions\": "
+                        << fmm.fmm_interior_coarse.L << "}";
+                    if (fmm.banded_fmm_middle) {
+                        diagnostic_output
+                            << ", \"exterior_middle\": {\"tree_depth\": "
+                            << fmm.fmm_exterior_middle.tree.max_level
+                            << ", \"order\": "
+                            << fmm.fmm_exterior_middle.p
+                            << ", \"directions\": "
+                            << fmm.fmm_exterior_middle.L
+                            << "}, \"interior_middle\": "
+                            << "{\"tree_depth\": "
+                            << fmm.fmm_interior_middle.tree.max_level
+                            << ", \"order\": "
+                            << fmm.fmm_interior_middle.p
+                            << ", \"directions\": "
+                            << fmm.fmm_interior_middle.L << "}";
+                    }
+                    diagnostic_output << "}";
+                } else {
+                    diagnostic_output << "null";
+                }
+                diagnostic_output
+                    << ",\n"
+                    << "  \"gpu_memory_delta_mb\": ";
+                if (diagnostic_gpu_delta_mb >= 0.0)
+                    diagnostic_output << diagnostic_gpu_delta_mb;
+                else
+                    diagnostic_output << "null";
+                diagnostic_output
+                    << ",\n"
+                    << "  \"fmm_setup_s\": " << fmm_setup_seconds
+                    << ",\n"
+                    << "  \"fmm_relative_commutator\": "
+                    << fmm_symmetry_commutator << ",\n"
+                    << "  \"fmm_commutator_s\": "
+                    << fmm_symmetry_commutator_seconds << ",\n"
+                    << "  \"checkpoint_primary_residual\": ";
+                if (checkpoint_primary_residual >= 0.0)
+                    diagnostic_output << checkpoint_primary_residual;
+                else
+                    diagnostic_output << "null";
+                diagnostic_output
+                    << ",\n"
+                    << "  \"checkpoint_parallel_residual\": ";
+                if (checkpoint_parallel_residual >= 0.0)
+                    diagnostic_output << checkpoint_parallel_residual;
+                else
+                    diagnostic_output << "null";
+                diagnostic_output
+                    << ",\n"
+                    << "  \"dense_operator_probe_difference\": ";
+                if (dense_operator_probe_difference >= 0.0)
+                    diagnostic_output << dense_operator_probe_difference;
+                else
+                    diagnostic_output << "null";
+                diagnostic_output
+                    << ",\n"
+                    << "  \"dense_relative_commutator\": ";
+                if (dense_commutator >= 0.0)
+                    diagnostic_output << dense_commutator;
+                else
+                    diagnostic_output << "null";
+                diagnostic_output << "\n}\n";
+                diagnostic_output.close();
+                std::printf(
+                    "Muller symmetry operator diagnostic: "
+                    "FMM %.3e, dense %s, out=%s\n",
+                    fmm_symmetry_commutator,
+                    dense_commutator >= 0.0
+                        ? "available" : "disabled",
+                    output_path);
+                fmm.cleanup();
+                return 0;
+            }
+        }
     }
 
     GmresResult baseline;
@@ -5265,7 +5811,9 @@ int run_main(int argc, char** argv)
                 GmresResult inner = solve_gmres(
                     pfft_action, inner_rhs, fmm.system_dofs,
                     pfft_inner_tolerance, pfft_inner_iterations,
-                    pfft_inner_iterations, &mbj, "pFFT-inner");
+                    pfft_inner_iterations, &mbj, "pFFT-inner",
+                    nullptr, nullptr, nullptr, nullptr,
+                    SolverCheckpointOptions(), true);
                 std::copy(
                     inner.solution.begin(), inner.solution.end(), output);
                 pfft_inner_applications++;
@@ -5273,12 +5821,15 @@ int run_main(int argc, char** argv)
                 pfft_inner_total_seconds += inner.seconds;
             };
         preconditioned = solve_flexible_gmres(
-            exact_action, pfft_inverse, rhs.data(), fmm.system_dofs,
+            mixed_exact_action, pfft_inverse,
+            rhs.data(), fmm.system_dofs,
             tolerance, maximum_iterations, pfft_outer_restart,
             "FMM-pFFT-FGMRES",
             primary_initial_guess,
             nullptr, nullptr, nullptr,
-            solver_checkpoint("FMM-pFFT-FGMRES"));
+            solver_checkpoint("FMM-pFFT-FGMRES"),
+            strict_verification_action,
+            trust_final_projected_residual);
         first_pfft_inner_applications = pfft_inner_applications;
         first_pfft_inner_iterations = pfft_inner_total_iterations;
         first_pfft_inner_seconds = pfft_inner_total_seconds;
@@ -5300,6 +5851,7 @@ int run_main(int argc, char** argv)
     GmresResult parallel_preconditioned;
     bool cyclic_polarization_used = false;
     bool cyclic_exact_geometry_used = false;
+    bool trusted_cyclic_exact_geometry_used = false;
     bool cyclic_polarization_corrected = false;
     bool cyclic_polarization_fallback = false;
     bool mirror_polarization_used = false;
@@ -5343,19 +5895,28 @@ int run_main(int argc, char** argv)
                 parallel_preconditioned.solution);
             symmetry_direct_solution =
                 parallel_preconditioned.solution;
-            std::vector<cdouble> symmetry_work(fmm.system_dofs);
-            action(
-                parallel_preconditioned.solution.data(),
-                symmetry_work.data());
             const double rhs_parallel_norm = std::max(
                 norm(rhs_parallel.data(), fmm.system_dofs), 1.0e-300);
+            const bool trusted_exact_geometry =
+                trust_cyclic_exact_geometry &&
+                cyclic_exact_geometry &&
+                cyclic_rhs_relative_error <= 1.0e-10;
+            std::vector<cdouble> symmetry_work;
+            if (trusted_exact_geometry) {
+                parallel_preconditioned.operator_residual = -1.0;
+            } else {
+                symmetry_work.resize(fmm.system_dofs);
+                action(
+                    parallel_preconditioned.solution.data(),
+                    symmetry_work.data());
 #pragma omp parallel for schedule(static)
-            for (int i = 0; i < fmm.system_dofs; i++)
-                symmetry_work[i] =
-                    rhs_parallel[i] - symmetry_work[i];
-            parallel_preconditioned.operator_residual =
-                norm(symmetry_work.data(), fmm.system_dofs) /
-                rhs_parallel_norm;
+                for (int i = 0; i < fmm.system_dofs; i++)
+                    symmetry_work[i] =
+                        rhs_parallel[i] - symmetry_work[i];
+                parallel_preconditioned.operator_residual =
+                    norm(symmetry_work.data(), fmm.system_dofs) /
+                    rhs_parallel_norm;
+            }
             symmetry_direct_residual =
                 parallel_preconditioned.operator_residual;
             parallel_preconditioned.projected_residual =
@@ -5364,16 +5925,42 @@ int run_main(int argc, char** argv)
                 std::chrono::duration<double>(
                     std::chrono::steady_clock::now() -
                     symmetry_start).count();
-            std::printf(
-                "  [%s symmetry] direct reconstructed residual %.3e\n",
-                symmetry_name, symmetry_direct_residual);
+            if (trusted_exact_geometry) {
+                std::printf(
+                    "  [%s symmetry] exact FMM residual check skipped "
+                    "by explicit trust mode\n",
+                    symmetry_name);
+            } else {
+                std::printf(
+                    "  [%s symmetry] direct reconstructed residual "
+                    "%.3e\n",
+                    symmetry_name, symmetry_direct_residual);
+                if (cyclic_exact_geometry &&
+                    symmetry_direct_residual >
+                        std::max(100.0 * tolerance, 1.0e-3)) {
+                    std::fprintf(
+                        stderr,
+                        "  [FMM accuracy warning] the discrete "
+                        "operator violates the exact C%d geometry "
+                        "by %.3e; increasing GMRES iterations alone "
+                        "cannot repair this FMM truncation error\n",
+                        prism_sides, symmetry_direct_residual);
+                }
+            }
             if (symmetry_reconstruction_meets_tolerance(
                     parallel_preconditioned.operator_residual,
-                    tolerance)) {
+                    tolerance) || trusted_exact_geometry) {
                 cyclic_polarization_used = true;
                 mirror_polarization_used = mirror_polarization;
                 cyclic_exact_geometry_used = cyclic_exact_geometry;
-                if (cyclic_exact_geometry) {
+                trusted_cyclic_exact_geometry_used =
+                    trusted_exact_geometry;
+                if (trusted_cyclic_exact_geometry_used) {
+                    std::printf(
+                        "  [C%d exact geometry] accepting the rotated "
+                        "polarization from exact mesh/RHS symmetry\n",
+                        prism_sides);
+                } else if (cyclic_exact_geometry) {
                     std::printf(
                         "  [C%d exact geometry] rotated polarization "
                         "verified; FMM residual %.3e\n",
@@ -5443,7 +6030,7 @@ int run_main(int argc, char** argv)
                         pfft_inner_total_seconds;
                     parallel_preconditioned =
                         solve_flexible_gmres(
-                            exact_action, pfft_inverse,
+                            mixed_exact_action, pfft_inverse,
                             rhs_parallel.data(), fmm.system_dofs,
                             tolerance, maximum_iterations,
                             pfft_outer_restart,
@@ -5451,7 +6038,9 @@ int run_main(int argc, char** argv)
                             selected_guess,
                             nullptr, nullptr, nullptr,
                             solver_checkpoint(
-                                "FMM-pFFT-symmetry-correction"));
+                                "FMM-pFFT-symmetry-correction"),
+                            strict_verification_action,
+                            trust_final_projected_residual);
                     parallel_pfft_inner_applications +=
                         pfft_inner_applications -
                         applications_before;
@@ -5502,14 +6091,16 @@ int run_main(int argc, char** argv)
                     pfft_inner_total_seconds;
                 parallel_preconditioned =
                     solve_flexible_gmres(
-                        exact_action, pfft_inverse,
+                        mixed_exact_action, pfft_inverse,
                         rhs_parallel.data(), fmm.system_dofs,
                         tolerance, maximum_iterations,
                         pfft_outer_restart,
                         "FMM-pFFT-parallel",
                         parallel_initial_guess,
                         nullptr, nullptr, nullptr,
-                        solver_checkpoint("FMM-pFFT-parallel"));
+                        solver_checkpoint("FMM-pFFT-parallel"),
+                        strict_verification_action,
+                        trust_final_projected_residual);
                 parallel_pfft_inner_applications =
                     pfft_inner_applications - applications_before;
                 parallel_pfft_inner_iterations =
@@ -5655,6 +6246,7 @@ int run_main(int argc, char** argv)
     double baseline_dense_residual = -1.0;
     double mbj_dense_residual = -1.0;
     double symmetry_direct_dense_residual = -1.0;
+    double dense_symmetry_commutator = -1.0;
     double neural_dense_residual = -1.0;
     if (dense_validation) {
         const auto dense_start = std::chrono::steady_clock::now();
@@ -5674,6 +6266,30 @@ int run_main(int argc, char** argv)
         if (symmetry_polarization) {
             symmetry_direct_dense_residual = dense_residual(
                 dense, symmetry_direct_solution, rhs_parallel);
+        }
+        if (symmetry_operator_check) {
+            const Matvec dense_action =
+                [&](const cdouble* input, cdouble* output) {
+#pragma omp parallel for schedule(static)
+                    for (int row = 0; row < dense.system_dofs; row++) {
+                        cdouble value(0.0);
+                        for (int column = 0;
+                             column < dense.system_dofs; column++) {
+                            value += dense.matrix[
+                                static_cast<size_t>(row) *
+                                    dense.system_dofs + column] *
+                                input[column];
+                        }
+                        output[row] = value;
+                    }
+                };
+            dense_symmetry_commutator = symmetry_operator_commutator(
+                dense_action, symmetry_solution_vector_transform,
+                dense.system_dofs);
+            std::printf(
+                "  [%s symmetry] dense operator commutator "
+                "||AT-TA||/||AT|| %.3e\n",
+                symmetry_name, dense_symmetry_commutator);
         }
         if (neural_preconditioner_path) {
             neural_dense_residual = dense_residual(
@@ -5724,6 +6340,9 @@ int run_main(int argc, char** argv)
            << (hybrid_pfft_fmm ? "true" : "false") << ",\n"
            << "  \"pfft_fgmres_enabled\": "
            << (pfft_fgmres ? "true" : "false") << ",\n"
+           << "  \"trust_final_projected_residual\": "
+           << (trust_final_projected_residual ? "true" : "false")
+           << ",\n"
 #ifdef BEM_PFFT_FP32
            << "  \"pfft_fft_precision\": \"fp32\",\n"
 #else
@@ -5775,8 +6394,31 @@ int run_main(int argc, char** argv)
            << std::min(digits, 5) << ",\n"
            << "  \"fmm_digits_requested\": " << digits << ",\n"
            << "  \"fmm_max_leaf_points\": " << max_leaf << ",\n"
+           << "  \"fmm_expansion\": ";
+    if (fmm.fmm_exterior.initialized && fmm.fmm_interior.initialized) {
+        output << "{\"exterior\": {\"tree_depth\": "
+               << fmm.fmm_exterior.tree.max_level
+               << ", \"order\": " << fmm.fmm_exterior.p
+               << ", \"directions\": " << fmm.fmm_exterior.L
+               << "}, \"interior\": {\"tree_depth\": "
+               << fmm.fmm_interior.tree.max_level
+               << ", \"order\": " << fmm.fmm_interior.p
+               << ", \"directions\": " << fmm.fmm_interior.L
+               << "}}";
+    } else {
+        output << "null";
+    }
+    output << ",\n"
            << "  \"fmm_near_radius\": "
            << fmm_near_radius << ",\n"
+           << "  \"fmm_banded\": "
+           << (fmm.banded_fmm ? "true" : "false") << ",\n"
+           << "  \"fmm_banded_split_depth\": "
+           << fmm.banded_fmm_split_depth << ",\n"
+           << "  \"fmm_banded_coarse_max_leaf\": "
+           << fmm.banded_fmm_coarse_max_leaf << ",\n"
+           << "  \"fmm_banded_middle_max_leaf\": "
+           << fmm.banded_fmm_middle_max_leaf << ",\n"
            << "  \"fmm_near_precision\": \""
            << (fmm_near_fp32 ? "fp32" : "fp64") << "\",\n"
            << "  \"gmres_restart\": " << gmres_restart << ",\n"
@@ -5795,6 +6437,9 @@ int run_main(int argc, char** argv)
            << ",\n"
            << "  \"cyclic_exact_geometry_requested\": "
            << (cyclic_exact_geometry ? "true" : "false") << ",\n"
+           << "  \"trust_cyclic_exact_geometry_requested\": "
+           << (trust_cyclic_exact_geometry ? "true" : "false")
+           << ",\n"
            << "  \"mirror_polarization_requested\": "
            << (mirror_polarization ? "true" : "false") << ",\n"
            << "  \"max_element_edge\": "
@@ -5854,6 +6499,19 @@ int run_main(int argc, char** argv)
     else
         output << "null";
     output << ",\n"
+           << "  \"symmetry_operator_check\": {\"requested\": "
+           << (symmetry_operator_check ? "true" : "false")
+           << ", \"fmm_relative_commutator\": ";
+    if (fmm_symmetry_commutator >= 0.0)
+        output << fmm_symmetry_commutator;
+    else
+        output << "null";
+    output << ", \"dense_relative_commutator\": ";
+    if (dense_symmetry_commutator >= 0.0)
+        output << dense_symmetry_commutator;
+    else
+        output << "null";
+    output << "},\n"
            << "  \"mbj_local_setup_s\": "
            << mbj_local_setup_seconds << ",\n"
            << "  \"mbj_setup_breakdown\": {\"ordering_s\": "
@@ -5902,6 +6560,9 @@ int run_main(int argc, char** argv)
            << preconditioned.initial_operator_residual
            << ", \"fmm_residual\": "
            << preconditioned.operator_residual
+           << ", \"fmm_residual_verified\": "
+           << (preconditioned.operator_residual_verified
+                   ? "true" : "false")
            << ", \"dense_residual\": ";
     if (dense_validation)
         output << mbj_dense_residual;
@@ -5955,6 +6616,11 @@ int run_main(int argc, char** argv)
             << preconditioned.seconds
             << ", \"fmm_residual\": "
             << preconditioned.operator_residual
+            << ", \"fmm_residual_verified\": "
+            << (preconditioned.operator_residual_verified
+                    ? "true" : "false")
+            << ", \"projected_residual\": "
+            << preconditioned.projected_residual
             << ", \"initial_fmm_residual\": "
             << preconditioned.initial_operator_residual
             << ", \"inner_applications\": "
@@ -6055,7 +6721,9 @@ int run_main(int argc, char** argv)
                               ? "mirror_reconstruction_corrected"
                               : "mirror_reconstruction")
                        : (cyclic_exact_geometry_used
-                       ? "cyclic_exact_geometry"
+                       ? (trusted_cyclic_exact_geometry_used
+                              ? "cyclic_exact_geometry_trusted"
+                              : "cyclic_exact_geometry")
                        : (cyclic_polarization_corrected
                        ? "cyclic_reconstruction_corrected"
                        : (cyclic_polarization_used
@@ -6074,16 +6742,23 @@ int run_main(int argc, char** argv)
                        : 0.0)
                << ", \"cyclic_rhs_relative_error\": "
                << cyclic_rhs_relative_error
-               << ", \"symmetry_direct_fmm_residual\": "
-               << symmetry_direct_residual
-               << ", \"parallel_iterations\": "
+               << ", \"trusted_cyclic_exact_geometry_used\": "
+               << (trusted_cyclic_exact_geometry_used
+                       ? "true" : "false")
+               << ", \"symmetry_direct_fmm_residual\": ";
+        if (trusted_cyclic_exact_geometry_used)
+            output << "null";
+        else
+            output << symmetry_direct_residual;
+        output << ", \"parallel_iterations\": "
                << parallel_preconditioned.iterations
                << ", \"parallel_resumed_iterations\": "
                << parallel_preconditioned.resumed_iterations
                << ", \"parallel_s\": "
                << parallel_preconditioned.seconds
                << ", \"parallel_fmm_residual\": ";
-        if (sphere_rotational_farfield)
+        if (sphere_rotational_farfield ||
+            trusted_cyclic_exact_geometry_used)
             output << "null";
         else
             output << parallel_preconditioned.operator_residual;
@@ -6200,6 +6875,12 @@ int run_main(int argc, char** argv)
             std::printf(
                 "  sphere symmetry: one solved polarization, two "
                 "far-field planes; far field %.3fs (%d angles)\n",
+                farfield_seconds, ntheta);
+        } else if (trusted_cyclic_exact_geometry_used) {
+            std::printf(
+                "  second polarization: exact C%d reconstruction %.3fs; "
+                "far field %.3fs (%d angles)\n",
+                prism_sides, parallel_preconditioned.seconds,
                 farfield_seconds, ntheta);
         } else {
             std::printf(

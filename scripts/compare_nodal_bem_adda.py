@@ -46,6 +46,25 @@ def parse_number(text: str, pattern: str, cast=float):
     return cast(match.group(1)) if match else None
 
 
+def interpolate_mueller(
+    theta_source: np.ndarray,
+    mueller_source: np.ndarray,
+    theta_target: np.ndarray,
+) -> np.ndarray:
+    if (
+        theta_target[0] < theta_source[0] - 1e-12
+        or theta_target[-1] > theta_source[-1] + 1e-12
+    ):
+        raise ValueError("target angles extend beyond the available Mueller data")
+    return np.asarray(
+        [
+            [np.interp(theta_target, theta_source, mueller_source[i, j])
+             for j in range(4)]
+            for i in range(4)
+        ]
+    )
+
+
 def load_bem(path: Path, log_path: Path | None) -> tuple[np.ndarray, np.ndarray, dict]:
     data = json.loads(path.read_text())
     physical = data["physical"]
@@ -101,12 +120,9 @@ def load_bem(path: Path, log_path: Path | None) -> tuple[np.ndarray, np.ndarray,
 def load_adda(directory: Path, theta_target: np.ndarray) -> tuple[np.ndarray, dict]:
     table = np.loadtxt(directory / "mueller", skiprows=1)
     theta = table[:, 0]
-    keep = (theta >= theta_target[0] - 1e-12) & (theta <= theta_target[-1] + 1e-12)
-    table = table[keep]
-    theta = table[:, 0]
-    if len(theta) != len(theta_target) or not np.allclose(theta, theta_target):
-        raise ValueError(f"ADDA angles in {directory} do not match BEM angles")
     mueller = table[:, 1:].reshape(-1, 4, 4).transpose(1, 2, 0)
+    if len(theta) != len(theta_target) or not np.allclose(theta, theta_target):
+        mueller = interpolate_mueller(theta, mueller, theta_target)
 
     log_text = (directory / "log").read_text(errors="replace")
     solver_match = re.search(r"Iterative Method:\s*(.+)", log_text)
@@ -279,7 +295,8 @@ def plot_study(summary: dict, output: Path) -> None:
     axes[0].set_ylabel("Изменение, %")
     axes[0].set_title("Сходимость сетки ADDA")
     axes[0].grid(True, which="both", alpha=0.25)
-    axes[0].legend()
+    if convergence:
+        axes[0].legend()
 
     labels = [row["label"] for row in adda]
     x = np.arange(len(labels))
@@ -362,6 +379,17 @@ def write_report(path: Path, summary: dict) -> None:
     for run in summary["adda"]:
         info = run["run"]
         metrics = run["comparison"]
+        speedup = metrics["wall_speedup_bem_vs_adda"]
+        if speedup is None:
+            speedup_text = "; отношение полного времени не вычислено"
+        elif speedup >= 1.0:
+            speedup_text = (
+                f"; BEM быстрее ADDA по полному времени в {speedup:.2f} раза"
+            )
+        else:
+            speedup_text = (
+                f"; ADDA быстрее BEM по полному времени в {1.0 / speedup:.2f} раза"
+            )
         lines.extend(
             [
                 (
@@ -369,9 +397,8 @@ def write_report(path: Path, summary: dict) -> None:
                     f"{info['dipoles_per_wavelength']:.3f} диполя/длину волны, "
                     f"{info['iterations_total']} итераций на две поляризации; "
                     f"wall time процесса "
-                    f"{(info['process_wall_s'] or info['wall_s']):.2f} с; "
-                    f"ADDA быстрее BEM по полному "
-                    f"времени в {metrics['wall_speedup_adda_vs_bem']:.2f} раза."
+                    f"{(info['process_wall_s'] or info['wall_s']):.2f} с"
+                    f"{speedup_text}."
                 ),
                 (
                     f"- ADDA {run['label']} против BEM: взвешенная по телесному углу "
@@ -428,7 +455,9 @@ def main() -> None:
             len(coarse_theta) != len(theta)
             or not np.allclose(coarse_theta, theta)
         ):
-            raise ValueError(f"BEM angles in {path} do not match fine BEM")
+            coarse_mueller = interpolate_mueller(
+                coarse_theta, coarse_mueller, theta
+            )
         metrics = comparison_metrics(theta, bem_mueller, coarse_mueller)
         bem_coarse_summary.append(
             {
@@ -451,11 +480,15 @@ def main() -> None:
         metrics = comparison_metrics(theta, bem_mueller, mueller)
         adda_process_wall = info.get("process_wall_s") or info["wall_s"]
         if bem_info["wall_s"] is not None and adda_process_wall is not None:
-            metrics["wall_speedup_adda_vs_bem"] = (
+            metrics["wall_time_ratio_bem_over_adda"] = (
                 bem_info["wall_s"] / adda_process_wall
             )
+            metrics["wall_speedup_bem_vs_adda"] = (
+                adda_process_wall / bem_info["wall_s"]
+            )
         else:
-            metrics["wall_speedup_adda_vs_bem"] = None
+            metrics["wall_time_ratio_bem_over_adda"] = None
+            metrics["wall_speedup_bem_vs_adda"] = None
         adda_summary.append(
             {
                 "label": label,

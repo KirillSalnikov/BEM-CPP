@@ -1,5 +1,10 @@
 # Muller FMM Optimization on RTX 3090 Ti
 
+`BEM_FMM_BANDED_COARSE_ORDER_REFERENCE_DEPTH=N` sets an independent order
+floor for the coarse member of the banded FMM. The ka=80 physical-fast profile
+uses a depth-4 coarse tree with a depth-3 order floor; this retains the strict
+three-band operator accuracy while avoiding the separate middle tree.
+
 ## Scope
 
 These measurements use the H(div)-BDM1 Muller operator, quadrature order 7,
@@ -104,6 +109,17 @@ than the full-memory transposed path. Set
 memory footprint, or `BEM_FMM_PHASE_CACHE=0` if the primary cache prevents a
 larger mesh from fitting.
 
+For `ka=111, ref=6`, neither complete phase table fit beside both pFFT media.
+The bounded fallback enabled by `BEM_FMM_L2P_PHASE_CACHE_FP16=1` and
+`BEM_FMM_L2P_PHASE_CACHE_FP16_MB=1024` cached 256 directions per medium in
+919 MiB. It reduced the three-step solve from 36.87 s to 30.61 s (`1.20x`)
+and changed the full Mueller output by `9.21e-4%`. Remaining directions still
+compute phases on demand, and all accumulations remain FP32. On the same
+case, `BEM_FMM_STRICT_PAIR_WORKSPACE=0` was required for mixed-precision
+iterative refinement: eager paired FP64 workspaces otherwise left too little
+memory for the first pFFT action. The sequential strict residual preserves
+the mathematical operator.
+
 For one Shape A `ka=40, ref=3` base orientation and ten forced iterations,
 paired GPU GMRES reduced the two-polarization solve from 8.780 s to 8.226 s
 (`1.067x`). The final residual was unchanged at `1.926e-1`, and the maximum
@@ -161,6 +177,22 @@ the extra charge and operator buffers are not allocated.
 solves on the fast mixed operator but recomputes the residual with a fully
 FP64 FMM action after every restart cycle. If that residual exceeds the
 requested tolerance, the next cycle solves for the residual correction.
+The nested pFFT preconditioner now accepts its projected inner residual and
+does not repeat the same pFFT action solely for verification. The outer
+restart default is 40, and a 10% projected-residual margin reduces avoidable
+FP64 checks near the requested tolerance.
+The public `standard` orientation profile now enables this mode and FP64 L2P
+automatically. Stage-isolation tests on a `ka=3`, `m=1.5`, `ref=3` hexagonal
+prism identified FP32 L2P as the source of a residual plateau near `2.2e-5`;
+FP64 L2P reached `2.9e-7` while the remaining FMM stages stayed mixed.
+
+On the `ka=80`, `m=1.3`, `ref=6` prism (806400 complex unknowns), the final
+combined path used 34 outer and 377 inner iterations, reached a true FP64 FMM
+residual of `9.26e-6`, and completed in 255.56 s. The earlier implementation,
+which used a strict FMM action on every outer Arnoldi step and solved both
+polarizations independently, took 2529.75 s. This is a measured `9.90x`
+speedup; peak process RSS was 9.64 GiB and observed GPU allocation was about
+16.1 GiB.
 
 Strict residual actions now evaluate the electric and magnetic currents in a
 paired FP64 traversal. A dedicated six-channel FP64 multipole/local workspace
@@ -169,8 +201,8 @@ to the previous sequential strict action. For the same `ka=20` prism, the
 strict residual reached `8.19e-6` in 60 iterations. Solve time decreased from
 18.842 s for sequential strict actions to 17.204 s (`1.095x`), while the
 largest Mueller change relative to the previous strict result was `2.01e-7`
-of the result peak. It is still a validation mode rather than the default fast
-path: the ordinary mixed solve took 9.844 s.
+of the result peak. It remains an explicit expert option outside the
+`standard` orientation workflow; the ordinary mixed solve took 9.844 s.
 
 ### Angular spectral far field
 
@@ -351,3 +383,80 @@ bin/muller_nodal_fmm_demo_fp32 \
 
 The driver sets the depth-5 expansion-order floor automatically. Do not use a
 native reduced depth-6 order for a physical calculation.
+
+## High-frequency symmetry audit
+
+The new standalone commutator diagnostic applies a deterministic complex
+probe to both `AT` and `TA`, where `T` is the declared polarization symmetry.
+It does not require a linear solve. For the regular hexagonal prism it exposed
+an error that residual-only testing could not detect:
+
+| `ka=111`, `m=1.3`, `ref=6` configuration | `||AT-TA||/||AT||` |
+|---|---:|
+| depth 5, mixed | `7.578e-2` |
+| depth 5, FP64 | `7.578e-2` |
+| depth 5, requested digits 7 | `2.650e-2` |
+| depth 4, `--max-leaf 512` | `8.485e-3` |
+| depth 3, `--max-leaf 4096` | `7.125e-6` |
+| depth 5, depth-3 global order floor | `1.833e-5` |
+| depth 5/4/3 disjoint level bands | `2.228e-6` |
+
+The unchanged FP64 result rules out mixed-precision roundoff. The dominant
+error is the single FMM plane-wave order selected from the leaf size and then
+used on coarser levels. The depth-3 control reconverged to `8.32e-6` and
+`9.74e-6` residuals for the two polarizations. Its full Mueller result changed
+by `54.4%` from the old depth-5 BEM result and agreed with the stored ADDA FP32
+`dpl=15` result to `2.74%` in the solid-angle-weighted full-matrix norm.
+
+The durable implementation target is a level-dependent order
+`p_l = p(k a_l, tolerance)` plus stable interpolation and anterpolation between
+adjacent spherical direction grids. Increasing `digits` globally is both less
+accurate and more memory-intensive.
+
+Keeping the depth-5 tree while forcing the depth-3 order demonstrated that
+the missing coarse-level angular resolution is sufficient to explain the
+symmetry error. The exterior/interior orders became `p=55/65` with
+`L=6272/8712`, and setup took 63.8 s. This control occupied about 21.7 GiB
+even with GPU operator assembly disabled. Enabling GPU assembly exhausted a
+24 GiB card while uploading the near-correction arrays. It is therefore a
+diagnostic bridge, not a production solution.
+
+Reordering the existing workspaces cannot make the current uniform-order
+paired path fit. Its six-channel FP32 multipole and local expansions alone
+would require about 8.4 GiB for the two media; the geometry, transfers, near
+corrections, and one scalar workspace already require about 16 GiB. A real
+memory reduction must avoid storing the fine-level direction count at every
+tree node, which is exactly what level-dependent orders provide.
+
+The implemented banded control achieves that memory reduction without
+interpolation. The depth-5 tree evaluates only level-5 M2L interactions and
+P2P, the depth-4 tree evaluates only level 4, and the depth-3 tree evaluates
+levels 1--3. The three disjoint actions sum to the same FMM decomposition but
+each tree stores a suitable direction count. Exterior/interior orders were
+`24/28`, `36/42`, and `55/65`; fused setup took 31.28 s and occupied
+12426 MiB. A small near-radius-3 prism gave a `3.068e-7` C6 commutator and a
+`2.302e-7` FMM/dense deterministic-probe difference. The large
+`ka=111, ref=6` commutator was `2.228e-6`.
+
+The first fused three-channel attempt incorrectly added P2P in every band.
+After both batch entry points were made conditional on `p2p_enabled`, its
+small dense result matched the scalar-band reference. A one-block-per-M2L-pair
+kernel then restored enough parallelism at the high-order coarse levels. The
+two large commutator actions took 70.97 s instead of 233.89 s for the scalar
+bands (`3.30x`) with the same `2.228e-6` result. The extra fused expansion
+buffers increased memory from 9482 to 12426 MiB. Full-solve and far-field
+validation are still required before enabling this mode automatically.
+
+Rounding the azimuthal plane-wave count to a multiple of six was also
+rejected. It increased the exterior direction count from 1250 to 1350 but
+reduced the depth-5 commutator only from `7.578e-2` to `7.218e-2`. Exact
+closure of the directional grid under a 60-degree rotation is therefore not
+enough while the Cartesian multilevel transfer remains under-resolved.
+
+An alternative analytic pFFT experiment derived gradient and Hessian actions
+from one scalar Green spectrum using `i xi G_hat` and
+`(|xi|^2 I-xi xi^T)G_hat`. It was rejected: the identities apply to the
+continuous transform, while the current pFFT uses a truncated sampled
+circulant kernel. The derivative test changed by 42%--117%; on a `ka=20`,
+`ref=2` prism, outer iterations increased from 3 to 4 and wall time from
+1.08 s to 1.50 s. The production sampled derivative spectra remain unchanged.

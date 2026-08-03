@@ -4,6 +4,7 @@
 #include "types.h"
 #include "octree.h"
 #include "sphere_quad.h"
+#include <climits>
 #include <complex>
 #include <vector>
 
@@ -53,6 +54,8 @@ struct HelmholtzFMM {
     float*  d_weights_fp32_cached;
     float2* d_phase_cache_fp32; // reusable real-k leaf phases, Nt*L
     float2* d_l2p_phase_cache_fp32; // direction-major phases, L*Nt
+    void*   d_l2p_phase_cache_fp16; // target-major half2 L2P fallback
+    int     l2p_phase_cache_fp16_directions;
     int*    d_p2p_offsets;    // (Nt+1)
     int*    d_p2p_indices;    // (nnz)
 
@@ -218,11 +221,17 @@ struct HelmholtzFMM {
     bool batch4_allocated;
     bool pair_l2p_allocated;
     bool near_field_fp32;
+    int order_reference_depth;
+    int minimum_m2l_level;
+    int maximum_m2l_level;
+    bool p2p_enabled;
 
     HelmholtzFMM() : d_tgt_pts(0), d_src_pts(0),
         d_tgt_pts_fp32(0), d_src_pts_fp32(0),
         d_dirs_fp32_cached(0), d_weights_fp32_cached(0),
         d_phase_cache_fp32(0), d_l2p_phase_cache_fp32(0),
+        d_l2p_phase_cache_fp16(0),
+        l2p_phase_cache_fp16_directions(0),
         d_p2p_offsets(0), d_p2p_indices(0),
         d_multi_re(0), d_multi_im(0), d_local_re(0), d_local_im(0),
         d_transfer_re(0), d_transfer_im(0),
@@ -265,7 +274,21 @@ struct HelmholtzFMM {
         d_gx4_re_tmp_cached(0), d_gx4_im_tmp_cached(0),
         d_complex_tmp1(0), d_complex_tmp2(0), initialized(false),
         batch4_allocated(false), pair_l2p_allocated(false),
-        near_field_fp32(false) {}
+        near_field_fp32(false), order_reference_depth(0),
+        minimum_m2l_level(1),
+        maximum_m2l_level(INT_MAX), p2p_enabled(true) {}
+
+    void configure_order_reference_depth(int depth) {
+        order_reference_depth = depth;
+    }
+
+    void configure_interaction_band(
+        int minimum_level, int maximum_level,
+        bool include_near_field) {
+        minimum_m2l_level = minimum_level;
+        maximum_m2l_level = maximum_level;
+        p2p_enabled = include_near_field;
+    }
 
     // Initialize: build tree, precompute transfers, upload to GPU
     void init(const double* targets, int n_tgt,

@@ -38,6 +38,8 @@ class Profile:
     points_per_wavelength: float
     minimum_refinement: int
     mixed_precision: bool
+    compact_caches: bool
+    sequential_currents: bool
     solver_policy: str
     two_meshes: bool
     orientation_minimum_level: int
@@ -49,6 +51,62 @@ class Profile:
 
 
 PROFILES = {
+    "preview": Profile(
+        name="preview",
+        purpose=(
+            "Validated ka=80 prism preview with about 0.4% physical error; "
+            "not a residual-converged publication result."
+        ),
+        tolerance=3.0e-2,
+        fmm_digits=5,
+        quadrature=7,
+        duffy_order=4,
+        ntheta=181,
+        maximum_iterations=3,
+        gmres_restart=100,
+        max_leaf=32,
+        points_per_wavelength=3.0,
+        minimum_refinement=6,
+        mixed_precision=True,
+        compact_caches=False,
+        sequential_currents=False,
+        solver_policy="adaptive_pfft",
+        two_meshes=False,
+        orientation_minimum_level=1,
+        orientation_maximum_level=1,
+        orientation_m11_tolerance=1.0,
+        orientation_integral_tolerance=1.0,
+        orientation_component_tolerance=1.0,
+        orientation_recycle_rank=0,
+    ),
+    "physical-fast": Profile(
+        name="physical-fast",
+        purpose=(
+            "Two-stage physically validated ka=60/80/111 prism calculation; "
+            "targets observables rather than a 1e-5 linear residual."
+        ),
+        tolerance=4.0e-3,
+        fmm_digits=5,
+        quadrature=7,
+        duffy_order=4,
+        ntheta=181,
+        maximum_iterations=5,
+        gmres_restart=100,
+        max_leaf=256,
+        points_per_wavelength=3.0,
+        minimum_refinement=6,
+        mixed_precision=True,
+        compact_caches=False,
+        sequential_currents=True,
+        solver_policy="adaptive_pfft",
+        two_meshes=False,
+        orientation_minimum_level=1,
+        orientation_maximum_level=1,
+        orientation_m11_tolerance=1.0,
+        orientation_integral_tolerance=1.0,
+        orientation_component_tolerance=1.0,
+        orientation_recycle_rank=0,
+    ),
     "quick": Profile(
         name="quick",
         purpose="Exploratory calculation; not suitable for publication.",
@@ -56,13 +114,15 @@ PROFILES = {
         fmm_digits=4,
         quadrature=4,
         duffy_order=3,
-        ntheta=73,
+        ntheta=181,
         maximum_iterations=200,
         gmres_restart=50,
         max_leaf=64,
         points_per_wavelength=4.0,
         minimum_refinement=2,
         mixed_precision=True,
+        compact_caches=False,
+        sequential_currents=False,
         solver_policy="fmm_mbj",
         two_meshes=False,
         orientation_minimum_level=1,
@@ -86,6 +146,36 @@ PROFILES = {
         points_per_wavelength=8.0,
         minimum_refinement=2,
         mixed_precision=True,
+        compact_caches=True,
+        sequential_currents=False,
+        solver_policy="adaptive_pfft",
+        two_meshes=False,
+        orientation_minimum_level=2,
+        orientation_maximum_level=4,
+        orientation_m11_tolerance=1.0e-2,
+        orientation_integral_tolerance=1.0e-2,
+        orientation_component_tolerance=1.0e-1,
+        orientation_recycle_rank=8,
+    ),
+    "memory": Profile(
+        name="memory",
+        purpose=(
+            "Standard accuracy with lower GPU memory use and at most a "
+            "moderate runtime penalty."
+        ),
+        tolerance=1.0e-5,
+        fmm_digits=5,
+        quadrature=7,
+        duffy_order=4,
+        ntheta=181,
+        maximum_iterations=500,
+        gmres_restart=100,
+        max_leaf=32,
+        points_per_wavelength=8.0,
+        minimum_refinement=2,
+        mixed_precision=True,
+        compact_caches=True,
+        sequential_currents=True,
         solver_policy="adaptive_pfft",
         two_meshes=False,
         orientation_minimum_level=2,
@@ -109,6 +199,8 @@ PROFILES = {
         points_per_wavelength=8.0,
         minimum_refinement=2,
         mixed_precision=False,
+        compact_caches=False,
+        sequential_currents=False,
         solver_policy="adaptive_pfft",
         two_meshes=True,
         orientation_minimum_level=2,
@@ -118,6 +210,49 @@ PROFILES = {
         orientation_component_tolerance=2.0e-2,
         orientation_recycle_rank=0,
     ),
+}
+
+
+# Measurements for the published control cases.  The automatic planner does
+# not depend on this table; it only attaches known validation/baseline numbers
+# when a generated plan happens to match one of these cases.
+VALIDATED_TWO_STAGE_CASES = {
+    60.0: {
+        "stage1_tolerance": 3.0e-2,
+        "stage2_maximum_iterations": 5,
+        "pfft_grid_safety": 0.8,
+        "banded_split_depth": 4,
+        "banded_coarse_max_leaf": 512,
+        "banded_middle_max_leaf": 256,
+        "banded_coarse_order_reference_depth": 3,
+        "saved_adda_wall_s": 1017.7369,
+        "measured_physical_fast_residual": 2.277211e-3,
+        "strict_reference_weighted_full_mueller_relative_l2": 2.48013e-4,
+    },
+    80.0: {
+        "stage1_tolerance": 3.0e-2,
+        "stage2_maximum_iterations": 5,
+        "pfft_grid_safety": 0.8,
+        "banded_split_depth": 4,
+        "banded_coarse_max_leaf": 512,
+        "banded_middle_max_leaf": 256,
+        "banded_coarse_order_reference_depth": 3,
+        "saved_adda_wall_s": 3285.405,
+        "measured_physical_fast_residual": 3.424314e-3,
+        "strict_reference_weighted_full_mueller_relative_l2": 7.77968e-5,
+    },
+    111.0: {
+        "stage1_tolerance": 4.0e-2,
+        "stage2_maximum_iterations": 8,
+        "pfft_grid_safety": 1.0,
+        "banded_split_depth": 3,
+        "banded_coarse_max_leaf": 4096,
+        "banded_middle_max_leaf": 512,
+        "banded_coarse_order_reference_depth": None,
+        "saved_adda_wall_s": 15489.3375,
+        "measured_physical_fast_residual": 1.691905e-3,
+        "strict_reference_weighted_full_mueller_relative_l2": 5.82976e-4,
+    },
 }
 
 
@@ -151,6 +286,10 @@ def base_edge_scale(args: argparse.Namespace) -> float:
     return 1.0
 
 
+def shortest_wavelength_factor(args: argparse.Namespace) -> float:
+    return max(1.0, abs(args.ri))
+
+
 def automatic_refinement(args: argparse.Namespace, profile: Profile) -> int:
     if args.ref is not None:
         if args.ref < 0:
@@ -169,6 +308,7 @@ def automatic_refinement(args: argparse.Namespace, profile: Profile) -> int:
         points_per_wavelength
         * args.ka
         * base_edge_scale(args)
+        * shortest_wavelength_factor(args)
         / (2.0 * math.pi)
     )
     return max(profile.minimum_refinement, int(math.ceil(math.log2(max(1.0, required)))))
@@ -189,12 +329,39 @@ def estimate_dofs(args: argparse.Namespace, refinement: int) -> int:
     if args.shape == "obj":
         triangles = obj_triangle_count(Path(args.obj))
         return max(1, 6 * triangles * scale)
-    sides = 4 if args.shape == "cube" else args.sides
-    return 36 * sides * scale
+    if args.shape == "cube":
+        return 72 * scale
+    sides = args.sides
+    segment_count = 1 << refinement
+    circumradius = (
+        1.0 / (2.0 * math.cos(math.pi / sides))
+        if sides % 2 == 0
+        else 1.0 / (1.0 + math.cos(math.pi / sides))
+    )
+    side_length = 2.0 * circumradius * math.sin(math.pi / sides)
+    height_segments = max(
+        segment_count,
+        int(math.ceil(args.aspect * segment_count / side_length)),
+    )
+    triangles = (
+        2 * sides * segment_count * (height_segments + segment_count)
+    )
+    return 6 * triangles
 
 
 def estimate_memory_gib(profile: Profile, dofs: int, pfft_fgmres: bool) -> float:
+    if profile.name == "preview":
+        # Measured ka=80/ref=6 peak with one interior FP32 phase table.
+        return 22.7
     # Conservative empirical envelope from the 24 GiB release-machine runs.
+    if profile.sequential_currents and pfft_fgmres:
+        # Sequential electric/magnetic FMM actions avoid both mixed and
+        # strict paired-current workspaces.
+        return 1.25 + dofs * (14 * 1024) / (1024.0 ** 3)
+    if profile.compact_caches and pfft_fgmres:
+        # The phase and flattened near-source caches accounted for about
+        # 5.6 GiB of an 18.2 GiB ka=60/ref=6 measurement.
+        return 1.5 + dofs * (18 * 1024) / (1024.0 ** 3)
     bytes_per_dof = 28 * 1024 if pfft_fgmres else (
         26 * 1024 if not profile.mixed_precision else 20 * 1024
     )
@@ -202,7 +369,7 @@ def estimate_memory_gib(profile: Profile, dofs: int, pfft_fgmres: bool) -> float
     return fixed_gib + dofs * bytes_per_dof / (1024.0 ** 3)
 
 
-def gpu_memory_gib(index: int) -> float | None:
+def gpu_memory_status_gib(index: int) -> tuple[float, float] | None:
     executable = shutil.which("nvidia-smi")
     if not executable:
         return None
@@ -210,7 +377,7 @@ def gpu_memory_gib(index: int) -> float | None:
         [
             executable,
             f"--id={index}",
-            "--query-gpu=memory.total",
+            "--query-gpu=memory.total,memory.free",
             "--format=csv,noheader,nounits",
         ],
         text=True,
@@ -221,7 +388,8 @@ def gpu_memory_gib(index: int) -> float | None:
     if process.returncode != 0:
         return None
     try:
-        return float(process.stdout.splitlines()[0].strip()) / 1024.0
+        values = process.stdout.splitlines()[0].split(",")
+        return float(values[0].strip()) / 1024.0, float(values[1].strip()) / 1024.0
     except (IndexError, ValueError):
         return None
 
@@ -306,6 +474,33 @@ def selected(args: argparse.Namespace, name: str, default: Any) -> Any:
     return default if value is None else value
 
 
+def default_maximum_iterations(args: argparse.Namespace, profile: Profile) -> int:
+    if profile.name == "quick" and abs(args.ri) >= 2.5:
+        return max(profile.maximum_iterations, 400)
+    return profile.maximum_iterations
+
+
+def default_mbj_nodes(args: argparse.Namespace, profile: Profile) -> int:
+    if profile.name in {"standard", "memory"} and abs(args.ri) >= 2.5:
+        return 100
+    return 50
+
+
+def default_pfft_inner_tolerance(dofs: int) -> float:
+    return 8.0e-2 if dofs >= 500_000 else 4.0e-2
+
+
+def default_orientation_maximum_level(
+    args: argparse.Namespace, profile: Profile,
+) -> int:
+    if abs(args.ri) >= 2.0:
+        if profile.name == "quick":
+            return max(profile.orientation_maximum_level, 4)
+        if profile.name in {"standard", "memory"}:
+            return max(profile.orientation_maximum_level, 5)
+    return profile.orientation_maximum_level
+
+
 def orientation_parameters(
     args: argparse.Namespace,
     profile: Profile,
@@ -351,7 +546,7 @@ def orientation_parameters(
     if adaptive:
         levels = args.adaptive_levels or (
             profile.orientation_minimum_level,
-            profile.orientation_maximum_level,
+            default_orientation_maximum_level(args, profile),
         )
         minimum_level, maximum_level = levels
         if minimum_level < 1 or maximum_level <= minimum_level or maximum_level > 15:
@@ -373,6 +568,7 @@ def orientation_parameters(
             fail("adaptive averaging tolerances must be non-negative")
         beta_nodes = (1 << maximum_level) + 1
         gamma_nodes = 1 << maximum_level
+        maximum_base_orientations = beta_nodes * gamma_nodes
         parts = output / "orientation_parts"
         arguments = [
             "--orient-average", str(alpha), str(beta_nodes), str(gamma_nodes),
@@ -382,6 +578,15 @@ def orientation_parameters(
             "--orient-adaptive-component-tol", f"{component_tolerance:g}",
             "--orient-parts-dir", str(parts),
         ]
+        dihedral_symmetry = (
+            args.shape in ("cube", "prism") and alpha % 2 == 0
+        )
+        if dihedral_symmetry:
+            arguments.append("--orient-dihedral-symmetry")
+        maximum_solved_base_orientations = (
+            (maximum_base_orientations + 2) // 2
+            if dihedral_symmetry else maximum_base_orientations
+        )
         details = {
             "mode": "adaptive",
             "alpha": alpha,
@@ -389,11 +594,15 @@ def orientation_parameters(
             "maximum_level": maximum_level,
             "maximum_beta_nodes": beta_nodes,
             "maximum_gamma_nodes": gamma_nodes,
-            "maximum_base_orientations": beta_nodes * gamma_nodes,
+            "maximum_base_orientations": maximum_base_orientations,
+            "maximum_solved_base_orientations": (
+                maximum_solved_base_orientations
+            ),
             "m11_tolerance": m11_tolerance,
             "integral_tolerance": integral_tolerance,
             "component_tolerance": component_tolerance,
             "parts_directory": str(parts),
+            "dihedral_symmetry_reuse": dihedral_symmetry,
         }
     else:
         beta = selected(args, "beta", 8)
@@ -407,6 +616,7 @@ def orientation_parameters(
             "beta": beta,
             "gamma": gamma,
             "base_orientations": beta * gamma,
+            "dihedral_symmetry_reuse": False,
         }
 
     arguments += [
@@ -452,29 +662,47 @@ def make_single_plan(
     duffy_order = selected(args, "duffy_order", profile.duffy_order)
     fmm_digits = selected(args, "fmm_digits", profile.fmm_digits)
     maximum_iterations = selected(
-        args, "maximum_iterations", profile.maximum_iterations
+        args, "maximum_iterations", default_maximum_iterations(args, profile)
     )
     gmres_restart = selected(args, "gmres_restart", profile.gmres_restart)
     ntheta = selected(args, "ntheta", profile.ntheta)
-    mbj_nodes = selected(args, "mbj_nodes", 50)
+    mbj_nodes = selected(args, "mbj_nodes", default_mbj_nodes(args, profile))
     mbj_overlap = selected(args, "mbj_overlap", 0)
-    pfft_inner_tolerance = selected(args, "pfft_inner_tolerance", 4.0e-2)
+    dofs = estimate_dofs(args, refinement)
+    pfft_inner_tolerance = selected(
+        args,
+        "pfft_inner_tolerance",
+        0.12 if profile.name == "preview" else default_pfft_inner_tolerance(dofs),
+    )
     pfft_inner_iterations = selected(args, "pfft_inner_iterations", "auto")
-    pfft_outer_restart = selected(args, "pfft_outer_restart", 32)
+    pfft_outer_restart = selected(
+        args, "pfft_outer_restart", 3 if profile.name == "preview" else 40
+    )
     pfft_order = selected(args, "pfft_order", 2)
     pfft_correction_radius = selected(args, "pfft_correction_radius", 0.0)
     pfft_grid_safety = selected(args, "pfft_grid_safety", 1.0)
     points_per_wavelength = selected(
         args, "points_per_wavelength", profile.points_per_wavelength
     )
-    achieved_points_per_wavelength = None
+    exterior_points_per_wavelength = None
+    interior_points_per_wavelength = None
+    shortest_points_per_wavelength = None
     if args.shape != "obj":
-        achieved_points_per_wavelength = (
+        exterior_points_per_wavelength = (
             2.0 * math.pi * (1 << refinement)
             / (args.ka * base_edge_scale(args))
         )
-    dofs = estimate_dofs(args, refinement)
+        interior_points_per_wavelength = exterior_points_per_wavelength / abs(args.ri)
+        shortest_points_per_wavelength = (
+            exterior_points_per_wavelength / shortest_wavelength_factor(args)
+        )
     result = output / "result.json"
+    cache_directory = output
+    if profile.name == "preview":
+        cache_root = Path(
+            os.environ.get("BEM_CACHE_DIR", Path.home() / ".cache" / "bem-cpp")
+        ).expanduser().resolve()
+        cache_directory = cache_root / "preview_prism_ka80_m1p3_ref6"
     command = [str(binary)]
     command += shape_arguments(args)
     command += [
@@ -502,25 +730,85 @@ def make_single_plan(
         pfft_correction_radius,
         pfft_grid_safety,
     )
+    if profile.name == "preview":
+        command += ["--trust-final-projected-residual"]
     command += [
         "--fmm-near-fp32" if profile.mixed_precision else "--fmm-near-fp64",
-        "--near-correction-cache", str(output / "operator.near"),
-        "--mbj-cache", str(output / f"mbj{mbj_nodes}.cache"),
+        "--near-correction-cache", str(cache_directory / "operator.near"),
+        "--mbj-cache", str(cache_directory / f"mbj{mbj_nodes}.cache"),
         "--physical-check",
         "--ntheta", str(ntheta),
         "--no-dense-validation",
         "--iteration-log", str(output / "iterations.csv"),
     ]
+    if profile.name == "preview":
+        command += ["--no-checkpoint"]
+    else:
+        command += ["--checkpoint", str(output / "checkpoint")]
+
+    exact_prism_polarization_symmetry = (
+        kind == "run"
+        and args.shape == "prism"
+        and profile.name != "strict"
+        and not args.independent_polarizations
+    )
+    if exact_prism_polarization_symmetry:
+        command += [
+            "--cyclic-polarization",
+            "--cyclic-exact-geometry",
+        ]
 
     orientation: dict[str, Any] | None = None
     if kind == "average":
         orientation_arguments, orientation = orientation_parameters(
             args, profile, output, pfft_fgmres
         )
+        orientation.update({
+            "operator_setup_reused": True,
+            "operator_setup_count": 1,
+            "resume_granularity": "completed_base_orientation",
+        })
         command += orientation_arguments
 
     command += ["--out", str(result)]
     memory = estimate_memory_gib(profile, dofs, pfft_fgmres)
+    strict_residual_refinement = (
+        profile.mixed_precision and tolerance <= 1.0e-5
+    )
+    runtime_environment: dict[str, str] = {}
+    if kind == "average":
+        runtime_environment["BEM_MULLER_GPU_ASSEMBLY"] = "1"
+    if strict_residual_refinement:
+        runtime_environment["BEM_MIXED_ITERATIVE_REFINEMENT"] = "1"
+        # FP32 L2P evaluation can leave a 2e-5 true-residual floor on sharp
+        # meshes.  Keep the expensive FMM translations mixed precision, but
+        # evaluate the final local expansion in FP64 for the standard target.
+        runtime_environment["BEM_FMM_L2P_FP32"] = "0"
+    if profile.compact_caches:
+        runtime_environment["BEM_FMM_PHASE_CACHE"] = "0"
+        runtime_environment["BEM_FMM_FLAT_NEAR_SOURCES"] = "0"
+    if profile.name == "preview":
+        runtime_environment.update({
+            "BEM_MIXED_ITERATIVE_REFINEMENT": "0",
+            "BEM_FMM_L2P_FP32": "1",
+            "BEM_FMM_PHASE_CACHE": "1",
+            "BEM_FMM_PHASE_CACHE_RESERVE_MB": "512",
+            "BEM_FMM_L2P_WARP_PER_TARGET": "1",
+            "BEM_FMM_L2P_PHASE_CACHE_FP16": "1",
+            "BEM_FMM_L2P_PHASE_CACHE_FP16_MB": "1024",
+            "BEM_FMM_FLAT_NEAR_SOURCES": "0",
+            "BEM_FMM_INTERIOR_FIRST": "1",
+        })
+    elif profile.name == "quick":
+        runtime_environment.update({
+            "BEM_FMM_L2P_PHASE_CACHE_FP16": "1",
+            "BEM_FMM_L2P_PHASE_CACHE_FP16_MB": "1024",
+        })
+    if strict_residual_refinement and dofs >= 700_000 and args.ka >= 100.0:
+        runtime_environment["BEM_FMM_STRICT_PAIR_WORKSPACE"] = "0"
+    runtime_environment["BEM_FMM_PAIR_CURRENTS"] = (
+        "0" if profile.sequential_currents else "1"
+    )
     return {
         "schema_version": 1,
         "wrapper_version": VERSION,
@@ -542,11 +830,59 @@ def make_single_plan(
             "mbj_nodes": mbj_nodes,
             "mbj_overlap": mbj_overlap,
             "pfft_inner_tolerance": pfft_inner_tolerance,
+            "pfft_inner_tolerance_selection": (
+                "explicit"
+                if args.pfft_inner_tolerance is not None
+                else "automatic_by_system_size"
+            ),
             "pfft_inner_iterations": pfft_inner_iterations,
             "pfft_outer_restart": pfft_outer_restart,
             "pfft_order": pfft_order,
             "pfft_correction_radius": pfft_correction_radius,
             "pfft_grid_safety": pfft_grid_safety,
+            "strict_residual_refinement": strict_residual_refinement,
+            "final_residual_verification": (
+                "projected_residual_only"
+                if profile.name == "preview"
+                else "operator_residual"
+            ),
+            "krylov_operator_policy": (
+                "mixed_fmm_with_fp64_restart_residual"
+                if strict_residual_refinement and pfft_fgmres
+                else "profile_operator"
+            ),
+            "polarization_mode": (
+                "verified_prism_symmetry_with_correction"
+                if exact_prism_polarization_symmetry
+                else "independent"
+            ),
+            "l2p_precision": (
+                "fp64" if strict_residual_refinement
+                else ("fp32" if profile.mixed_precision else "fp64")
+            ),
+            "memory_policy": (
+                "sequential_currents_and_recompute_caches"
+                if profile.sequential_currents else (
+                    "recompute_phases_and_direct_near_lists"
+                    if profile.compact_caches else "performance_caches"
+                )
+            ),
+            "automatic_high_contrast_adjustments": {
+                "extended_iterations": (
+                    args.maximum_iterations is None
+                    and maximum_iterations > profile.maximum_iterations
+                ),
+                "extended_angular_levels": (
+                    kind == "average"
+                    and args.adaptive_levels is None
+                    and profile.name in {"quick", "standard", "memory"}
+                    and abs(args.ri) >= 2.0
+                ),
+                "larger_mbj_blocks": (
+                    args.mbj_nodes is None
+                    and mbj_nodes > 50
+                ),
+            },
             "orientation": orientation,
         },
         "inputs": {
@@ -555,8 +891,14 @@ def make_single_plan(
             "relative_refractive_index": args.ri,
             "refinement": refinement,
             "refinement_selection": "explicit" if args.ref is not None else "automatic",
-            "target_points_per_exterior_wavelength": points_per_wavelength,
-            "estimated_points_per_exterior_wavelength": achieved_points_per_wavelength,
+            "target_points_per_exterior_wavelength": (
+                points_per_wavelength * shortest_wavelength_factor(args)
+            ),
+            "target_points_per_shortest_wavelength": points_per_wavelength,
+            "estimated_points_per_exterior_wavelength": exterior_points_per_wavelength,
+            "estimated_points_per_interior_wavelength": interior_points_per_wavelength,
+            "estimated_points_per_shortest_wavelength": shortest_points_per_wavelength,
+            "shortest_wavelength_refractive_factor": shortest_wavelength_factor(args),
             "sides": args.sides if args.shape == "prism" else None,
             "aspect": args.aspect if args.shape == "prism" else None,
             "obj": str(Path(args.obj).expanduser().resolve()) if args.obj else None,
@@ -564,6 +906,11 @@ def make_single_plan(
         "estimate": {
             "system_dofs": dofs,
             "gpu_memory_gib": round(memory, 2),
+            "checkpoint_disk_gib": round(
+                dofs * (32 if kind == "average" else 16) /
+                (1024.0 ** 3),
+                3,
+            ),
             "note": "conservative estimate; setup-only reports actual allocation",
         },
         "runtime": {
@@ -573,15 +920,374 @@ def make_single_plan(
             "gpu": args.gpu,
             "cxx": args.cxx,
             "cuda_home": args.cuda_home,
-            "environment": (
-                {"BEM_MULLER_GPU_ASSEMBLY": "1"}
-                if kind == "average" else {}
-            ),
+            "environment": runtime_environment,
         },
         "output_directory": str(output),
+        "cache_directory": str(cache_directory),
         "result_path": str(result),
         "command": command,
     }
+
+
+def replace_command_option(
+    command: list[str], option: str, value: str,
+) -> None:
+    index = command.index(option)
+    command[index + 1] = value
+
+
+def remove_command_option(
+    command: list[str], option: str, takes_value: bool = False,
+) -> None:
+    if option not in command:
+        return
+    index = command.index(option)
+    del command[index:index + (2 if takes_value else 1)]
+
+
+def validated_two_stage_case(ka: float) -> dict[str, Any] | None:
+    for candidate, settings in VALIDATED_TWO_STAGE_CASES.items():
+        if math.isclose(ka, candidate):
+            return settings
+    return None
+
+
+def matches_validated_two_stage_control(
+    args: argparse.Namespace, refinement: int,
+) -> bool:
+    return (
+        args.shape == "prism"
+        and args.sides == 6
+        and math.isclose(args.aspect, 1.0)
+        and math.isclose(args.ri, 1.3)
+        and refinement == 6
+        and validated_two_stage_case(args.ka) is not None
+    )
+
+
+def automatic_banded_settings(
+    args: argparse.Namespace,
+    profile: Profile,
+    refinement: int,
+    dofs: int,
+) -> dict[str, Any]:
+    """Choose a conservative banded-FMM hierarchy from mesh resolution.
+
+    Surface refinement increases the number of unknowns by roughly four per
+    level.  Moving the split one octree level deeper at the same time keeps the
+    coarse occupancy in the same range.  Electrically dense meshes use one
+    shallower split and larger leaves to limit translation/setup memory.
+    """
+    electrical_density = (
+        args.ka * shortest_wavelength_factor(args) / float(1 << refinement)
+    )
+    dense_frequency = electrical_density >= 2.0 or dofs >= 2_000_000
+    split_depth = max(
+        2,
+        min(6, refinement - (3 if dense_frequency else 2)),
+    )
+    # A one-level shallower octree contains roughly eight times more source
+    # quadrature points per leaf.  These values reproduce the measured
+    # ref6 split-4 (512/256) and split-3 (4096/512) controls and continue that
+    # occupancy law to adjacent refinements.
+    coarse_max_leaf = max(64, int(512 * (8.0 ** (4 - split_depth))))
+    middle_max_leaf = max(64, int(256 * (2.0 ** (4 - split_depth))))
+    stage1_tolerance = min(
+        8.0e-2,
+        max(3.0e-2, 2.0e-2 * shortest_wavelength_factor(args)),
+    )
+    return {
+        "selection": "automatic_by_mesh_and_electrical_density",
+        "electrical_density": electrical_density,
+        "stage1_tolerance": stage1_tolerance,
+        "stage2_maximum_iterations": default_maximum_iterations(args, profile),
+        "pfft_grid_safety": 1.0 if dense_frequency else 0.8,
+        "banded_split_depth": split_depth,
+        "banded_coarse_max_leaf": coarse_max_leaf,
+        "banded_middle_max_leaf": middle_max_leaf,
+        "banded_coarse_order_reference_depth": (
+            None if dense_frequency else max(1, split_depth - 1)
+        ),
+    }
+
+
+def two_stage_settings(
+    args: argparse.Namespace,
+    profile: Profile,
+    refinement: int,
+    physical_fast: bool,
+) -> dict[str, Any]:
+    measured = (
+        validated_two_stage_case(args.ka)
+        if matches_validated_two_stage_control(args, refinement)
+        else None
+    )
+    if physical_fast:
+        if measured is None:
+            fail(f"no validated physical-fast parameters for ka={args.ka:g}")
+        settings = dict(measured)
+        settings["selection"] = "validated_control_case"
+        settings["electrical_density"] = (
+            args.ka * shortest_wavelength_factor(args) / float(1 << refinement)
+        )
+        return settings
+
+    settings = automatic_banded_settings(
+        args, profile, refinement, estimate_dofs(args, refinement)
+    )
+    if measured is not None:
+        for name in (
+            "saved_adda_wall_s",
+            "measured_physical_fast_residual",
+            "strict_reference_weighted_full_mueller_relative_l2",
+        ):
+            settings[name] = measured[name]
+    return settings
+
+
+def make_two_stage_plan(
+    args: argparse.Namespace,
+    profile: Profile,
+    output: Path,
+    refinement: int,
+    physical_fast: bool,
+) -> dict[str, Any]:
+    output = output.resolve()
+    cache_directory = output / "cache"
+    checkpoint = output / "checkpoint"
+    settings = two_stage_settings(
+        args, profile, refinement, physical_fast
+    )
+    target_tolerance = (
+        4.0e-3
+        if physical_fast
+        else selected(args, "tolerance", profile.tolerance)
+    )
+    final_maximum_iterations = (
+        int(settings["stage2_maximum_iterations"])
+        if physical_fast
+        else selected(
+            args,
+            "maximum_iterations",
+            default_maximum_iterations(args, profile),
+        )
+    )
+    mbj_nodes = selected(args, "mbj_nodes", default_mbj_nodes(args, profile))
+
+    stage1_args = argparse.Namespace(**vars(args))
+    stage1_args.solver = "pfft"
+    stage1_args.tolerance = float(settings["stage1_tolerance"])
+    stage1_args.fmm_digits = max(5, selected(args, "fmm_digits", profile.fmm_digits))
+    stage1_args.maximum_iterations = 3
+    stage1_args.max_leaf = 256
+    stage1_args.pfft_inner_tolerance = 0.12
+    stage1_args.pfft_inner_iterations = "auto"
+    stage1_args.pfft_outer_restart = 3
+    stage1_args.pfft_order = 2
+    stage1_args.pfft_correction_radius = 0.0
+    stage1_args.pfft_grid_safety = float(settings["pfft_grid_safety"])
+    stage1 = make_single_plan(
+        stage1_args, profile, output / "stage1_preview", refinement, "run"
+    )
+    stage1["kind"] = "two_stage_preview"
+    stage1["cache_directory"] = str(cache_directory)
+    stage1["effective_parameters"].update({
+        "stage": "up_to_three_step_preview",
+        "final_residual_verification": "projected_residual_only",
+        "physical_output": False,
+    })
+    stage1_command = stage1["command"]
+    replace_command_option(
+        stage1_command, "--near-correction-cache",
+        str(cache_directory / "operator.near"),
+    )
+    replace_command_option(
+        stage1_command, "--mbj-cache",
+        str(cache_directory / f"mbj{mbj_nodes}.cache"),
+    )
+    replace_command_option(stage1_command, "--checkpoint", str(checkpoint))
+    remove_command_option(stage1_command, "--physical-check")
+    remove_command_option(stage1_command, "--ntheta", takes_value=True)
+    remove_command_option(stage1_command, "--cyclic-polarization")
+    remove_command_option(stage1_command, "--cyclic-exact-geometry")
+    stage1_command.insert(
+        stage1_command.index("--out"), "--trust-final-projected-residual"
+    )
+    stage1["runtime"]["environment"].update({
+        "BEM_MIXED_ITERATIVE_REFINEMENT": "1",
+        "BEM_FMM_PAIR_CURRENTS": "0",
+        "BEM_MULLER_GPU_ASSEMBLY": "0",
+    })
+    two_stage_memory = (
+        1.25
+        + stage1["estimate"]["system_dofs"] * (14 * 1024) / (1024.0 ** 3)
+    )
+    stage1["estimate"]["gpu_memory_gib"] = round(two_stage_memory, 2)
+    stage1["effective_parameters"]["memory_policy"] = (
+        "sequential_currents_two_stage"
+    )
+    if args.ka >= 100.0:
+        stage1["runtime"]["environment"].update({
+            "BEM_FMM_L2P_PHASE_CACHE_FP16": "1",
+            "BEM_FMM_L2P_PHASE_CACHE_FP16_MB": "1024",
+            "BEM_FMM_STRICT_PAIR_WORKSPACE": "0",
+        })
+
+    stage2_args = argparse.Namespace(**vars(args))
+    stage2_args.solver = "pfft"
+    stage2_args.tolerance = target_tolerance
+    stage2_args.fmm_digits = max(5, selected(args, "fmm_digits", profile.fmm_digits))
+    stage2_args.maximum_iterations = final_maximum_iterations
+    stage2_args.max_leaf = 256
+    stage2_args.pfft_inner_tolerance = 2.0e-2
+    stage2_args.pfft_inner_iterations = "48"
+    stage2_args.pfft_outer_restart = 40
+    stage2_args.pfft_order = 2
+    stage2_args.pfft_correction_radius = 0.0
+    stage2_args.pfft_grid_safety = float(settings["pfft_grid_safety"])
+    stage2 = make_single_plan(
+        stage2_args, profile, output / "final", refinement, "run"
+    )
+    stage2["kind"] = "two_stage_exact"
+    stage2["cache_directory"] = str(cache_directory)
+    stage2_command = stage2["command"]
+    stage2["effective_parameters"].update({
+        "stage": "exact_banded_fmm_corrections",
+        "final_residual_verification": "exact_banded_fmm_operator_residual",
+        "physical_output": True,
+        "validated_residual_target": target_tolerance,
+        "polarization_mode": (
+            "exact_regular_prism_mesh_reconstruction"
+            if "--cyclic-polarization" in stage2_command
+            else "independent"
+        ),
+    })
+    replace_command_option(
+        stage2_command, "--near-correction-cache",
+        str(cache_directory / "operator.near"),
+    )
+    replace_command_option(
+        stage2_command, "--mbj-cache",
+        str(cache_directory / f"mbj{mbj_nodes}.cache"),
+    )
+    replace_command_option(stage2_command, "--checkpoint", str(checkpoint))
+    out_index = stage2_command.index("--out")
+    migration_options = ["--allow-checkpoint-migration"]
+    if "--cyclic-polarization" in stage2_command:
+        migration_options.append("--trust-cyclic-exact-geometry")
+    stage2_command[out_index:out_index] = migration_options
+    stage2["runtime"]["environment"].update({
+        "BEM_MIXED_ITERATIVE_REFINEMENT": "1",
+        "BEM_FMM_BANDED_SPLIT_DEPTH": str(settings["banded_split_depth"]),
+        "BEM_FMM_BANDED_COARSE_MAX_LEAF": str(
+            settings["banded_coarse_max_leaf"]
+        ),
+        "BEM_FMM_BANDED_MIDDLE_MAX_LEAF": str(
+            settings["banded_middle_max_leaf"]
+        ),
+        "BEM_FMM_PAIR_CURRENTS": "0",
+        "BEM_MULLER_GPU_ASSEMBLY": "0",
+        "BEM_FMM_STRICT_PAIR_WORKSPACE": "0",
+    })
+    stage2["estimate"]["gpu_memory_gib"] = round(two_stage_memory, 2)
+    stage2["effective_parameters"]["memory_policy"] = (
+        "sequential_currents_two_stage"
+    )
+    order_reference_depth = settings["banded_coarse_order_reference_depth"]
+    if order_reference_depth is not None:
+        stage2["runtime"]["environment"][
+            "BEM_FMM_BANDED_COARSE_ORDER_REFERENCE_DEPTH"
+        ] = str(order_reference_depth)
+    if args.ka >= 100.0 and target_tolerance > 1.0e-5:
+        stage2["runtime"]["environment"].update({
+            "BEM_FMM_L2P_PHASE_CACHE_FP16": "1",
+            "BEM_FMM_L2P_PHASE_CACHE_FP16_MB": "1024",
+        })
+
+    suite_kind = "physical_fast_suite" if physical_fast else "profile_two_stage_suite"
+    envelope = {
+        "selection": settings["selection"],
+        "shape": args.shape,
+        "sides": args.sides if args.shape == "prism" else None,
+        "aspect": args.aspect if args.shape == "prism" else None,
+        "ka": args.ka,
+        "relative_refractive_index": args.ri,
+        "refinement": refinement,
+        "electrical_density": settings["electrical_density"],
+        "theta_samples": stage2["effective_parameters"]["ntheta"],
+        "maximum_exact_operator_residual": target_tolerance,
+        "operator": "adaptive banded FMM",
+        "banded_parameters": {
+            "split_depth": settings["banded_split_depth"],
+            "coarse_max_leaf": settings["banded_coarse_max_leaf"],
+            "middle_max_leaf": settings["banded_middle_max_leaf"],
+            "coarse_order_reference_depth": settings[
+                "banded_coarse_order_reference_depth"
+            ],
+            "pfft_grid_safety": settings["pfft_grid_safety"],
+        },
+    }
+    if "saved_adda_wall_s" in settings:
+        envelope["saved_adda_ocl_fp32_dpl15_wall_time_s"] = settings[
+            "saved_adda_wall_s"
+        ]
+    if physical_fast:
+        envelope.update({
+            "measured_exact_operator_residual": settings[
+                "measured_physical_fast_residual"
+            ],
+            "strict_reference_weighted_full_mueller_relative_l2": settings[
+                "strict_reference_weighted_full_mueller_relative_l2"
+            ],
+        })
+
+    return {
+        "schema_version": 1,
+        "wrapper_version": VERSION,
+        "created_at_utc": utc_now(),
+        "kind": suite_kind,
+        "calculation_kind": "run",
+        "quality": profile.name,
+        "output_directory": str(output),
+        "cache_directory": str(cache_directory),
+        "checkpoint_prefix": str(checkpoint),
+        "result_path": stage2["result_path"],
+        "children": [stage1, stage2],
+        "validation_envelope": envelope,
+    }
+
+
+def has_pipeline_overrides(args: argparse.Namespace) -> bool:
+    return any(
+        value is not None
+        for value in (
+            args.max_leaf,
+            args.pfft_inner_tolerance,
+            args.pfft_inner_iterations,
+            args.pfft_outer_restart,
+            args.pfft_order,
+            args.pfft_correction_radius,
+            args.pfft_grid_safety,
+        )
+    )
+
+
+def use_automatic_acceleration(
+    args: argparse.Namespace,
+    profile: Profile,
+    refinement: int,
+) -> bool:
+    dofs = estimate_dofs(args, refinement)
+    return (
+        not args.single_stage
+        and profile.name in {"quick", "standard", "memory"}
+        and args.shape in {"sphere", "cube", "prism"}
+        and args.ka >= 60.0
+        and refinement >= 4
+        and dofs >= 100_000
+        and args.solver in {"auto", "pfft"}
+        and not has_pipeline_overrides(args)
+    )
 
 
 def create_plan(args: argparse.Namespace, kind: str) -> dict[str, Any]:
@@ -590,6 +1296,71 @@ def create_plan(args: argparse.Namespace, kind: str) -> dict[str, Any]:
     if args.ri <= 0.0:
         fail("--ri must be positive")
     profile = PROFILES[args.quality]
+    if profile.name == "physical-fast":
+        unsupported_overrides = [
+            option
+            for option, value in (
+                ("--points-per-wavelength", args.points_per_wavelength),
+                ("--tol", args.tolerance),
+                ("--digits", args.fmm_digits),
+                ("--quad", args.quadrature),
+                ("--duffy-order", args.duffy_order),
+                ("--ntheta", args.ntheta),
+                ("--max-iters", args.maximum_iterations),
+                ("--gmres-restart", args.gmres_restart),
+                ("--max-leaf", args.max_leaf),
+                ("--mbj-nodes", args.mbj_nodes),
+                ("--mbj-overlap", args.mbj_overlap),
+                ("--pfft-inner-tol", args.pfft_inner_tolerance),
+                ("--pfft-inner-iters", args.pfft_inner_iterations),
+                ("--pfft-outer-restart", args.pfft_outer_restart),
+                ("--pfft-order", args.pfft_order),
+                ("--pfft-correction-radius", args.pfft_correction_radius),
+                ("--pfft-grid-safety", args.pfft_grid_safety),
+            )
+            if value is not None
+        ]
+        physical_fast_case = (
+            kind == "run"
+            and args.shape == "prism"
+            and args.sides == 6
+            and math.isclose(args.aspect, 1.0)
+            and validated_two_stage_case(args.ka) is not None
+            and math.isclose(args.ri, 1.3)
+            and (args.ref is None or args.ref == 6)
+            and args.solver in {"auto", "pfft"}
+            and not args.independent_polarizations
+            and not unsupported_overrides
+        )
+        if not physical_fast_case:
+            detail = (
+                f"; unsupported overrides: {', '.join(unsupported_overrides)}"
+                if unsupported_overrides else ""
+            )
+            fail(
+                "the physical-fast profile is validated only for a regular "
+                "six-sided prism with ka=60, 80, or 111, m=1.3, ref=6, one fixed "
+                "orientation, automatic/pFFT solver selection, and no "
+                f"numerical overrides{detail}"
+            )
+    if profile.name == "preview":
+        preview_case = (
+            kind == "run"
+            and args.shape == "prism"
+            and args.sides == 6
+            and math.isclose(args.aspect, 1.0)
+            and math.isclose(args.ka, 80.0)
+            and math.isclose(args.ri, 1.3)
+            and (args.ref is None or args.ref == 6)
+            and not args.independent_polarizations
+            and args.solver != "fmm"
+        )
+        if not preview_case:
+            fail(
+                "the preview profile is validated only for a regular "
+                "six-sided prism with ka=80, m=1.3, ref=6, one fixed "
+                "orientation, and verified cyclic polarization correction"
+            )
     numeric_checks = {
         "--tol": selected(args, "tolerance", profile.tolerance),
         "--digits": selected(args, "fmm_digits", profile.fmm_digits),
@@ -601,7 +1372,7 @@ def create_plan(args: argparse.Namespace, kind: str) -> dict[str, Any]:
         "--max-leaf": selected(args, "max_leaf", profile.max_leaf),
         "--mbj-nodes": selected(args, "mbj_nodes", 50),
         "--pfft-inner-tol": selected(args, "pfft_inner_tolerance", 4.0e-2),
-        "--pfft-outer-restart": selected(args, "pfft_outer_restart", 32),
+        "--pfft-outer-restart": selected(args, "pfft_outer_restart", 40),
         "--pfft-order": selected(args, "pfft_order", 2),
         "--pfft-grid-safety": selected(args, "pfft_grid_safety", 1.0),
     }
@@ -633,8 +1404,22 @@ def create_plan(args: argparse.Namespace, kind: str) -> dict[str, Any]:
         except ValueError:
             fail("--pfft-inner-iters must be 'auto' or a positive integer")
     refinement = automatic_refinement(args, profile)
+    if profile.name == "physical-fast" and args.ref is None:
+        refinement = 6
     output = Path(args.out).expanduser() if args.out else default_output(args)
     output = output.resolve()
+
+    if profile.name == "physical-fast":
+        return make_two_stage_plan(
+            args, profile, output, refinement, physical_fast=True
+        )
+
+    if kind == "run" and use_automatic_acceleration(
+        args, profile, refinement
+    ):
+        return make_two_stage_plan(
+            args, profile, output, refinement, physical_fast=False
+        )
 
     if not profile.two_meshes:
         return make_single_plan(args, profile, output, refinement, kind)
@@ -664,6 +1449,26 @@ def print_plan(plan: dict[str, Any], as_json: bool = False) -> None:
     if as_json:
         print(json.dumps(plan, indent=2, ensure_ascii=False))
         return
+    if plan["kind"] in {"physical_fast_suite", "profile_two_stage_suite"}:
+        envelope = plan["validation_envelope"]
+        print(f"{plan['quality']} two-stage calculation:")
+        print("  stage 1: up to three inexpensive pFFT-FGMRES preview steps")
+        print(
+            "  stage 2: exact banded-FMM corrections to the profile residual "
+            "target and Mueller output"
+        )
+        print(
+            f"  case: {envelope['shape']}, ka={envelope['ka']:g}, "
+            f"m={envelope['relative_refractive_index']:g}, "
+            f"ref={envelope['refinement']}; "
+            f"operator residual <= {envelope['maximum_exact_operator_residual']:.0e}"
+        )
+        print(
+            "  parameter selection: "
+            f"{envelope['selection'].replace('_', ' ')}"
+        )
+        print(f"  output: {plan['output_directory']}")
+        return
     if plan["kind"] == "strict_suite":
         print("Strict validation suite:")
         for child in plan["children"]:
@@ -674,12 +1479,19 @@ def print_plan(plan: dict[str, Any], as_json: bool = False) -> None:
                 f"~{child['estimate']['gpu_memory_gib']:.2f} GiB GPU, "
                 f"{solver_label(child['effective_parameters']['solver'])}"
             )
-            if mesh["estimated_points_per_exterior_wavelength"] is not None:
+            shortest_resolution = mesh.get(
+                "estimated_points_per_shortest_wavelength",
+                mesh.get("estimated_points_per_exterior_wavelength"),
+            )
+            shortest_target = mesh.get(
+                "target_points_per_shortest_wavelength",
+                mesh.get("target_points_per_exterior_wavelength"),
+            )
+            if shortest_resolution is not None:
                 print(
-                    "    exterior wavelength resolution: "
-                    f"{mesh['estimated_points_per_exterior_wavelength']:.1f} "
-                    f"points (target >= "
-                    f"{mesh['target_points_per_exterior_wavelength']:g})"
+                    "    shortest-wavelength resolution: "
+                    f"{shortest_resolution:.1f} points (target >= "
+                    f"{shortest_target:g})"
                 )
             orientation = child["effective_parameters"].get("orientation")
             if orientation:
@@ -700,22 +1512,37 @@ def print_plan(plan: dict[str, Any], as_json: bool = False) -> None:
         f"{plan['estimate']['gpu_memory_gib']:.2f} GiB GPU"
     )
     mesh = plan["inputs"]
-    if mesh["estimated_points_per_exterior_wavelength"] is not None:
+    shortest_resolution = mesh.get(
+        "estimated_points_per_shortest_wavelength",
+        mesh.get("estimated_points_per_exterior_wavelength"),
+    )
+    shortest_target = mesh.get(
+        "target_points_per_shortest_wavelength",
+        mesh.get("target_points_per_exterior_wavelength"),
+    )
+    if shortest_resolution is not None:
         print(
             f"  mesh: {mesh['refinement_selection']} ref={mesh['refinement']}, "
-            f"~{mesh['estimated_points_per_exterior_wavelength']:.1f} "
-            "points/exterior wavelength "
-            f"(target >= {mesh['target_points_per_exterior_wavelength']:g})"
+            f"~{shortest_resolution:.1f} points/shortest wavelength "
+            f"(target >= {shortest_target:g})"
         )
     print(f"  solver: {solver_label(plan['effective_parameters']['solver'])}")
     orientation = plan["effective_parameters"].get("orientation")
     if orientation:
         if orientation["mode"] == "adaptive":
+            maximum_base = orientation["maximum_base_orientations"]
+            maximum_solved = orientation.get("maximum_solved_base_orientations")
+            if maximum_solved is None:
+                maximum_solved = (
+                    (maximum_base + 2) // 2
+                    if orientation.get("dihedral_symmetry_reuse") else maximum_base
+                )
             print(
                 "  averaging: adaptive beta/gamma "
                 f"J={orientation['minimum_level']}..{orientation['maximum_level']}, "
                 f"alpha={orientation['alpha']}, "
-                f"up to {orientation['maximum_base_orientations']} base orientations"
+                f"up to {maximum_solved} solved base orientations ({maximum_base} "
+                "quadrature nodes)"
             )
         else:
             print(
@@ -723,12 +1550,19 @@ def print_plan(plan: dict[str, Any], as_json: bool = False) -> None:
                 f"alpha={orientation['alpha']}, beta={orientation['beta']}, "
                 f"gamma={orientation['gamma']}"
             )
+        if orientation.get("operator_setup_reused"):
+            print(
+                "  operator reuse: one prepared operator is shared by all "
+                "base orientations"
+            )
     print(f"  output: {plan['output_directory']}")
     print(f"  command: {shlex.join(plan['command'])}")
 
 
 def plan_leaves(plan: dict[str, Any]) -> Iterable[dict[str, Any]]:
-    if plan["kind"] == "strict_suite":
+    if plan["kind"] in {
+        "strict_suite", "physical_fast_suite", "profile_two_stage_suite",
+    }:
         yield from plan["children"]
     else:
         yield plan
@@ -736,19 +1570,63 @@ def plan_leaves(plan: dict[str, Any]) -> Iterable[dict[str, Any]]:
 
 def enforce_memory(plan: dict[str, Any], allow_risk: bool) -> None:
     for leaf in plan_leaves(plan):
-        available = gpu_memory_gib(int(leaf["runtime"]["gpu"]))
-        if available is None:
+        status = gpu_memory_status_gib(int(leaf["runtime"]["gpu"]))
+        if status is None:
             continue
+        total, free = status
         estimated = float(leaf["estimate"]["gpu_memory_gib"])
-        if estimated > 0.85 * available:
+        if leaf["quality"] == "preview":
+            if min(total, free) < estimated and not allow_risk:
+                fail(
+                    f"the validated preview needs about {estimated:.1f} GiB, "
+                    f"while GPU {leaf['runtime']['gpu']} has {free:.1f} GiB free "
+                    f"of {total:.1f} GiB"
+                )
+            continue
+        memory_policy = str(
+            leaf.get("effective_parameters", {}).get("memory_policy", "")
+        )
+        sequential = "sequential_currents" in memory_policy
+        total_fraction = 0.92 if sequential else 0.85
+        safe_budget = min(total_fraction * total, max(0.0, free - 0.75))
+        if estimated > safe_budget:
             message = (
                 f"ref={leaf['inputs']['refinement']} is estimated to need "
                 f"{estimated:.1f} GiB, while GPU {leaf['runtime']['gpu']} has "
-                f"{available:.1f} GiB"
+                f"{free:.1f} GiB free of {total:.1f} GiB "
+                f"({safe_budget:.1f} GiB safe budget)"
             )
             if not allow_risk:
-                fail(message + "; choose a smaller --ref or use --allow-memory-risk")
+                fail(
+                    message + "; close other GPU jobs, choose a smaller --ref, "
+                    "or use --allow-memory-risk"
+                )
             print(f"warning: {message}", file=sys.stderr)
+
+    checkpoint_need = max(
+        (
+            float(leaf.get("estimate", {}).get("checkpoint_disk_gib", 0.0))
+            for leaf in plan_leaves(plan)
+        ),
+        default=0.0,
+    )
+    if checkpoint_need <= 0.0:
+        return
+    output = Path(plan["output_directory"])
+    probe = output
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    free_disk = shutil.disk_usage(probe).free / (1024.0 ** 3)
+    # Atomic replacement temporarily keeps the old and new checkpoint.
+    required_disk = max(0.25, 2.0 * checkpoint_need + 0.1)
+    if free_disk < required_disk:
+        message = (
+            f"checkpoints need about {required_disk:.2f} GiB of temporary "
+            f"disk space, but {probe} has {free_disk:.2f} GiB free"
+        )
+        if not allow_risk:
+            fail(message + "; free disk space or use --allow-memory-risk")
+        print(f"warning: {message}", file=sys.stderr)
 
 
 def write_json_atomic(path: Path, data: dict[str, Any]) -> None:
@@ -759,6 +1637,32 @@ def write_json_atomic(path: Path, data: dict[str, Any]) -> None:
         encoding="utf-8",
     )
     temporary.replace(path)
+
+
+def write_execution_state(
+    plan: dict[str, Any], status: str, **details: Any,
+) -> None:
+    state = {
+        "schema_version": 1,
+        "updated_at_utc": utc_now(),
+        "status": status,
+        "quality": plan["quality"],
+        "calculation_kind": plan.get("calculation_kind", plan["kind"]),
+        "result_path": plan.get("result_path"),
+    }
+    state.update(details)
+    write_json_atomic(
+        Path(plan["output_directory"]) / "execution_state.json", state
+    )
+
+
+def usable_solver_checkpoint(path: Path, dofs: int) -> bool:
+    try:
+        # Header plus one complex<double> solution vector.  A shorter file is
+        # necessarily interrupted/corrupt and must not skip the preview.
+        return path.stat().st_size >= 64 + 16 * dofs
+    except OSError:
+        return False
 
 
 def write_single_files(plan: dict[str, Any]) -> None:
@@ -887,7 +1791,9 @@ def resample_mueller(
     ]
 
 
-def inspect_result(path: Path) -> tuple[dict[str, Any], bool]:
+def inspect_result(
+    path: Path, require_physical: bool = True,
+) -> tuple[dict[str, Any], bool]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
@@ -897,19 +1803,29 @@ def inspect_result(path: Path) -> tuple[dict[str, Any], bool]:
     warnings: list[str] = []
     tolerance = float(data.get("tolerance", 0.0))
     found_residuals = residuals(data)
+    pfft_metadata = data.get("pfft_fgmres")
+    residual_verified = not (
+        isinstance(pfft_metadata, dict)
+        and pfft_metadata.get("fmm_residual_verified") is False
+    )
     if not found_residuals:
-        errors.append("no true full-operator residual found")
+        errors.append("no final residual found")
     elif tolerance <= 0.0:
         errors.append("missing positive tolerance")
     elif max(found_residuals) > 2.0 * tolerance:
         errors.append(
             f"maximum residual {max(found_residuals):.3e} exceeds 2*tolerance"
         )
+    if found_residuals and not residual_verified:
+        warnings.append(
+            "final residual is an explicitly trusted Krylov projection, "
+            "not an independently verified full-operator residual"
+        )
 
     physical = mueller_data(data)
-    if physical is None:
+    if physical is None and require_physical:
         errors.append("Mueller matrix is missing")
-    else:
+    elif physical is not None:
         theta, mueller = physical
         flat = flatten(mueller)
         if not theta or not flat:
@@ -934,6 +1850,7 @@ def inspect_result(path: Path) -> tuple[dict[str, Any], bool]:
         "solver": data.get("solver"),
         "tolerance": tolerance,
         "maximum_residual": max(found_residuals) if found_residuals else None,
+        "residual_verified": residual_verified,
         "errors": errors,
         "warnings": warnings,
     }
@@ -979,15 +1896,26 @@ def compare_results(first_path: Path, second_path: Path) -> dict[str, Any]:
     }
 
 
-def result_is_complete(plan: dict[str, Any]) -> bool:
+def result_is_complete(
+    plan: dict[str, Any], require_physical: bool = True,
+) -> bool:
     path = Path(plan["result_path"])
-    return path.is_file() and inspect_result(path)[1]
+    return path.is_file() and inspect_result(path, require_physical)[1]
 
 
-def run_process(plan: dict[str, Any], no_build: bool, resume: bool) -> None:
-    if resume and result_is_complete(plan):
+def run_process(
+    plan: dict[str, Any], no_build: bool, resume: bool,
+    require_physical: bool = True,
+) -> dict[str, Any]:
+    if resume and result_is_complete(plan, require_physical):
         print(f"Already complete: {plan['result_path']}")
-        return
+        validation_path = Path(plan["output_directory"]) / "validation.json"
+        if validation_path.is_file():
+            return json.loads(validation_path.read_text(encoding="utf-8"))
+        report, _ = inspect_result(
+            Path(plan["result_path"]), require_physical
+        )
+        return report
     started = time.monotonic()
     ensure_binary(plan, no_build)
     output = Path(plan["output_directory"])
@@ -1024,20 +1952,113 @@ def run_process(plan: dict[str, Any], no_build: bool, resume: bool) -> None:
             f"solver exited with code {return_code}; see {log_path}",
             return_code if return_code > 0 else 1,
         )
-    report, valid = inspect_result(Path(plan["result_path"]))
+    report, valid = inspect_result(
+        Path(plan["result_path"]), require_physical
+    )
     report["wall_time_s"] = time.monotonic() - started
     write_json_atomic(output / "validation.json", report)
     if not valid:
         fail(f"result validation failed; see {output / 'validation.json'}", 1)
     print(f"Finished: {plan['result_path']}")
     print(f"Validation: PASS ({output / 'validation.json'})")
+    return report
 
 
 def execute_plan(plan: dict[str, Any], no_build: bool, resume: bool) -> None:
     started = time.monotonic()
     write_plan_files(plan)
+    write_execution_state(plan, "running", resumed=resume)
+    if plan["kind"] in {"physical_fast_suite", "profile_two_stage_suite"}:
+        stage1, stage2 = plan["children"]
+        checkpoint_file = Path(
+            plan["checkpoint_prefix"] + ".FMM_pFFT_FGMRES.bin"
+        )
+        stage1_validation = Path(stage1["output_directory"]) / "validation.json"
+        checkpoint_ready = usable_solver_checkpoint(
+            checkpoint_file, int(stage1["estimate"]["system_dofs"])
+        )
+        if resume and checkpoint_ready:
+            print(f"Using saved stage-1 checkpoint: {checkpoint_file}")
+            if stage1_validation.is_file():
+                stage1_report = json.loads(
+                    stage1_validation.read_text(encoding="utf-8")
+                )
+            else:
+                stage1_report = {"wall_time_s": 0.0, "resumed": True}
+        else:
+            write_execution_state(
+                plan, "stage1_running", resumed=resume,
+                checkpoint=str(checkpoint_file),
+            )
+            stage1_report = run_process(
+                stage1, no_build, resume=False, require_physical=False
+            )
+        write_execution_state(
+            plan, "stage1_complete", resumed=resume,
+            checkpoint=str(checkpoint_file),
+        )
+        write_execution_state(
+            plan, "stage2_running", resumed=resume,
+            checkpoint=str(checkpoint_file),
+        )
+        stage2_report = run_process(
+            stage2, no_build, resume=resume, require_physical=True
+        )
+        target_residual = float(
+            plan["validation_envelope"]["maximum_exact_operator_residual"]
+        )
+        measured_residual = stage2_report.get("maximum_residual")
+        if (
+            measured_residual is None
+            or float(measured_residual) > target_residual
+        ):
+            fail(
+                "two-stage exact residual gate failed: "
+                f"{measured_residual} > {target_residual:g}",
+                1,
+            )
+        stage1_wall = float(stage1_report.get("wall_time_s", 0.0))
+        stage2_wall = float(stage2_report.get("wall_time_s", 0.0))
+        pipeline_wall = stage1_wall + stage2_wall
+        summary = {
+            "quality": plan["quality"],
+            "stage1_wall_time_s": stage1_wall,
+            "stage2_wall_time_s": stage2_wall,
+            "pipeline_wall_time_s": pipeline_wall,
+            "result_path": stage2["result_path"],
+            "validation_envelope": plan["validation_envelope"],
+            "result_validation": stage2_report,
+        }
+        baseline = plan["validation_envelope"].get(
+            "saved_adda_ocl_fp32_dpl15_wall_time_s"
+        )
+        if baseline is not None:
+            baseline_wall = float(baseline)
+            summary["saved_adda_ocl_fp32_dpl15_wall_time_s"] = baseline_wall
+            summary["speedup_vs_saved_adda"] = (
+                baseline_wall / pipeline_wall if pipeline_wall > 0.0 else None
+            )
+        summary_name = (
+            "physical_fast_summary.json"
+            if plan["kind"] == "physical_fast_suite"
+            else "two_stage_summary.json"
+        )
+        summary_path = Path(plan["output_directory"]) / summary_name
+        write_json_atomic(summary_path, summary)
+        print(f"Two-stage summary: {summary_path}")
+        if summary.get("speedup_vs_saved_adda") is not None:
+            print(
+                "Saved ADDA baseline speedup: "
+                f"{summary['speedup_vs_saved_adda']:.2f}x"
+            )
+        write_execution_state(
+            plan, "complete", resumed=resume,
+            summary_path=str(summary_path),
+        )
+        return
     if plan["kind"] != "strict_suite":
         run_process(plan, no_build, resume)
+        write_execution_state(plan, "complete", resumed=resume)
         return
     for child in plan["children"]:
         run_process(child, no_build, resume)
@@ -1055,6 +2076,12 @@ def execute_plan(plan: dict[str, Any], no_build: bool, resume: bool) -> None:
     write_json_atomic(Path(plan["output_directory"]) / "mesh_convergence.json", comparison)
     if not comparison["passes"]:
         fail("strict two-mesh convergence gate failed", 1)
+    write_execution_state(
+        plan, "complete", resumed=resume,
+        comparison_path=str(
+            Path(plan["output_directory"]) / "mesh_convergence.json"
+        ),
+    )
     print("Strict two-mesh convergence gate: passed")
 
 
@@ -1086,10 +2113,46 @@ def command_resume(args: argparse.Namespace) -> int:
         fail(f"missing {config}")
     plan = json.loads(config.read_text(encoding="utf-8"))
     for leaf in plan_leaves(plan):
+        environment = leaf.setdefault("runtime", {}).setdefault("environment", {})
         if leaf.get("kind") == "average":
-            leaf.setdefault("runtime", {}).setdefault("environment", {})[
-                "BEM_MULLER_GPU_ASSEMBLY"
-            ] = "1"
+            environment["BEM_MULLER_GPU_ASSEMBLY"] = "1"
+        profile = leaf.get("profile", {})
+        effective = leaf.setdefault("effective_parameters", {})
+        planned_memory_policy = str(effective.get("memory_policy", ""))
+        forced_sequential = (
+            "sequential_currents" in planned_memory_policy
+            or "shared_operator" in planned_memory_policy
+        )
+        tolerance = effective.get("tolerance", profile.get("tolerance", 1.0))
+        if profile.get("mixed_precision") and tolerance <= 1.0e-5:
+            environment["BEM_MIXED_ITERATIVE_REFINEMENT"] = "1"
+            environment["BEM_FMM_L2P_FP32"] = "0"
+            effective["strict_residual_refinement"] = True
+            effective["l2p_precision"] = "fp64"
+        if profile.get("compact_caches") or profile.get("low_memory"):
+            environment["BEM_FMM_PHASE_CACHE"] = "0"
+            environment["BEM_FMM_FLAT_NEAR_SOURCES"] = "0"
+            if not forced_sequential:
+                effective["memory_policy"] = (
+                    "recompute_phases_and_direct_near_lists"
+                )
+        environment["BEM_FMM_PAIR_CURRENTS"] = (
+            "0"
+            if profile.get("sequential_currents") or forced_sequential
+            else "1"
+        )
+        if effective.get("strict_residual_refinement") and (
+            effective.get("solver") == "fmm_pfft_fgmres"
+        ):
+            effective["krylov_operator_policy"] = (
+                "mixed_fmm_with_fp64_restart_residual"
+            )
+        else:
+            effective["krylov_operator_policy"] = "profile_operator"
+        if profile.get("sequential_currents") and not forced_sequential:
+            effective["memory_policy"] = (
+                "sequential_currents_and_recompute_caches"
+            )
     print_plan(plan, args.json)
     enforce_memory(plan, args.allow_memory_risk)
     execute_plan(plan, args.no_build, resume=True)
@@ -1156,7 +2219,10 @@ def command_explain(args: argparse.Namespace) -> int:
         print("  solver: FMM+MBJ for ka<10; FMM+pFFT-FGMRES for ka>=10")
     else:
         print("  solver: FMM with MBJ")
-    print(f"  automatic mesh target: {profile.points_per_wavelength:g} points/wavelength")
+    print(
+        "  automatic mesh target: "
+        f"{profile.points_per_wavelength:g} points/shortest wavelength"
+    )
     print(
         "  adaptive averaging: "
         f"J={profile.orientation_minimum_level}..{profile.orientation_maximum_level}, "
@@ -1165,6 +2231,35 @@ def command_explain(args: argparse.Namespace) -> int:
         f"{profile.orientation_integral_tolerance:g}/"
         f"{profile.orientation_component_tolerance:g}"
     )
+    if profile.name == "quick":
+        print("  high contrast: Jmax=4 for m>=2; maximum iterations=400 for m>=2.5")
+    elif profile.name == "preview":
+        print("  validation domain: regular prism, ka=80, m=1.3, ref=6")
+        print("  stopping rule: three outer steps; projected residual only")
+        print("  polarization: C6 candidate followed by an operator check/correction")
+        print("  measured physical error: 0.388% full-Mueller weighted L2")
+    elif profile.name == "physical-fast":
+        print("  validation domain: regular prism, ka=60/80/111, m=1.3, ref=6")
+        print("  solve: three preview steps followed by exact banded-FMM corrections")
+        print("  measured exact-operator residual: at most 3.425e-3")
+        print("  measured weighted full-Mueller error vs strict BEM: at most 0.0583%")
+        print("  this is a physical-observable profile, not a 1e-5 residual profile")
+    elif profile.name in {"standard", "memory"}:
+        print("  high contrast: Jmax=5 for m>=2; MBJ100 for m>=2.5")
+    if profile.name in {"quick", "standard", "memory"}:
+        print(
+            "  automatic fixed-orientation path: adaptive two-stage banded "
+            "FMM for built-in meshes with ka>=60, ref>=4, and >=100000 "
+            "estimated unknowns"
+        )
+        print(
+            "  averaging: one operator setup and atomic per-orientation "
+            "restart; paired GPU-GMRES is retained when available"
+        )
+    if profile.compact_caches:
+        print("  memory: phase and flattened near-source caches are disabled")
+    if profile.sequential_currents:
+        print("  memory: electric and magnetic FMM currents are evaluated sequentially")
     if profile.two_meshes:
         print("  validation: two successive meshes and a Mueller-matrix comparison")
     return 0
@@ -1179,7 +2274,7 @@ def add_calculation_arguments(parser: argparse.ArgumentParser, average: bool) ->
     parser.add_argument(
         "--points-per-wavelength",
         type=float,
-        help="override the profile's automatic mesh-resolution target",
+        help="override points per shortest external/interior wavelength",
     )
     parser.add_argument("--sides", type=int, default=6, help="number of prism sides")
     parser.add_argument("--aspect", type=float, default=1.0, help="prism height/diameter ratio")
@@ -1196,6 +2291,11 @@ def add_calculation_arguments(parser: argparse.ArgumentParser, average: bool) ->
     parser.add_argument("--yes", action="store_true", help="confirm strict two-grid execution")
     parser.add_argument("--json", action="store_true", help="print the effective plan as JSON")
     parser.add_argument("--solver", choices=("auto", "fmm", "pfft"), default="auto")
+    parser.add_argument(
+        "--single-stage",
+        action="store_true",
+        help="disable the automatic validated two-stage high-frequency path",
+    )
     parser.add_argument("--tol", dest="tolerance", type=float)
     parser.add_argument("--digits", dest="fmm_digits", type=int)
     parser.add_argument("--quad", dest="quadrature", type=int, choices=(4, 7, 13))
@@ -1212,6 +2312,11 @@ def add_calculation_arguments(parser: argparse.ArgumentParser, average: bool) ->
     parser.add_argument("--pfft-order", type=int)
     parser.add_argument("--pfft-correction-radius", type=float)
     parser.add_argument("--pfft-grid-safety", type=float)
+    parser.add_argument(
+        "--independent-polarizations",
+        action="store_true",
+        help="disable exact cyclic reconstruction for a regular prism",
+    )
     if average:
         parser.add_argument("--alpha", "--orientations", type=int)
         parser.add_argument("--beta", type=int, help="fixed-grid beta nodes")

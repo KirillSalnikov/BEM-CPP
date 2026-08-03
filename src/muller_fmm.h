@@ -56,6 +56,11 @@ struct MullerFmmOperator {
     bool gpu_operator_assembly_requested = false;
     bool fmm_near_fp32 = false;
     int fmm_near_radius = 3;
+    bool banded_fmm = false;
+    bool banded_fmm_middle = false;
+    int banded_fmm_split_depth = 0;
+    int banded_fmm_coarse_max_leaf = 0;
+    int banded_fmm_middle_max_leaf = 0;
     int pfft_interpolation_order = 2;
     double pfft_correction_radius_cells = 2.0;
     double pfft_grid_safety = 0.96;
@@ -65,6 +70,10 @@ struct MullerFmmOperator {
     MullerNearCorrection correction;
     HelmholtzFMM fmm_exterior;
     HelmholtzFMM fmm_interior;
+    HelmholtzFMM fmm_exterior_coarse;
+    HelmholtzFMM fmm_interior_coarse;
+    HelmholtzFMM fmm_exterior_middle;
+    HelmholtzFMM fmm_interior_middle;
 #ifndef BEM_FMM_ONLY
     HelmholtzPFFT pfft_exterior;
     HelmholtzPFFT pfft_interior;
@@ -105,6 +114,9 @@ struct MullerFmmOperator {
         bool near_template_reuse_value = true);
 
     void matvec(
+        const std::complex<double>* input,
+        std::complex<double>* output);
+    void matvec_strict(
         const std::complex<double>* input,
         std::complex<double>* output);
 
@@ -168,6 +180,14 @@ private:
     std::vector<std::complex<double>> curl_interior;
     std::vector<std::complex<double>> hessian_action_exterior;
     std::vector<std::complex<double>> hessian_action_interior;
+    std::vector<std::complex<double>> curl_exterior_coarse;
+    std::vector<std::complex<double>> curl_interior_coarse;
+    std::vector<std::complex<double>> hessian_action_exterior_coarse;
+    std::vector<std::complex<double>> hessian_action_interior_coarse;
+    std::vector<std::complex<double>> curl_exterior_middle;
+    std::vector<std::complex<double>> curl_interior_middle;
+    std::vector<std::complex<double>> hessian_action_exterior_middle;
+    std::vector<std::complex<double>> hessian_action_interior_middle;
     std::vector<std::complex<double>> mass_work;
     std::vector<std::complex<double>> k1_work;
     std::vector<std::complex<double>> k2_epsilon_work;

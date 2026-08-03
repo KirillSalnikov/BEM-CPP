@@ -18,7 +18,7 @@ CUDA_TARGET ?= $(if $(wildcard $(CUDA_HOME)/targets/x86_64-linux/include),$(CUDA
 CUDA_LIB_DIRS = $(CUDA_TARGET)/lib $(CUDA_HOME)/lib/x86_64-linux-gnu $(CUDA_HOME)/lib64 $(CUDA_HOME)/lib
 
 VERSION_FLAGS = -DBEM_VERSION=\"$(VERSION)\"
-NVFLAGS = $(ARCH) $(NVCC_EXTRA_FLAGS) $(VERSION_FLAGS) -O3 -I$(CUDA_TARGET)/include -Xcompiler "$(HOST_OPT) -Wall -Wno-unknown-pragmas -std=c++11" -std=c++11
+NVFLAGS = $(ARCH) -ccbin $(CXX) $(NVCC_EXTRA_FLAGS) $(VERSION_FLAGS) -O3 -I$(CUDA_TARGET)/include -Xcompiler "$(HOST_OPT) -Wall -Wno-unknown-pragmas -std=c++11" -std=c++11
 CXXFLAGS = $(HOST_OPT) -Wall -std=c++11 $(VERSION_FLAGS) -I$(CUDA_TARGET)/include
 LDFLAGS = $(addprefix -L,$(CUDA_LIB_DIRS)) -lcudart -lcufft -lcusparse -lm -lstdc++
 HOST_TEST_DIR = tests
@@ -103,6 +103,8 @@ MULLER_FP32_OBJS = \
 	$(FP32_BUILD_DIR)/p2p.o \
 	$(FP32_BUILD_DIR)/pfft.o
 
+$(CU_OBJS) $(CPP_OBJS) $(CU_OBJS_FMM) $(CPP_OBJS_FMM) $(MULLER_FP32_OBJS): Makefile
+
 all: cuda-toolchain-check $(TARGET)
 
 $(TARGET): $(OBJS)
@@ -129,6 +131,8 @@ $(MULLER_FMM_DEMO): tools/muller_nodal_fmm_demo.cpp \
 	$(NVCC) $(NVFLAGS) -I$(SRCDIR) -o $@ $^ $(LDFLAGS) -lcublas
 	@echo "Built: $@"
 
+$(MULLER_FMM_FP32_DEMO): HOST_OPT=-O3 -march=native
+$(MULLER_FMM_FP32_DEMO): ARCH=-arch=sm_86
 $(MULLER_FMM_FP32_DEMO): tools/muller_nodal_fmm_demo.cpp \
 		$(MULLER_FP32_OBJS)
 	@mkdir -p $(BINDIR)
@@ -136,8 +140,6 @@ $(MULLER_FMM_FP32_DEMO): tools/muller_nodal_fmm_demo.cpp \
 		-I$(SRCDIR) -o $@ $^ $(LDFLAGS) -lcublas
 	@echo "Built optimized mixed-precision solver: $@"
 
-muller-fp32: HOST_OPT=-O3 -march=native
-muller-fp32: ARCH=-arch=sm_86
 muller-fp32: cuda-toolchain-check $(MULLER_FMM_FP32_DEMO)
 
 $(MULLER_TRAINING_DUMP): tools/muller_training_dump.cpp \

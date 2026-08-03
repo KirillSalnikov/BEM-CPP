@@ -457,7 +457,11 @@ MullerPairedGmresResult solve_muller_paired_gmres_device(
     std::vector<cdouble> inner_x, inner_y;
     std::vector<cdouble> coefficients_host_x;
     std::vector<cdouble> coefficients_host_y;
-    const double projected_tolerance = tolerance * 0.9;
+    // A mixed-precision correction must be solved substantially more tightly
+    // than the FP64 residual target; otherwise operator roundoff can make the
+    // outer refinement stagnate above that target.
+    const double projected_tolerance =
+        tolerance * (strict_residual ? 0.05 : 0.9);
 
     while (result.iterations < maximum_iterations &&
            (result.final_residual_x >= tolerance ||

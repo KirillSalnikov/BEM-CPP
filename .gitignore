@@ -18,3 +18,5 @@ MANUAL.lot
 *.o
 bin/
 tests/*_check
+beam_log.dat
+particle_for_check.dat
