@@ -140,8 +140,8 @@ use the former `0.388%` difference as a current accuracy claim.
 The universal adaptive mode needs no stored reference result:
 
 ```bash
-./bem run --shape prism --sides 7 --aspect 1.4 --ka 72 --ri 1.7 \
-  --quality fast --out runs/prism_ka72_fast
+./bem run --shape prism --sides 7 --aspect 1.4 --ka 25 --ri 1.3 \
+  --quality fast --out runs/prism_ka25_fast
 ```
 
 The mesh is selected from `ka`, refractive index, and geometry. Large systems
