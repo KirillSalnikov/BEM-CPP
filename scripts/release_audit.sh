@@ -75,6 +75,8 @@ data = json.load(open(sys.argv[1], encoding="utf-8"))
 assert data["software_version"] == sys.argv[2], data
 assert data["setup_only"] is True, data
 assert data["solver"].startswith("muller_hdiv_bdm1_"), data
+assert data["prism_sides"] == 6, data
+assert data["prism_aspect"] == 1, data
 print("GPU setup smoke: ok")
 PY
 

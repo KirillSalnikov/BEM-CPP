@@ -49,6 +49,27 @@ def load_bem(path: Path) -> tuple[np.ndarray, np.ndarray, dict]:
     return theta, mueller, data
 
 
+def interpolate_mueller(
+    theta_source: np.ndarray,
+    mueller_source: np.ndarray,
+    theta_target: np.ndarray,
+) -> np.ndarray:
+    if (
+        theta_target[0] < theta_source[0] - 1.0e-12
+        or theta_target[-1] > theta_source[-1] + 1.0e-12
+    ):
+        raise ValueError("target angles extend beyond the Mueller data")
+    return np.asarray(
+        [
+            [
+                np.interp(theta_target, theta_source, mueller_source[row, column])
+                for column in range(4)
+            ]
+            for row in range(4)
+        ]
+    )
+
+
 def adda_extinction(directory: Path, ka: float) -> dict | None:
     values = []
     for name in ("CrossSec-X", "CrossSec-Y"):
@@ -207,23 +228,33 @@ def plot_elements(
     for row in range(4):
         for column in range(4):
             ax = axes[row, column]
+            is_m11 = row == 0 and column == 0
+            if is_m11:
+                adda_values = adda[row, column] / scale
+                bem_values = bem[row, column] / scale
+                panel_title = r"$M_{11}/M_{11}^{ADDA}(0)$"
+            else:
+                adda_values = adda[row, column] / adda[0, 0]
+                bem_values = bem[row, column] / bem[0, 0]
+                panel_title = rf"$M_{{{row + 1}{column + 1}}}(\theta)/M_{{11}}(\theta)$"
             ax.plot(
                 theta,
-                adda[row, column] / scale,
+                adda_values,
                 color="#1769aa",
                 linewidth=1.8,
                 label="ADDA",
             )
             ax.plot(
                 theta,
-                bem[row, column] / scale,
+                bem_values,
                 color="#d95f02",
                 linewidth=1.5,
                 linestyle="--",
                 label="BEM",
             )
-            ax.set_yscale("symlog", linthresh=1.0e-7, linscale=0.7)
-            ax.set_title(rf"$M_{{{row + 1}{column + 1}}}/M_{{11}}^{{ADDA}}(0)$")
+            if is_m11:
+                ax.set_yscale("log")
+            ax.set_title(panel_title)
             ax.set_xlim(0.0, 180.0)
             ax.grid(True, which="both", alpha=0.22)
             if row == 3:
@@ -236,8 +267,8 @@ def plot_elements(
         0.5,
         0.008,
         (
-            r"Обе матрицы разделены на одно число $M_{11}^{ADDA}(0)$; "
-            "разница абсолютного масштаба сохранена."
+            r"$M_{11}$ дан в общей нормировке на $M_{11}^{ADDA}(0)$; "
+            r"остальные элементы каждого метода нормированы на его $M_{11}(\theta)$."
         ),
         ha="center",
         fontsize=11,
@@ -318,7 +349,14 @@ def main() -> None:
     theta_adda, adda = load_adda(args.adda)
     theta_bem, bem, bem_data = load_bem(args.bem)
     if len(theta_adda) != len(theta_bem) or not np.allclose(theta_adda, theta_bem):
-        raise ValueError("ADDA and BEM angular grids differ")
+        # Compare on the coarser native grid.  Interpolating a sparse angular
+        # curve onto a denser grid invents structure between samples and can
+        # dominate error norms for high-ka oscillatory scattering patterns.
+        if len(theta_adda) <= len(theta_bem):
+            bem = interpolate_mueller(theta_bem, bem, theta_adda)
+        else:
+            adda = interpolate_mueller(theta_adda, adda, theta_bem)
+            theta_adda = theta_bem
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     theta_rad = np.deg2rad(theta_adda)
@@ -422,10 +460,10 @@ def main() -> None:
     if args.bem_coarse is not None:
         theta_coarse, bem_coarse, coarse_data = load_bem(args.bem_coarse)
         if (
-            len(theta_coarse) != len(theta_bem)
-            or not np.allclose(theta_coarse, theta_bem)
+            len(theta_coarse) != len(theta_adda)
+            or not np.allclose(theta_coarse, theta_adda)
         ):
-            raise ValueError("Fine and coarse BEM angular grids differ")
+            bem_coarse = interpolate_mueller(theta_coarse, bem_coarse, theta_adda)
         refinement_rows = component_metrics(bem_coarse, bem, scale)
         summary["bem_self_convergence"] = {
             "coarse_file": str(args.bem_coarse),

@@ -18,6 +18,15 @@ Semantic Versioning while its public interfaces are stabilizing.
   speedup is `1.620x`, maximum is `2.321x`, while ADDA remains faster in every
   declared case.
 
+### Fixed
+
+- record prism side count and aspect ratio in both setup-only and final Muller
+  result files so that non-unit-aspect calculations are self-describing;
+- verify reconstructed prism polarizations with the final FMM operator and
+  remove stale speedups based on stored, non-comparable ADDA timings;
+- count quadratic P2 edge-midpoint nodes when selecting automatic surface
+  refinement and compare differing angular grids on the coarser native grid.
+
 ## [0.1.0-alpha.5] - 2026-08-03
 
 ### Fixed

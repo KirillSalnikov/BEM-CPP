@@ -119,6 +119,13 @@ The available quality levels are:
 | `memory` | standard-accuracy runs near the GPU-memory limit | same residual as `standard`; sequential electric/magnetic FMM currents reduce peak memory |
 | `strict` | publication control | FP64, residual `1e-6`, adaptive `J=2..5`, two successive meshes |
 
+`fast` is accepted as a short command-line alias for `physical-fast`.
+For `quick`, `physical-fast`/`fast`, and `memory`, rotational symmetry only
+supplies a candidate second polarization. The final stage evaluates its full
+operator residual and solves a correction whenever the candidate exceeds the
+profile tolerance. `./bem validate` rejects output from the former unchecked
+symmetry shortcut.
+
 The case-specific preview is intentionally separate from `quick` and
 `standard`: it is not a residual-converged result and is rejected for any
 unvalidated geometry or parameters. Its historical 34.44 s validation used
@@ -148,6 +155,11 @@ requires both programs to use the same residual target, independently
 recalculate the final residual, produce the same angular output, and pass
 their own discretization-convergence studies.
 
+The launcher does not print a speedup from a stored ADDA timing. Such a number
+is valid only when residual target, precision, angular grid, particle
+discretization, and wall-time boundary match the BEM run; it therefore belongs
+in an explicit comparison report.
+
 For fixed-orientation `./bem run`, `quick`, `standard`, and `memory` select
 two-stage checkpoint migration on built-in sphere, cube, and prism meshes
 when `ka>=60`, `ref>=4`, the estimated system has at least 100,000 unknowns,
@@ -175,8 +187,10 @@ content-addressed path in `~/.cache/bem-cpp/operators/v2`; later output
 directories with exactly the same geometry, mesh, material, frequency, and
 quadrature reuse them. A changed input gets a different path, and both binary
 cache formats independently verify their full operator signatures before a
-hit is accepted. Set `BEM_CACHE_DIR` to relocate this cache. Use `standard` or
-`strict` when a verified FMM residual or publication result is required.
+hit is accepted. Set `BEM_CACHE_DIR` to relocate this cache. Final outputs from
+`quick`, `physical-fast`/`fast`, `standard`, and `memory` record verified FMM
+residuals. Use `standard` or `strict` when publication accuracy rather than
+exploratory or case-specific accuracy is required.
 
 A separate fixed-`ref=6`, `m=1.3` study checked the same strategy at
 `ka=20,30,60,80,111`. The first four cases remained below 1% full-Mueller
@@ -253,12 +267,14 @@ size is unknown. The launcher refuses an estimated GPU allocation above 85%
 of available memory unless the expert override `--allow-memory-risk` is given.
 
 For a built-in shape the initial level is
-`ceil(log2(P * ka * L0 * max(1, |m|) / (2*pi)))`, bounded by the profile
+`ceil(log2(P * ka * L0 * max(1, |m|) / (4*pi)))`, bounded by the profile
 minimum. Here `P` is the target points per shortest wavelength, `m` is the
-relative refractive index, and `L0` is the longest initial edge scale. For
-`|m|>1`, the shortest wavelength is the internal wavelength. Thus `ref` grows
-logarithmically with both particle size and refractive index, while the number
-of surface elements grows by approximately four per added level.
+relative refractive index, and `L0` is the longest initial edge scale. The
+factor `4*pi` counts the quadratic P2 nodes, including edge midpoints, rather
+than only the linear mesh vertices. For `|m|>1`, the shortest wavelength is
+the internal wavelength. Thus `ref` grows logarithmically with both particle
+size and refractive index, while the number of surface elements grows by
+approximately four per added level.
 Override the target with `--points-per-wavelength`; an explicit `--ref` always
 wins. The `strict` profile then adds a second calculation at `ref+1`.
 
@@ -335,7 +351,7 @@ same command resumes compatible interrupted solves. Operator, geometry,
 material, precision, and right-hand-side signatures are checked before a
 checkpoint is accepted.
 
-The public `./bem run` launcher adds the three cyclic-polarization flags
+The public `./bem run` launcher adds the two cyclic-polarization flags shown
 automatically for a built-in regular prism in `quick`, `standard`, and
 `memory` modes. Use `--independent-polarizations` for an explicit two-solve
 control. The `strict` profile always uses independent polarizations.

@@ -55,12 +55,14 @@ For built-in shapes, the automatic surface refinement is selected from the
 shortest exterior/interior wavelength:
 
 ```text
-ref = max(ref_min, ceil(log2(P * ka * h0 * max(1, |m|) / (2*pi)))).
+ref = max(ref_min, ceil(log2(P * ka * h0 * max(1, |m|) / (4*pi)))).
 ```
 
 Here `P=4` for `quick` and `P=8` for `standard`/`memory`, while `h0` is the longest
-edge scale of the initial shape mesh. Consequently, increasing either `ka` or
-`|m|` can increase `ref`; an explicit `--ref` remains an expert override.
+edge scale of the initial shape mesh. The `4*pi` denominator counts quadratic
+P2 nodes, including edge midpoints; the previous `2*pi` formula counted
+elements while reporting them as nodes. Consequently, increasing either `ka`
+or `|m|` can increase `ref`; an explicit `--ref` remains an expert override.
 
 The `quick`, `standard`, and `strict` presets were compared on the same RTX
 3090 Ti with 16 host threads. All reported residuals are true residuals of the
@@ -129,11 +131,13 @@ where direct FMM+MBJ is faster and avoids unnecessary setup.
 ## Adaptive orientation averaging
 
 For a non-averaged built-in regular prism, `quick`, `standard`, and `memory`
-use exact cyclic reconstruction of the second incident polarization after a
-one-to-one mesh map and right-hand-side check. This removes one Krylov solve.
-`--independent-polarizations` disables the optimization, and `strict` never
-enables it. Orientation averaging has its own two-polarization reuse path and
-is unchanged by this single-orientation optimization.
+map the first-polarization solution through cyclic symmetry to obtain a
+candidate for the second polarization. The full FMM operator then evaluates
+its residual and the solver computes a correction whenever the profile
+tolerance is not met. `--independent-polarizations` disables the candidate,
+and `strict` always solves both polarizations independently. Orientation
+averaging has its own two-polarization reuse path and is unchanged by this
+single-orientation optimization.
 
 The adaptive beta/gamma path was exercised through the public `bem average`
 interface on a sphere with `ka=1`, `m=1.3`, automatic `ref`, and eight alpha
@@ -277,7 +281,9 @@ stress matrix from being mistaken for a fully passing release test.
 six-sided prism with `ka=60`, `80`, or `111`, `m=1.3`, and `ref=6`. It first
 makes three cheap pFFT-FGMRES preview steps, then migrates that checkpoint to
 the accurate two- or three-band FMM operator. The final Mueller matrix uses
-181 scattering angles and exact C6 polarization reconstruction.
+181 scattering angles. C6 symmetry supplies a candidate second polarization,
+but the full banded-FMM operator checks its residual and computes a correction
+whenever it exceeds the selected tolerance.
 
 ```bash
 ./bem run --shape prism --sides 6 --aspect 1 --ka 80 --ri 1.3 \
@@ -308,6 +314,11 @@ limited to three exact `ka` values. Only the regular-prism controls above carry
 the published ADDA baseline and physical-validation numbers. All profiles
 retain their normal residual targets (`1e-3`, `1e-5`, and `1e-5`), and
 `--single-stage` provides a control run.
+
+`fast` is a short command-line alias for `physical-fast`. Final output from
+`quick`, `physical-fast`/`fast`, and `memory` requires verified operator
+residuals for both polarizations. The validator rejects files produced with
+the former unchecked cyclic-symmetry shortcut.
 
 Orientation averaging already constructs the operator once and reuses it for
 all Euler-angle right-hand sides. It additionally keeps lossless per-angle

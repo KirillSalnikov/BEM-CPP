@@ -226,7 +226,6 @@ VALIDATED_TWO_STAGE_CASES = {
         "banded_coarse_max_leaf": 512,
         "banded_middle_max_leaf": 256,
         "banded_coarse_order_reference_depth": 3,
-        "saved_adda_wall_s": 1017.7369,
         "measured_physical_fast_residual": 2.277211e-3,
         "strict_reference_weighted_full_mueller_relative_l2": 2.48013e-4,
     },
@@ -238,7 +237,6 @@ VALIDATED_TWO_STAGE_CASES = {
         "banded_coarse_max_leaf": 512,
         "banded_middle_max_leaf": 256,
         "banded_coarse_order_reference_depth": 3,
-        "saved_adda_wall_s": 3285.405,
         "measured_physical_fast_residual": 3.424314e-3,
         "strict_reference_weighted_full_mueller_relative_l2": 7.77968e-5,
     },
@@ -250,10 +248,14 @@ VALIDATED_TWO_STAGE_CASES = {
         "banded_coarse_max_leaf": 4096,
         "banded_middle_max_leaf": 512,
         "banded_coarse_order_reference_depth": None,
-        "saved_adda_wall_s": 15489.3375,
         "measured_physical_fast_residual": 1.691905e-3,
         "strict_reference_weighted_full_mueller_relative_l2": 5.82976e-4,
     },
+}
+
+
+QUALITY_ALIASES = {
+    "fast": "physical-fast",
 }
 
 
@@ -310,7 +312,7 @@ def automatic_refinement(args: argparse.Namespace, profile: Profile) -> int:
         * args.ka
         * base_edge_scale(args)
         * shortest_wavelength_factor(args)
-        / (2.0 * math.pi)
+        / (4.0 * math.pi)
     )
     return max(profile.minimum_refinement, int(math.ceil(math.log2(max(1.0, required)))))
 
@@ -730,7 +732,7 @@ def make_single_plan(
     shortest_points_per_wavelength = None
     if args.shape != "obj":
         exterior_points_per_wavelength = (
-            2.0 * math.pi * (1 << refinement)
+            4.0 * math.pi * (1 << refinement)
             / (args.ka * base_edge_scale(args))
         )
         interior_points_per_wavelength = exterior_points_per_wavelength / abs(args.ri)
@@ -786,13 +788,13 @@ def make_single_plan(
     else:
         command += ["--checkpoint", str(output / "checkpoint")]
 
-    exact_prism_polarization_symmetry = (
+    prism_polarization_symmetry_candidate = (
         kind == "run"
         and args.shape == "prism"
         and profile.name != "strict"
         and not args.independent_polarizations
     )
-    if exact_prism_polarization_symmetry:
+    if prism_polarization_symmetry_candidate:
         command += [
             "--cyclic-polarization",
             "--cyclic-exact-geometry",
@@ -899,7 +901,7 @@ def make_single_plan(
             ),
             "polarization_mode": (
                 "verified_prism_symmetry_with_correction"
-                if exact_prism_polarization_symmetry
+                if prism_polarization_symmetry_candidate
                 else "independent"
             ),
             "l2p_precision": (
@@ -1083,17 +1085,9 @@ def two_stage_settings(
         )
         return settings
 
-    settings = automatic_banded_settings(
+    return automatic_banded_settings(
         args, profile, refinement, estimate_dofs(args, refinement)
     )
-    if measured is not None:
-        for name in (
-            "saved_adda_wall_s",
-            "measured_physical_fast_residual",
-            "strict_reference_weighted_full_mueller_relative_l2",
-        ):
-            settings[name] = measured[name]
-    return settings
 
 
 def make_two_stage_plan(
@@ -1215,7 +1209,7 @@ def make_two_stage_plan(
         "physical_output": True,
         "validated_residual_target": target_tolerance,
         "polarization_mode": (
-            "exact_regular_prism_mesh_reconstruction"
+            "verified_regular_prism_symmetry_with_correction"
             if "--cyclic-polarization" in stage2_command
             else "independent"
         ),
@@ -1231,8 +1225,6 @@ def make_two_stage_plan(
     replace_command_option(stage2_command, "--checkpoint", str(checkpoint))
     out_index = stage2_command.index("--out")
     migration_options = ["--allow-checkpoint-migration"]
-    if "--cyclic-polarization" in stage2_command:
-        migration_options.append("--trust-cyclic-exact-geometry")
     stage2_command[out_index:out_index] = migration_options
     stage2["runtime"]["environment"].update({
         "BEM_MIXED_ITERATIVE_REFINEMENT": "1",
@@ -1285,10 +1277,6 @@ def make_two_stage_plan(
             "pfft_grid_safety": settings["pfft_grid_safety"],
         },
     }
-    if "saved_adda_wall_s" in settings:
-        envelope["saved_adda_ocl_fp32_dpl15_wall_time_s"] = settings[
-            "saved_adda_wall_s"
-        ]
     if physical_fast:
         envelope.update({
             "measured_exact_operator_residual": settings[
@@ -1353,7 +1341,7 @@ def create_plan(args: argparse.Namespace, kind: str) -> dict[str, Any]:
         fail("--ka must be positive")
     if args.ri <= 0.0:
         fail("--ri must be positive")
-    profile = PROFILES[args.quality]
+    profile = PROFILES[QUALITY_ALIASES.get(args.quality, args.quality)]
     if profile.name == "physical-fast":
         unsupported_overrides = [
             option
@@ -1880,6 +1868,24 @@ def inspect_result(
             "not an independently verified full-operator residual"
         )
 
+    physical_metadata = data.get("physical")
+    if isinstance(physical_metadata, dict):
+        if physical_metadata.get("trusted_cyclic_exact_geometry_used") is True:
+            errors.append(
+                "second polarization was accepted without a direct operator "
+                "residual check"
+            )
+        if require_physical:
+            parallel_residual = physical_metadata.get("parallel_fmm_residual")
+            if (
+                parallel_residual is None
+                or not math.isfinite(float(parallel_residual))
+                or float(parallel_residual) < 0.0
+            ):
+                errors.append(
+                    "verified second-polarization operator residual is missing"
+                )
+
     physical = mueller_data(data)
     if physical is None and require_physical:
         errors.append("Mueller matrix is missing")
@@ -1925,8 +1931,23 @@ def compare_results(first_path: Path, second_path: Path) -> dict[str, Any]:
     first_theta, first_mueller = first_physical
     second_theta, second_mueller = second_physical
     interpolated = first_theta != second_theta
+    interpolation_target = "none"
+    comparison_theta = first_theta
     if interpolated:
-        second_mueller = resample_mueller(second_theta, second_mueller, first_theta)
+        # Preserve the coarser native angular data.  Upsampling a sparse,
+        # rapidly oscillating high-ka curve creates artificial agreement or
+        # disagreement between its actual samples.
+        if len(first_theta) <= len(second_theta):
+            second_mueller = resample_mueller(
+                second_theta, second_mueller, first_theta
+            )
+            interpolation_target = "reference_to_candidate_grid"
+        else:
+            first_mueller = resample_mueller(
+                first_theta, first_mueller, second_theta
+            )
+            comparison_theta = second_theta
+            interpolation_target = "candidate_to_reference_grid"
     a = flatten(first_mueller)
     b = flatten(second_mueller)
     if len(a) != len(b) or not a:
@@ -1940,8 +1961,9 @@ def compare_results(first_path: Path, second_path: Path) -> dict[str, Any]:
     raw_den = math.sqrt(sum(value * value for value in b)) or 1.0
     norm_den = math.sqrt(sum(value * value for value in bn)) or 1.0
     return {
-        "comparison_angles": len(first_theta),
+        "comparison_angles": len(comparison_theta),
         "reference_interpolated": interpolated,
+        "interpolation_target": interpolation_target,
         "raw_relative_l2": math.sqrt(sum((x - y) ** 2 for x, y in zip(a, b))) / raw_den,
         "normalized_relative_l2": math.sqrt(
             sum((x - y) ** 2 for x, y in zip(an, bn))
@@ -2075,6 +2097,8 @@ def execute_plan(plan: dict[str, Any], no_build: bool, resume: bool) -> None:
                 f"{measured_residual} > {target_residual:g}",
                 1,
             )
+        if not stage2_report.get("residual_verified", False):
+            fail("two-stage full-operator residual verification failed", 1)
         stage1_wall = float(stage1_report.get("wall_time_s", 0.0))
         stage2_wall = float(stage2_report.get("wall_time_s", 0.0))
         pipeline_wall = stage1_wall + stage2_wall
@@ -2087,15 +2111,6 @@ def execute_plan(plan: dict[str, Any], no_build: bool, resume: bool) -> None:
             "validation_envelope": plan["validation_envelope"],
             "result_validation": stage2_report,
         }
-        baseline = plan["validation_envelope"].get(
-            "saved_adda_ocl_fp32_dpl15_wall_time_s"
-        )
-        if baseline is not None:
-            baseline_wall = float(baseline)
-            summary["saved_adda_ocl_fp32_dpl15_wall_time_s"] = baseline_wall
-            summary["speedup_vs_saved_adda"] = (
-                baseline_wall / pipeline_wall if pipeline_wall > 0.0 else None
-            )
         summary_name = (
             "physical_fast_summary.json"
             if plan["kind"] == "physical_fast_suite"
@@ -2104,11 +2119,6 @@ def execute_plan(plan: dict[str, Any], no_build: bool, resume: bool) -> None:
         summary_path = Path(plan["output_directory"]) / summary_name
         write_json_atomic(summary_path, summary)
         print(f"Two-stage summary: {summary_path}")
-        if summary.get("speedup_vs_saved_adda") is not None:
-            print(
-                "Saved ADDA baseline speedup: "
-                f"{summary['speedup_vs_saved_adda']:.2f}x"
-            )
         write_execution_state(
             plan, "complete", resumed=resume,
             summary_path=str(summary_path),
@@ -2268,7 +2278,7 @@ def command_presets(args: argparse.Namespace) -> int:
 
 
 def command_explain(args: argparse.Namespace) -> int:
-    profile = PROFILES[args.quality]
+    profile = PROFILES[QUALITY_ALIASES.get(args.quality, args.quality)]
     if args.json:
         print(json.dumps(asdict(profile), indent=2, ensure_ascii=False))
         return 0
@@ -2331,7 +2341,11 @@ def add_calculation_arguments(parser: argparse.ArgumentParser, average: bool) ->
     parser.add_argument("--shape", choices=("sphere", "cube", "prism", "obj"), required=True)
     parser.add_argument("--ka", type=float, required=True, help="equal-volume size parameter")
     parser.add_argument("--ri", type=float, required=True, help="real relative refractive index")
-    parser.add_argument("--quality", choices=tuple(PROFILES), default="standard")
+    parser.add_argument(
+        "--quality",
+        choices=tuple(PROFILES) + tuple(QUALITY_ALIASES),
+        default="standard",
+    )
     parser.add_argument("--ref", type=int, help="surface refinement; automatic for built-in shapes")
     parser.add_argument(
         "--points-per-wavelength",
@@ -2377,7 +2391,9 @@ def add_calculation_arguments(parser: argparse.ArgumentParser, average: bool) ->
     parser.add_argument(
         "--independent-polarizations",
         action="store_true",
-        help="disable exact cyclic reconstruction for a regular prism",
+        help=(
+            "disable the verified cyclic-symmetry candidate for a regular prism"
+        ),
     )
     if average:
         parser.add_argument("--alpha", "--orientations", type=int)
@@ -2437,7 +2453,9 @@ def build_parser() -> argparse.ArgumentParser:
     presets.set_defaults(handler=command_presets)
 
     explain = subparsers.add_parser("explain", help="show one quality profile")
-    explain.add_argument("quality", choices=tuple(PROFILES))
+    explain.add_argument(
+        "quality", choices=tuple(PROFILES) + tuple(QUALITY_ALIASES)
+    )
     explain.add_argument("--json", action="store_true")
     explain.set_defaults(handler=command_explain)
 

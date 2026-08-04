@@ -25,7 +25,10 @@ def invoke(*arguments: str, expected: int = 0) -> subprocess.CompletedProcess[st
 
 
 def plan(*arguments: str) -> dict:
-    completed = invoke(*arguments, "--dry-run", "--json")
+    options = list(arguments)
+    if "--allow-memory-risk" not in options:
+        options.append("--allow-memory-risk")
+    completed = invoke(*options, "--dry-run", "--json")
     return json.loads(completed.stdout)
 
 
@@ -53,6 +56,8 @@ def synthetic_result(
                 "tolerance": 1e-5,
                 "mbj": {"fmm_residual": residual},
                 "physical": {
+                    "parallel_fmm_residual": residual,
+                    "trusted_cyclic_exact_geometry_used": False,
                     "theta_degrees": theta,
                     "mueller": mueller,
                 },
@@ -69,6 +74,8 @@ def main() -> int:
     }
     assert profiles["standard"]["tolerance"] == 1e-5
     assert profiles["strict"]["mixed_precision"] is False
+    fast_explanation = json.loads(invoke("explain", "fast", "--json").stdout)
+    assert fast_explanation["name"] == "physical-fast"
 
     preview = plan(
         "run", "--shape", "prism", "--ka", "80", "--ri", "1.3",
@@ -114,10 +121,16 @@ def main() -> int:
     assert stage2["effective_parameters"]["tolerance"] == 4e-3
     assert stage2["effective_parameters"]["pfft_inner_tolerance"] == 2e-2
     assert "--allow-checkpoint-migration" in stage2["command"]
-    assert "--trust-cyclic-exact-geometry" in stage2["command"]
+    assert "--trust-cyclic-exact-geometry" not in stage2["command"]
+    assert stage2["effective_parameters"]["polarization_mode"] == (
+        "verified_regular_prism_symmetry_with_correction"
+    )
     assert stage2["runtime"]["environment"][
         "BEM_FMM_BANDED_COARSE_ORDER_REFERENCE_DEPTH"
     ] == "3"
+    assert "saved_adda_ocl_fp32_dpl15_wall_time_s" not in (
+        physical_fast["validation_envelope"]
+    )
     assert command_value(stage1, "--checkpoint") == command_value(
         stage2, "--checkpoint"
     )
@@ -150,6 +163,23 @@ def main() -> int:
     assert quick_two_stage["children"][1]["effective_parameters"][
         "solver"
     ] == "fmm_pfft_fgmres"
+    quick_exact = quick_two_stage["children"][1]
+    assert quick_exact["effective_parameters"]["ntheta"] == 181
+    assert quick_exact["effective_parameters"]["final_residual_verification"] == (
+        "exact_banded_fmm_operator_residual"
+    )
+    assert quick_exact["effective_parameters"]["polarization_mode"] == (
+        "verified_regular_prism_symmetry_with_correction"
+    )
+    assert "--trust-cyclic-exact-geometry" not in quick_exact["command"]
+
+    fast_alias = plan(
+        "run", "--shape", "prism", "--ka", "60", "--ri", "1.3",
+        "--quality", "fast", "--out", "/tmp/bem-fast-alias-plan",
+    )
+    assert fast_alias["quality"] == "physical-fast"
+    assert fast_alias["kind"] == "physical_fast_suite"
+    assert "--trust-cyclic-exact-geometry" not in fast_alias["children"][1]["command"]
 
     standard_two_stage = plan(
         "run", "--shape", "prism", "--ka", "60", "--ri", "1.3",
@@ -179,6 +209,16 @@ def main() -> int:
     assert memory_two_stage["children"][1]["estimate"][
         "gpu_memory_gib"
     ] == 12.02
+    memory_exact = memory_two_stage["children"][1]
+    assert memory_exact["effective_parameters"]["ntheta"] == 181
+    assert memory_exact["effective_parameters"]["final_residual_verification"] == (
+        "exact_banded_fmm_operator_residual"
+    )
+    assert memory_exact["effective_parameters"]["polarization_mode"] == (
+        "verified_regular_prism_symmetry_with_correction"
+    )
+    assert memory_exact["runtime"]["environment"]["BEM_FMM_PAIR_CURRENTS"] == "0"
+    assert "--trust-cyclic-exact-geometry" not in memory_exact["command"]
 
     standard_single_stage = plan(
         "run", "--shape", "prism", "--ka", "60", "--ri", "1.3",
@@ -224,9 +264,9 @@ def main() -> int:
         "run", "--shape", "prism", "--ka", "10", "--ri", "1.3",
         "--out", "/tmp/bem-frontend-standard-plan",
     )
-    assert standard["inputs"]["refinement"] == 5
+    assert standard["inputs"]["refinement"] == 4
     assert standard["inputs"]["sides"] == 6
-    assert standard["estimate"]["system_dofs"] == 202752
+    assert standard["estimate"]["system_dofs"] == 50688
     assert standard["quality"] == "standard"
     assert "--pfft-fgmres" in standard["command"]
     assert "--mbj-only" in standard["command"]
@@ -327,13 +367,26 @@ def main() -> int:
         "--points-per-wavelength", "16",
         "--out", "/tmp/bem-frontend-finer-mesh-plan",
     )
-    assert larger["inputs"]["refinement"] == 5
-    assert finer["inputs"]["refinement"] == 6
+    assert larger["inputs"]["refinement"] == 4
+    assert finer["inputs"]["refinement"] == 5
     assert larger["inputs"]["refinement_selection"] == "automatic"
     assert larger["inputs"]["estimated_points_per_shortest_wavelength"] >= 8
     assert larger["inputs"]["estimated_points_per_interior_wavelength"] == (
         larger["inputs"]["estimated_points_per_shortest_wavelength"]
     )
+
+    ka30_prism = plan(
+        "run", "--shape", "prism", "--sides", "6", "--aspect", "1",
+        "--ka", "30", "--ri", "1.3", "--quality", "standard",
+        "--single-stage", "--out", "/tmp/bem-frontend-ka30-prism-plan",
+    )
+    assert ka30_prism["inputs"]["refinement"] == 5
+    assert ka30_prism["estimate"]["system_dofs"] == 202752
+    assert ka30_prism["inputs"]["estimated_points_per_shortest_wavelength"] >= 8
+    assert ka30_prism["effective_parameters"]["polarization_mode"] == (
+        "verified_prism_symmetry_with_correction"
+    )
+    assert "--trust-cyclic-exact-geometry" not in ka30_prism["command"]
 
     low_index = plan(
         "run", "--shape", "sphere", "--ka", "10", "--ri", "0.8",
@@ -343,8 +396,8 @@ def main() -> int:
         "run", "--shape", "sphere", "--ka", "10", "--ri", "2",
         "--out", "/tmp/bem-frontend-high-index-plan",
     )
-    assert low_index["inputs"]["refinement"] == 4
-    assert high_index["inputs"]["refinement"] == 5
+    assert low_index["inputs"]["refinement"] == 3
+    assert high_index["inputs"]["refinement"] == 4
     assert low_index["inputs"]["shortest_wavelength_refractive_factor"] == 1
     assert high_index["inputs"]["shortest_wavelength_refractive_factor"] == 2
 
@@ -692,6 +745,10 @@ def main() -> int:
         )
         assert interpolated["comparison"]["passes"] is True
         assert interpolated["comparison"]["reference_interpolated"] is True
+        assert interpolated["comparison"]["comparison_angles"] == 2
+        assert interpolated["comparison"]["interpolation_target"] == (
+            "candidate_to_reference_grid"
+        )
         synthetic_result(result, residual=3e-5)
         failed = invoke("validate", str(result), "--json", expected=1)
         assert "exceeds 2*tolerance" in failed.stdout
@@ -701,6 +758,12 @@ def main() -> int:
         result.write_text(json.dumps(document), encoding="utf-8")
         adaptive_failed = invoke("validate", str(result), "--json", expected=1)
         assert "without satisfying convergence" in adaptive_failed.stdout
+        synthetic_result(result)
+        document = json.loads(result.read_text(encoding="utf-8"))
+        document["physical"]["trusted_cyclic_exact_geometry_used"] = True
+        result.write_text(json.dumps(document), encoding="utf-8")
+        trusted_failed = invoke("validate", str(result), "--json", expected=1)
+        assert "without a direct operator residual check" in trusted_failed.stdout
 
     print("bem frontend: ok")
     return 0

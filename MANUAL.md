@@ -596,10 +596,10 @@ exact-operator residual of `3.424e-3`, and a `0.00778%` weighted full-Mueller
 difference from the strict BEM result. Its ADDA run used a different residual
 criterion, so the wall-time ratio is not an acceleration claim.
 
-The `./bem run` frontend selects this exact-prism reconstruction automatically
-for `quick`, `standard`, and `memory`. Pass `--independent-polarizations` to
-request the two-solve control path. `strict` always keeps independent
-polarizations on both meshes.
+The `./bem run` frontend selects this verified prism-symmetry candidate
+automatically for `quick`, `standard`, and `memory`. Pass
+`--independent-polarizations` to request the two-solve control path. `strict`
+always keeps independent polarizations on both meshes.
 
 ## 8. Checkpoints and Caches
 

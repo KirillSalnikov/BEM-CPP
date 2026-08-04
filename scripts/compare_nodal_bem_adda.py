@@ -30,6 +30,12 @@ def parse_args() -> argparse.Namespace:
         metavar="LABEL=DIR",
         help="Label and ADDA result directory; may be repeated.",
     )
+    parser.add_argument(
+        "--aspect",
+        type=float,
+        default=1.0,
+        help="Prism aspect ratio h/D used in the compared calculations.",
+    )
     parser.add_argument("--out-dir", type=Path, required=True)
     return parser.parse_args()
 
@@ -87,6 +93,17 @@ def load_bem(path: Path, log_path: Path | None) -> tuple[np.ndarray, np.ndarray,
             match = re.search(r"^ACTUAL_WALL_S=(\d+(?:\.\d+)?)$", text, re.MULTILINE)
             if match:
                 wall_s = float(match.group(1))
+
+    if wall_s is None:
+        summary_path = path.parent.parent / "two_stage_summary.json"
+        if summary_path.exists():
+            summary = json.loads(summary_path.read_text())
+            recorded_result = summary.get("result_path")
+            if (
+                recorded_result is not None
+                and Path(recorded_result).resolve() == path.resolve()
+            ):
+                wall_s = float(summary["pipeline_wall_time_s"])
 
     info = {
         "method": (
@@ -197,6 +214,12 @@ def comparison_metrics(
                 / np.sum(solid_angle_weights * bem_normalized**2)
             )
         ),
+        "solid_angle_weighted_raw_full_relative_l2": float(
+            np.sqrt(
+                np.sum(solid_angle_weights * (adda - bem) ** 2)
+                / np.sum(solid_angle_weights * bem**2)
+            )
+        ),
         "solid_angle_weighted_M11_relative_l2": float(
             np.sqrt(
                 np.sum(
@@ -280,9 +303,15 @@ def plot_study(summary: dict, output: Path) -> None:
         x = np.arange(len(labels))
         axes[0].plot(
             x,
+            [100 * row["solid_angle_weighted_raw_full_relative_l2"]
+             for row in convergence],
+            "^-", label="полная матрица, абсолютный масштаб",
+        )
+        axes[0].plot(
+            x,
             [100 * row["solid_angle_weighted_full_relative_l2"]
              for row in convergence],
-            "o-", label="полная матрица",
+            "o-", label="полная матрица, нормировка вперёд",
         )
         axes[0].plot(
             x,
@@ -342,11 +371,13 @@ def plot_study(summary: dict, output: Path) -> None:
 
 def write_report(path: Path, summary: dict) -> None:
     bem = summary["bem"]
+    aspect = summary["particle"]["aspect_h_over_D"]
     lines = [
         "# Сравнение BEM и ADDA на одинаковой частице",
         "",
         (
-            f"Шестигранная призма h/D=1, ka={bem['ka']}, m={bem['refractive_index']}, "
+            f"Шестигранная призма h/D={aspect:g}, ka={bem['ka']}, "
+            f"m={bem['refractive_index']}, "
             f"азимут {bem['azimuth_degrees']}°, относительная невязка {bem['tolerance']:.0e}."
         ),
         "",
@@ -402,8 +433,12 @@ def write_report(path: Path, summary: dict) -> None:
                 ),
                 (
                     f"- ADDA {run['label']} против BEM: взвешенная по телесному углу "
-                    f"ошибка полной матрицы {100 * metrics['solid_angle_weighted_full_relative_l2']:.3f}%, "
-                    f"ошибка M11 {100 * metrics['solid_angle_weighted_M11_relative_l2']:.3f}%."
+                    f"ошибка полной матрицы с сохранением масштаба "
+                    f"{100 * metrics['solid_angle_weighted_raw_full_relative_l2']:.3f}%, "
+                    f"после отдельной нормировки вперёд "
+                    f"{100 * metrics['solid_angle_weighted_full_relative_l2']:.3f}%; "
+                    f"ошибка формы M11 "
+                    f"{100 * metrics['solid_angle_weighted_M11_relative_l2']:.3f}%."
                 ),
                 (
                     f"- Вперёд: M11(BEM)={metrics['forward_M11_bem']:.6g}, "
@@ -427,10 +462,14 @@ def write_report(path: Path, summary: dict) -> None:
                 "",
                 (
                     f"Переход {refinement['from']} -> {refinement['to']} меняет "
-                    f"нормированную матрицу на "
+                    f"полную матрицу в абсолютном масштабе на "
+                    f"{100 * refinement['solid_angle_weighted_raw_full_relative_l2']:.3f}%, "
+                    f"а после отдельной нормировки вперёд на "
                     f"{100 * refinement['solid_angle_weighted_full_relative_l2']:.3f}% "
                     f"в норме с весом по телесному углу; M11 меняется на "
-                    f"{100 * refinement['solid_angle_weighted_M11_relative_l2']:.3f}%."
+                    f"{100 * refinement['solid_angle_weighted_M11_relative_l2']:.3f}%. "
+                    f"Отношение прямого M11(0) на тонкой и грубой сетках равно "
+                    f"{refinement['forward_M11_fine_over_coarse']:.6f}."
                 ),
             ]
         )
@@ -501,7 +540,7 @@ def main() -> None:
     summary = {
         "particle": {
             "shape": "regular hexagonal prism",
-            "aspect_h_over_D": 1.0,
+            "aspect_h_over_D": args.aspect,
             "ka": bem_info["ka"],
             "refractive_index": bem_info["refractive_index"],
             "azimuth_degrees": bem_info["azimuth_degrees"],
@@ -538,6 +577,13 @@ def main() -> None:
                         metrics["solid_angle_weighted_full_relative_l2"],
                     "solid_angle_weighted_M11_relative_l2":
                         metrics["solid_angle_weighted_M11_relative_l2"],
+                    "raw_full_relative_l2": metrics["raw_full_relative_l2"],
+                    "solid_angle_weighted_raw_full_relative_l2": metrics[
+                        "solid_angle_weighted_raw_full_relative_l2"
+                    ],
+                    "forward_M11_fine_over_coarse": float(
+                        fine_mueller[0, 0, 0] / coarse_mueller[0, 0, 0]
+                    ),
                 }
             )
         summary["adda_grid_convergence"] = convergence_history
@@ -553,6 +599,13 @@ def main() -> None:
                 refinement["solid_angle_weighted_full_relative_l2"],
             "solid_angle_weighted_M11_relative_l2":
                 refinement["solid_angle_weighted_M11_relative_l2"],
+            "raw_full_relative_l2": refinement["raw_full_relative_l2"],
+            "solid_angle_weighted_raw_full_relative_l2": refinement[
+                "solid_angle_weighted_raw_full_relative_l2"
+            ],
+            "forward_M11_fine_over_coarse": float(
+                last_mueller[0, 0, 0] / first_mueller[0, 0, 0]
+            ),
         }
     (args.out_dir / "comparison_summary.json").write_text(
         json.dumps(summary, indent=2) + "\n"
