@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+import hashlib
 import json
 import math
 import os
@@ -419,6 +420,46 @@ def shape_arguments(args: argparse.Namespace) -> list[str]:
     return ["--shape", "obj", "--obj", str(obj)]
 
 
+def operator_cache_directory(
+    args: argparse.Namespace,
+    refinement: int,
+    edge_mode: str,
+    quadrature: int,
+    duffy_order: int,
+) -> Path:
+    """Return a shared cache path for one physical discretized operator."""
+    shape: dict[str, Any] = {"kind": args.shape}
+    if args.shape == "prism":
+        shape.update({"sides": args.sides, "aspect": float(args.aspect).hex()})
+    elif args.shape == "obj":
+        obj = Path(args.obj).expanduser().resolve()
+        digest = hashlib.sha256()
+        with obj.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+        shape["content_sha256"] = digest.hexdigest()
+
+    identity = {
+        "cache_schema": 2,
+        "formulation": "muller_p2",
+        "shape": shape,
+        "refinement": refinement,
+        "ka": float(args.ka).hex(),
+        "relative_refractive_index": float(args.ri).hex(),
+        "edge_mode": edge_mode,
+        "quadrature": quadrature,
+        "duffy_order": duffy_order,
+    }
+    encoded = json.dumps(
+        identity, sort_keys=True, separators=(",", ":")
+    ).encode("ascii")
+    key = hashlib.sha256(encoded).hexdigest()
+    root = Path(
+        os.environ.get("BEM_CACHE_DIR", Path.home() / ".cache" / "bem-cpp")
+    ).expanduser().resolve()
+    return root / "operators" / "v2" / key
+
+
 def use_pfft_fgmres(args: argparse.Namespace, profile: Profile) -> bool:
     if args.solver == "fmm":
         return False
@@ -697,12 +738,9 @@ def make_single_plan(
             exterior_points_per_wavelength / shortest_wavelength_factor(args)
         )
     result = output / "result.json"
-    cache_directory = output
-    if profile.name == "preview":
-        cache_root = Path(
-            os.environ.get("BEM_CACHE_DIR", Path.home() / ".cache" / "bem-cpp")
-        ).expanduser().resolve()
-        cache_directory = cache_root / "preview_prism_ka80_m1p3_ref6"
+    cache_directory = operator_cache_directory(
+        args, refinement, edge_mode, quadrature, duffy_order
+    )
     command = [str(binary)]
     command += shape_arguments(args)
     command += [
@@ -735,7 +773,9 @@ def make_single_plan(
     command += [
         "--fmm-near-fp32" if profile.mixed_precision else "--fmm-near-fp64",
         "--near-correction-cache", str(cache_directory / "operator.near"),
-        "--mbj-cache", str(cache_directory / f"mbj{mbj_nodes}.cache"),
+        "--mbj-cache", str(
+            cache_directory / f"mbj_n{mbj_nodes}_o{mbj_overlap}.cache"
+        ),
         "--physical-check",
         "--ntheta", str(ntheta),
         "--no-dense-validation",
@@ -775,15 +815,21 @@ def make_single_plan(
     strict_residual_refinement = (
         profile.mixed_precision and tolerance <= 1.0e-5
     )
+    safe_sequential_currents = (
+        profile.sequential_currents
+        or (kind == "run" and strict_residual_refinement)
+    )
     runtime_environment: dict[str, str] = {}
     if kind == "average":
         runtime_environment["BEM_MULLER_GPU_ASSEMBLY"] = "1"
     if strict_residual_refinement:
         runtime_environment["BEM_MIXED_ITERATIVE_REFINEMENT"] = "1"
-        # FP32 L2P evaluation can leave a 2e-5 true-residual floor on sharp
-        # meshes.  Keep the expensive FMM translations mixed precision, but
-        # evaluate the final local expansion in FP64 for the standard target.
-        runtime_environment["BEM_FMM_L2P_FP32"] = "0"
+        # A mixed Krylov operator is corrected against an FP64 residual after
+        # each restart. Sequential current actions avoid the inaccurate fused
+        # current kernel while retaining the fast FP32 L2P stage.
+        runtime_environment["BEM_FMM_L2P_FP32"] = (
+            "1" if kind == "run" and safe_sequential_currents else "0"
+        )
     if profile.compact_caches:
         runtime_environment["BEM_FMM_PHASE_CACHE"] = "0"
         runtime_environment["BEM_FMM_FLAT_NEAR_SOURCES"] = "0"
@@ -807,7 +853,7 @@ def make_single_plan(
     if strict_residual_refinement and dofs >= 700_000 and args.ka >= 100.0:
         runtime_environment["BEM_FMM_STRICT_PAIR_WORKSPACE"] = "0"
     runtime_environment["BEM_FMM_PAIR_CURRENTS"] = (
-        "0" if profile.sequential_currents else "1"
+        "0" if safe_sequential_currents else "1"
     )
     return {
         "schema_version": 1,
@@ -848,7 +894,7 @@ def make_single_plan(
             ),
             "krylov_operator_policy": (
                 "mixed_fmm_with_fp64_restart_residual"
-                if strict_residual_refinement and pfft_fgmres
+                if strict_residual_refinement
                 else "profile_operator"
             ),
             "polarization_mode": (
@@ -857,12 +903,16 @@ def make_single_plan(
                 else "independent"
             ),
             "l2p_precision": (
-                "fp64" if strict_residual_refinement
+                "fp32_krylov_fp64_restart_residual"
+                if strict_residual_refinement and kind == "run"
+                and safe_sequential_currents
+                else ("fp64" if strict_residual_refinement
                 else ("fp32" if profile.mixed_precision else "fp64")
+                )
             ),
             "memory_policy": (
                 "sequential_currents_and_recompute_caches"
-                if profile.sequential_currents else (
+                if safe_sequential_currents else (
                     "recompute_phases_and_direct_near_lists"
                     if profile.compact_caches else "performance_caches"
                 )
@@ -924,6 +974,7 @@ def make_single_plan(
         },
         "output_directory": str(output),
         "cache_directory": str(cache_directory),
+        "cache_policy": "shared_content_addressed_operator_v2",
         "result_path": str(result),
         "command": command,
     }
@@ -1053,7 +1104,6 @@ def make_two_stage_plan(
     physical_fast: bool,
 ) -> dict[str, Any]:
     output = output.resolve()
-    cache_directory = output / "cache"
     checkpoint = output / "checkpoint"
     settings = two_stage_settings(
         args, profile, refinement, physical_fast
@@ -1073,6 +1123,14 @@ def make_two_stage_plan(
         )
     )
     mbj_nodes = selected(args, "mbj_nodes", default_mbj_nodes(args, profile))
+    mbj_overlap = selected(args, "mbj_overlap", 0)
+    cache_directory = operator_cache_directory(
+        args,
+        refinement,
+        "smooth" if args.shape == "sphere" else "hdiv",
+        selected(args, "quadrature", profile.quadrature),
+        selected(args, "duffy_order", profile.duffy_order),
+    )
 
     stage1_args = argparse.Namespace(**vars(args))
     stage1_args.solver = "pfft"
@@ -1103,7 +1161,7 @@ def make_two_stage_plan(
     )
     replace_command_option(
         stage1_command, "--mbj-cache",
-        str(cache_directory / f"mbj{mbj_nodes}.cache"),
+        str(cache_directory / f"mbj_n{mbj_nodes}_o{mbj_overlap}.cache"),
     )
     replace_command_option(stage1_command, "--checkpoint", str(checkpoint))
     remove_command_option(stage1_command, "--physical-check")
@@ -1168,7 +1226,7 @@ def make_two_stage_plan(
     )
     replace_command_option(
         stage2_command, "--mbj-cache",
-        str(cache_directory / f"mbj{mbj_nodes}.cache"),
+        str(cache_directory / f"mbj_n{mbj_nodes}_o{mbj_overlap}.cache"),
     )
     replace_command_option(stage2_command, "--checkpoint", str(checkpoint))
     out_index = stage2_command.index("--out")
@@ -2126,9 +2184,13 @@ def command_resume(args: argparse.Namespace) -> int:
         tolerance = effective.get("tolerance", profile.get("tolerance", 1.0))
         if profile.get("mixed_precision") and tolerance <= 1.0e-5:
             environment["BEM_MIXED_ITERATIVE_REFINEMENT"] = "1"
-            environment["BEM_FMM_L2P_FP32"] = "0"
+            environment["BEM_FMM_L2P_FP32"] = (
+                "1"
+                if effective.get("l2p_precision") ==
+                "fp32_krylov_fp64_restart_residual"
+                else "0"
+            )
             effective["strict_residual_refinement"] = True
-            effective["l2p_precision"] = "fp64"
         if profile.get("compact_caches") or profile.get("low_memory"):
             environment["BEM_FMM_PHASE_CACHE"] = "0"
             environment["BEM_FMM_FLAT_NEAR_SOURCES"] = "0"

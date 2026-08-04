@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <unistd.h>
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -215,7 +216,8 @@ void save_mbj_cache(
     const MullerFmmOperator& op,
     const std::string& path)
 {
-    const std::string temporary = path + ".tmp";
+    const std::string temporary = path + ".tmp." +
+        std::to_string(static_cast<long long>(getpid()));
     std::ofstream output(
         temporary.c_str(),
         std::ios::binary | std::ios::out | std::ios::trunc);

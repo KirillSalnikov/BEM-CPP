@@ -162,7 +162,7 @@ def main() -> int:
     ] == 1e-5
     assert standard_two_stage["children"][1]["runtime"]["environment"][
         "BEM_FMM_L2P_FP32"
-    ] == "0"
+    ] == "1"
     assert standard_two_stage["children"][1]["runtime"]["environment"][
         "BEM_FMM_PAIR_CURRENTS"
     ] == "0"
@@ -238,16 +238,43 @@ def main() -> int:
     assert command_value(standard, "--pfft-outer-restart") == "40"
     assert standard["runtime"]["environment"] == {
         "BEM_FMM_FLAT_NEAR_SOURCES": "0",
-        "BEM_FMM_L2P_FP32": "0",
-        "BEM_FMM_PAIR_CURRENTS": "1",
+        "BEM_FMM_L2P_FP32": "1",
+        "BEM_FMM_PAIR_CURRENTS": "0",
         "BEM_FMM_PHASE_CACHE": "0",
         "BEM_MIXED_ITERATIVE_REFINEMENT": "1",
     }
     assert standard["effective_parameters"]["strict_residual_refinement"] is True
-    assert standard["effective_parameters"]["l2p_precision"] == "fp64"
+    assert standard["effective_parameters"]["l2p_precision"] == (
+        "fp32_krylov_fp64_restart_residual"
+    )
     assert standard["effective_parameters"]["krylov_operator_policy"] == (
         "mixed_fmm_with_fp64_restart_residual"
     )
+    same_operator = plan(
+        "run", "--shape", "prism", "--ka", "10", "--ri", "1.3",
+        "--out", "/tmp/bem-frontend-same-operator-plan",
+    )
+    assert same_operator["cache_directory"] == standard["cache_directory"]
+    assert command_value(
+        same_operator, "--near-correction-cache"
+    ) == command_value(standard, "--near-correction-cache")
+    different_operator = plan(
+        "run", "--shape", "prism", "--ka", "10.25", "--ri", "1.3",
+        "--ref", "5", "--out", "/tmp/bem-frontend-different-operator-plan",
+    )
+    assert different_operator["cache_directory"] != standard["cache_directory"]
+    different_mbj = plan(
+        "run", "--shape", "prism", "--ka", "10", "--ri", "1.3",
+        "--mbj-nodes", "72", "--mbj-overlap", "4",
+        "--out", "/tmp/bem-frontend-different-mbj-plan",
+    )
+    assert different_mbj["cache_directory"] == standard["cache_directory"]
+    assert command_value(
+        different_mbj, "--near-correction-cache"
+    ) == command_value(standard, "--near-correction-cache")
+    assert command_value(
+        different_mbj, "--mbj-cache"
+    ) != command_value(standard, "--mbj-cache")
 
     memory = plan(
         "run", "--shape", "prism", "--ka", "60", "--ri", "1.3",
@@ -265,7 +292,7 @@ def main() -> int:
     )
     assert memory["runtime"]["environment"] == {
         "BEM_FMM_FLAT_NEAR_SOURCES": "0",
-        "BEM_FMM_L2P_FP32": "0",
+        "BEM_FMM_L2P_FP32": "1",
         "BEM_FMM_PAIR_CURRENTS": "0",
         "BEM_FMM_PHASE_CACHE": "0",
         "BEM_MIXED_ITERATIVE_REFINEMENT": "1",
@@ -350,7 +377,9 @@ def main() -> int:
     assert command_value(overrides, "--digits") == "6"
     assert command_value(overrides, "--ntheta") == "91"
     assert command_value(overrides, "--mbj-nodes") == "72"
-    assert command_value(overrides, "--mbj-cache").endswith("/mbj72.cache")
+    assert command_value(overrides, "--mbj-cache").endswith(
+        "/mbj_n72_o4.cache"
+    )
     for option in ("--tol", "--quad", "--digits", "--ntheta", "--mbj-nodes"):
         assert overrides["command"].count(option) == 1
 
@@ -624,6 +653,24 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="bem-frontend-test.") as directory:
         root = Path(directory)
+        obj = root / "shape.obj"
+        obj.write_text(
+            "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n",
+            encoding="ascii",
+        )
+        obj_first = plan(
+            "run", "--shape", "obj", "--obj", str(obj), "--ref", "1",
+            "--ka", "1", "--ri", "1.3", "--out", str(root / "obj-first"),
+        )
+        obj.write_text(
+            "v 0 0 0\nv 2 0 0\nv 0 1 0\nf 1 2 3\n",
+            encoding="ascii",
+        )
+        obj_second = plan(
+            "run", "--shape", "obj", "--obj", str(obj), "--ref", "1",
+            "--ka", "1", "--ri", "1.3", "--out", str(root / "obj-second"),
+        )
+        assert obj_first["cache_directory"] != obj_second["cache_directory"]
         result = root / "result.json"
         reference = root / "reference.json"
         synthetic_result(result)

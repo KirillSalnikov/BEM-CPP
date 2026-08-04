@@ -77,9 +77,10 @@ from one of five reviewed profiles. A normal prism calculation needs only:
 ```
 
 The default `standard` profile targets a `1e-5` true residual, computes both
-incident polarizations, and writes the complete Mueller matrix. It evaluates
-the L2P stage and restart residuals in FP64 while retaining mixed precision in
-the remaining FMM work. Redundant phase and flattened near-source performance
+incident polarizations, and writes the complete Mueller matrix. In a
+fixed-orientation run, its Krylov corrections use sequential current actions
+with FP32 L2P, while every restart recomputes the true residual with the FP64
+FMM operator. Redundant phase and flattened near-source performance
 caches are disabled by default after validation showed a 25.6% memory saving
 without a measurable wall-time penalty. It uses
 FMM+MBJ for `ka<10` and automatically enables the faster nested pFFT-FGMRES
@@ -169,10 +170,13 @@ continuation reached `8.429e-6`; its normalized Mueller difference from the
 strict BEM result was `3.28e-8`. The saved ADDA run used a different residual
 criterion, so no cross-program speedup is inferred from these timings.
 
-The first invocation builds reusable case caches under
-`~/.cache/bem-cpp/preview_prism_ka80_m1p3_ref6`; later output directories reuse
-them. Set `BEM_CACHE_DIR` to relocate this cache. Use `standard` or `strict`
-when a verified FMM residual or publication result is required.
+The first invocation builds the near-correction and MBJ factors under a
+content-addressed path in `~/.cache/bem-cpp/operators/v2`; later output
+directories with exactly the same geometry, mesh, material, frequency, and
+quadrature reuse them. A changed input gets a different path, and both binary
+cache formats independently verify their full operator signatures before a
+hit is accepted. Set `BEM_CACHE_DIR` to relocate this cache. Use `standard` or
+`strict` when a verified FMM residual or publication result is required.
 
 A separate fixed-`ref=6`, `m=1.3` study checked the same strategy at
 `ka=20,30,60,80,111`. The first four cases remained below 1% full-Mueller
@@ -453,11 +457,12 @@ range.
 
 `BEM_MIXED_ITERATIVE_REFINEMENT=1` recomputes restart residuals with the full
 FP64 FMM operator and uses the mixed operator only for Krylov corrections.
-The `standard` orientation profile enables it automatically together with
-FP64 L2P evaluation; this avoids the approximately `2e-5` residual floor seen
-with FP32 L2P on sharp meshes. On the tested `ka=20` prism, refinement
-increased solve time from 9.844 s to 17.204 s. Its dedicated FP64 pair buffers
-are allocated only in this mode. `BEM_FMM_FOUR_FIELD=1`
+For fixed-orientation `standard`/`memory` runs, sequential current actions make
+FP32 L2P accurate enough for Krylov corrections; the FP64 restart residual is
+the acceptance criterion. Orientation averaging retains FP64 L2P because its
+paired-current path has not passed the same mixed-operator validation. The
+dedicated FP64 residual buffers are allocated only in refinement mode.
+`BEM_FMM_FOUR_FIELD=1`
 enables the experimental joint 12-channel FMM traversal for both
 polarizations. Splitting its M2L accumulation into two six-channel launches
 reduced register pressure, but it was still 6% slower on the `ka=20` prism, so
@@ -739,8 +744,8 @@ A strict physical study additionally requires:
 
 ### Equal-accuracy BEM/ADDA benchmark
 
-The reproducible ten-case benchmark in
-[`benchmarks/equal_accuracy_10_20260804`](benchmarks/equal_accuracy_10_20260804)
+The reproducible optimized ten-case benchmark in
+[`benchmarks/equal_accuracy_10_optimized_20260804`](benchmarks/equal_accuracy_10_optimized_20260804)
 uses the clean official ADDA commit `8f550a7`, three independent complete-wall
 repetitions, two independently solved polarizations, a `1e-5` final
 recalculated/operator residual, 181 common angles, adjacent discretization
@@ -749,10 +754,20 @@ sphere and regular hexagonal prism at `ka=2/4/6/8/10`, `m=1.3`.
 Application caches were new for every repetition; system CUDA/OpenCL compiler
 caches were warm and were not flushed.
 
-There is no BEM acceleration in these ten cases. The measured
-`ADDA wall / BEM wall` ratios are `0.0030x` to `0.0451x`, meaning that BEM is
-22 to 329 times slower. These results describe only this declared range and
-must not be extrapolated to large particles or orientation averaging.
+Relative to the previous BEM implementation under the identical protocol,
+mixed iterative refinement gives a median **1.620x** cold full-process
+speedup and up to **2.321x**. The complete before/after table and plot are in
+[`benchmarks/bem_optimization_10_20260804`](benchmarks/bem_optimization_10_20260804).
+On the production `prism_ka6, ref=5` case, a shared validated setup-cache hit
+reduces the optimized calculation from 45.73 s to 28.22 s; this is **3.617x**
+faster than the former 102.07 s BEM path, with a `3.43e-9` relative L2 change
+in the complete Mueller matrix.
+
+This accelerates BEM, but it does not make BEM faster than ADDA in the ten
+declared cases. The optimized cold `ADDA wall / BEM wall` ratios are
+`0.0070x` to `0.0677x`, so official ADDA remains 14.8 to 142.4 times faster.
+These results must not be extrapolated to large particles or orientation
+averaging.
 
 ## Documentation
 

@@ -1342,7 +1342,8 @@ GmresResult solve_gmres(
         std::vector<cdouble>&)>* recycle_base_transform = nullptr,
     const SolverCheckpointOptions& checkpoint =
         SolverCheckpointOptions(),
-    bool trust_final_projected_residual = false)
+    bool trust_final_projected_residual = false,
+    const Matvec* residual_matvec = nullptr)
 {
     const auto start = std::chrono::steady_clock::now();
     const int maximum = std::min(n, maximum_iterations);
@@ -1371,7 +1372,10 @@ GmresResult solve_gmres(
             throw std::invalid_argument(
                 "GMRES initial guess has the wrong size");
         result.solution = *starting_guess;
-        matvec(result.solution.data(), work.data());
+        if (residual_matvec)
+            (*residual_matvec)(result.solution.data(), work.data());
+        else
+            matvec(result.solution.data(), work.data());
 #pragma omp parallel for schedule(static)
         for (int i = 0; i < n; i++)
             residual[i] = rhs[i] - work[i];
@@ -1618,7 +1622,12 @@ GmresResult solve_gmres(
         } else {
             const auto exact_matvec_start =
                 std::chrono::steady_clock::now();
-            matvec(result.solution.data(), work.data());
+            if (residual_matvec) {
+                (*residual_matvec)(
+                    result.solution.data(), work.data());
+            } else {
+                matvec(result.solution.data(), work.data());
+            }
             exact_matvec_seconds =
                 std::chrono::duration<double>(
                     std::chrono::steady_clock::now() -
@@ -1665,7 +1674,12 @@ GmresResult solve_gmres(
         if (recycle_base_transform) {
             (*recycle_base_transform)(
                 result.solution, *recycle_guess);
-            matvec(recycle_guess->data(), work.data());
+            if (residual_matvec) {
+                (*residual_matvec)(
+                    recycle_guess->data(), work.data());
+            } else {
+                matvec(recycle_guess->data(), work.data());
+            }
 #pragma omp parallel for schedule(static)
             for (int i = 0; i < n; i++)
                 residual[i] = recycle_rhs[i] - work[i];
@@ -5312,10 +5326,7 @@ int run_main(int argc, char** argv)
         refinement_environment != nullptr &&
         std::strcmp(refinement_environment, "0") != 0;
     const Matvec action = [&](const cdouble* input, cdouble* output) {
-        if (strict_outer_action && !fmm.use_pfft)
-            fmm.matvec_strict(input, output);
-        else
-            fmm.matvec(input, output);
+        fmm.matvec(input, output);
     };
     const Matvec exact_action =
         [&](const cdouble* input, cdouble* output) {
@@ -5743,7 +5754,8 @@ int run_main(int argc, char** argv)
             tolerance, maximum_iterations, gmres_restart,
             nullptr, "baseline", primary_initial_guess,
             nullptr, nullptr, nullptr,
-            solver_checkpoint("baseline"));
+            solver_checkpoint("baseline"), false,
+            strict_verification_action);
     }
     std::vector<cdouble> recycled_parallel_guess;
     GmresResult hybrid_pfft_result;
@@ -5791,7 +5803,8 @@ int run_main(int argc, char** argv)
                 ? &recycled_parallel_guess : nullptr,
             symmetry_polarization && !cyclic_exact_geometry
                 ? &symmetry_solution_transform : nullptr,
-            solver_checkpoint("FMM-correction"));
+            solver_checkpoint("FMM-correction"), false,
+            strict_verification_action);
     } else if (pfft_fgmres) {
         hybrid_fmm_switch_setup_seconds =
             fmm.switch_pfft_to_fmm(digits, max_leaf, true);
@@ -5846,7 +5859,8 @@ int run_main(int argc, char** argv)
                 ? &recycled_parallel_guess : nullptr,
             symmetry_polarization && !cyclic_exact_geometry
                 ? &symmetry_solution_transform : nullptr,
-            solver_checkpoint("MBJ"));
+            solver_checkpoint("MBJ"), false,
+            strict_verification_action);
     }
     GmresResult parallel_preconditioned;
     bool cyclic_polarization_used = false;
@@ -6056,7 +6070,8 @@ int run_main(int argc, char** argv)
                         &mbj, "MBJ-symmetry-correction",
                         selected_guess, nullptr, nullptr, nullptr,
                         solver_checkpoint(
-                            "MBJ-symmetry-correction"));
+                            "MBJ-symmetry-correction"), false,
+                        strict_verification_action);
                 }
                 parallel_preconditioned.seconds += candidate_seconds;
                 if (parallel_preconditioned.operator_residual <=
@@ -6076,7 +6091,8 @@ int run_main(int argc, char** argv)
                         action, rhs_parallel.data(), fmm.system_dofs,
                         tolerance, maximum_iterations, gmres_restart,
                         &mbj, "MBJ-parallel", nullptr, nullptr, nullptr,
-                        nullptr, solver_checkpoint("MBJ-parallel"));
+                        nullptr, solver_checkpoint("MBJ-parallel"),
+                        false, strict_verification_action);
                     parallel_preconditioned.seconds +=
                         correction_seconds;
                 }
@@ -6113,7 +6129,8 @@ int run_main(int argc, char** argv)
                     tolerance, maximum_iterations, gmres_restart,
                     &mbj, "MBJ-parallel",
                     parallel_initial_guess, nullptr, nullptr,
-                    nullptr, solver_checkpoint("MBJ-parallel"));
+                    nullptr, solver_checkpoint("MBJ-parallel"),
+                    false, strict_verification_action);
             }
         }
 

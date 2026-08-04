@@ -151,7 +151,7 @@ run_bem() {
   fi
 
   echo "[run] BEM ${shape} ka=${ka} ref=${refinement} ${label}"
-  env OMP_NUM_THREADS="${THREADS}" \
+  env OMP_NUM_THREADS="${THREADS}" BEM_CACHE_DIR="${output}/cache-root" \
     /usr/bin/time -f 'wall_s=%e\nmax_rss_kb=%M\nexit_code=%x' \
       -o "${timing}" \
     "${REPO_ROOT}/bem" run \

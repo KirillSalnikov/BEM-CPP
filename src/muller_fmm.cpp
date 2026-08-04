@@ -17,6 +17,7 @@
 #include <string>
 #include <stdexcept>
 #include <vector>
+#include <unistd.h>
 
 namespace {
 
@@ -363,7 +364,8 @@ bool save_near_correction_cache(
     int color_count,
     std::string& reason)
 {
-    const std::string temporary = std::string(path) + ".tmp";
+    const std::string temporary = std::string(path) + ".tmp." +
+        std::to_string(static_cast<long long>(getpid()));
     std::ofstream output(
         temporary.c_str(),
         std::ios::binary | std::ios::trunc);

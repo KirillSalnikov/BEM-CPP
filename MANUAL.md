@@ -149,9 +149,11 @@ dedicated paired FP64 restart buffers would leave too little memory for pFFT;
 the strict residual then uses the sequential fallback without changing the
 operator.
 
-The `standard` profile instead uses FP64 L2P and FP64 restart residuals
-automatically for both single calculations and orientation averages. The
-unused transposed FP32 L2P table is not allocated in that mode.
+For a fixed-orientation `standard` or `memory` run, the Krylov operator uses
+sequential electric/magnetic current actions and FP32 L2P. At each restart the
+true residual is recomputed with the FP64 FMM operator, and only that residual
+may satisfy the `1e-5` target. Orientation averaging retains FP64 L2P because
+its paired-current path has not passed the same mixed-operator validation.
 
 The default high-frequency guard limits the tree to depth 5 when a deeper tree
 would lower the FMM expansion order. `BEM_FMM_ALLOW_DEPTH6=1` permits the
@@ -241,6 +243,15 @@ FMM and pFFT approximations are replaced by accurately integrated entries for
 singular and topologically adjacent element pairs. `--fmm-near-radius`
 controls the geometric near region. `--near-correction-cache FILE` stores the
 validated correction and rejects incompatible geometry or physics.
+
+The `bem` launcher normally assigns this file and the MBJ file to a shared,
+content-addressed operator directory below `~/.cache/bem-cpp/operators/v2`.
+Repeated runs in different output directories therefore skip identical setup
+work. The address includes geometry (or the OBJ content hash), refinement,
+`ka`, refractive index, edge treatment, and both quadrature orders. Each cache
+file also verifies its internal full-operator signature before accepting a
+hit. `BEM_CACHE_DIR` changes the root; benchmark scripts use a private root
+when a cold setup is required.
 
 Equivalent local configurations on regular polyhedra reuse correction
 templates. This reduces setup cost without changing the operator.
@@ -444,20 +455,25 @@ must not be divided and reported as speedups: BEM finished at exact-operator
 residuals `2.277e-3/3.424e-3/1.692e-3`, while ADDA requested `1e-4`. At
 `ka=111`, `ref=6` provides only 5.25 nodes per internal wavelength.
 
-No equal-accuracy speedup over ADDA is currently claimed. The older nominal
-`1e-5` comparison used ADDA runs without an independent final-residual
-recalculation and optimized BEM runs that trusted exact prism symmetry for the
-second polarization. It is retained as diagnostic history, not release
-evidence. A new benchmark must use the same residual target, independently
-recalculate both residuals, produce the same angular output, and establish
-discretization convergence in each method.
+No equal-accuracy speedup over ADDA is currently claimed. The current ten-case
+equal-accuracy benchmark uses the same `1e-5` target,
+independent residual recalculation for both polarizations, 181 common angles,
+and adjacent-grid convergence in each method. Mixed iterative refinement
+accelerates the cold complete BEM process by a median `1.620x` and up to
+`2.321x` relative to the previous BEM implementation. A validated shared-cache
+repeat of the production `ka=6, ref=5` prism takes 28.22 s instead of the old
+102.07 s (`3.617x`), with a `3.43e-9` relative full-Mueller change. Official
+ADDA nevertheless remains 14.8--142.4 times faster in these ten cases; this is
+a BEM implementation speedup, not a cross-method victory.
 
 `memory` has the same mesh rule, residual target, quadrature, mixed precision,
-pFFT-FGMRES policy, and angular controls as `standard`. In addition to the
-compact standard cache policy, it sets `BEM_FMM_PAIR_CURRENTS=0`. Electric and
-magnetic FMM currents are evaluated sequentially, avoiding the paired mixed
-and strict FP64 workspaces. This preserves the discrete operator and final
-accuracy; its tradeoff is an additional FMM traversal.
+pFFT-FGMRES policy, and angular controls as `standard`. Fixed-orientation
+strict-target runs in both profiles now use sequential electric/magnetic
+currents for the validated mixed Krylov operator. The distinction remains for
+orientation averaging: `memory` also forces sequential currents there, while
+`standard` retains the faster paired FP64 path. This preserves the discrete
+operator and final accuracy; the low-memory tradeoff is an additional FMM
+traversal.
 Use it as:
 
 ```bash

@@ -10,8 +10,13 @@ Semantic Versioning while its public interfaces are stabilizing.
 - added a reproducible ten-case BEM/ADDA benchmark with three wall-time
   repetitions, independently recalculated residuals, adjacent-grid controls,
   common angular output, and sphere checks against Mie theory;
-- documented the unfavorable result without selection: BEM was slower in all
-  ten declared `ka=2..10` sphere and prism cases.
+- added mixed-operator iterative refinement: FP32 L2P Krylov corrections are
+  accepted only after an FP64 FMM restart-residual check;
+- added content-addressed near-correction and MBJ caches shared across output
+  directories, including OBJ-content hashing and atomic concurrent writes;
+- documented all ten before/after BEM timings without selection: median cold
+  speedup is `1.620x`, maximum is `2.321x`, while ADDA remains faster in every
+  declared case.
 
 ## [0.1.0-alpha.5] - 2026-08-03
 
