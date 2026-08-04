@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -80,24 +81,24 @@ PROFILES = {
         orientation_component_tolerance=1.0,
         orientation_recycle_rank=0,
     ),
-    "physical-fast": Profile(
-        name="physical-fast",
+    "fast": Profile(
+        name="fast",
         purpose=(
-            "Two-stage physically validated ka=60/80/111 prism calculation; "
-            "targets observables rather than a 1e-5 linear residual."
+            "Universal adaptive calculation with observable-stability gates "
+            "and an automatic fallback to the standard 1e-5 residual."
         ),
-        tolerance=4.0e-3,
+        tolerance=1.0e-5,
         fmm_digits=5,
         quadrature=7,
         duffy_order=4,
         ntheta=181,
-        maximum_iterations=5,
+        maximum_iterations=500,
         gmres_restart=100,
-        max_leaf=256,
-        points_per_wavelength=3.0,
-        minimum_refinement=6,
+        max_leaf=32,
+        points_per_wavelength=8.0,
+        minimum_refinement=2,
         mixed_precision=True,
-        compact_caches=False,
+        compact_caches=True,
         sequential_currents=True,
         solver_policy="adaptive_pfft",
         two_meshes=False,
@@ -214,49 +215,17 @@ PROFILES = {
 }
 
 
-# Measurements for the published control cases.  The automatic planner does
-# not depend on this table; it only attaches known validation/baseline numbers
-# when a generated plan happens to match one of these cases.
-VALIDATED_TWO_STAGE_CASES = {
-    60.0: {
-        "stage1_tolerance": 3.0e-2,
-        "stage2_maximum_iterations": 5,
-        "pfft_grid_safety": 0.8,
-        "banded_split_depth": 4,
-        "banded_coarse_max_leaf": 512,
-        "banded_middle_max_leaf": 256,
-        "banded_coarse_order_reference_depth": 3,
-        "measured_physical_fast_residual": 2.277211e-3,
-        "strict_reference_weighted_full_mueller_relative_l2": 2.48013e-4,
-    },
-    80.0: {
-        "stage1_tolerance": 3.0e-2,
-        "stage2_maximum_iterations": 5,
-        "pfft_grid_safety": 0.8,
-        "banded_split_depth": 4,
-        "banded_coarse_max_leaf": 512,
-        "banded_middle_max_leaf": 256,
-        "banded_coarse_order_reference_depth": 3,
-        "measured_physical_fast_residual": 3.424314e-3,
-        "strict_reference_weighted_full_mueller_relative_l2": 7.77968e-5,
-    },
-    111.0: {
-        "stage1_tolerance": 4.0e-2,
-        "stage2_maximum_iterations": 8,
-        "pfft_grid_safety": 1.0,
-        "banded_split_depth": 3,
-        "banded_coarse_max_leaf": 4096,
-        "banded_middle_max_leaf": 512,
-        "banded_coarse_order_reference_depth": None,
-        "measured_physical_fast_residual": 1.691905e-3,
-        "strict_reference_weighted_full_mueller_relative_l2": 5.82976e-4,
-    },
-}
-
-
 QUALITY_ALIASES = {
-    "fast": "physical-fast",
+    "physical-fast": "fast",
 }
+
+
+FAST_RESIDUAL_LEVELS = (
+    4.0e-3, 1.0e-3, 3.0e-4, 1.0e-4, 3.0e-5, 1.0e-5,
+)
+FAST_OBSERVABLE_RELATIVE_TOLERANCE = 1.0e-3
+FAST_REQUIRED_CONSECUTIVE_STABLE_LEVELS = 2
+FAST_MINIMUM_RESIDUAL_REDUCTION_FACTOR = 1.25
 
 
 def fail(message: str, code: int = 2) -> NoReturn:
@@ -524,7 +493,7 @@ def default_maximum_iterations(args: argparse.Namespace, profile: Profile) -> in
 
 
 def default_mbj_nodes(args: argparse.Namespace, profile: Profile) -> int:
-    if profile.name in {"standard", "memory"} and abs(args.ri) >= 2.5:
+    if profile.name in {"fast", "standard", "memory"} and abs(args.ri) >= 2.5:
         return 100
     return 50
 
@@ -998,26 +967,6 @@ def remove_command_option(
     del command[index:index + (2 if takes_value else 1)]
 
 
-def validated_two_stage_case(ka: float) -> dict[str, Any] | None:
-    for candidate, settings in VALIDATED_TWO_STAGE_CASES.items():
-        if math.isclose(ka, candidate):
-            return settings
-    return None
-
-
-def matches_validated_two_stage_control(
-    args: argparse.Namespace, refinement: int,
-) -> bool:
-    return (
-        args.shape == "prism"
-        and args.sides == 6
-        and math.isclose(args.aspect, 1.0)
-        and math.isclose(args.ri, 1.3)
-        and refinement == 6
-        and validated_two_stage_case(args.ka) is not None
-    )
-
-
 def automatic_banded_settings(
     args: argparse.Namespace,
     profile: Profile,
@@ -1068,23 +1017,7 @@ def two_stage_settings(
     args: argparse.Namespace,
     profile: Profile,
     refinement: int,
-    physical_fast: bool,
 ) -> dict[str, Any]:
-    measured = (
-        validated_two_stage_case(args.ka)
-        if matches_validated_two_stage_control(args, refinement)
-        else None
-    )
-    if physical_fast:
-        if measured is None:
-            fail(f"no validated physical-fast parameters for ka={args.ka:g}")
-        settings = dict(measured)
-        settings["selection"] = "validated_control_case"
-        settings["electrical_density"] = (
-            args.ka * shortest_wavelength_factor(args) / float(1 << refinement)
-        )
-        return settings
-
     return automatic_banded_settings(
         args, profile, refinement, estimate_dofs(args, refinement)
     )
@@ -1095,26 +1028,17 @@ def make_two_stage_plan(
     profile: Profile,
     output: Path,
     refinement: int,
-    physical_fast: bool,
 ) -> dict[str, Any]:
     output = output.resolve()
     checkpoint = output / "checkpoint"
     settings = two_stage_settings(
-        args, profile, refinement, physical_fast
+        args, profile, refinement
     )
-    target_tolerance = (
-        4.0e-3
-        if physical_fast
-        else selected(args, "tolerance", profile.tolerance)
-    )
-    final_maximum_iterations = (
-        int(settings["stage2_maximum_iterations"])
-        if physical_fast
-        else selected(
-            args,
-            "maximum_iterations",
-            default_maximum_iterations(args, profile),
-        )
+    target_tolerance = selected(args, "tolerance", profile.tolerance)
+    final_maximum_iterations = selected(
+        args,
+        "maximum_iterations",
+        default_maximum_iterations(args, profile),
     )
     mbj_nodes = selected(args, "mbj_nodes", default_mbj_nodes(args, profile))
     mbj_overlap = selected(args, "mbj_overlap", 0)
@@ -1254,7 +1178,6 @@ def make_two_stage_plan(
             "BEM_FMM_L2P_PHASE_CACHE_FP16_MB": "1024",
         })
 
-    suite_kind = "physical_fast_suite" if physical_fast else "profile_two_stage_suite"
     envelope = {
         "selection": settings["selection"],
         "shape": args.shape,
@@ -1277,21 +1200,11 @@ def make_two_stage_plan(
             "pfft_grid_safety": settings["pfft_grid_safety"],
         },
     }
-    if physical_fast:
-        envelope.update({
-            "measured_exact_operator_residual": settings[
-                "measured_physical_fast_residual"
-            ],
-            "strict_reference_weighted_full_mueller_relative_l2": settings[
-                "strict_reference_weighted_full_mueller_relative_l2"
-            ],
-        })
-
     return {
         "schema_version": 1,
         "wrapper_version": VERSION,
         "created_at_utc": utc_now(),
-        "kind": suite_kind,
+        "kind": "profile_two_stage_suite",
         "calculation_kind": "run",
         "quality": profile.name,
         "output_directory": str(output),
@@ -1299,6 +1212,140 @@ def make_two_stage_plan(
         "checkpoint_prefix": str(checkpoint),
         "result_path": stage2["result_path"],
         "children": [stage1, stage2],
+        "validation_envelope": envelope,
+    }
+
+
+def fast_uses_pfft_preview(
+    args: argparse.Namespace, refinement: int,
+) -> bool:
+    if args.solver == "fmm":
+        return False
+    if args.solver == "pfft":
+        return True
+    return (
+        args.ka >= 60.0
+        and refinement >= 4
+        and estimate_dofs(args, refinement) >= 100_000
+    )
+
+
+def residual_level_slug(tolerance: float) -> str:
+    return f"{tolerance:.0e}".replace("e-0", "e-").replace(".", "p")
+
+
+def make_adaptive_fast_plan(
+    args: argparse.Namespace,
+    profile: Profile,
+    output: Path,
+    refinement: int,
+) -> dict[str, Any]:
+    """Build a residual ladder with observable gates and a standard fallback."""
+    if fast_uses_pfft_preview(args, refinement):
+        base = make_two_stage_plan(
+            args, profile, output, refinement
+        )
+        preview = base["children"][0]
+        exact_template = base["children"][1]
+        envelope = dict(base["validation_envelope"])
+        checkpoint_prefix = base["checkpoint_prefix"]
+        cache_directory = base["cache_directory"]
+    else:
+        preview = None
+        exact_args = argparse.Namespace(**vars(args))
+        exact_args.solver = "fmm"
+        exact_args.tolerance = profile.tolerance
+        exact_template = make_single_plan(
+            exact_args,
+            profile,
+            output / "exact_template",
+            refinement,
+            "run",
+        )
+        checkpoint_prefix = str(output / "checkpoint")
+        replace_command_option(
+            exact_template["command"], "--checkpoint", checkpoint_prefix
+        )
+        out_index = exact_template["command"].index("--out")
+        exact_template["command"].insert(
+            out_index, "--allow-checkpoint-migration"
+        )
+        cache_directory = exact_template["cache_directory"]
+        envelope = {
+            "selection": "automatic_direct_fmm",
+            "shape": args.shape,
+            "sides": args.sides if args.shape == "prism" else None,
+            "aspect": args.aspect if args.shape == "prism" else None,
+            "ka": args.ka,
+            "relative_refractive_index": args.ri,
+            "refinement": refinement,
+            "electrical_density": (
+                args.ka * shortest_wavelength_factor(args)
+                / float(1 << refinement)
+            ),
+            "theta_samples": exact_template["effective_parameters"]["ntheta"],
+            "operator": "direct FMM",
+        }
+
+    exact_stages: list[dict[str, Any]] = []
+    for level_index, tolerance in enumerate(FAST_RESIDUAL_LEVELS):
+        stage = copy.deepcopy(exact_template)
+        slug = residual_level_slug(tolerance)
+        stage_output = (output / f"exact_{slug}").resolve()
+        stage_result = stage_output / "result.json"
+        stage["kind"] = "adaptive_fast_level"
+        stage["output_directory"] = str(stage_output)
+        stage["result_path"] = str(stage_result)
+        stage["effective_parameters"].update({
+            "stage": "adaptive_exact_operator_level",
+            "adaptive_level_index": level_index,
+            "tolerance": tolerance,
+            "validated_residual_target": tolerance,
+            "final_residual_verification": "exact_fmm_operator_residual",
+            "physical_output": True,
+        })
+        replace_command_option(stage["command"], "--tol", f"{tolerance:.1e}")
+        replace_command_option(
+            stage["command"],
+            "--iteration-log",
+            str(stage_output / "iterations.csv"),
+        )
+        replace_command_option(
+            stage["command"], "--checkpoint", checkpoint_prefix
+        )
+        replace_command_option(stage["command"], "--out", str(stage_result))
+        exact_stages.append(stage)
+
+    children = ([preview] if preview is not None else []) + exact_stages
+    envelope.update({
+        "maximum_exact_operator_residual": profile.tolerance,
+        "adaptive_residual_levels": list(FAST_RESIDUAL_LEVELS),
+        "observable_relative_tolerance": (
+            FAST_OBSERVABLE_RELATIVE_TOLERANCE
+        ),
+        "required_consecutive_stable_levels": (
+            FAST_REQUIRED_CONSECUTIVE_STABLE_LEVELS
+        ),
+        "minimum_residual_reduction_factor": (
+            FAST_MINIMUM_RESIDUAL_REDUCTION_FACTOR
+        ),
+        "minimum_early_stop_residual": 1.0e-3,
+        "fallback": "standard_1e-5",
+        "pfft_preview": preview is not None,
+    })
+    return {
+        "schema_version": 1,
+        "wrapper_version": VERSION,
+        "created_at_utc": utc_now(),
+        "kind": "adaptive_fast_suite",
+        "calculation_kind": "run",
+        "quality": profile.name,
+        "output_directory": str(output.resolve()),
+        "cache_directory": cache_directory,
+        "checkpoint_prefix": checkpoint_prefix,
+        "result_path": str((output / "result.json").resolve()),
+        "children": children,
+        "preview_stage_count": 1 if preview is not None else 0,
         "validation_envelope": envelope,
     }
 
@@ -1342,52 +1389,21 @@ def create_plan(args: argparse.Namespace, kind: str) -> dict[str, Any]:
     if args.ri <= 0.0:
         fail("--ri must be positive")
     profile = PROFILES[QUALITY_ALIASES.get(args.quality, args.quality)]
-    if profile.name == "physical-fast":
-        unsupported_overrides = [
-            option
-            for option, value in (
-                ("--points-per-wavelength", args.points_per_wavelength),
-                ("--tol", args.tolerance),
-                ("--digits", args.fmm_digits),
-                ("--quad", args.quadrature),
-                ("--duffy-order", args.duffy_order),
-                ("--ntheta", args.ntheta),
-                ("--max-iters", args.maximum_iterations),
-                ("--gmres-restart", args.gmres_restart),
-                ("--max-leaf", args.max_leaf),
-                ("--mbj-nodes", args.mbj_nodes),
-                ("--mbj-overlap", args.mbj_overlap),
-                ("--pfft-inner-tol", args.pfft_inner_tolerance),
-                ("--pfft-inner-iters", args.pfft_inner_iterations),
-                ("--pfft-outer-restart", args.pfft_outer_restart),
-                ("--pfft-order", args.pfft_order),
-                ("--pfft-correction-radius", args.pfft_correction_radius),
-                ("--pfft-grid-safety", args.pfft_grid_safety),
-            )
-            if value is not None
-        ]
-        physical_fast_case = (
-            kind == "run"
-            and args.shape == "prism"
-            and args.sides == 6
-            and math.isclose(args.aspect, 1.0)
-            and validated_two_stage_case(args.ka) is not None
-            and math.isclose(args.ri, 1.3)
-            and (args.ref is None or args.ref == 6)
-            and args.solver in {"auto", "pfft"}
-            and not args.independent_polarizations
-            and not unsupported_overrides
-        )
-        if not physical_fast_case:
-            detail = (
-                f"; unsupported overrides: {', '.join(unsupported_overrides)}"
-                if unsupported_overrides else ""
-            )
+    if profile.name == "fast":
+        if kind != "run":
             fail(
-                "the physical-fast profile is validated only for a regular "
-                "six-sided prism with ka=60, 80, or 111, m=1.3, ref=6, one fixed "
-                "orientation, automatic/pFFT solver selection, and no "
-                f"numerical overrides{detail}"
+                "adaptive fast currently supports fixed-orientation runs; "
+                "use standard or memory for orientation averaging"
+            )
+        if args.single_stage:
+            fail(
+                "adaptive fast requires multiple exact residual levels; "
+                "use quick or standard with --single-stage"
+            )
+        if args.tolerance is not None:
+            fail(
+                "--tol cannot override the adaptive fast residual ladder; "
+                "use quick or standard for a fixed residual target"
             )
     if profile.name == "preview":
         preview_case = (
@@ -1427,6 +1443,11 @@ def create_plan(args: argparse.Namespace, kind: str) -> dict[str, Any]:
             fail(f"{option} must be positive")
     if selected(args, "ntheta", profile.ntheta) < 2:
         fail("--ntheta must be at least 2")
+    if (
+        profile.name == "fast"
+        and selected(args, "ntheta", profile.ntheta) < 3
+    ):
+        fail("adaptive fast requires --ntheta at least 3 for angular integrals")
     if selected(args, "gmres_restart", profile.gmres_restart) < 0:
         fail("--gmres-restart must be non-negative")
     if selected(args, "mbj_overlap", 0) < 0:
@@ -1450,21 +1471,19 @@ def create_plan(args: argparse.Namespace, kind: str) -> dict[str, Any]:
         except ValueError:
             fail("--pfft-inner-iters must be 'auto' or a positive integer")
     refinement = automatic_refinement(args, profile)
-    if profile.name == "physical-fast" and args.ref is None:
-        refinement = 6
     output = Path(args.out).expanduser() if args.out else default_output(args)
     output = output.resolve()
 
-    if profile.name == "physical-fast":
-        return make_two_stage_plan(
-            args, profile, output, refinement, physical_fast=True
+    if profile.name == "fast":
+        return make_adaptive_fast_plan(
+            args, profile, output, refinement
         )
 
     if kind == "run" and use_automatic_acceleration(
         args, profile, refinement
     ):
         return make_two_stage_plan(
-            args, profile, output, refinement, physical_fast=False
+            args, profile, output, refinement
         )
 
     if not profile.two_meshes:
@@ -1494,6 +1513,34 @@ def create_plan(args: argparse.Namespace, kind: str) -> dict[str, Any]:
 def print_plan(plan: dict[str, Any], as_json: bool = False) -> None:
     if as_json:
         print(json.dumps(plan, indent=2, ensure_ascii=False))
+        return
+    if plan["kind"] == "adaptive_fast_suite":
+        envelope = plan["validation_envelope"]
+        levels = ", ".join(
+            f"{float(value):.0e}"
+            for value in envelope["adaptive_residual_levels"]
+        )
+        print("fast adaptive calculation:")
+        print(
+            "  startup: "
+            + (
+                "up to three inexpensive pFFT-FGMRES preview steps"
+                if envelope["pfft_preview"]
+                else "direct FMM+MBJ (pFFT preview is not beneficial here)"
+            )
+        )
+        print(f"  exact residual ladder: {levels}")
+        print(
+            "  early stop: two consecutive Mueller/forward/integral/extinction "
+            f"changes <= {envelope['observable_relative_tolerance']:.0e}"
+        )
+        print("  fallback: continue automatically to the standard 1e-5 residual")
+        print(
+            f"  case: {envelope['shape']}, ka={envelope['ka']:g}, "
+            f"m={envelope['relative_refractive_index']:g}, "
+            f"ref={envelope['refinement']}"
+        )
+        print(f"  output: {plan['output_directory']}")
         return
     if plan["kind"] in {"physical_fast_suite", "profile_two_stage_suite"}:
         envelope = plan["validation_envelope"]
@@ -1608,6 +1655,7 @@ def print_plan(plan: dict[str, Any], as_json: bool = False) -> None:
 def plan_leaves(plan: dict[str, Any]) -> Iterable[dict[str, Any]]:
     if plan["kind"] in {
         "strict_suite", "physical_fast_suite", "profile_two_stage_suite",
+        "adaptive_fast_suite",
     }:
         yield from plan["children"]
     else:
@@ -1838,7 +1886,9 @@ def resample_mueller(
 
 
 def inspect_result(
-    path: Path, require_physical: bool = True,
+    path: Path,
+    require_physical: bool = True,
+    enforce_tolerance: bool = True,
 ) -> tuple[dict[str, Any], bool]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -1858,7 +1908,7 @@ def inspect_result(
         errors.append("no final residual found")
     elif tolerance <= 0.0:
         errors.append("missing positive tolerance")
-    elif max(found_residuals) > 2.0 * tolerance:
+    elif enforce_tolerance and max(found_residuals) > 2.0 * tolerance:
         errors.append(
             f"maximum residual {max(found_residuals):.3e} exceeds 2*tolerance"
         )
@@ -1914,6 +1964,11 @@ def inspect_result(
         "solver": data.get("solver"),
         "tolerance": tolerance,
         "maximum_residual": max(found_residuals) if found_residuals else None,
+        "target_met": bool(
+            found_residuals
+            and tolerance > 0.0
+            and max(found_residuals) <= tolerance
+        ),
         "residual_verified": residual_verified,
         "errors": errors,
         "warnings": warnings,
@@ -1976,6 +2031,160 @@ def compare_results(first_path: Path, second_path: Path) -> dict[str, Any]:
     }
 
 
+def solid_angle_weights(theta_degrees: list[float]) -> list[float]:
+    if len(theta_degrees) < 2:
+        fail("observable stability requires at least two scattering angles")
+    theta = [math.radians(float(value)) for value in theta_degrees]
+    if any(right <= left for left, right in zip(theta, theta[1:])):
+        fail("observable stability angles must be strictly increasing")
+    weights: list[float] = []
+    for index, angle in enumerate(theta):
+        if index == 0:
+            width = 0.5 * (theta[1] - theta[0])
+        elif index == len(theta) - 1:
+            width = 0.5 * (theta[-1] - theta[-2])
+        else:
+            width = 0.5 * (theta[index + 1] - theta[index - 1])
+        weights.append(max(0.0, math.sin(angle) * width))
+    if sum(weights) <= 0.0:
+        fail("observable stability solid-angle weights are zero")
+    return weights
+
+
+def extinction_observable(data: dict[str, Any]) -> float:
+    physical = data.get("physical")
+    amplitudes = physical.get("amplitudes") if isinstance(physical, dict) else None
+    if not isinstance(amplitudes, dict):
+        fail("adaptive fast requires forward amplitudes for extinction control")
+    forward: list[float] = []
+    for name in ("S1", "S2"):
+        values = amplitudes.get(name)
+        if (
+            not isinstance(values, list)
+            or not values
+            or not isinstance(values[0], list)
+            or len(values[0]) != 2
+        ):
+            fail(f"adaptive fast requires a complex forward {name} amplitude")
+        forward.append(float(values[0][0]))
+    value = sum(forward)
+    if not math.isfinite(value) or value == 0.0:
+        fail("adaptive fast encountered a zero/non-finite extinction observable")
+    # In the solver's Bohren-Huffman amplitude convention the unpolarized
+    # optical-theorem extinction is proportional to Re[S1(0)+S2(0)].  Its
+    # constant scale and convention-dependent sign cancel between levels.
+    return value
+
+
+def observable_stability_metrics(
+    previous_path: Path,
+    current_path: Path,
+    relative_tolerance: float = FAST_OBSERVABLE_RELATIVE_TOLERANCE,
+) -> dict[str, Any]:
+    previous = json.loads(previous_path.read_text(encoding="utf-8"))
+    current = json.loads(current_path.read_text(encoding="utf-8"))
+    previous_physical = mueller_data(previous)
+    current_physical = mueller_data(current)
+    if previous_physical is None or current_physical is None:
+        fail("adaptive fast requires Mueller matrices at every exact level")
+    previous_theta, previous_mueller = previous_physical
+    current_theta, current_mueller = current_physical
+    interpolation_target = "none"
+    theta = previous_theta
+    if previous_theta != current_theta:
+        if len(previous_theta) <= len(current_theta):
+            current_mueller = resample_mueller(
+                current_theta, current_mueller, previous_theta
+            )
+            interpolation_target = "current_to_previous_grid"
+        else:
+            previous_mueller = resample_mueller(
+                previous_theta, previous_mueller, current_theta
+            )
+            theta = current_theta
+            interpolation_target = "previous_to_current_grid"
+
+    previous_forward = float(previous_mueller[0][0][0])
+    current_forward = float(current_mueller[0][0][0])
+    if previous_forward == 0.0 or current_forward == 0.0:
+        fail("adaptive fast cannot normalize a zero forward M11")
+    weights = solid_angle_weights([float(value) for value in theta])
+
+    weighted_difference = 0.0
+    weighted_reference = 0.0
+    weighted_m11_difference = 0.0
+    weighted_m11_reference = 0.0
+    maximum_normalized_difference = 0.0
+    for row in range(4):
+        for column in range(4):
+            for angle, weight in enumerate(weights):
+                old = float(previous_mueller[row][column][angle]) / previous_forward
+                new = float(current_mueller[row][column][angle]) / current_forward
+                difference = new - old
+                weighted_difference += weight * difference * difference
+                weighted_reference += weight * new * new
+                maximum_normalized_difference = max(
+                    maximum_normalized_difference, abs(difference)
+                )
+                if row == 0 and column == 0:
+                    weighted_m11_difference += weight * difference * difference
+                    weighted_m11_reference += weight * new * new
+
+    previous_integral = sum(
+        weight * float(previous_mueller[0][0][angle])
+        for angle, weight in enumerate(weights)
+    )
+    current_integral = sum(
+        weight * float(current_mueller[0][0][angle])
+        for angle, weight in enumerate(weights)
+    )
+    if current_integral == 0.0:
+        fail("adaptive fast encountered a zero integrated M11")
+    previous_extinction = extinction_observable(previous)
+    current_extinction = extinction_observable(current)
+
+    full_l2 = math.sqrt(
+        weighted_difference / max(weighted_reference, sys.float_info.min)
+    )
+    m11_l2 = math.sqrt(
+        weighted_m11_difference
+        / max(weighted_m11_reference, sys.float_info.min)
+    )
+    forward_difference = abs(previous_forward / current_forward - 1.0)
+    integral_difference = abs(previous_integral / current_integral - 1.0)
+    extinction_difference = abs(
+        previous_extinction / current_extinction - 1.0
+    )
+    passes = all(
+        value <= relative_tolerance
+        for value in (
+            full_l2,
+            m11_l2,
+            forward_difference,
+            integral_difference,
+            extinction_difference,
+        )
+    )
+    return {
+        "previous_result": str(previous_path),
+        "current_result": str(current_path),
+        "comparison_angles": len(theta),
+        "interpolation_target": interpolation_target,
+        "relative_tolerance": relative_tolerance,
+        "solid_angle_weighted_normalized_full_mueller_l2": full_l2,
+        "solid_angle_weighted_normalized_m11_l2": m11_l2,
+        "forward_m11_relative_difference": forward_difference,
+        "integrated_m11_relative_difference": integral_difference,
+        "optical_theorem_extinction_relative_difference": (
+            extinction_difference
+        ),
+        "maximum_forward_normalized_element_difference": (
+            maximum_normalized_difference
+        ),
+        "passes": passes,
+    }
+
+
 def result_is_complete(
     plan: dict[str, Any], require_physical: bool = True,
 ) -> bool:
@@ -1986,6 +2195,7 @@ def result_is_complete(
 def run_process(
     plan: dict[str, Any], no_build: bool, resume: bool,
     require_physical: bool = True,
+    enforce_tolerance: bool = True,
 ) -> dict[str, Any]:
     if resume and result_is_complete(plan, require_physical):
         print(f"Already complete: {plan['result_path']}")
@@ -2033,7 +2243,7 @@ def run_process(
             return_code if return_code > 0 else 1,
         )
     report, valid = inspect_result(
-        Path(plan["result_path"]), require_physical
+        Path(plan["result_path"]), require_physical, enforce_tolerance
     )
     report["wall_time_s"] = time.monotonic() - started
     write_json_atomic(output / "validation.json", report)
@@ -2044,10 +2254,232 @@ def run_process(
     return report
 
 
+def publish_adaptive_fast_result(
+    source: Path, destination: Path,
+) -> dict[str, Any]:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(destination.suffix + ".tmp")
+    shutil.copy2(source, temporary)
+    temporary.replace(destination)
+    report, valid = inspect_result(destination, require_physical=True)
+    if not valid or not report.get("residual_verified", False):
+        fail("selected adaptive fast result failed final validation", 1)
+    write_json_atomic(destination.parent / "validation.json", report)
+    return report
+
+
+def execute_adaptive_fast(
+    plan: dict[str, Any], no_build: bool, resume: bool,
+) -> None:
+    output = Path(plan["output_directory"])
+    summary_path = output / "adaptive_fast_summary.json"
+    final_path = Path(plan["result_path"])
+    if resume and summary_path.is_file() and final_path.is_file():
+        final_report, valid = inspect_result(final_path, require_physical=True)
+        if valid and final_report.get("residual_verified", False):
+            print(f"Already complete: {final_path}")
+            write_execution_state(
+                plan, "complete", resumed=True,
+                summary_path=str(summary_path),
+            )
+            return
+
+    children = plan["children"]
+    preview_count = int(plan.get("preview_stage_count", 0))
+    preview_report: dict[str, Any] | None = None
+    if preview_count:
+        preview = children[0]
+        checkpoint_file = Path(
+            plan["checkpoint_prefix"] + ".FMM_pFFT_FGMRES.bin"
+        )
+        preview_validation = (
+            Path(preview["output_directory"]) / "validation.json"
+        )
+        if resume and usable_solver_checkpoint(
+            checkpoint_file, int(preview["estimate"]["system_dofs"])
+        ):
+            print(f"Using saved adaptive-fast checkpoint: {checkpoint_file}")
+            if preview_validation.is_file():
+                preview_report = json.loads(
+                    preview_validation.read_text(encoding="utf-8")
+                )
+            else:
+                preview_report = {"wall_time_s": 0.0, "resumed": True}
+        else:
+            write_execution_state(
+                plan, "preview_running", resumed=resume,
+                checkpoint=str(checkpoint_file),
+            )
+            preview_report = run_process(
+                preview,
+                no_build,
+                resume=False,
+                require_physical=False,
+                enforce_tolerance=False,
+            )
+
+    exact_stages = children[preview_count:]
+    comparisons: list[dict[str, Any]] = []
+    exact_reports: list[dict[str, Any]] = []
+    consecutive_stable = 0
+    previous_stage: dict[str, Any] | None = None
+    selected_stage: dict[str, Any] | None = None
+    selected_tolerance: float | None = None
+    observable_tolerance = float(
+        plan["validation_envelope"]["observable_relative_tolerance"]
+    )
+    required_stable = int(
+        plan["validation_envelope"]["required_consecutive_stable_levels"]
+    )
+    minimum_early_residual = float(
+        plan["validation_envelope"]["minimum_early_stop_residual"]
+    )
+    minimum_reduction = float(
+        plan["validation_envelope"]["minimum_residual_reduction_factor"]
+    )
+
+    for stage in exact_stages:
+        tolerance = float(stage["effective_parameters"]["tolerance"])
+        write_execution_state(
+            plan,
+            "exact_level_running",
+            resumed=resume,
+            tolerance=tolerance,
+            completed_exact_levels=len(exact_reports),
+        )
+        report = run_process(
+            stage, no_build, resume=resume, require_physical=True
+        )
+        exact_reports.append(report)
+        residual = report.get("maximum_residual")
+        if residual is None or float(residual) > tolerance:
+            fail(
+                "adaptive fast exact residual gate failed: "
+                f"{residual} > {tolerance:g}",
+                1,
+            )
+        if not report.get("residual_verified", False):
+            fail("adaptive fast requires a verified full-operator residual", 1)
+
+        if previous_stage is not None:
+            previous_residual = float(
+                exact_reports[-2]["maximum_residual"]
+            )
+            current_residual = float(residual)
+            residual_reduction = (
+                previous_residual / current_residual
+                if current_residual > 0.0 else math.inf
+            )
+            independent_update = residual_reduction >= minimum_reduction
+            stability = observable_stability_metrics(
+                Path(previous_stage["result_path"]),
+                Path(stage["result_path"]),
+                observable_tolerance,
+            )
+            stability.update({
+                "previous_residual_target": float(
+                    previous_stage["effective_parameters"]["tolerance"]
+                ),
+                "current_residual_target": tolerance,
+                "previous_exact_residual": previous_residual,
+                "current_exact_residual": current_residual,
+                "residual_reduction_factor": residual_reduction,
+                "minimum_residual_reduction_factor": minimum_reduction,
+                "independent_residual_update": independent_update,
+            })
+            comparisons.append(stability)
+            write_json_atomic(
+                Path(stage["output_directory"]) / "observable_stability.json",
+                stability,
+            )
+            if independent_update:
+                consecutive_stable = (
+                    consecutive_stable + 1 if stability["passes"] else 0
+                )
+            print(
+                "Adaptive fast observables: "
+                f"full={stability['solid_angle_weighted_normalized_full_mueller_l2']:.3e}, "
+                f"M11={stability['solid_angle_weighted_normalized_m11_l2']:.3e}, "
+                f"forward={stability['forward_m11_relative_difference']:.3e}, "
+                f"integral={stability['integrated_m11_relative_difference']:.3e}; "
+                f"extinction={stability['optical_theorem_extinction_relative_difference']:.3e}; "
+                + (
+                    f"stable {consecutive_stable}/{required_stable}"
+                    if independent_update else
+                    "not counted (no independent residual reduction)"
+                )
+            )
+
+        previous_stage = stage
+        if (
+            tolerance <= minimum_early_residual
+            and tolerance > float(PROFILES["standard"].tolerance)
+            and consecutive_stable >= required_stable
+        ):
+            selected_stage = stage
+            selected_tolerance = tolerance
+            break
+
+    if selected_stage is None:
+        if not exact_reports or previous_stage is None:
+            fail("adaptive fast produced no exact result", 1)
+        selected_stage = previous_stage
+        selected_tolerance = float(
+            selected_stage["effective_parameters"]["tolerance"]
+        )
+        if selected_tolerance > float(PROFILES["standard"].tolerance):
+            fail("adaptive fast did not reach its standard fallback", 1)
+
+    final_report = publish_adaptive_fast_result(
+        Path(selected_stage["result_path"]), final_path
+    )
+    preview_wall = float(
+        preview_report.get("wall_time_s", 0.0) if preview_report else 0.0
+    )
+    exact_wall = sum(
+        float(report.get("wall_time_s", 0.0)) for report in exact_reports
+    )
+    standard_tolerance = float(PROFILES["standard"].tolerance)
+    summary = {
+        "quality": plan["quality"],
+        "selection": (
+            "observable_stability_early_stop"
+            if selected_tolerance > standard_tolerance
+            else "standard_residual_fallback"
+        ),
+        "selected_residual_target": selected_tolerance,
+        "selected_result_source": selected_stage["result_path"],
+        "result_path": str(final_path),
+        "preview_wall_time_s": preview_wall,
+        "exact_wall_time_s": exact_wall,
+        "pipeline_wall_time_s": preview_wall + exact_wall,
+        "completed_exact_levels": len(exact_reports),
+        "consecutive_stable_levels": consecutive_stable,
+        "validation_envelope": plan["validation_envelope"],
+        "observable_comparisons": comparisons,
+        "result_validation": final_report,
+    }
+    write_json_atomic(summary_path, summary)
+    write_execution_state(
+        plan, "complete", resumed=resume,
+        summary_path=str(summary_path),
+        selected_residual_target=selected_tolerance,
+        selection=summary["selection"],
+    )
+    print(
+        "Adaptive fast complete: "
+        f"{summary['selection']}, residual target {selected_tolerance:.0e}"
+    )
+    print(f"Adaptive fast summary: {summary_path}")
+
+
 def execute_plan(plan: dict[str, Any], no_build: bool, resume: bool) -> None:
     started = time.monotonic()
     write_plan_files(plan)
     write_execution_state(plan, "running", resumed=resume)
+    if plan["kind"] == "adaptive_fast_suite":
+        execute_adaptive_fast(plan, no_build, resume)
+        return
     if plan["kind"] in {"physical_fast_suite", "profile_two_stage_suite"}:
         stage1, stage2 = plan["children"]
         checkpoint_file = Path(
@@ -2287,7 +2719,12 @@ def command_explain(args: argparse.Namespace) -> int:
     print(f"  precision: {precision}")
     print(f"  residual target: {profile.tolerance:.0e}")
     print(f"  angular samples: {profile.ntheta}")
-    if profile.solver_policy == "adaptive_pfft":
+    if profile.name == "fast":
+        print(
+            "  solver: exact FMM+MBJ correction ladder; optional pFFT "
+            "warm start only when profitable"
+        )
+    elif profile.solver_policy == "adaptive_pfft":
         print("  solver: FMM+MBJ for ka<10; FMM+pFFT-FGMRES for ka>=10")
     else:
         print("  solver: FMM with MBJ")
@@ -2310,12 +2747,19 @@ def command_explain(args: argparse.Namespace) -> int:
         print("  stopping rule: three outer steps; projected residual only")
         print("  polarization: C6 candidate followed by an operator check/correction")
         print("  measured physical error: 0.388% full-Mueller weighted L2")
-    elif profile.name == "physical-fast":
-        print("  validation domain: regular prism, ka=60/80/111, m=1.3, ref=6")
-        print("  solve: three preview steps followed by exact banded-FMM corrections")
-        print("  measured exact-operator residual: at most 3.425e-3")
-        print("  measured weighted full-Mueller error vs strict BEM: at most 0.0583%")
-        print("  this is a physical-observable profile, not a 1e-5 residual profile")
+    elif profile.name == "fast":
+        levels = ", ".join(f"{value:.0e}" for value in FAST_RESIDUAL_LEVELS)
+        print(f"  exact residual ladder: {levels}")
+        print(
+            "  early stop: two consecutive solid-angle-weighted Mueller, "
+            "M11, forward-M11, integrated-M11, and optical-theorem "
+            "extinction changes <= 1e-3"
+        )
+        print("  fallback: continue automatically to the standard 1e-5 target")
+        print(
+            "  startup: pFFT preview only when the high-frequency system is "
+            "large enough to benefit; otherwise direct FMM+MBJ"
+        )
     elif profile.name in {"standard", "memory"}:
         print("  high contrast: Jmax=5 for m>=2; MBJ100 for m>=2.5")
     if profile.name in {"quick", "standard", "memory"}:

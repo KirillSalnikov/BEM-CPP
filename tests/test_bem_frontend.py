@@ -3,6 +3,7 @@
 
 from pathlib import Path
 import json
+import runpy
 import subprocess
 import tempfile
 
@@ -60,6 +61,12 @@ def synthetic_result(
                     "trusted_cyclic_exact_geometry_used": False,
                     "theta_degrees": theta,
                     "mueller": mueller,
+                    "amplitudes": {
+                        "S1": [[-scale, 0.0] for _ in theta],
+                        "S2": [[-scale, 0.0] for _ in theta],
+                        "S3": [[0.0, 0.0] for _ in theta],
+                        "S4": [[0.0, 0.0] for _ in theta],
+                    },
                 },
             }
         ),
@@ -70,12 +77,16 @@ def synthetic_result(
 def main() -> int:
     profiles = json.loads(invoke("presets", "--json").stdout)
     assert set(profiles) == {
-        "preview", "physical-fast", "quick", "standard", "memory", "strict"
+        "preview", "fast", "quick", "standard", "memory", "strict"
     }
     assert profiles["standard"]["tolerance"] == 1e-5
     assert profiles["strict"]["mixed_precision"] is False
     fast_explanation = json.loads(invoke("explain", "fast", "--json").stdout)
-    assert fast_explanation["name"] == "physical-fast"
+    assert fast_explanation["name"] == "fast"
+    legacy_fast_explanation = json.loads(
+        invoke("explain", "physical-fast", "--json").stdout
+    )
+    assert legacy_fast_explanation == fast_explanation
 
     preview = plan(
         "run", "--shape", "prism", "--ka", "80", "--ri", "1.3",
@@ -106,51 +117,69 @@ def main() -> int:
     )
     assert "validated only" in invalid_preview_average.stderr
 
-    physical_fast = plan(
-        "run", "--shape", "prism", "--ka", "80", "--ri", "1.3",
-        "--quality", "physical-fast", "--out", "/tmp/bem-physical-fast-plan",
+    adaptive_fast = plan(
+        "run", "--shape", "prism", "--sides", "7", "--aspect", "1.4",
+        "--ka", "72", "--ri", "1.7", "--ref", "6",
+        "--quality", "fast", "--out", "/tmp/bem-adaptive-fast-plan",
     )
-    assert physical_fast["kind"] == "physical_fast_suite"
-    assert len(physical_fast["children"]) == 2
-    stage1, stage2 = physical_fast["children"]
-    assert stage1["effective_parameters"]["maximum_iterations"] == 3
-    assert stage1["effective_parameters"]["physical_output"] is False
-    assert "--trust-final-projected-residual" in stage1["command"]
-    assert "--physical-check" not in stage1["command"]
-    assert stage2["effective_parameters"]["maximum_iterations"] == 5
-    assert stage2["effective_parameters"]["tolerance"] == 4e-3
-    assert stage2["effective_parameters"]["pfft_inner_tolerance"] == 2e-2
-    assert "--allow-checkpoint-migration" in stage2["command"]
-    assert "--trust-cyclic-exact-geometry" not in stage2["command"]
-    assert stage2["effective_parameters"]["polarization_mode"] == (
-        "verified_regular_prism_symmetry_with_correction"
-    )
-    assert stage2["runtime"]["environment"][
-        "BEM_FMM_BANDED_COARSE_ORDER_REFERENCE_DEPTH"
-    ] == "3"
-    assert "saved_adda_ocl_fp32_dpl15_wall_time_s" not in (
-        physical_fast["validation_envelope"]
-    )
-    assert command_value(stage1, "--checkpoint") == command_value(
-        stage2, "--checkpoint"
-    )
-    invalid_physical_fast = invoke(
-        "run", "--shape", "prism", "--ka", "50", "--ri", "1.3",
-        "--quality", "physical-fast", "--dry-run", expected=2,
-    )
-    assert "validated only" in invalid_physical_fast.stderr
+    assert adaptive_fast["kind"] == "adaptive_fast_suite"
+    assert adaptive_fast["quality"] == "fast"
+    assert adaptive_fast["preview_stage_count"] == 1
+    assert adaptive_fast["validation_envelope"]["shape"] == "prism"
+    assert adaptive_fast["validation_envelope"]["sides"] == 7
+    assert adaptive_fast["validation_envelope"]["aspect"] == 1.4
+    assert adaptive_fast["validation_envelope"]["adaptive_residual_levels"] == [
+        4e-3, 1e-3, 3e-4, 1e-4, 3e-5, 1e-5,
+    ]
+    assert adaptive_fast["validation_envelope"]["fallback"] == "standard_1e-5"
+    preview_stage, *fast_levels = adaptive_fast["children"]
+    assert preview_stage["effective_parameters"]["maximum_iterations"] == 3
+    assert preview_stage["effective_parameters"]["physical_output"] is False
+    assert "--trust-final-projected-residual" in preview_stage["command"]
+    assert "--physical-check" not in preview_stage["command"]
+    assert [level["effective_parameters"]["tolerance"] for level in fast_levels] == [
+        4e-3, 1e-3, 3e-4, 1e-4, 3e-5, 1e-5,
+    ]
+    checkpoints = {
+        command_value(stage, "--checkpoint")
+        for stage in adaptive_fast["children"]
+    }
+    assert len(checkpoints) == 1
+    assert all("--allow-checkpoint-migration" in level["command"] for level in fast_levels)
+    assert all("--trust-cyclic-exact-geometry" not in level["command"] for level in fast_levels)
 
-    physical_fast_111 = plan(
-        "run", "--shape", "prism", "--ka", "111", "--ri", "1.3",
-        "--quality", "physical-fast", "--out", "/tmp/bem-physical-fast-111-plan",
+    small_fast = plan(
+        "run", "--shape", "sphere", "--ka", "1", "--ri", "1.3",
+        "--quality", "physical-fast", "--out", "/tmp/bem-small-fast-plan",
     )
-    assert physical_fast_111["validation_envelope"]["refinement"] == 6
-    assert physical_fast_111["children"][1]["runtime"]["environment"][
-        "BEM_FMM_BANDED_SPLIT_DEPTH"
-    ] == "3"
-    assert physical_fast_111["children"][1]["effective_parameters"][
-        "maximum_iterations"
-    ] == 8
+    assert small_fast["quality"] == "fast"
+    assert small_fast["kind"] == "adaptive_fast_suite"
+    assert small_fast["preview_stage_count"] == 0
+    assert len(small_fast["children"]) == 6
+    assert all(
+        level["effective_parameters"]["solver"] == "fmm_mbj"
+        for level in small_fast["children"]
+    )
+    invalid_fast_tolerance = invoke(
+        "run", "--shape", "sphere", "--ka", "1", "--ri", "1.3",
+        "--quality", "fast", "--tol", "1e-3", "--dry-run", expected=2,
+    )
+    assert "residual ladder" in invalid_fast_tolerance.stderr
+    invalid_fast_average = invoke(
+        "average", "--shape", "sphere", "--ka", "1", "--ri", "1.3",
+        "--quality", "fast", "--alpha", "8", "--dry-run", expected=2,
+    )
+    assert "fixed-orientation" in invalid_fast_average.stderr
+    invalid_fast_single = invoke(
+        "run", "--shape", "sphere", "--ka", "1", "--ri", "1.3",
+        "--quality", "fast", "--single-stage", "--dry-run", expected=2,
+    )
+    assert "multiple exact residual levels" in invalid_fast_single.stderr
+    invalid_fast_angles = invoke(
+        "run", "--shape", "sphere", "--ka", "1", "--ri", "1.3",
+        "--quality", "fast", "--ntheta", "2", "--dry-run", expected=2,
+    )
+    assert "angular integrals" in invalid_fast_angles.stderr
 
     quick_two_stage = plan(
         "run", "--shape", "prism", "--ka", "60", "--ri", "1.3",
@@ -172,14 +201,6 @@ def main() -> int:
         "verified_regular_prism_symmetry_with_correction"
     )
     assert "--trust-cyclic-exact-geometry" not in quick_exact["command"]
-
-    fast_alias = plan(
-        "run", "--shape", "prism", "--ka", "60", "--ri", "1.3",
-        "--quality", "fast", "--out", "/tmp/bem-fast-alias-plan",
-    )
-    assert fast_alias["quality"] == "physical-fast"
-    assert fast_alias["kind"] == "physical_fast_suite"
-    assert "--trust-cyclic-exact-geometry" not in fast_alias["children"][1]["command"]
 
     standard_two_stage = plan(
         "run", "--shape", "prism", "--ka", "60", "--ri", "1.3",
@@ -706,6 +727,104 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="bem-frontend-test.") as directory:
         root = Path(directory)
+        launcher = runpy.run_path(str(BEM))
+        stability = launcher["observable_stability_metrics"]
+        stable_previous = root / "stable-previous.json"
+        stable_current = root / "stable-current.json"
+        unstable_current = root / "unstable-current.json"
+        synthetic_result(
+            stable_previous, scale=1.0, theta=[0.0, 90.0, 180.0]
+        )
+        synthetic_result(
+            stable_current, scale=1.0005, theta=[0.0, 90.0, 180.0]
+        )
+        synthetic_result(
+            unstable_current, scale=1.01, theta=[0.0, 90.0, 180.0]
+        )
+        stable_metrics = stability(stable_previous, stable_current)
+        unstable_metrics = stability(stable_previous, unstable_current)
+        assert stable_metrics["passes"] is True
+        assert stable_metrics["forward_m11_relative_difference"] < 1e-3
+        assert stable_metrics["integrated_m11_relative_difference"] < 1e-3
+        assert unstable_metrics["passes"] is False
+
+        fake_solver = root / "fake_muller_solver.py"
+        fake_solver.write_text(
+            """#!/usr/bin/env python3
+import json
+from pathlib import Path
+import sys
+
+def option(name, default=None):
+    if name not in sys.argv:
+        return default
+    return sys.argv[sys.argv.index(name) + 1]
+
+tolerance = float(option("--tol", "1e-5"))
+ri = float(option("--ri", "1.3"))
+theta = [float(value) for value in range(181)]
+levels = [4e-3, 1e-3, 3e-4, 1e-4, 3e-5, 1e-5]
+level = min(range(len(levels)), key=lambda i: abs(levels[i] - tolerance))
+scale = 1.0 + ((0.0004 * level) if ri < 1.305 else (0.01 * level))
+mueller = [
+    [[scale * (1.0 if row == column else 0.01) for _ in theta]
+     for column in range(4)]
+    for row in range(4)
+]
+residual = 0.8 * tolerance
+result = {
+    "software_version": "test",
+    "solver": "fake_muller",
+    "tolerance": tolerance,
+    "mbj": {"fmm_residual": residual},
+    "physical": {
+        "parallel_fmm_residual": residual,
+        "trusted_cyclic_exact_geometry_used": False,
+        "theta_degrees": theta,
+        "mueller": mueller,
+        "amplitudes": {
+            "S1": [[-scale, 0.0] for _ in theta],
+            "S2": [[-scale, 0.0] for _ in theta],
+            "S3": [[0.0, 0.0] for _ in theta],
+            "S4": [[0.0, 0.0] for _ in theta],
+        },
+    },
+}
+output = Path(option("--out"))
+output.parent.mkdir(parents=True, exist_ok=True)
+output.write_text(json.dumps(result), encoding="utf-8")
+""",
+            encoding="utf-8",
+        )
+        fake_solver.chmod(0o755)
+
+        fast_early = root / "fast-early"
+        invoke(
+            "run", "--shape", "sphere", "--ka", "1", "--ri", "1.3",
+            "--ref", "2", "--quality", "fast", "--binary", str(fake_solver),
+            "--out", str(fast_early), "--no-build", "--allow-memory-risk",
+        )
+        early_summary = json.loads(
+            (fast_early / "adaptive_fast_summary.json").read_text()
+        )
+        assert early_summary["selection"] == "observable_stability_early_stop"
+        assert early_summary["selected_residual_target"] == 3e-4
+        assert early_summary["completed_exact_levels"] == 3
+        assert (fast_early / "result.json").is_file()
+
+        fast_fallback = root / "fast-fallback"
+        invoke(
+            "run", "--shape", "sphere", "--ka", "1", "--ri", "1.31",
+            "--ref", "2", "--quality", "fast", "--binary", str(fake_solver),
+            "--out", str(fast_fallback), "--no-build", "--allow-memory-risk",
+        )
+        fallback_summary = json.loads(
+            (fast_fallback / "adaptive_fast_summary.json").read_text()
+        )
+        assert fallback_summary["selection"] == "standard_residual_fallback"
+        assert fallback_summary["selected_residual_target"] == 1e-5
+        assert fallback_summary["completed_exact_levels"] == 6
+
         obj = root / "shape.obj"
         obj.write_text(
             "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n",

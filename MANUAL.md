@@ -387,7 +387,7 @@ flag.
   --alpha 256
 ```
 
-`standard` is the default. `preview`, `physical-fast`, `quick`, `standard`, and
+`standard` is the default. `preview`, `fast`, `quick`, `standard`, and
 `memory` output 181 scattering angles by default. `standard` uses direct FMM+MBJ below `ka=10` and the
 validated pFFT-FGMRES acceleration from `ka=10` upward. It recomputes phases
 and traverses near-source lists directly, avoiding two caches that did not
@@ -432,22 +432,32 @@ projected residual without a final accurate-operator check. Its historical
 therefore the former `0.388%` number is not a current accuracy guarantee. The
 launcher rejects `preview` outside this fixed case.
 
-`physical-fast` is the corresponding physical-result profile for the same
-regular prism at `ka=60`, `80`, or `111`, `m=1.3`, and `ref=6`. It
-automatically performs the three-step preview, migrates the checkpoint,
-makes corrections with the accurate banded-FMM operator, and evaluates the
-complete Mueller matrix on 181 angles:
+`fast` is a universal fixed-orientation profile. It chooses the surface mesh
+from particle size, refractive index, and geometry, then evaluates the exact
+FMM residual at progressively tighter levels. Large high-frequency systems
+first receive up to three pFFT-FGMRES warm-start steps; smaller systems use
+direct FMM+MBJ immediately:
 
 ```bash
-./bem run --shape prism --sides 6 --aspect 1 --ka 80 --ri 1.3 \
-  --ref 6 --quality physical-fast --out runs/prism_ka80_physical_fast
+./bem run --shape prism --sides 7 --aspect 1.4 --ka 72 --ri 1.7 \
+  --quality fast --out runs/prism_ka72_fast
 ```
 
-The cold measured time is 282.54 s including local-operator and MBJ cache
-construction. The exact-operator residual is `3.424e-3`; the weighted relative
-L2 difference of all Mueller elements from the strict BEM reference is
-`7.780e-5` (0.00778%). This is a physical-observable acceptance profile, not a
-replacement for `standard` when a `1e-5` linear residual is mandatory.
+The exact residual ladder is `4e-3, 1e-3, 3e-4, 1e-4, 3e-5, 1e-5`. Between
+levels, `fast` compares the solid-angle-weighted complete Mueller matrix,
+normalized `M11`, forward `M11`, and integrated `M11`. Early completion
+requires every relative change to be at most `1e-3` on two consecutive levels
+that reduce the actual residual by at least `1.25x`. The extinction observable
+from the optical theorem, proportional to `Re[S1(0)+S2(0)]`, is checked by the
+same rule. A no-op level is not
+evidence of stability. If this test is not satisfied, the checkpoint is
+continued automatically to the `standard` target `1e-5`.
+
+No reference curve is read at runtime. The stable selected result is published
+as `result.json`; intermediate exact results and
+`adaptive_fast_summary.json` document why it stopped. The old name
+`physical-fast` is retained only as a deprecated alias for command-line
+compatibility.
 
 The cold BEM measurements at `ka=60/80/111` are 246.22/281.43/455.48 s. The
 saved ADDA-OCL FP32 times are 1017.74/3285.41/15489.34 s, but the two columns
@@ -590,11 +600,12 @@ change that can be obtained by continuing GMRES on the old operator.
 The previous 255.56 s benchmark and its reported `9.26e-6` residual used the
 old uniform high-frequency FMM operator. Its checkpoint has a `1.24e-1`
 residual under the corrected two-band operator. Therefore the old `9.90x` BEM
-and `12.86x` ADDA speedup claims are withdrawn. The `physical-fast` pipeline
-is retained as a case-specific observable comparison: 282.54 s cold, an
+and `12.86x` ADDA speedup claims are withdrawn. The former three-case
+`physical-fast` pipeline is retained as historical regression data: 282.54 s cold, an
 exact-operator residual of `3.424e-3`, and a `0.00778%` weighted full-Mueller
-difference from the strict BEM result. Its ADDA run used a different residual
-criterion, so the wall-time ratio is not an acceleration claim.
+difference from the strict BEM result. These values do not control the current
+universal `fast` mode. Its ADDA run used a different residual criterion, so
+the wall-time ratio is not an acceleration claim.
 
 The `./bem run` frontend selects this verified prism-symmetry candidate
 automatically for `quick`, `standard`, and `memory`. Pass

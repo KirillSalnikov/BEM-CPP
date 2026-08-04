@@ -70,7 +70,7 @@ conversion, toolchain detection, and automated tests.
 
 The recommended entry point is `./bem`. It chooses the surface refinement,
 precision, solver, quadrature, cache paths, checkpoint paths, and output names
-from one of five reviewed profiles. A normal prism calculation needs only:
+from one of six reviewed profiles. A normal prism calculation needs only:
 
 ```bash
 ./bem run --shape prism --ka 25 --ri 1.3
@@ -113,14 +113,15 @@ The available quality levels are:
 | Profile | Intended use | Numerical and angular control |
 |---|---|---|
 | `preview` | historical rapid inspection of the `ka=80`, `m=1.3`, `ref=6` regular prism | projected-residual output only; its former reference used the withdrawn uniform high-frequency FMM operator |
-| `physical-fast` | case-specific observable-matching experiment for the `ka=60/80/111`, `m=1.3`, `ref=6` regular prism | three preview steps followed by accurate banded-FMM corrections; residual target `4e-3`, so this is not an equal-tolerance benchmark |
+| `fast` | adaptive fixed-orientation calculation on any supported shape and material | exact residual ladder `4e-3, 1e-3, 3e-4, 1e-4, 3e-5, 1e-5`; stop only after two independent Mueller-stability checks, otherwise fall back to `standard` |
 | `quick` | exploratory runs only | mixed precision, residual `1e-3`, 181 scattering angles; adaptive two-stage fixed-orientation path for sufficiently large built-in meshes |
 | `standard` | normal calculations | mixed precision, residual `1e-5`; the automatic two-stage path does not relax this target |
 | `memory` | standard-accuracy runs near the GPU-memory limit | same residual as `standard`; sequential electric/magnetic FMM currents reduce peak memory |
 | `strict` | publication control | FP64, residual `1e-6`, adaptive `J=2..5`, two successive meshes |
 
-`fast` is accepted as a short command-line alias for `physical-fast`.
-For `quick`, `physical-fast`/`fast`, and `memory`, rotational symmetry only
+`physical-fast` remains accepted as a deprecated command-line alias for
+`fast`; it no longer selects a three-case parameter table. For `fast`,
+`quick`, `standard`, and `memory`, rotational symmetry only
 supplies a candidate second polarization. The final stage evaluates its full
 operator residual and solves a correction whenever the candidate exceeds the
 profile tolerance. `./bem validate` rejects output from the former unchecked
@@ -136,19 +137,24 @@ use the former `0.388%` difference as a current accuracy claim.
 ./bem run --shape prism --ka 80 --ri 1.3 --quality preview
 ```
 
-For the case-specific physical-observable experiment, run the complete
-two-stage pipeline with one command:
+The universal adaptive mode needs no stored reference result:
 
 ```bash
-./bem run --shape prism --sides 6 --aspect 1 --ka 80 --ri 1.3 \
-  --ref 6 --quality physical-fast --out runs/prism_ka80_physical_fast
+./bem run --shape prism --sides 7 --aspect 1.4 --ka 72 --ri 1.7 \
+  --quality fast --out runs/prism_ka72_fast
 ```
 
-At `ka=80` the measured cold pipeline took 282.54 s including cache
-construction, while a saved ADDA-OCL FP32 run took 3285.48 s. These times are
-not an acceleration benchmark: the BEM exact-operator residual was
-`3.424e-3`, whereas ADDA requested `1e-4`. At `ka=111`, `ref=6` also has only
-5.25 nodes per internal wavelength and differs from ADDA by 2.79%.
+The mesh is selected from `ka`, refractive index, and geometry. Large systems
+receive a three-step pFFT warm start; small systems start directly with
+FMM+MBJ. At every exact level the full operator residual is recalculated for
+both polarizations. The complete solid-angle-weighted Mueller matrix,
+normalized `M11`, forward `M11`, and integrated `M11` must change by at most
+`1e-3` on two levels that genuinely reduce the residual. The optical-theorem
+extinction observable `Re[S1(0)+S2(0)]` is checked at the same tolerance. A
+level that performs no new correction is not counted. If the gate is inconclusive, the same
+checkpoint continues automatically to the `standard` residual `1e-5`.
+The selected result is written to `result.json`; every intermediate level and
+`adaptive_fast_summary.json` remain available for audit.
 
 No equal-accuracy speedup over ADDA is currently claimed. A valid claim
 requires both programs to use the same residual target, independently
@@ -177,7 +183,7 @@ selected automatically.
 
 An end-to-end cold `quick` check at `ka=60` completed in 169.58 s and reached
 a verified `6.851e-4` residual. Its normalized Mueller matrix differed from
-the quadrature-7 physical-fast result by `0.0131%`. A separate `standard`
+the legacy quadrature-7 control result by `0.0131%`. A separate `standard`
 continuation reached `8.429e-6`; its normalized Mueller difference from the
 strict BEM result was `3.28e-8`. The saved ADDA run used a different residual
 criterion, so no cross-program speedup is inferred from these timings.
@@ -188,7 +194,7 @@ directories with exactly the same geometry, mesh, material, frequency, and
 quadrature reuse them. A changed input gets a different path, and both binary
 cache formats independently verify their full operator signatures before a
 hit is accepted. Set `BEM_CACHE_DIR` to relocate this cache. Final outputs from
-`quick`, `physical-fast`/`fast`, `standard`, and `memory` record verified FMM
+`fast`, `quick`, `standard`, and `memory` record verified FMM
 residuals. Use `standard` or `strict` when publication accuracy rather than
 exploratory or case-specific accuracy is required.
 
@@ -360,10 +366,11 @@ An earlier benchmark claimed 255.56 s and a `9.26e-6` residual for this
 `ka=80`, `m=1.3`, `ref=6` prism. That residual belonged to the old uniform FMM
 operator. Rechecking its checkpoint with the corrected high-frequency
 two-band operator gave `1.24e-1`, so the old `9.90x` BEM and `12.86x` ADDA
-claims are withdrawn. The `physical-fast` profile is retained only as a
-case-specific observable-matching experiment: 282.54 s cold, `3.424e-3`
+claims are withdrawn. The former three-case `physical-fast` experiment is
+retained only as historical regression data: 282.54 s cold, `3.424e-3`
 exact-operator residual, and a directly measured `0.00778%` weighted
-full-Mueller difference from the strict BEM reference.
+full-Mueller difference from the strict BEM reference. It is not the stopping
+rule of the current universal `fast` profile.
 
 Use `--no-checkpoint` only for disposable benchmarks. Do not use
 `--allow-checkpoint-migration` unless an intentionally changed operator is

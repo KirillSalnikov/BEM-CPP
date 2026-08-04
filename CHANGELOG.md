@@ -16,7 +16,11 @@ Semantic Versioning while its public interfaces are stabilizing.
   directories, including OBJ-content hashing and atomic concurrent writes;
 - documented all ten before/after BEM timings without selection: median cold
   speedup is `1.620x`, maximum is `2.321x`, while ADDA remains faster in every
-  declared case.
+  declared case;
+- replaced the three-case `physical-fast` gate with a universal fixed-
+  orientation `fast` profile: automatic mesh selection, optional pFFT warm
+  start, an exact residual ladder, two independent Mueller-stability gates,
+  atomic final-result publication, and an automatic `1e-5` standard fallback.
 
 ### Fixed
 

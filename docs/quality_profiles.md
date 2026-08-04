@@ -275,36 +275,51 @@ The report command returns a nonzero status while any case is missing or has
 failed a numerical gate. This is intentional and prevents an incomplete
 stress matrix from being mistaken for a fully passing release test.
 
-## Validated two-stage high-frequency prism mode
+## Universal adaptive fast mode
 
-`physical-fast` is a deliberately narrow two-stage profile for the regular
-six-sided prism with `ka=60`, `80`, or `111`, `m=1.3`, and `ref=6`. It first
-makes three cheap pFFT-FGMRES preview steps, then migrates that checkpoint to
-the accurate two- or three-band FMM operator. The final Mueller matrix uses
-181 scattering angles. C6 symmetry supplies a candidate second polarization,
-but the full banded-FMM operator checks its residual and computes a correction
-whenever it exceeds the selected tolerance.
+`fast` is a fixed-orientation adaptive profile for every supported built-in
+shape and OBJ mesh. It uses the same automatic wavelength-based refinement as
+`standard`. For a large high-frequency system it first makes up to three cheap
+pFFT-FGMRES warm-start steps and migrates that checkpoint to the accurate
+banded FMM operator. When pFFT setup is not expected to pay for itself, it
+starts directly with FMM+MBJ.
 
 ```bash
-./bem run --shape prism --sides 6 --aspect 1 --ka 80 --ri 1.3 \
-  --ref 6 --quality physical-fast --out runs/prism_ka80_physical_fast
+./bem run --shape prism --sides 7 --aspect 1.4 --ka 72 --ri 1.7 \
+  --quality fast --out runs/prism_ka72_fast
 ```
 
-The measured cold run, including near-operator and MBJ cache construction,
-took 282.54 s. A saved ADDA-OCL FP32 `dpl=15` run took 3285.48 s, but the two
-times are not an acceleration benchmark: the BEM exact-operator residual was
-`3.424e-3`, whereas ADDA requested `1e-4`. Against the fully converged BEM
-reference, the solid-angle weighted relative L2 difference of the complete
-Mueller matrix was `7.780e-5` (0.00778%), and the largest absolute element
-difference divided by forward `M11` was `8.248e-5` (0.00825%).
+The exact operator is continued through residual targets `4e-3`, `1e-3`,
+`3e-4`, `1e-4`, `3e-5`, and `1e-5`. Each completed level records a complete
+181-angle Mueller matrix and verified residuals for both polarizations. Two
+successive independent corrections must keep all of the following below
+`1e-3` before early completion is allowed:
+
+- solid-angle-weighted relative L2 change of the complete Mueller matrix;
+- solid-angle-weighted relative L2 change of normalized `M11`;
+- relative change of forward `M11`;
+- relative change of the solid-angle integral of `M11`;
+- relative change of the optical-theorem extinction observable
+  `Re[S1(0)+S2(0)]`.
+
+An apparently identical result caused by a solver step that made no residual
+progress is not counted: the measured residual must decrease by at least
+`1.25x`. If two accepted transitions are not available, the same checkpoint
+continues to `1e-5`, making the result a `standard` residual fallback rather
+than an unverified early stop. The selected result is copied atomically to the
+top-level `result.json`; `adaptive_fast_summary.json` and every intermediate
+level remain available for audit.
 
 No equal-accuracy speedup over ADDA is currently claimed. A valid comparison
 must independently recalculate both final residuals, use the same target and
 angular output, and establish discretization convergence for both methods.
 
-This profile is not a `1e-5` linear-residual result and is not enabled outside
-the validated particle and parameter set. Use `standard` when a `1e-5`
-operator residual is the required acceptance criterion.
+No external reference result is used by the stopping rule. The historical
+`ka=60/80/111`, `m=1.3`, `ref=6` regular-prism calculations are regression
+controls only. `physical-fast` remains a deprecated alias for `fast`; it no
+longer activates a special table for those three cases. Orientation averaging
+still uses `standard` or `memory`, because its adaptive angular quadrature has
+a separate convergence controller.
 
 The fixed-orientation `quick`, `standard`, and `memory` profiles also use an
 adaptive form of this pipeline for built-in meshes with `ka>=60`, `ref>=4`,
@@ -315,8 +330,7 @@ the published ADDA baseline and physical-validation numbers. All profiles
 retain their normal residual targets (`1e-3`, `1e-5`, and `1e-5`), and
 `--single-stage` provides a control run.
 
-`fast` is a short command-line alias for `physical-fast`. Final output from
-`quick`, `physical-fast`/`fast`, and `memory` requires verified operator
+Final output from `fast`, `quick`, `standard`, and `memory` requires verified operator
 residuals for both polarizations. The validator rejects files produced with
 the former unchecked cyclic-symmetry shortcut.
 
