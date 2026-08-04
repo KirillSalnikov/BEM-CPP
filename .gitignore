@@ -6,6 +6,7 @@ runs/
 src/*.o
 *.json
 !reference/**/*.json
+!benchmarks/**/*.json
 *.npz
 *.pyc
 __pycache__/

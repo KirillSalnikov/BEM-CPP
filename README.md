@@ -737,6 +737,23 @@ A strict physical study additionally requires:
 5. comparison with Mie theory for spheres or an independently converged method;
 6. complete wall time including setup, solve, and far field.
 
+### Equal-accuracy BEM/ADDA benchmark
+
+The reproducible ten-case benchmark in
+[`benchmarks/equal_accuracy_10_20260804`](benchmarks/equal_accuracy_10_20260804)
+uses the clean official ADDA commit `8f550a7`, three independent complete-wall
+repetitions, two independently solved polarizations, a `1e-5` final
+recalculated/operator residual, 181 common angles, adjacent discretization
+controls, and Mie checks for spheres. The cases were declared before execution:
+sphere and regular hexagonal prism at `ka=2/4/6/8/10`, `m=1.3`.
+Application caches were new for every repetition; system CUDA/OpenCL compiler
+caches were warm and were not flushed.
+
+There is no BEM acceleration in these ten cases. The measured
+`ADDA wall / BEM wall` ratios are `0.0030x` to `0.0451x`, meaning that BEM is
+22 to 329 times slower. These results describe only this declared range and
+must not be extrapolated to large particles or orientation averaging.
+
 ## Documentation
 
 - [`MANUAL.md`](MANUAL.md): operational manual.

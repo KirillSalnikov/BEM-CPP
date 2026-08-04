@@ -5,6 +5,14 @@ Semantic Versioning while its public interfaces are stabilizing.
 
 ## Unreleased
 
+### Added
+
+- added a reproducible ten-case BEM/ADDA benchmark with three wall-time
+  repetitions, independently recalculated residuals, adjacent-grid controls,
+  common angular output, and sphere checks against Mie theory;
+- documented the unfavorable result without selection: BEM was slower in all
+  ten declared `ka=2..10` sphere and prism cases.
+
 ## [0.1.0-alpha.5] - 2026-08-03
 
 ### Fixed
