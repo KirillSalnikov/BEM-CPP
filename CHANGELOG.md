@@ -20,7 +20,10 @@ Semantic Versioning while its public interfaces are stabilizing.
 - replaced the three-case `physical-fast` gate with a universal fixed-
   orientation `fast` profile: automatic mesh selection, optional pFFT warm
   start, an exact residual ladder, two independent Mueller-stability gates,
-  atomic final-result publication, and an automatic `1e-5` standard fallback.
+  atomic final-result publication, and an automatic `1e-5` standard fallback;
+- keep FMM/pFFT operators, MBJ factors, and Krylov solutions resident across
+  the adaptive residual ladder, and evaluate both fixed-orientation far fields
+  in one OpenMP-parallel element traversal.
 
 ### Fixed
 

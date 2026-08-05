@@ -1350,6 +1350,107 @@ def make_adaptive_fast_plan(
     }
 
 
+def make_inprocess_adaptive_fast_plan(
+    args: argparse.Namespace,
+    profile: Profile,
+    output: Path,
+    refinement: int,
+) -> dict[str, Any]:
+    """Build one resident-operator run for the adaptive residual ladder."""
+    dofs = estimate_dofs(args, refinement)
+    large_pfft = (
+        args.solver != "fmm"
+        and args.ka >= 60.0
+        and refinement >= 4
+        and dofs >= 100_000
+    )
+    if large_pfft:
+        staged = make_two_stage_plan(args, profile, output, refinement)
+        plan = copy.deepcopy(staged["children"][1])
+        envelope = dict(staged["validation_envelope"])
+        operator = "resident adaptive banded FMM with pFFT-FGMRES"
+    else:
+        exact_args = argparse.Namespace(**vars(args))
+        exact_args.solver = (
+            "pfft"
+            if args.solver == "pfft" or
+            (args.solver == "auto" and args.ka >= 10.0)
+            else "fmm"
+        )
+        plan = make_single_plan(
+            exact_args, profile, output, refinement, "run"
+        )
+        envelope = {
+            "selection": "automatic_direct_fmm",
+            "shape": args.shape,
+            "sides": args.sides if args.shape == "prism" else None,
+            "aspect": args.aspect if args.shape == "prism" else None,
+            "ka": args.ka,
+            "relative_refractive_index": args.ri,
+            "refinement": refinement,
+            "electrical_density": (
+                args.ka * shortest_wavelength_factor(args)
+                / float(1 << refinement)
+            ),
+            "theta_samples": plan["effective_parameters"]["ntheta"],
+        }
+        operator = (
+            "resident FMM with pFFT-FGMRES"
+            if exact_args.solver == "pfft"
+            else "resident direct FMM with MBJ"
+        )
+
+    result = (output / "result.json").resolve()
+    replace_command_option(
+        plan["command"], "--iteration-log", str(output / "iterations.csv")
+    )
+    replace_command_option(
+        plan["command"], "--checkpoint", str(output / "checkpoint")
+    )
+    replace_command_option(plan["command"], "--out", str(result))
+    out_index = plan["command"].index("--out")
+    plan["command"].insert(out_index, "--adaptive-fast")
+    plan.update({
+        "kind": "adaptive_fast_run",
+        "calculation_kind": "run",
+        "output_directory": str(output.resolve()),
+        "result_path": str(result),
+    })
+    plan["effective_parameters"].update({
+        "stage": "inprocess_adaptive_residual_ladder",
+        "adaptive_residual_levels": list(FAST_RESIDUAL_LEVELS),
+        "observable_relative_tolerance": (
+            FAST_OBSERVABLE_RELATIVE_TOLERANCE
+        ),
+        "required_consecutive_stable_levels": (
+            FAST_REQUIRED_CONSECUTIVE_STABLE_LEVELS
+        ),
+        "minimum_residual_reduction_factor": (
+            FAST_MINIMUM_RESIDUAL_REDUCTION_FACTOR
+        ),
+        "resident_operator_reuse": True,
+    })
+    envelope.update({
+        "maximum_exact_operator_residual": profile.tolerance,
+        "adaptive_residual_levels": list(FAST_RESIDUAL_LEVELS),
+        "observable_relative_tolerance": (
+            FAST_OBSERVABLE_RELATIVE_TOLERANCE
+        ),
+        "required_consecutive_stable_levels": (
+            FAST_REQUIRED_CONSECUTIVE_STABLE_LEVELS
+        ),
+        "minimum_residual_reduction_factor": (
+            FAST_MINIMUM_RESIDUAL_REDUCTION_FACTOR
+        ),
+        "minimum_early_stop_residual": 1.0e-3,
+        "fallback": "standard_1e-5",
+        "operator": operator,
+        "operator_setup_count": 1,
+    })
+    plan["validation_envelope"] = envelope
+    return plan
+
+
 def has_pipeline_overrides(args: argparse.Namespace) -> bool:
     return any(
         value is not None
@@ -1475,7 +1576,13 @@ def create_plan(args: argparse.Namespace, kind: str) -> dict[str, Any]:
     output = output.resolve()
 
     if profile.name == "fast":
-        return make_adaptive_fast_plan(
+        if args.binary:
+            # External/older solver binaries may not implement the resident
+            # ladder yet; retain the audited multi-process compatibility path.
+            return make_adaptive_fast_plan(
+                args, profile, output, refinement
+            )
+        return make_inprocess_adaptive_fast_plan(
             args, profile, output, refinement
         )
 
@@ -1513,6 +1620,28 @@ def create_plan(args: argparse.Namespace, kind: str) -> dict[str, Any]:
 def print_plan(plan: dict[str, Any], as_json: bool = False) -> None:
     if as_json:
         print(json.dumps(plan, indent=2, ensure_ascii=False))
+        return
+    if plan["kind"] == "adaptive_fast_run":
+        envelope = plan["validation_envelope"]
+        levels = ", ".join(
+            f"{float(value):.0e}"
+            for value in envelope["adaptive_residual_levels"]
+        )
+        print("fast adaptive calculation (one resident operator):")
+        print(f"  exact residual ladder: {levels}")
+        print(
+            "  early stop: two consecutive Mueller/forward/integral/extinction "
+            f"changes <= {envelope['observable_relative_tolerance']:.0e}"
+        )
+        print("  fallback: continue automatically to the standard 1e-5 residual")
+        print(f"  operator: {envelope['operator']}")
+        print(
+            f"  case: {envelope['shape']}, ka={envelope['ka']:g}, "
+            f"m={envelope['relative_refractive_index']:g}, "
+            f"ref={envelope['refinement']}"
+        )
+        print(f"  output: {plan['output_directory']}")
+        print(f"  command: {shlex.join(plan['command'])}")
         return
     if plan["kind"] == "adaptive_fast_suite":
         envelope = plan["validation_envelope"]
@@ -1956,6 +2085,53 @@ def inspect_result(
                 "adaptive orientation averaging reached its maximum level "
                 "without satisfying convergence tolerances"
             )
+    adaptive_fast = data.get("adaptive_fast")
+    if data.get("adaptive_fast_enabled") is True:
+        if not isinstance(adaptive_fast, dict):
+            errors.append("adaptive fast metadata is missing")
+        else:
+            selected_target = float(
+                adaptive_fast.get("selected_residual_target", 0.0)
+            )
+            completed_levels = int(adaptive_fast.get("completed_levels", 0))
+            stable_levels = int(
+                adaptive_fast.get("consecutive_stable_levels", 0)
+            )
+            comparisons = adaptive_fast.get("comparisons")
+            if selected_target <= 0.0 or not math.isclose(
+                selected_target, tolerance, rel_tol=1.0e-12
+            ):
+                errors.append(
+                    "adaptive fast selected target does not match the "
+                    "reported solver tolerance"
+                )
+            if completed_levels < 1 or not isinstance(comparisons, list):
+                errors.append("adaptive fast residual ladder is incomplete")
+            if selected_target > 1.0e-5 and stable_levels < 2:
+                errors.append(
+                    "adaptive fast stopped before two independent physical "
+                    "stability checks passed"
+                )
+            if isinstance(comparisons, list):
+                required_values = (
+                    "full_mueller_l2", "m11_l2",
+                    "forward_m11_relative",
+                    "integrated_m11_relative",
+                    "extinction_relative",
+                    "previous_residual", "current_residual",
+                    "residual_reduction_factor",
+                )
+                for comparison in comparisons:
+                    if not isinstance(comparison, dict) or any(
+                        name not in comparison or
+                        not math.isfinite(float(comparison[name]))
+                        for name in required_values
+                    ):
+                        errors.append(
+                            "adaptive fast comparison contains missing or "
+                            "non-finite metrics"
+                        )
+                        break
     if data.get("hdiv_conforming") and not data.get("sharp_edge_formulation_validated"):
         warnings.append("sharp-edge H(div) result still requires independent validation")
     report = {
@@ -1970,6 +2146,10 @@ def inspect_result(
             and max(found_residuals) <= tolerance
         ),
         "residual_verified": residual_verified,
+        "adaptive_fast_selected_target": (
+            adaptive_fast.get("selected_residual_target")
+            if isinstance(adaptive_fast, dict) else None
+        ),
         "errors": errors,
         "warnings": warnings,
     }

@@ -434,9 +434,10 @@ launcher rejects `preview` outside this fixed case.
 
 `fast` is a universal fixed-orientation profile. It chooses the surface mesh
 from particle size, refractive index, and geometry, then evaluates the exact
-FMM residual at progressively tighter levels. Large high-frequency systems
-first receive up to three pFFT-FGMRES warm-start steps; smaller systems use
-direct FMM+MBJ immediately:
+FMM residual at progressively tighter levels. One process retains the
+prepared FMM/pFFT operator and MBJ factors for every level. Medium systems use
+ordinary pFFT-FGMRES, large high-frequency systems use its banded-FMM
+configuration, and small systems use direct FMM+MBJ:
 
 ```bash
 ./bem run --shape prism --sides 7 --aspect 1.4 --ka 25 --ri 1.3 \
@@ -454,8 +455,8 @@ evidence of stability. If this test is not satisfied, the checkpoint is
 continued automatically to the `standard` target `1e-5`.
 
 No reference curve is read at runtime. The stable selected result is published
-as `result.json`; intermediate exact results and
-`adaptive_fast_summary.json` document why it stopped. The old name
+as `result.json`; its `adaptive_fast` section records the intermediate
+comparisons, selected tolerance, and reason for stopping. The old name
 `physical-fast` is retained only as a deprecated alias for command-line
 compatibility.
 

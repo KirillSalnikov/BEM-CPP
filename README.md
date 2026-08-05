@@ -144,17 +144,37 @@ The universal adaptive mode needs no stored reference result:
   --quality fast --out runs/prism_ka25_fast
 ```
 
-The mesh is selected from `ka`, refractive index, and geometry. Large systems
-receive a three-step pFFT warm start; small systems start directly with
-FMM+MBJ. At every exact level the full operator residual is recalculated for
-both polarizations. The complete solid-angle-weighted Mueller matrix,
+The mesh is selected from `ka`, refractive index, and geometry. One solver
+process keeps the FMM/pFFT operator and MBJ factors resident while it advances
+through the residual ladder. Medium and large systems use pFFT-FGMRES; the
+largest systems use its banded-FMM configuration, while small systems use
+direct FMM+MBJ. At every exact level the full operator residual is recalculated
+for both polarizations. The complete solid-angle-weighted Mueller matrix,
 normalized `M11`, forward `M11`, and integrated `M11` must change by at most
 `1e-3` on two levels that genuinely reduce the residual. The optical-theorem
 extinction observable `Re[S1(0)+S2(0)]` is checked at the same tolerance. A
 level that performs no new correction is not counted. If the gate is inconclusive, the same
-checkpoint continues automatically to the `standard` residual `1e-5`.
-The selected result is written to `result.json`; every intermediate level and
-`adaptive_fast_summary.json` remain available for audit.
+in-memory solution and on-disk checkpoint continue automatically to the
+`standard` residual `1e-5`. The selected result is written to `result.json`;
+its `adaptive_fast` object records every intermediate comparison and the
+selected residual target for audit.
+
+Cold-cache measurements on the release RTX 3090 Ti for a regular hexagonal
+prism (`h/D=1`, `m=1.3`, 181 angles) give the following profile-level result:
+
+| `ka` | surface refinement | `standard` (`1e-5`) | adaptive `fast` | `standard / fast` | full normalized Mueller difference |
+|---:|---:|---:|---:|---:|---:|
+| 25 | 5 | 47.88 s | 48.88 s, selected `3e-4` | 0.980x | `7.21e-5` |
+| 60 | 6 | 640.13 s | 582.24 s, selected `1e-4` | 1.099x | `2.51e-6` |
+
+These are isolated cold runs with identical meshes and numerical backends.
+They show a break-even medium case and a measured large-case benefit; they do
+not establish universal speedup or equal-residual performance. The `fast`
+profile's claim is instead that its looser stopping point passed two
+independent physical-observable stability checks.
+
+The scalar data, methodology, and wall-time plot are tracked in
+[`benchmarks/adaptive_fast_resident_20260805`](benchmarks/adaptive_fast_resident_20260805).
 
 No equal-accuracy speedup over ADDA is currently claimed. A valid claim
 requires both programs to use the same residual target, independently

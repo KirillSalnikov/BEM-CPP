@@ -63,7 +63,9 @@ void print_usage(const char* program)
         "  --mbj-only --mbj-nodes N        Use the MBJ-preconditioned solve only\n"
         "  --pfft-fgmres                   Use pFFT as an inner FGMRES operator\n"
         "  --trust-final-projected-residual  Skip the final FMM check in fixed-step runs\n"
-        "  --physical-check --ntheta N     Solve both polarizations and far field\n\n"
+        "  --physical-check --ntheta N     Solve both polarizations and far field\n"
+        "  --adaptive-fast                  Reuse one resident operator across the\n"
+        "                                   residual/observable ladder\n\n"
         "  --cyclic-polarization           Reconstruct the second polarization\n"
         "  --cyclic-exact-geometry         Verify cyclic reconstruction with FMM\n"
         "  --trust-cyclic-exact-geometry   Accept exact mesh symmetry after checks\n"
@@ -992,6 +994,140 @@ void amplitude_to_mueller(
         mueller[index(3, 2, angle)] = s1s2.imag() - s3s4.imag();
         mueller[index(3, 3, angle)] = s1s2.real() - s3s4.real();
     }
+}
+
+struct AdaptiveFastComparison {
+    double full_mueller_l2 = 0.0;
+    double m11_l2 = 0.0;
+    double forward_m11_relative = 0.0;
+    double integrated_m11_relative = 0.0;
+    double extinction_relative = 0.0;
+    double maximum_normalized_difference = 0.0;
+    double previous_residual = 0.0;
+    double current_residual = 0.0;
+    double residual_reduction = 0.0;
+    bool independent_update = false;
+    bool passes = false;
+};
+
+AdaptiveFastComparison compare_adaptive_fast_observables(
+    const std::vector<double>& theta_degrees,
+    const std::vector<double>& previous_mueller,
+    const std::vector<double>& current_mueller,
+    const std::vector<cdouble>& previous_s1,
+    const std::vector<cdouble>& previous_s2,
+    const std::vector<cdouble>& current_s1,
+    const std::vector<cdouble>& current_s2,
+    double previous_residual,
+    double current_residual,
+    double relative_tolerance = 1.0e-3,
+    double minimum_residual_reduction = 1.25)
+{
+    const int ntheta = static_cast<int>(theta_degrees.size());
+    if (ntheta < 2 ||
+        previous_mueller.size() != static_cast<size_t>(16 * ntheta) ||
+        current_mueller.size() != static_cast<size_t>(16 * ntheta) ||
+        previous_s1.size() != static_cast<size_t>(ntheta) ||
+        previous_s2.size() != static_cast<size_t>(ntheta) ||
+        current_s1.size() != static_cast<size_t>(ntheta) ||
+        current_s2.size() != static_cast<size_t>(ntheta)) {
+        throw std::invalid_argument(
+            "adaptive fast observable arrays have incompatible sizes");
+    }
+
+    std::vector<double> weights(ntheta, 0.0);
+    for (int angle = 0; angle < ntheta; angle++) {
+        const double theta = theta_degrees[angle] * M_PI / 180.0;
+        double width = 0.0;
+        if (angle == 0) {
+            width = 0.5 * (theta_degrees[1] - theta_degrees[0]) *
+                M_PI / 180.0;
+        } else if (angle + 1 == ntheta) {
+            width = 0.5 *
+                (theta_degrees[ntheta - 1] - theta_degrees[ntheta - 2]) *
+                M_PI / 180.0;
+        } else {
+            width = 0.5 *
+                (theta_degrees[angle + 1] - theta_degrees[angle - 1]) *
+                M_PI / 180.0;
+        }
+        weights[angle] = std::max(0.0, std::sin(theta) * width);
+    }
+
+    const double previous_forward = previous_mueller[0];
+    const double current_forward = current_mueller[0];
+    if (previous_forward == 0.0 || current_forward == 0.0)
+        throw std::runtime_error(
+            "adaptive fast cannot normalize a zero forward M11");
+
+    double full_difference = 0.0;
+    double full_reference = 0.0;
+    double m11_difference = 0.0;
+    double m11_reference = 0.0;
+    double previous_integral = 0.0;
+    double current_integral = 0.0;
+    AdaptiveFastComparison result;
+    for (int component = 0; component < 16; component++) {
+        for (int angle = 0; angle < ntheta; angle++) {
+            const size_t index =
+                static_cast<size_t>(component) * ntheta + angle;
+            const double old_value =
+                previous_mueller[index] / previous_forward;
+            const double new_value =
+                current_mueller[index] / current_forward;
+            const double difference = new_value - old_value;
+            full_difference += weights[angle] * difference * difference;
+            full_reference += weights[angle] * new_value * new_value;
+            result.maximum_normalized_difference = std::max(
+                result.maximum_normalized_difference,
+                std::abs(difference));
+            if (component == 0) {
+                m11_difference +=
+                    weights[angle] * difference * difference;
+                m11_reference +=
+                    weights[angle] * new_value * new_value;
+                previous_integral +=
+                    weights[angle] * previous_mueller[index];
+                current_integral +=
+                    weights[angle] * current_mueller[index];
+            }
+        }
+    }
+    if (current_integral == 0.0)
+        throw std::runtime_error(
+            "adaptive fast encountered a zero integrated M11");
+    const double previous_extinction =
+        (previous_s1[0] + previous_s2[0]).real();
+    const double current_extinction =
+        (current_s1[0] + current_s2[0]).real();
+    if (current_extinction == 0.0)
+        throw std::runtime_error(
+            "adaptive fast encountered a zero extinction observable");
+
+    result.full_mueller_l2 = std::sqrt(
+        full_difference / std::max(full_reference, 1.0e-300));
+    result.m11_l2 = std::sqrt(
+        m11_difference / std::max(m11_reference, 1.0e-300));
+    result.forward_m11_relative =
+        std::abs(previous_forward / current_forward - 1.0);
+    result.integrated_m11_relative =
+        std::abs(previous_integral / current_integral - 1.0);
+    result.extinction_relative =
+        std::abs(previous_extinction / current_extinction - 1.0);
+    result.previous_residual = previous_residual;
+    result.current_residual = current_residual;
+    result.residual_reduction = current_residual > 0.0
+        ? previous_residual / current_residual
+        : 1.0e300;
+    result.independent_update =
+        result.residual_reduction >= minimum_residual_reduction;
+    result.passes =
+        result.full_mueller_l2 <= relative_tolerance &&
+        result.m11_l2 <= relative_tolerance &&
+        result.forward_m11_relative <= relative_tolerance &&
+        result.integrated_m11_relative <= relative_tolerance &&
+        result.extinction_relative <= relative_tolerance;
+    return result;
 }
 
 double norm(const cdouble* vector, int n)
@@ -4074,6 +4210,7 @@ int run_main(int argc, char** argv)
     bool mbj_only = false;
     bool setup_only = false;
     bool physical_check = false;
+    bool adaptive_fast = false;
     bool cyclic_polarization = false;
     bool cyclic_exact_geometry = false;
     bool trust_cyclic_exact_geometry = false;
@@ -4285,6 +4422,10 @@ int run_main(int argc, char** argv)
             setup_only = true;
         else if (std::strcmp(argv[i], "--physical-check") == 0)
             physical_check = true;
+        else if (std::strcmp(argv[i], "--adaptive-fast") == 0) {
+            adaptive_fast = true;
+            physical_check = true;
+        }
         else if (std::strcmp(argv[i], "--orient-average") == 0 &&
                  i + 3 < argc) {
             orient_average_alpha = std::atoi(argv[++i]);
@@ -4668,6 +4809,18 @@ int run_main(int argc, char** argv)
         orient_average_gamma > 0 ||
         orient_file ||
         orient_adaptive_maximum_level > 0;
+    if (adaptive_fast &&
+        (orientation_average || !physical_check || !mbj_only || setup_only ||
+         dense_validation || neural_preconditioner_path ||
+         hybrid_pfft_fmm || trust_final_projected_residual ||
+         ntheta < 3)) {
+        std::fprintf(
+            stderr,
+            "--adaptive-fast requires a fixed-orientation physical run, "
+            "--mbj-only, --no-dense-validation, at least three theta "
+            "samples, and no neural/hybrid/projected-residual mode\n");
+        return 2;
+    }
     if (orient_adaptive_maximum_level > 0 &&
         (orient_adaptive_minimum_level < 1 ||
          orient_adaptive_maximum_level <
@@ -5774,11 +5927,58 @@ int run_main(int argc, char** argv)
     double parallel_pfft_inner_seconds = 0.0;
     FlexiblePreconditioner pfft_inverse;
     GmresResult preconditioned;
+    GmresResult parallel_preconditioned;
+    bool cyclic_polarization_used = false;
+    bool cyclic_exact_geometry_used = false;
+    bool trusted_cyclic_exact_geometry_used = false;
+    bool cyclic_polarization_corrected = false;
+    bool cyclic_polarization_fallback = false;
+    bool mirror_polarization_used = false;
+    double cyclic_rhs_relative_error = -1.0;
+    double symmetry_direct_residual = -1.0;
+    std::vector<cdouble> symmetry_direct_solution;
+    double farfield_seconds = 0.0;
+    std::vector<double> theta;
+    std::vector<double> mueller;
+    std::vector<cdouble> s1, s2, s3, s4;
+    double sphere_cross_polarization_relative = -1.0;
+    std::vector<double> previous_adaptive_mueller;
+    std::vector<cdouble> previous_adaptive_s1;
+    std::vector<cdouble> previous_adaptive_s2;
+    std::vector<AdaptiveFastComparison> adaptive_comparisons;
+    double previous_adaptive_residual = 1.0;
+    int adaptive_consecutive_stable = 0;
+    int adaptive_completed_levels = 0;
+    const double requested_tolerance = tolerance;
+    const double adaptive_levels[] = {
+        4.0e-3, 1.0e-3, 3.0e-4, 1.0e-4, 3.0e-5, 1.0e-5
+    };
+    const int adaptive_level_count =
+        static_cast<int>(sizeof(adaptive_levels) / sizeof(double));
+    const int solve_level_count = adaptive_fast ? adaptive_level_count : 1;
+    std::vector<cdouble> adaptive_primary_guess;
+    std::vector<cdouble> adaptive_parallel_guess;
+    const auto solve_pipeline_start = std::chrono::steady_clock::now();
+
+    for (int solve_level = 0; solve_level < solve_level_count; solve_level++) {
+        tolerance = adaptive_fast
+            ? adaptive_levels[solve_level] : requested_tolerance;
+        const std::vector<cdouble>* current_primary_initial_guess =
+            adaptive_primary_guess.empty()
+                ? primary_initial_guess : &adaptive_primary_guess;
+        const std::vector<cdouble>* current_parallel_initial_guess =
+            adaptive_parallel_guess.empty()
+                ? parallel_initial_guess : &adaptive_parallel_guess;
+        if (adaptive_fast) {
+            std::printf(
+                "\n  [adaptive fast] exact residual level %.1e (%d/%d)\n",
+                tolerance, solve_level + 1, adaptive_level_count);
+        }
     if (hybrid_pfft_fmm) {
         hybrid_pfft_result = solve_gmres(
             action, rhs.data(), fmm.system_dofs,
             hybrid_pfft_tolerance, maximum_iterations, gmres_restart,
-            &mbj, "pFFT-MBJ", primary_initial_guess,
+            &mbj, "pFFT-MBJ", current_primary_initial_guess,
             nullptr, nullptr, nullptr,
             solver_checkpoint("pFFT-MBJ"));
         hybrid_fmm_switch_setup_seconds =
@@ -5808,53 +6008,61 @@ int run_main(int argc, char** argv)
             solver_checkpoint("FMM-correction"), false,
             strict_verification_action);
     } else if (pfft_fgmres) {
-        hybrid_fmm_switch_setup_seconds =
-            fmm.switch_pfft_to_fmm(digits, max_leaf, true);
-        size_t hybrid_gpu_free = 0;
-        size_t hybrid_gpu_total = 0;
-        if (gpu_memory_before_valid &&
-            cudaMemGetInfo(
-                &hybrid_gpu_free, &hybrid_gpu_total) == cudaSuccess &&
-            gpu_free_before >= hybrid_gpu_free) {
-            hybrid_gpu_memory_delta_mb =
-                static_cast<double>(
-                    gpu_free_before - hybrid_gpu_free) /
-                (1024.0 * 1024.0);
+        if (!pfft_inverse) {
+            hybrid_fmm_switch_setup_seconds =
+                fmm.switch_pfft_to_fmm(digits, max_leaf, true);
+            size_t hybrid_gpu_free = 0;
+            size_t hybrid_gpu_total = 0;
+            if (gpu_memory_before_valid &&
+                cudaMemGetInfo(
+                    &hybrid_gpu_free, &hybrid_gpu_total) == cudaSuccess &&
+                gpu_free_before >= hybrid_gpu_free) {
+                hybrid_gpu_memory_delta_mb =
+                    static_cast<double>(
+                        gpu_free_before - hybrid_gpu_free) /
+                    (1024.0 * 1024.0);
+            }
+            pfft_inverse =
+                [&](const cdouble* inner_rhs, cdouble* output) {
+                    GmresResult inner = solve_gmres(
+                        pfft_action, inner_rhs, fmm.system_dofs,
+                        pfft_inner_tolerance, pfft_inner_iterations,
+                        pfft_inner_iterations, &mbj, "pFFT-inner",
+                        nullptr, nullptr, nullptr, nullptr,
+                        SolverCheckpointOptions(), true);
+                    std::copy(
+                        inner.solution.begin(), inner.solution.end(), output);
+                    pfft_inner_applications++;
+                    pfft_inner_total_iterations += inner.iterations;
+                    pfft_inner_total_seconds += inner.seconds;
+                };
         }
-        pfft_inverse =
-            [&](const cdouble* inner_rhs, cdouble* output) {
-                GmresResult inner = solve_gmres(
-                    pfft_action, inner_rhs, fmm.system_dofs,
-                    pfft_inner_tolerance, pfft_inner_iterations,
-                    pfft_inner_iterations, &mbj, "pFFT-inner",
-                    nullptr, nullptr, nullptr, nullptr,
-                    SolverCheckpointOptions(), true);
-                std::copy(
-                    inner.solution.begin(), inner.solution.end(), output);
-                pfft_inner_applications++;
-                pfft_inner_total_iterations += inner.iterations;
-                pfft_inner_total_seconds += inner.seconds;
-            };
+        const int primary_applications_before = pfft_inner_applications;
+        const int primary_iterations_before = pfft_inner_total_iterations;
+        const double primary_seconds_before = pfft_inner_total_seconds;
         preconditioned = solve_flexible_gmres(
             mixed_exact_action, pfft_inverse,
             rhs.data(), fmm.system_dofs,
             tolerance, maximum_iterations, pfft_outer_restart,
             "FMM-pFFT-FGMRES",
-            primary_initial_guess,
+            current_primary_initial_guess,
             nullptr, nullptr, nullptr,
             solver_checkpoint("FMM-pFFT-FGMRES"),
             strict_verification_action,
             trust_final_projected_residual);
-        first_pfft_inner_applications = pfft_inner_applications;
-        first_pfft_inner_iterations = pfft_inner_total_iterations;
-        first_pfft_inner_seconds = pfft_inner_total_seconds;
+        first_pfft_inner_applications =
+            pfft_inner_applications - primary_applications_before;
+        first_pfft_inner_iterations =
+            pfft_inner_total_iterations - primary_iterations_before;
+        first_pfft_inner_seconds =
+            pfft_inner_total_seconds - primary_seconds_before;
         fmm.select_fmm_backend();
     } else {
         preconditioned = solve_gmres(
             action, rhs.data(), fmm.system_dofs,
             tolerance, maximum_iterations, gmres_restart,
             &mbj, "MBJ",
-            primary_initial_guess,
+            current_primary_initial_guess,
             symmetry_polarization && !cyclic_exact_geometry
                 ? rhs_parallel.data() : nullptr,
             symmetry_polarization && !cyclic_exact_geometry
@@ -5864,21 +6072,24 @@ int run_main(int argc, char** argv)
             solver_checkpoint("MBJ"), false,
             strict_verification_action);
     }
-    GmresResult parallel_preconditioned;
-    bool cyclic_polarization_used = false;
-    bool cyclic_exact_geometry_used = false;
-    bool trusted_cyclic_exact_geometry_used = false;
-    bool cyclic_polarization_corrected = false;
-    bool cyclic_polarization_fallback = false;
-    bool mirror_polarization_used = false;
-    double cyclic_rhs_relative_error = -1.0;
-    double symmetry_direct_residual = -1.0;
-    std::vector<cdouble> symmetry_direct_solution;
-    double farfield_seconds = 0.0;
-    std::vector<double> theta;
-    std::vector<double> mueller;
-    std::vector<cdouble> s1, s2, s3, s4;
-    double sphere_cross_polarization_relative = -1.0;
+        parallel_preconditioned = GmresResult();
+        cyclic_polarization_used = false;
+        cyclic_exact_geometry_used = false;
+        trusted_cyclic_exact_geometry_used = false;
+        cyclic_polarization_corrected = false;
+        cyclic_polarization_fallback = false;
+        mirror_polarization_used = false;
+        cyclic_rhs_relative_error = -1.0;
+        symmetry_direct_residual = -1.0;
+        symmetry_direct_solution.clear();
+        farfield_seconds = 0.0;
+        theta.clear();
+        mueller.clear();
+        s1.clear();
+        s2.clear();
+        s3.clear();
+        s4.clear();
+        sphere_cross_polarization_relative = -1.0;
     if (physical_check) {
         if (sphere_rotational_farfield) {
             std::printf(
@@ -6114,7 +6325,7 @@ int run_main(int argc, char** argv)
                         tolerance, maximum_iterations,
                         pfft_outer_restart,
                         "FMM-pFFT-parallel",
-                        parallel_initial_guess,
+                        current_parallel_initial_guess,
                         nullptr, nullptr, nullptr,
                         solver_checkpoint("FMM-pFFT-parallel"),
                         strict_verification_action,
@@ -6130,7 +6341,7 @@ int run_main(int argc, char** argv)
                     action, rhs_parallel.data(), fmm.system_dofs,
                     tolerance, maximum_iterations, gmres_restart,
                     &mbj, "MBJ-parallel",
-                    parallel_initial_guess, nullptr, nullptr,
+                    current_parallel_initial_guess, nullptr, nullptr,
                     nullptr, solver_checkpoint("MBJ-parallel"),
                     false, strict_verification_action);
             }
@@ -6174,30 +6385,34 @@ int run_main(int argc, char** argv)
                     preconditioned.solution.data() + fmm.current_dofs,
                     wave_number, orthogonal_directions, field_parallel);
             }
+        } else if (fmm.gpu_operator_assembly) {
+            fmm.farfield_pair(
+                parallel_preconditioned.solution.data(),
+                preconditioned.solution.data(),
+                directions, field_parallel, field_perpendicular);
         } else {
+            muller_nodal_farfield_pair(
+                fmm.mesh,
+                parallel_preconditioned.solution.data(),
+                parallel_preconditioned.solution.data() +
+                    fmm.current_dofs,
+                preconditioned.solution.data(),
+                preconditioned.solution.data() + fmm.current_dofs,
+                wave_number, directions,
+                field_parallel, field_perpendicular);
+        }
+        if (sphere_rotational_farfield) {
             if (fmm.gpu_operator_assembly) {
                 fmm.farfield(
-                    parallel_preconditioned.solution.data(),
-                    directions, field_parallel);
+                    preconditioned.solution.data(),
+                    directions, field_perpendicular);
             } else {
                 muller_nodal_farfield(
                     fmm.mesh,
-                    parallel_preconditioned.solution.data(),
-                    parallel_preconditioned.solution.data() +
-                        fmm.current_dofs,
-                    wave_number, directions, field_parallel);
+                    preconditioned.solution.data(),
+                    preconditioned.solution.data() + fmm.current_dofs,
+                    wave_number, directions, field_perpendicular);
             }
-        }
-        if (fmm.gpu_operator_assembly) {
-            fmm.farfield(
-                preconditioned.solution.data(),
-                directions, field_perpendicular);
-        } else {
-            muller_nodal_farfield(
-                fmm.mesh,
-                preconditioned.solution.data(),
-                preconditioned.solution.data() + fmm.current_dofs,
-                wave_number, directions, field_perpendicular);
         }
         s1.resize(ntheta);
         s2.resize(ntheta);
@@ -6251,6 +6466,63 @@ int run_main(int argc, char** argv)
         farfield_seconds = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - farfield_start).count();
     }
+        adaptive_primary_guess = preconditioned.solution;
+        if (!sphere_rotational_farfield)
+            adaptive_parallel_guess = parallel_preconditioned.solution;
+        if (adaptive_fast) {
+            adaptive_completed_levels++;
+            const double current_residual = std::max(
+                preconditioned.operator_residual,
+                sphere_rotational_farfield
+                    ? preconditioned.operator_residual
+                    : parallel_preconditioned.operator_residual);
+            if (current_residual > tolerance) {
+                throw std::runtime_error(
+                    "adaptive fast level did not reach its verified "
+                    "operator-residual target");
+            }
+            if (!previous_adaptive_mueller.empty()) {
+                const AdaptiveFastComparison comparison =
+                    compare_adaptive_fast_observables(
+                        theta, previous_adaptive_mueller, mueller,
+                        previous_adaptive_s1, previous_adaptive_s2,
+                        s1, s2, previous_adaptive_residual,
+                        current_residual);
+                adaptive_comparisons.push_back(comparison);
+                if (comparison.independent_update) {
+                    adaptive_consecutive_stable = comparison.passes
+                        ? adaptive_consecutive_stable + 1 : 0;
+                }
+                std::printf(
+                    "  [adaptive fast observables] full %.3e, M11 %.3e, "
+                    "forward %.3e, integral %.3e, extinction %.3e; "
+                    "stable %d/2%s\n",
+                    comparison.full_mueller_l2,
+                    comparison.m11_l2,
+                    comparison.forward_m11_relative,
+                    comparison.integrated_m11_relative,
+                    comparison.extinction_relative,
+                    adaptive_consecutive_stable,
+                    comparison.independent_update
+                        ? "" : " (residual update not independent)");
+            }
+            previous_adaptive_mueller = mueller;
+            previous_adaptive_s1 = s1;
+            previous_adaptive_s2 = s2;
+            previous_adaptive_residual = current_residual;
+            if (tolerance <= 1.0e-3 && tolerance > 1.0e-5 &&
+                adaptive_consecutive_stable >= 2) {
+                std::printf(
+                    "  [adaptive fast] selected residual target %.1e "
+                    "after %d physically stable levels\n",
+                    tolerance, adaptive_completed_levels);
+                break;
+            }
+        }
+    }
+    const double solve_pipeline_seconds =
+        std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - solve_pipeline_start).count();
     GmresResult neural_preconditioned;
     if (neural_preconditioner_path) {
         neural_preconditioned = solve_gmres(
@@ -6359,6 +6631,8 @@ int run_main(int argc, char** argv)
            << (hybrid_pfft_fmm ? "true" : "false") << ",\n"
            << "  \"pfft_fgmres_enabled\": "
            << (pfft_fgmres ? "true" : "false") << ",\n"
+           << "  \"adaptive_fast_enabled\": "
+           << (adaptive_fast ? "true" : "false") << ",\n"
            << "  \"trust_final_projected_residual\": "
            << (trust_final_projected_residual ? "true" : "false")
            << ",\n"
@@ -6835,6 +7109,46 @@ int run_main(int argc, char** argv)
             output << "]" << (component == 3 ? "\n" : ",\n");
         }
         output << "  }},\n";
+    }
+    output << "  \"adaptive_fast\": ";
+    if (!adaptive_fast) {
+        output << "null,\n";
+    } else {
+        output << "{\"selected_residual_target\": " << tolerance
+               << ", \"completed_levels\": "
+               << adaptive_completed_levels
+               << ", \"consecutive_stable_levels\": "
+               << adaptive_consecutive_stable
+               << ", \"pipeline_s\": " << solve_pipeline_seconds
+               << ", \"comparisons\": [";
+        for (size_t index = 0; index < adaptive_comparisons.size(); index++) {
+            if (index)
+                output << ", ";
+            const AdaptiveFastComparison& comparison =
+                adaptive_comparisons[index];
+            output << "{\"full_mueller_l2\": "
+                   << comparison.full_mueller_l2
+                   << ", \"m11_l2\": " << comparison.m11_l2
+                   << ", \"forward_m11_relative\": "
+                   << comparison.forward_m11_relative
+                   << ", \"integrated_m11_relative\": "
+                   << comparison.integrated_m11_relative
+                   << ", \"extinction_relative\": "
+                   << comparison.extinction_relative
+                   << ", \"maximum_normalized_difference\": "
+                   << comparison.maximum_normalized_difference
+                   << ", \"previous_residual\": "
+                   << comparison.previous_residual
+                   << ", \"current_residual\": "
+                   << comparison.current_residual
+                   << ", \"residual_reduction_factor\": "
+                   << comparison.residual_reduction
+                   << ", \"independent_update\": "
+                   << (comparison.independent_update ? "true" : "false")
+                   << ", \"passes\": "
+                   << (comparison.passes ? "true" : "false") << "}";
+        }
+        output << "]},\n";
     }
     output
            << "  \"solve_speedup\": " << solve_speedup << ",\n"

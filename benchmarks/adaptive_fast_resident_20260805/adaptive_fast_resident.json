@@ -1,0 +1,53 @@
+{
+  "date": "2026-08-05",
+  "hardware": "NVIDIA GeForce RTX 3090 Ti 24 GiB",
+  "case": "regular hexagonal prism, aspect=1, m=1.3, 181 theta samples",
+  "methodology": "isolated cold caches; identical ref, quadrature 7, Duffy order 4, FMM digits 5, mixed precision; standard uses verified residual 1e-5; fast uses two successive 1e-3 physical-observable gates",
+  "speedup_definition": "standard wall time / resident fast wall time",
+  "rows": [
+    {
+      "ka": 25,
+      "ref": 5,
+      "dofs": 202752,
+      "standard_wall_s": 47.88,
+      "old_multiprocess_fast_wall_s": 93.02,
+      "resident_fast_wall_s": 48.88,
+      "speedup_standard_over_resident_fast": 0.9795417348608838,
+      "speedup_old_fast_over_resident_fast": 1.903027823240589,
+      "fast_selected_target": 0.0003,
+      "fast_max_residual": 0.00018397289024940845,
+      "standard_max_residual": 7.717619289607633e-06,
+      "normalized_full_mueller_l2": 7.214908381355336e-05,
+      "maximum_normalized_absolute_difference": 6.223007438222337e-05,
+      "forward_m11_relative_difference": 5.542806048852711e-05,
+      "resident_fast_max_rss_gib": 2.7008934020996094,
+      "reported_gpu_memory_delta_mb": 664
+    },
+    {
+      "ka": 60,
+      "ref": 6,
+      "dofs": 806400,
+      "standard_wall_s": 640.13,
+      "old_multiprocess_fast_wall_s": 692.17,
+      "resident_fast_wall_s": 582.24,
+      "speedup_standard_over_resident_fast": 1.0994263533937896,
+      "speedup_old_fast_over_resident_fast": 1.18880530365485,
+      "fast_selected_target": 0.0001,
+      "fast_max_residual": 8.084806035641081e-05,
+      "standard_max_residual": 8.778355455171043e-06,
+      "normalized_full_mueller_l2": 2.5058018086034394e-06,
+      "maximum_normalized_absolute_difference": 1.6828570341131943e-06,
+      "forward_m11_relative_difference": 1.1343402634977906e-05,
+      "resident_fast_max_rss_gib": 9.118339538574219,
+      "standard_max_rss_gib": 9.010425567626953,
+      "reported_gpu_memory_delta_mb": 4664
+    }
+  ],
+  "farfield_pair_component_check": {
+    "ka": 60,
+    "serial_s": 8.011,
+    "openmp_s": 0.579,
+    "speedup": 13.836,
+    "normalized_full_mueller_l2": 2.5894e-14
+  }
+}

@@ -122,9 +122,8 @@ def main() -> int:
         "--ka", "72", "--ri", "1.7", "--ref", "6",
         "--quality", "fast", "--out", "/tmp/bem-adaptive-fast-plan",
     )
-    assert adaptive_fast["kind"] == "adaptive_fast_suite"
+    assert adaptive_fast["kind"] == "adaptive_fast_run"
     assert adaptive_fast["quality"] == "fast"
-    assert adaptive_fast["preview_stage_count"] == 1
     assert adaptive_fast["validation_envelope"]["shape"] == "prism"
     assert adaptive_fast["validation_envelope"]["sides"] == 7
     assert adaptive_fast["validation_envelope"]["aspect"] == 1.4
@@ -132,34 +131,23 @@ def main() -> int:
         4e-3, 1e-3, 3e-4, 1e-4, 3e-5, 1e-5,
     ]
     assert adaptive_fast["validation_envelope"]["fallback"] == "standard_1e-5"
-    preview_stage, *fast_levels = adaptive_fast["children"]
-    assert preview_stage["effective_parameters"]["maximum_iterations"] == 3
-    assert preview_stage["effective_parameters"]["physical_output"] is False
-    assert "--trust-final-projected-residual" in preview_stage["command"]
-    assert "--physical-check" not in preview_stage["command"]
-    assert [level["effective_parameters"]["tolerance"] for level in fast_levels] == [
+    assert adaptive_fast["effective_parameters"]["adaptive_residual_levels"] == [
         4e-3, 1e-3, 3e-4, 1e-4, 3e-5, 1e-5,
     ]
-    checkpoints = {
-        command_value(stage, "--checkpoint")
-        for stage in adaptive_fast["children"]
-    }
-    assert len(checkpoints) == 1
-    assert all("--allow-checkpoint-migration" in level["command"] for level in fast_levels)
-    assert all("--trust-cyclic-exact-geometry" not in level["command"] for level in fast_levels)
+    assert adaptive_fast["effective_parameters"]["resident_operator_reuse"] is True
+    assert adaptive_fast["validation_envelope"]["operator_setup_count"] == 1
+    assert "--adaptive-fast" in adaptive_fast["command"]
+    assert "--trust-final-projected-residual" not in adaptive_fast["command"]
+    assert "--trust-cyclic-exact-geometry" not in adaptive_fast["command"]
 
     small_fast = plan(
         "run", "--shape", "sphere", "--ka", "1", "--ri", "1.3",
         "--quality", "physical-fast", "--out", "/tmp/bem-small-fast-plan",
     )
     assert small_fast["quality"] == "fast"
-    assert small_fast["kind"] == "adaptive_fast_suite"
-    assert small_fast["preview_stage_count"] == 0
-    assert len(small_fast["children"]) == 6
-    assert all(
-        level["effective_parameters"]["solver"] == "fmm_mbj"
-        for level in small_fast["children"]
-    )
+    assert small_fast["kind"] == "adaptive_fast_run"
+    assert small_fast["effective_parameters"]["solver"] == "fmm_mbj"
+    assert small_fast["validation_envelope"]["operator_setup_count"] == 1
     invalid_fast_tolerance = invoke(
         "run", "--shape", "sphere", "--ka", "1", "--ri", "1.3",
         "--quality", "fast", "--tol", "1e-3", "--dry-run", expected=2,
@@ -877,6 +865,19 @@ output.write_text(json.dumps(result), encoding="utf-8")
         result.write_text(json.dumps(document), encoding="utf-8")
         adaptive_failed = invoke("validate", str(result), "--json", expected=1)
         assert "without satisfying convergence" in adaptive_failed.stdout
+        synthetic_result(result)
+        document = json.loads(result.read_text(encoding="utf-8"))
+        document["adaptive_fast_enabled"] = True
+        document["adaptive_fast"] = {
+            "selected_residual_target": 1e-4,
+            "completed_levels": 2,
+            "consecutive_stable_levels": 1,
+            "comparisons": [],
+        }
+        document["tolerance"] = 1e-4
+        result.write_text(json.dumps(document), encoding="utf-8")
+        fast_failed = invoke("validate", str(result), "--json", expected=1)
+        assert "two independent physical stability checks" in fast_failed.stdout
         synthetic_result(result)
         document = json.loads(result.read_text(encoding="utf-8"))
         document["physical"]["trusted_cyclic_exact_geometry_used"] = True

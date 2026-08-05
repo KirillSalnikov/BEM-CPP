@@ -53,4 +53,16 @@ void muller_nodal_farfield(
     std::vector<std::complex<double>>& field,
     int quadrature_order = 13);
 
+void muller_nodal_farfield_pair(
+    const MullerP2Mesh& mesh,
+    const std::complex<double>* first_electric_current,
+    const std::complex<double>* first_magnetic_current,
+    const std::complex<double>* second_electric_current,
+    const std::complex<double>* second_magnetic_current,
+    std::complex<double> k_exterior,
+    const std::vector<Vec3>& directions,
+    std::vector<std::complex<double>>& first_field,
+    std::vector<std::complex<double>>& second_field,
+    int quadrature_order = 13);
+
 #endif

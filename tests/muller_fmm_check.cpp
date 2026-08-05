@@ -213,6 +213,8 @@ int main(int argc, char** argv)
             second_input[index] =
                 cdouble(0.37, -0.21) * input[index];
         std::vector<cdouble> farfield_second;
+        std::vector<cdouble> farfield_cpu_pair_first;
+        std::vector<cdouble> farfield_cpu_pair_second;
         std::vector<cdouble> farfield_pair_first;
         std::vector<cdouble> farfield_pair_second;
         muller_nodal_farfield(
@@ -220,6 +222,13 @@ int main(int argc, char** argv)
             input.data(),
             input.data() + fmm.current_dofs,
             k, directions, farfield_cpu);
+        muller_nodal_farfield_pair(
+            fmm.mesh,
+            input.data(), input.data() + fmm.current_dofs,
+            second_input.data(),
+            second_input.data() + fmm.current_dofs,
+            k, directions,
+            farfield_cpu_pair_first, farfield_cpu_pair_second);
         fmm.farfield(input.data(), directions, farfield_gpu);
         fmm.farfield(
             second_input.data(), directions, farfield_second);
@@ -232,6 +241,11 @@ int main(int argc, char** argv)
              index < farfield_cpu.size(); index++) {
             difference_squared += std::norm(
                 farfield_gpu[index] - farfield_cpu[index]);
+            difference_squared += std::norm(
+                farfield_cpu_pair_first[index] - farfield_cpu[index]);
+            difference_squared += std::norm(
+                farfield_cpu_pair_second[index] -
+                cdouble(0.37, -0.21) * farfield_cpu[index]);
             field_squared += std::norm(farfield_cpu[index]);
         }
         for (size_t index = 0;

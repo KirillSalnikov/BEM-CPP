@@ -279,10 +279,10 @@ stress matrix from being mistaken for a fully passing release test.
 
 `fast` is a fixed-orientation adaptive profile for every supported built-in
 shape and OBJ mesh. It uses the same automatic wavelength-based refinement as
-`standard`. For a large high-frequency system it first makes up to three cheap
-pFFT-FGMRES warm-start steps and migrates that checkpoint to the accurate
-banded FMM operator. When pFFT setup is not expected to pay for itself, it
-starts directly with FMM+MBJ.
+`standard`. A single process keeps one prepared FMM/pFFT operator and its MBJ
+factors resident for the complete residual ladder. Medium systems use the
+ordinary pFFT-FGMRES configuration, large high-frequency systems use the
+accurate banded-FMM configuration, and small systems use direct FMM+MBJ.
 
 ```bash
 ./bem run --shape prism --sides 7 --aspect 1.4 --ka 25 --ri 1.3 \
@@ -306,9 +306,17 @@ An apparently identical result caused by a solver step that made no residual
 progress is not counted: the measured residual must decrease by at least
 `1.25x`. If two accepted transitions are not available, the same checkpoint
 continues to `1e-5`, making the result a `standard` residual fallback rather
-than an unverified early stop. The selected result is copied atomically to the
-top-level `result.json`; `adaptive_fast_summary.json` and every intermediate
-level remain available for audit.
+than an unverified early stop. The selected result is written to the top-level
+`result.json`; its `adaptive_fast.comparisons` array stores every intermediate
+physical gate and `selected_residual_target` records the accepted level.
+
+On an RTX 3090 Ti, isolated cold-cache regular-hexagonal-prism runs
+(`h/D=1`, `m=1.3`, 181 angles) measured 48.88 s for `fast` versus 47.88 s for
+`standard` at `ka=25, ref=5`, and 582.24 s versus 640.13 s at
+`ka=60, ref=6`. The selected fast targets were `3e-4` and `1e-4`; normalized
+complete-Mueller differences from the strict `1e-5` results were `7.21e-5`
+and `2.51e-6`. This is a physical-stability profile comparison, not an
+equal-residual speedup claim. The two cases do not establish universality.
 
 No equal-accuracy speedup over ADDA is currently claimed. A valid comparison
 must independently recalculate both final residuals, use the same target and

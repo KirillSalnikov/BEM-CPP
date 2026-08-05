@@ -6,6 +6,9 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 #include <stdexcept>
 #include <vector>
 
@@ -484,6 +487,148 @@ void muller_nodal_farfield(
             field[3 * direction + axis] =
                 prefactor *
                 (j_perpendicular[axis] - r_cross_m[axis]);
+        }
+    }
+}
+
+void muller_nodal_farfield_pair(
+    const MullerP2Mesh& mesh,
+    const cdouble* first_electric_current,
+    const cdouble* first_magnetic_current,
+    const cdouble* second_electric_current,
+    const cdouble* second_magnetic_current,
+    cdouble k_exterior,
+    const std::vector<Vec3>& directions,
+    std::vector<cdouble>& first_field,
+    std::vector<cdouble>& second_field,
+    int quadrature_order)
+{
+    const size_t field_size = directions.size() * 3;
+    std::vector<cdouble> transformed_j[2] = {
+        std::vector<cdouble>(field_size, cdouble(0.0)),
+        std::vector<cdouble>(field_size, cdouble(0.0))
+    };
+    std::vector<cdouble> transformed_m[2] = {
+        std::vector<cdouble>(field_size, cdouble(0.0)),
+        std::vector<cdouble>(field_size, cdouble(0.0))
+    };
+    int thread_count = 1;
+#ifdef _OPENMP
+    thread_count = std::max(1, omp_get_max_threads());
+#endif
+    std::vector<cdouble> local_j(
+        static_cast<size_t>(thread_count) * 2 * field_size,
+        cdouble(0.0));
+    std::vector<cdouble> local_m(
+        static_cast<size_t>(thread_count) * 2 * field_size,
+        cdouble(0.0));
+    const cdouble* electric[2] = {
+        first_electric_current, second_electric_current
+    };
+    const cdouble* magnetic[2] = {
+        first_magnetic_current, second_magnetic_current
+    };
+    const TriQuad quadrature = tri_quadrature(quadrature_order);
+    const cdouble imaginary(0.0, 1.0);
+
+#pragma omp parallel
+    {
+        int thread = 0;
+#ifdef _OPENMP
+        thread = omp_get_thread_num();
+#endif
+        cdouble* thread_j = local_j.data() +
+            static_cast<size_t>(thread) * 2 * field_size;
+        cdouble* thread_m = local_m.data() +
+            static_cast<size_t>(thread) * 2 * field_size;
+#pragma omp for schedule(static)
+        for (int element_index = 0;
+             element_index < static_cast<int>(mesh.elements.size());
+             element_index++) {
+            for (int q = 0; q < quadrature.npts; q++) {
+                const MullerFrameSample sample = evaluate_muller_frame(
+                    mesh, element_index,
+                    quadrature.pts[q][0], quadrature.pts[q][1]);
+                const double weight =
+                    0.5 * quadrature.wts[q] * sample.jacobian;
+                std::array<cdouble, 3> current_j[2];
+                std::array<cdouble, 3> current_m[2];
+                for (int polarization = 0; polarization < 2;
+                     polarization++) {
+                    current_j[polarization] = current_at_sample(
+                        mesh, element_index, sample,
+                        electric[polarization]);
+                    current_m[polarization] = current_at_sample(
+                        mesh, element_index, sample,
+                        magnetic[polarization]);
+                }
+                for (int direction = 0;
+                     direction < static_cast<int>(directions.size());
+                     direction++) {
+                    const cdouble weighted_phase = weight * std::exp(
+                        -imaginary * k_exterior *
+                        directions[direction].dot(sample.position));
+                    for (int polarization = 0; polarization < 2;
+                         polarization++) {
+                        for (int axis = 0; axis < 3; axis++) {
+                            const size_t offset =
+                                static_cast<size_t>(polarization) *
+                                field_size + 3 * direction + axis;
+                            thread_j[offset] += weighted_phase *
+                                current_j[polarization][axis];
+                            thread_m[offset] += weighted_phase *
+                                current_m[polarization][axis];
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+#pragma omp parallel for schedule(static)
+    for (size_t index = 0; index < 2 * field_size; index++) {
+        cdouble sum_j(0.0);
+        cdouble sum_m(0.0);
+        for (int thread = 0; thread < thread_count; thread++) {
+            const size_t offset =
+                static_cast<size_t>(thread) * 2 * field_size + index;
+            sum_j += local_j[offset];
+            sum_m += local_m[offset];
+        }
+        const int polarization = index >= field_size ? 1 : 0;
+        const size_t field_index = index % field_size;
+        transformed_j[polarization][field_index] = sum_j;
+        transformed_m[polarization][field_index] = sum_m;
+    }
+
+    std::vector<cdouble>* fields[2] = {&first_field, &second_field};
+    const cdouble prefactor = -imaginary * k_exterior * INV4PI;
+    for (int polarization = 0; polarization < 2; polarization++) {
+        fields[polarization]->assign(field_size, cdouble(0.0));
+        for (int direction = 0;
+             direction < static_cast<int>(directions.size()); direction++) {
+            const Vec3& r = directions[direction];
+            const cdouble* j =
+                transformed_j[polarization].data() + 3 * direction;
+            const cdouble* m =
+                transformed_m[polarization].data() + 3 * direction;
+            const cdouble r_dot_j =
+                r.x * j[0] + r.y * j[1] + r.z * j[2];
+            const cdouble j_perpendicular[3] = {
+                j[0] - r.x * r_dot_j,
+                j[1] - r.y * r_dot_j,
+                j[2] - r.z * r_dot_j
+            };
+            const cdouble r_cross_m[3] = {
+                r.y * m[2] - r.z * m[1],
+                r.z * m[0] - r.x * m[2],
+                r.x * m[1] - r.y * m[0]
+            };
+            for (int axis = 0; axis < 3; axis++) {
+                (*fields[polarization])[3 * direction + axis] =
+                    prefactor *
+                    (j_perpendicular[axis] - r_cross_m[axis]);
+            }
         }
     }
 }
