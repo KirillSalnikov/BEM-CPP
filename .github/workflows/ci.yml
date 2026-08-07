@@ -17,6 +17,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential python3 python3-matplotlib python3-numpy
+            build-essential python3 python3-matplotlib python3-numpy \
+            python3-pytest
       - name: Run release host audit
         run: CXX=g++ scripts/release_audit.sh --host
