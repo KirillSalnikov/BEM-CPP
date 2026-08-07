@@ -2,6 +2,7 @@
 #include "muller_fmm.h"
 #include "muller_mbj.h"
 #include "muller_paired_gmres.h"
+#include "krylov_deflation.h"
 #include "orient.h"
 #include "solver_policy.h"
 
@@ -61,6 +62,11 @@ void print_usage(const char* program)
         "  --digits N --max-leaf N         FMM accuracy controls\n"
         "  --quad 4|7|13 --duffy-order N   Surface quadrature controls\n"
         "  --mbj-only --mbj-nodes N        Use the MBJ-preconditioned solve only\n"
+        "  --krylov gmres|bicgstab-rr|cgs-rr  Outer Krylov solver\n"
+        "  --preconditioner mbj|none       Local preconditioner (none saves memory)\n"
+        "  --gmres-deflation-rank N        Harmonic-Ritz GCRO deflation rank\n"
+        "  --gmres-deflation-file FILE     Persistent operator deflation basis\n"
+        "  --residual-replacement N        True-residual interval for short recurrences\n"
         "  --pfft-fgmres                   Use pFFT as an inner FGMRES operator\n"
         "  --trust-final-projected-residual  Skip the final FMM check in fixed-step runs\n"
         "  --physical-check --ntheta N     Solve both polarizations and far field\n"
@@ -210,6 +216,8 @@ struct GmresResult {
     bool operator_residual_verified = true;
     double seconds = 0.0;
     double recycle_seconds = 0.0;
+    int deflation_rank = 0;
+    double deflation_seconds = 0.0;
     std::vector<cdouble> solution;
 };
 
@@ -1176,6 +1184,447 @@ cdouble inner_product(
     return cdouble(real, imaginary);
 }
 
+struct GmresDeflationSpace {
+    int requested_rank = 0;
+    int vector_size = 0;
+    std::uint64_t signature = 0;
+    std::string path;
+    std::vector<cdouble> solution_basis;
+    std::vector<cdouble> image_basis;
+    std::vector<double> harmonic_residual_indicators;
+    double setup_seconds = 0.0;
+    double application_seconds = 0.0;
+    bool loaded = false;
+
+    GmresDeflationSpace() = default;
+
+    GmresDeflationSpace(
+        int rank,
+        int size,
+        std::uint64_t operator_signature,
+        const std::string& checkpoint_path)
+        : requested_rank(rank),
+          vector_size(size),
+          signature(operator_signature),
+          path(checkpoint_path)
+    {
+    }
+
+    int rank() const
+    {
+        if (vector_size <= 0)
+            return 0;
+        return static_cast<int>(
+            image_basis.size() / static_cast<std::size_t>(vector_size));
+    }
+
+    bool enabled() const
+    {
+        return requested_rank > 0 && vector_size > 0;
+    }
+
+    bool active() const
+    {
+        return rank() > 0;
+    }
+
+    bool validate_basis() const
+    {
+        const int count = rank();
+        if (count <= 0 || solution_basis.size() != image_basis.size())
+            return false;
+        for (int column = 0; column < count; column++) {
+            const cdouble* current = image_basis.data() +
+                static_cast<std::size_t>(column) * vector_size;
+            const cdouble diagonal = inner_product(
+                current, current, vector_size);
+            if (std::abs(diagonal - cdouble(1.0)) > 1.0e-6)
+                return false;
+            if (column > 0) {
+                const cdouble* previous = image_basis.data() +
+                    static_cast<std::size_t>(column - 1) * vector_size;
+                if (std::abs(inner_product(
+                        previous, current, vector_size)) > 1.0e-6) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    bool load()
+    {
+        if (!enabled() || path.empty())
+            return false;
+        std::ifstream input(path.c_str(), std::ios::binary);
+        if (!input)
+            return false;
+        char magic[16] = {};
+        std::uint64_t version = 0;
+        std::uint64_t stored_signature = 0;
+        std::uint64_t stored_size = 0;
+        std::uint64_t stored_rank = 0;
+        input.read(magic, sizeof(magic));
+        input.read(reinterpret_cast<char*>(&version), sizeof(version));
+        input.read(
+            reinterpret_cast<char*>(&stored_signature),
+            sizeof(stored_signature));
+        input.read(
+            reinterpret_cast<char*>(&stored_size), sizeof(stored_size));
+        input.read(
+            reinterpret_cast<char*>(&stored_rank), sizeof(stored_rank));
+        const char expected_magic[16] = "BEM_GCRODR_CP1";
+        if (!input ||
+            std::memcmp(magic, expected_magic, sizeof(magic)) != 0 ||
+            version != 1 || stored_signature != signature ||
+            stored_size != static_cast<std::uint64_t>(vector_size) ||
+            stored_rank == 0 ||
+            stored_rank > static_cast<std::uint64_t>(requested_rank)) {
+            std::fprintf(
+                stderr,
+                "  [GMRES deflation] incompatible basis ignored: %s\n",
+                path.c_str());
+            return false;
+        }
+        const std::size_t entries =
+            static_cast<std::size_t>(stored_size * stored_rank);
+        solution_basis.resize(entries);
+        image_basis.resize(entries);
+        harmonic_residual_indicators.resize(stored_rank);
+        input.read(
+            reinterpret_cast<char*>(solution_basis.data()),
+            static_cast<std::streamsize>(entries * sizeof(cdouble)));
+        input.read(
+            reinterpret_cast<char*>(image_basis.data()),
+            static_cast<std::streamsize>(entries * sizeof(cdouble)));
+        input.read(
+            reinterpret_cast<char*>(harmonic_residual_indicators.data()),
+            static_cast<std::streamsize>(
+                stored_rank * sizeof(double)));
+        if (!input || !validate_basis()) {
+            std::fprintf(
+                stderr,
+                "  [GMRES deflation] corrupt basis ignored: %s\n",
+                path.c_str());
+            solution_basis.clear();
+            image_basis.clear();
+            harmonic_residual_indicators.clear();
+            return false;
+        }
+        loaded = true;
+        std::printf(
+            "  [GMRES deflation] loaded rank %d operator basis: %s\n",
+            rank(), path.c_str());
+        return true;
+    }
+
+    void save() const
+    {
+        if (!active() || path.empty())
+            return;
+        const std::string temporary = path + ".tmp";
+        std::ofstream output(
+            temporary.c_str(),
+            std::ios::binary | std::ios::out | std::ios::trunc);
+        if (!output)
+            throw std::runtime_error(
+                "cannot create GMRES deflation basis " + temporary);
+        const char magic[16] = "BEM_GCRODR_CP1";
+        const std::uint64_t version = 1;
+        const std::uint64_t stored_size =
+            static_cast<std::uint64_t>(vector_size);
+        const std::uint64_t stored_rank =
+            static_cast<std::uint64_t>(rank());
+        output.write(magic, sizeof(magic));
+        output.write(
+            reinterpret_cast<const char*>(&version), sizeof(version));
+        output.write(
+            reinterpret_cast<const char*>(&signature), sizeof(signature));
+        output.write(
+            reinterpret_cast<const char*>(&stored_size),
+            sizeof(stored_size));
+        output.write(
+            reinterpret_cast<const char*>(&stored_rank),
+            sizeof(stored_rank));
+        output.write(
+            reinterpret_cast<const char*>(solution_basis.data()),
+            static_cast<std::streamsize>(
+                solution_basis.size() * sizeof(cdouble)));
+        output.write(
+            reinterpret_cast<const char*>(image_basis.data()),
+            static_cast<std::streamsize>(
+                image_basis.size() * sizeof(cdouble)));
+        output.write(
+            reinterpret_cast<const char*>(
+                harmonic_residual_indicators.data()),
+            static_cast<std::streamsize>(
+                harmonic_residual_indicators.size() * sizeof(double)));
+        output.close();
+        if (!output ||
+            std::rename(temporary.c_str(), path.c_str()) != 0) {
+            std::remove(temporary.c_str());
+            throw std::runtime_error(
+                "cannot publish GMRES deflation basis " + path);
+        }
+    }
+
+    double correct_initial_guess(
+        std::vector<cdouble>& solution,
+        std::vector<cdouble>& residual)
+    {
+        if (!active())
+            return 1.0;
+        const auto start = std::chrono::steady_clock::now();
+        const double before = std::max(
+            norm(residual.data(), vector_size), 1.0e-300);
+        std::vector<cdouble> coefficients(rank());
+        for (int column = 0; column < rank(); column++) {
+            coefficients[column] = inner_product(
+                image_basis.data() +
+                    static_cast<std::size_t>(column) * vector_size,
+                residual.data(), vector_size);
+        }
+#pragma omp parallel for schedule(static)
+        for (int entry = 0; entry < vector_size; entry++) {
+            cdouble solution_update(0.0);
+            cdouble residual_update(0.0);
+            for (int column = 0; column < rank(); column++) {
+                solution_update += coefficients[column] *
+                    solution_basis[
+                        static_cast<std::size_t>(column) * vector_size +
+                        entry];
+                residual_update += coefficients[column] *
+                    image_basis[
+                        static_cast<std::size_t>(column) * vector_size +
+                        entry];
+            }
+            solution[entry] += solution_update;
+            residual[entry] -= residual_update;
+        }
+        const double after = norm(residual.data(), vector_size);
+        application_seconds += std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - start).count();
+        return after / before;
+    }
+
+    void project_action(
+        cdouble* action,
+        int column,
+        int coupling_stride,
+        std::vector<cdouble>& couplings)
+    {
+        if (!active())
+            return;
+        const auto start = std::chrono::steady_clock::now();
+        for (int pass = 0; pass < 2; pass++) {
+            for (int mode = 0; mode < rank(); mode++) {
+                const cdouble* image = image_basis.data() +
+                    static_cast<std::size_t>(mode) * vector_size;
+                const cdouble coefficient = inner_product(
+                    image, action, vector_size);
+                couplings[
+                    static_cast<std::size_t>(mode) * coupling_stride +
+                    column] += coefficient;
+#pragma omp parallel for schedule(static)
+                for (int entry = 0; entry < vector_size; entry++)
+                    action[entry] -= coefficient * image[entry];
+            }
+        }
+        application_seconds += std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - start).count();
+    }
+
+    void subtract_coupled_update(
+        const std::vector<cdouble>& coefficients,
+        int count,
+        const std::vector<cdouble>& couplings,
+        int coupling_stride,
+        std::vector<cdouble>& update)
+    {
+        if (!active())
+            return;
+        const auto start = std::chrono::steady_clock::now();
+        std::vector<cdouble> coarse_coefficients(rank(), cdouble(0.0));
+        for (int mode = 0; mode < rank(); mode++) {
+            for (int column = 0; column < count; column++) {
+                coarse_coefficients[mode] +=
+                    couplings[
+                        static_cast<std::size_t>(mode) * coupling_stride +
+                        column] *
+                    coefficients[column];
+            }
+        }
+#pragma omp parallel for schedule(static)
+        for (int entry = 0; entry < vector_size; entry++) {
+            cdouble correction(0.0);
+            for (int mode = 0; mode < rank(); mode++) {
+                correction += coarse_coefficients[mode] *
+                    solution_basis[
+                        static_cast<std::size_t>(mode) * vector_size +
+                        entry];
+            }
+            update[entry] -= correction;
+        }
+        application_seconds += std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - start).count();
+    }
+
+    bool initialize_from_arnoldi(
+        const std::vector<cdouble>& arnoldi_basis,
+        const std::vector<cdouble>& raw_hessenberg,
+        int hessenberg_stride,
+        int arnoldi_size,
+        const MullerMbjPreconditioner* preconditioner)
+    {
+        if (!enabled() || active() || arnoldi_size < 2)
+            return false;
+        const auto start = std::chrono::steady_clock::now();
+        std::vector<cdouble> ritz_coefficients;
+        const int candidate_count =
+            bem_krylov::harmonic_ritz_coefficients(
+                raw_hessenberg, hessenberg_stride, arnoldi_size,
+                requested_rank, ritz_coefficients);
+        if (candidate_count <= 0)
+            return false;
+
+        std::vector<cdouble> image_coefficients(
+            static_cast<std::size_t>(candidate_count) *
+                (arnoldi_size + 1),
+            cdouble(0.0));
+        for (int candidate = 0; candidate < candidate_count; candidate++) {
+            const cdouble* coefficient = ritz_coefficients.data() +
+                static_cast<std::size_t>(candidate) * arnoldi_size;
+            for (int row = 0; row <= arnoldi_size; row++) {
+                for (int column = 0; column < arnoldi_size; column++) {
+                    image_coefficients[
+                        static_cast<std::size_t>(candidate) *
+                            (arnoldi_size + 1) +
+                        row] +=
+                        raw_hessenberg[
+                            static_cast<std::size_t>(row) *
+                                hessenberg_stride +
+                            column] *
+                        coefficient[column];
+                }
+            }
+        }
+
+        const int batch_capacity = std::min(4, candidate_count);
+        std::vector<cdouble> candidate_vectors(
+            static_cast<std::size_t>(batch_capacity) * vector_size);
+        std::vector<cdouble> candidate_solutions(
+            static_cast<std::size_t>(batch_capacity) * vector_size);
+        std::vector<cdouble> candidate_images(
+            static_cast<std::size_t>(batch_capacity) * vector_size);
+        for (int batch_begin = 0; batch_begin < candidate_count;
+             batch_begin += batch_capacity) {
+            const int batch_count = std::min(
+                batch_capacity, candidate_count - batch_begin);
+#pragma omp parallel for schedule(static)
+            for (int entry = 0; entry < vector_size; entry++) {
+                std::array<cdouble, 4> vector_values = {};
+                std::array<cdouble, 4> image_values = {};
+                for (int column = 0; column < arnoldi_size; column++) {
+                    const cdouble basis_value = arnoldi_basis[
+                        static_cast<std::size_t>(column) * vector_size +
+                        entry];
+                    for (int local = 0; local < batch_count; local++) {
+                        const int candidate = batch_begin + local;
+                        vector_values[local] +=
+                            ritz_coefficients[
+                                static_cast<std::size_t>(candidate) *
+                                    arnoldi_size +
+                                column] *
+                            basis_value;
+                    }
+                }
+                for (int row = 0; row <= arnoldi_size; row++) {
+                    const cdouble basis_value = arnoldi_basis[
+                        static_cast<std::size_t>(row) * vector_size + entry];
+                    for (int local = 0; local < batch_count; local++) {
+                        const int candidate = batch_begin + local;
+                        image_values[local] +=
+                            image_coefficients[
+                                static_cast<std::size_t>(candidate) *
+                                    (arnoldi_size + 1) +
+                                row] *
+                            basis_value;
+                    }
+                }
+                for (int local = 0; local < batch_count; local++) {
+                    candidate_vectors[
+                        static_cast<std::size_t>(local) * vector_size +
+                        entry] = vector_values[local];
+                    candidate_images[
+                        static_cast<std::size_t>(local) * vector_size +
+                        entry] = image_values[local];
+                }
+            }
+            for (int local = 0; local < batch_count; local++) {
+                cdouble* candidate_vector = candidate_vectors.data() +
+                    static_cast<std::size_t>(local) * vector_size;
+                cdouble* candidate_solution = candidate_solutions.data() +
+                    static_cast<std::size_t>(local) * vector_size;
+                if (preconditioner) {
+                    preconditioner->apply(
+                        candidate_vector, candidate_solution);
+                } else {
+                    std::copy(
+                        candidate_vector,
+                        candidate_vector + vector_size,
+                        candidate_solution);
+                }
+                cdouble* candidate_image = candidate_images.data() +
+                    static_cast<std::size_t>(local) * vector_size;
+                for (int pass = 0; pass < 2; pass++) {
+                    for (int previous = 0; previous < rank(); previous++) {
+                        const cdouble* previous_image = image_basis.data() +
+                            static_cast<std::size_t>(previous) * vector_size;
+                        const cdouble projection = inner_product(
+                            previous_image, candidate_image, vector_size);
+#pragma omp parallel for schedule(static)
+                        for (int entry = 0; entry < vector_size; entry++) {
+                            candidate_image[entry] -=
+                                projection * previous_image[entry];
+                            candidate_solution[entry] -= projection *
+                                solution_basis[
+                                    static_cast<std::size_t>(previous) *
+                                        vector_size +
+                                    entry];
+                        }
+                    }
+                }
+                const double image_norm = norm(
+                    candidate_image, vector_size);
+                if (image_norm <= 1.0e-12)
+                    continue;
+                const double inverse_norm = 1.0 / image_norm;
+                const std::size_t old_size = image_basis.size();
+                image_basis.resize(old_size + vector_size);
+                solution_basis.resize(old_size + vector_size);
+#pragma omp parallel for schedule(static)
+                for (int entry = 0; entry < vector_size; entry++) {
+                    image_basis[old_size + entry] =
+                        inverse_norm * candidate_image[entry];
+                    solution_basis[old_size + entry] =
+                        inverse_norm * candidate_solution[entry];
+                }
+                harmonic_residual_indicators.push_back(image_norm);
+            }
+        }
+        setup_seconds += std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - start).count();
+        if (!active())
+            return false;
+        save();
+        std::printf(
+            "  [GMRES deflation] extracted rank %d harmonic Ritz basis "
+            "from %d Arnoldi vectors in %.3fs\n",
+            rank(), arnoldi_size, setup_seconds);
+        return true;
+    }
+};
+
 using ComplexVec3 = std::array<cdouble, 3>;
 using TangentialField =
     std::function<ComplexVec3(const MullerFrameSample&)>;
@@ -1479,7 +1928,8 @@ GmresResult solve_gmres(
     const SolverCheckpointOptions& checkpoint =
         SolverCheckpointOptions(),
     bool trust_final_projected_residual = false,
-    const Matvec* residual_matvec = nullptr)
+    const Matvec* residual_matvec = nullptr,
+    GmresDeflationSpace* deflation = nullptr)
 {
     const auto start = std::chrono::steady_clock::now();
     const int maximum = std::min(n, maximum_iterations);
@@ -1488,10 +1938,18 @@ GmresResult solve_gmres(
     std::vector<cdouble> basis((size_t)(cycle_limit + 1) * n);
     std::vector<cdouble> hessenberg(
         (size_t)(cycle_limit + 1) * cycle_limit, cdouble(0.0));
+    std::vector<cdouble> raw_hessenberg(
+        (size_t)(cycle_limit + 1) * cycle_limit, cdouble(0.0));
     std::vector<cdouble> cosine(cycle_limit);
     std::vector<cdouble> sine(cycle_limit);
     std::vector<cdouble> projected(cycle_limit + 1, cdouble(0.0));
     std::vector<cdouble> work(n), preconditioned(n), residual(n);
+    std::vector<cdouble> deflation_couplings(
+        deflation && deflation->enabled()
+            ? static_cast<std::size_t>(deflation->requested_rank) *
+                  cycle_limit
+            : 0,
+        cdouble(0.0));
     const double rhs_norm = std::max(norm(rhs, n), 1.0e-300);
     const std::uint64_t rhs_hash = vector_hash(rhs, n);
     GmresResult result;
@@ -1527,6 +1985,15 @@ GmresResult solve_gmres(
     int final_cycle_iterations = 0;
     double projected_relative = 1.0;
     double operator_relative = norm(residual.data(), n) / rhs_norm;
+    if (deflation && deflation->active() && operator_relative > 0.0) {
+        const double reduction = deflation->correct_initial_guess(
+            result.solution, residual);
+        operator_relative = norm(residual.data(), n) / rhs_norm;
+        std::printf(
+            "  [%s deflation] rank %d initial residual factor %.3e; "
+            "residual %.3e\n",
+            label, deflation->rank(), reduction, operator_relative);
+    }
     result.initial_operator_residual = operator_relative;
     if (resumed) {
         std::printf(
@@ -1555,6 +2022,11 @@ GmresResult solve_gmres(
         const int cycle_maximum = std::min(
             cycle_limit, maximum - total_iterations);
         std::fill(hessenberg.begin(), hessenberg.end(), cdouble(0.0));
+        std::fill(
+            raw_hessenberg.begin(), raw_hessenberg.end(), cdouble(0.0));
+        std::fill(
+            deflation_couplings.begin(),
+            deflation_couplings.end(), cdouble(0.0));
         std::fill(cosine.begin(), cosine.end(), cdouble(0.0));
         std::fill(sine.begin(), sine.end(), cdouble(0.0));
         std::fill(projected.begin(), projected.end(), cdouble(0.0));
@@ -1593,12 +2065,19 @@ GmresResult solve_gmres(
 
             const auto orthogonalization_start =
                 std::chrono::steady_clock::now();
+            if (deflation && deflation->active()) {
+                deflation->project_action(
+                    work.data(), column, cycle_limit,
+                    deflation_couplings);
+            }
             for (int row = 0; row <= column; row++) {
                 const cdouble* previous =
                     basis.data() + (size_t)row * n;
                 const cdouble value = orthogonalize_against(
                     previous, work.data(), n);
                 hessenberg[
+                    (size_t)row * cycle_limit + column] = value;
+                raw_hessenberg[
                     (size_t)row * cycle_limit + column] = value;
             }
             for (int row = 0; row <= column; row++) {
@@ -1608,6 +2087,8 @@ GmresResult solve_gmres(
                     previous, work.data(), n);
                 hessenberg[
                     (size_t)row * cycle_limit + column] += correction;
+                raw_hessenberg[
+                    (size_t)row * cycle_limit + column] += correction;
             }
             const double orthogonalization_seconds =
                 std::chrono::duration<double>(
@@ -1616,6 +2097,9 @@ GmresResult solve_gmres(
 
             const double next_norm = norm(work.data(), n);
             hessenberg[
+                (size_t)(column + 1) * cycle_limit + column] =
+                cdouble(next_norm, 0.0);
+            raw_hessenberg[
                 (size_t)(column + 1) * cycle_limit + column] =
                 cdouble(next_norm, 0.0);
             if (next_norm > 1.0e-30) {
@@ -1710,6 +2194,12 @@ GmresResult solve_gmres(
                 } else {
                     preconditioned = work;
                 }
+                if (deflation && deflation->active()) {
+                    deflation->subtract_coupled_update(
+                        checkpoint_coefficients, cycle_iterations,
+                        deflation_couplings, cycle_limit,
+                        preconditioned);
+                }
                 std::vector<cdouble> candidate(n);
 #pragma omp parallel for schedule(static)
                 for (int i = 0; i < n; i++)
@@ -1744,10 +2234,20 @@ GmresResult solve_gmres(
             preconditioner->apply(work.data(), preconditioned.data());
         else
             preconditioned = work;
+        if (deflation && deflation->active()) {
+            deflation->subtract_coupled_update(
+                coefficients, cycle_iterations,
+                deflation_couplings, cycle_limit, preconditioned);
+        }
 #pragma omp parallel for schedule(static)
         for (int i = 0; i < n; i++)
             result.solution[i] += preconditioned[i];
 
+        const bool deflation_created =
+            deflation && !trust_final_projected_residual &&
+            deflation->initialize_from_arnoldi(
+                basis, raw_hessenberg, cycle_limit,
+                cycle_iterations, preconditioner);
         const bool accept_projected_residual =
             trust_final_projected_residual &&
             (projected_relative < tolerance ||
@@ -1772,6 +2272,16 @@ GmresResult solve_gmres(
             for (int i = 0; i < n; i++)
                 residual[i] = rhs[i] - work[i];
             operator_relative = norm(residual.data(), n) / rhs_norm;
+            if (deflation_created && operator_relative > 0.0) {
+                const double reduction =
+                    deflation->correct_initial_guess(
+                        result.solution, residual);
+                operator_relative = norm(residual.data(), n) / rhs_norm;
+                std::printf(
+                    "  [%s deflation] extracted basis correction factor "
+                    "%.3e; residual %.3e\n",
+                    label, reduction, operator_relative);
+            }
         }
         final_cycle_iterations = cycle_iterations;
         log_iteration(
@@ -1800,6 +2310,11 @@ GmresResult solve_gmres(
     result.iterations = total_iterations;
     result.projected_residual = projected_relative;
     result.operator_residual = operator_relative;
+    if (deflation) {
+        result.deflation_rank = deflation->rank();
+        result.deflation_seconds =
+            deflation->setup_seconds + deflation->application_seconds;
+    }
     result.seconds = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - start).count();
     log_iteration(
@@ -1878,6 +2393,617 @@ GmresResult solve_gmres(
             recycle_start).count();
     }
     return result;
+}
+
+GmresResult solve_bicgstab_rr(
+    const Matvec& matvec,
+    const cdouble* rhs,
+    int n,
+    double tolerance,
+    int maximum_iterations,
+    int residual_replacement_interval,
+    const MullerMbjPreconditioner* preconditioner,
+    const char* label,
+    const std::vector<cdouble>* initial_guess = nullptr,
+    const SolverCheckpointOptions& checkpoint =
+        SolverCheckpointOptions(),
+    const Matvec* residual_matvec = nullptr)
+{
+    const auto start = std::chrono::steady_clock::now();
+    const int maximum = std::min(n, maximum_iterations);
+    const int replacement_interval =
+        std::max(1, residual_replacement_interval);
+    const Matvec& verification_matvec =
+        residual_matvec != nullptr ? *residual_matvec : matvec;
+    const double rhs_norm = std::max(norm(rhs, n), 1.0e-300);
+    const std::uint64_t rhs_hash = vector_hash(rhs, n);
+
+    GmresResult result;
+    std::vector<cdouble> checkpoint_solution;
+    int checkpoint_iterations = 0;
+    double checkpoint_residual = 1.0;
+    const bool resumed = load_solver_checkpoint(
+        checkpoint, rhs_hash, n, checkpoint_iterations,
+        checkpoint_residual, checkpoint_solution);
+    const std::vector<cdouble>* starting_guess =
+        resumed ? &checkpoint_solution : initial_guess;
+    if (starting_guess) {
+        if (starting_guess->size() != static_cast<size_t>(n))
+            throw std::invalid_argument(
+                "BiCGSTAB initial guess has the wrong size");
+        result.solution = *starting_guess;
+    } else {
+        result.solution.assign(n, cdouble(0.0));
+    }
+
+    std::vector<cdouble> residual(n), shadow(n), direction(n);
+    std::vector<cdouble> action_direction(n), intermediate(n);
+    std::vector<cdouble> action_intermediate(n), preconditioned_direction(n);
+    std::vector<cdouble> preconditioned_intermediate(n), work(n);
+
+    const auto apply_preconditioner =
+        [&](const std::vector<cdouble>& input,
+            std::vector<cdouble>& output) {
+            if (preconditioner) {
+                preconditioner->apply(input.data(), output.data());
+            } else {
+#pragma omp parallel for schedule(static)
+                for (int i = 0; i < n; i++)
+                    output[i] = input[i];
+            }
+        };
+    const auto compute_true_residual = [&]() {
+        verification_matvec(result.solution.data(), work.data());
+#pragma omp parallel for schedule(static)
+        for (int i = 0; i < n; i++)
+            residual[i] = rhs[i] - work[i];
+        return norm(residual.data(), n) / rhs_norm;
+    };
+
+    double operator_relative = 0.0;
+    if (starting_guess) {
+        operator_relative = compute_true_residual();
+    } else {
+#pragma omp parallel for schedule(static)
+        for (int i = 0; i < n; i++)
+            residual[i] = rhs[i];
+        operator_relative = norm(residual.data(), n) / rhs_norm;
+    }
+    double recurrence_relative = operator_relative;
+    result.initial_operator_residual = operator_relative;
+    int total_iterations = resumed ? checkpoint_iterations : 0;
+    result.resumed_iterations = total_iterations;
+    if (resumed) {
+        std::printf(
+            "  [%s checkpoint] resumed at iteration %d; "
+            "stored residual %.3e, verified residual %.3e\n",
+            label, total_iterations, checkpoint_residual,
+            operator_relative);
+    } else if (starting_guess) {
+        std::printf(
+            "  [%s] initial operator residual %.3e\n",
+            label, operator_relative);
+    } else if (!checkpoint.path.empty()) {
+        std::printf(
+            "  [%s checkpoint] autosave at every true-residual "
+            "replacement: %s\n",
+            label, checkpoint.path.c_str());
+    }
+    std::fflush(stdout);
+    log_iteration(
+        label, "initial", total_iterations,
+        recurrence_relative, operator_relative,
+        0.0, 0.0, 0.0,
+        std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - start).count());
+
+    shadow = residual;
+    std::fill(direction.begin(), direction.end(), cdouble(0.0));
+    std::fill(action_direction.begin(), action_direction.end(), cdouble(0.0));
+    cdouble previous_rho(1.0);
+    cdouble alpha(1.0);
+    cdouble omega(1.0);
+    bool restarted = true;
+    int breakdown_restarts = 0;
+
+    while (total_iterations < maximum &&
+           operator_relative >= tolerance) {
+        const cdouble rho = inner_product(
+            shadow.data(), residual.data(), n);
+        if (!std::isfinite(rho.real()) || !std::isfinite(rho.imag()) ||
+            std::abs(rho) <= 1.0e-30) {
+            operator_relative = compute_true_residual();
+            recurrence_relative = operator_relative;
+            if (operator_relative < tolerance)
+                break;
+            shadow = residual;
+            restarted = true;
+            if (++breakdown_restarts > 4)
+                throw std::runtime_error(
+                    "BiCGSTAB-RR repeated rho breakdown");
+            continue;
+        }
+
+        if (restarted) {
+            direction = residual;
+            restarted = false;
+        } else {
+            if (std::abs(omega) <= 1.0e-30)
+                throw std::runtime_error(
+                    "BiCGSTAB-RR omega breakdown");
+            const cdouble beta =
+                (rho / previous_rho) * (alpha / omega);
+#pragma omp parallel for schedule(static)
+            for (int i = 0; i < n; i++) {
+                direction[i] = residual[i] + beta *
+                    (direction[i] - omega * action_direction[i]);
+            }
+        }
+
+        const auto preconditioner_start =
+            std::chrono::steady_clock::now();
+        apply_preconditioner(direction, preconditioned_direction);
+        double preconditioner_seconds =
+            std::chrono::duration<double>(
+                std::chrono::steady_clock::now() -
+                preconditioner_start).count();
+        const auto matvec_start = std::chrono::steady_clock::now();
+        matvec(preconditioned_direction.data(), action_direction.data());
+        double matvec_seconds =
+            std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - matvec_start).count();
+        const cdouble alpha_denominator = inner_product(
+            shadow.data(), action_direction.data(), n);
+        if (!std::isfinite(alpha_denominator.real()) ||
+            !std::isfinite(alpha_denominator.imag()) ||
+            std::abs(alpha_denominator) <= 1.0e-30) {
+            operator_relative = compute_true_residual();
+            recurrence_relative = operator_relative;
+            shadow = residual;
+            restarted = true;
+            if (++breakdown_restarts > 4)
+                throw std::runtime_error(
+                    "BiCGSTAB-RR repeated alpha breakdown");
+            continue;
+        }
+        alpha = rho / alpha_denominator;
+#pragma omp parallel for schedule(static)
+        for (int i = 0; i < n; i++)
+            intermediate[i] = residual[i] - alpha * action_direction[i];
+
+        double intermediate_relative =
+            norm(intermediate.data(), n) / rhs_norm;
+        if (intermediate_relative < tolerance) {
+#pragma omp parallel for schedule(static)
+            for (int i = 0; i < n; i++)
+                result.solution[i] += alpha * preconditioned_direction[i];
+            total_iterations++;
+            operator_relative = compute_true_residual();
+            recurrence_relative = operator_relative;
+            if (operator_relative < tolerance)
+                break;
+            shadow = residual;
+            restarted = true;
+            previous_rho = cdouble(1.0);
+            alpha = cdouble(1.0);
+            omega = cdouble(1.0);
+            save_solver_checkpoint(
+                checkpoint, rhs_hash, total_iterations,
+                operator_relative, result.solution);
+            continue;
+        }
+
+        const auto second_preconditioner_start =
+            std::chrono::steady_clock::now();
+        apply_preconditioner(intermediate, preconditioned_intermediate);
+        preconditioner_seconds +=
+            std::chrono::duration<double>(
+                std::chrono::steady_clock::now() -
+                second_preconditioner_start).count();
+        const auto second_matvec_start =
+            std::chrono::steady_clock::now();
+        matvec(
+            preconditioned_intermediate.data(),
+            action_intermediate.data());
+        matvec_seconds +=
+            std::chrono::duration<double>(
+                std::chrono::steady_clock::now() -
+                second_matvec_start).count();
+        const cdouble omega_denominator = inner_product(
+            action_intermediate.data(),
+            action_intermediate.data(), n);
+        if (!std::isfinite(omega_denominator.real()) ||
+            std::abs(omega_denominator) <= 1.0e-30) {
+            throw std::runtime_error(
+                "BiCGSTAB-RR t-norm breakdown");
+        }
+        omega = inner_product(
+            action_intermediate.data(), intermediate.data(), n) /
+            omega_denominator;
+        if (!std::isfinite(omega.real()) ||
+            !std::isfinite(omega.imag()) ||
+            std::abs(omega) <= 1.0e-30) {
+            throw std::runtime_error(
+                "BiCGSTAB-RR omega breakdown");
+        }
+#pragma omp parallel for schedule(static)
+        for (int i = 0; i < n; i++) {
+            result.solution[i] +=
+                alpha * preconditioned_direction[i] +
+                omega * preconditioned_intermediate[i];
+            residual[i] =
+                intermediate[i] - omega * action_intermediate[i];
+        }
+        total_iterations++;
+        recurrence_relative = norm(residual.data(), n) / rhs_norm;
+
+        const bool replace_residual =
+            total_iterations % replacement_interval == 0 ||
+            recurrence_relative <= 2.0 * tolerance;
+        if (replace_residual) {
+            const auto verification_start =
+                std::chrono::steady_clock::now();
+            operator_relative = compute_true_residual();
+            matvec_seconds +=
+                std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() -
+                    verification_start).count();
+            recurrence_relative = operator_relative;
+            shadow = residual;
+            restarted = true;
+            previous_rho = cdouble(1.0);
+            alpha = cdouble(1.0);
+            omega = cdouble(1.0);
+            save_solver_checkpoint(
+                checkpoint, rhs_hash, total_iterations,
+                operator_relative, result.solution);
+            log_iteration(
+                label, "replacement", total_iterations,
+                recurrence_relative, operator_relative,
+                matvec_seconds, preconditioner_seconds, 0.0,
+                std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - start).count());
+        } else {
+            previous_rho = rho;
+        }
+
+        log_iteration(
+            label, "iteration", total_iterations,
+            recurrence_relative, operator_relative,
+            matvec_seconds, preconditioner_seconds, 0.0,
+            std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - start).count());
+        if (total_iterations == 1 ||
+            total_iterations % 10 == 0 || replace_residual) {
+            std::printf(
+                "  [%s %d] recurrence %.3e, true %.3e%s; "
+                "matvec %.3fs, preconditioner %.3fs\n",
+                label, total_iterations, recurrence_relative,
+                operator_relative,
+                replace_residual ? " (replaced)" : "",
+                matvec_seconds, preconditioner_seconds);
+            std::fflush(stdout);
+        }
+    }
+
+    operator_relative = compute_true_residual();
+    recurrence_relative = operator_relative;
+    save_solver_checkpoint(
+        checkpoint, rhs_hash, total_iterations,
+        operator_relative, result.solution);
+    result.iterations = total_iterations;
+    result.projected_residual = recurrence_relative;
+    result.operator_residual = operator_relative;
+    result.operator_residual_verified = true;
+    result.seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - start).count();
+    log_iteration(
+        label, "final", total_iterations,
+        recurrence_relative, operator_relative,
+        0.0, 0.0, 0.0, result.seconds);
+    return result;
+}
+
+GmresResult solve_cgs_rr(
+    const Matvec& matvec,
+    const cdouble* rhs,
+    int n,
+    double tolerance,
+    int maximum_iterations,
+    int residual_replacement_interval,
+    const MullerMbjPreconditioner* preconditioner,
+    const char* label,
+    const std::vector<cdouble>* initial_guess = nullptr,
+    const SolverCheckpointOptions& checkpoint =
+        SolverCheckpointOptions(),
+    const Matvec* residual_matvec = nullptr)
+{
+    const auto start = std::chrono::steady_clock::now();
+    const int maximum = std::min(n, maximum_iterations);
+    const int replacement_interval =
+        std::max(1, residual_replacement_interval);
+    const Matvec& verification_matvec =
+        residual_matvec != nullptr ? *residual_matvec : matvec;
+    const double rhs_norm = std::max(norm(rhs, n), 1.0e-300);
+    const std::uint64_t rhs_hash = vector_hash(rhs, n);
+
+    GmresResult result;
+    std::vector<cdouble> checkpoint_solution;
+    int checkpoint_iterations = 0;
+    double checkpoint_residual = 1.0;
+    const bool resumed = load_solver_checkpoint(
+        checkpoint, rhs_hash, n, checkpoint_iterations,
+        checkpoint_residual, checkpoint_solution);
+    const std::vector<cdouble>* starting_guess =
+        resumed ? &checkpoint_solution : initial_guess;
+    if (starting_guess) {
+        if (starting_guess->size() != static_cast<size_t>(n))
+            throw std::invalid_argument("CGS initial guess has the wrong size");
+        result.solution = *starting_guess;
+    } else {
+        result.solution.assign(n, cdouble(0.0));
+    }
+
+    std::vector<cdouble> residual(n), shadow(n), u(n), direction(n), q(n);
+    std::vector<cdouble> action_direction(n), update_direction(n);
+    std::vector<cdouble> preconditioned_direction(n);
+    std::vector<cdouble> preconditioned_update(n), work(n);
+
+    const auto apply_preconditioner =
+        [&](const std::vector<cdouble>& input,
+            std::vector<cdouble>& output) {
+            if (preconditioner) {
+                preconditioner->apply(input.data(), output.data());
+            } else {
+#pragma omp parallel for schedule(static)
+                for (int i = 0; i < n; i++)
+                    output[i] = input[i];
+            }
+        };
+    const auto compute_true_residual = [&]() {
+        verification_matvec(result.solution.data(), work.data());
+#pragma omp parallel for schedule(static)
+        for (int i = 0; i < n; i++)
+            residual[i] = rhs[i] - work[i];
+        return norm(residual.data(), n) / rhs_norm;
+    };
+
+    double operator_relative = 0.0;
+    if (starting_guess) {
+        operator_relative = compute_true_residual();
+    } else {
+#pragma omp parallel for schedule(static)
+        for (int i = 0; i < n; i++)
+            residual[i] = rhs[i];
+        operator_relative = norm(residual.data(), n) / rhs_norm;
+    }
+    double recurrence_relative = operator_relative;
+    result.initial_operator_residual = operator_relative;
+    int total_iterations = resumed ? checkpoint_iterations : 0;
+    result.resumed_iterations = total_iterations;
+    if (resumed) {
+        std::printf(
+            "  [%s checkpoint] resumed at iteration %d; "
+            "stored residual %.3e, verified residual %.3e\n",
+            label, total_iterations, checkpoint_residual,
+            operator_relative);
+    } else if (starting_guess) {
+        std::printf(
+            "  [%s] initial operator residual %.3e\n",
+            label, operator_relative);
+    } else if (!checkpoint.path.empty()) {
+        std::printf(
+            "  [%s checkpoint] autosave at every true-residual "
+            "replacement: %s\n",
+            label, checkpoint.path.c_str());
+    }
+    std::fflush(stdout);
+    log_iteration(
+        label, "initial", total_iterations,
+        recurrence_relative, operator_relative,
+        0.0, 0.0, 0.0,
+        std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - start).count());
+
+    shadow = residual;
+    u = residual;
+    direction = residual;
+    std::fill(q.begin(), q.end(), cdouble(0.0));
+    cdouble previous_rho(1.0);
+    bool restarted = true;
+    int breakdown_restarts = 0;
+
+    while (total_iterations < maximum && operator_relative >= tolerance) {
+        const cdouble rho = inner_product(
+            shadow.data(), residual.data(), n);
+        if (!std::isfinite(rho.real()) || !std::isfinite(rho.imag()) ||
+            std::abs(rho) <= 1.0e-30) {
+            operator_relative = compute_true_residual();
+            recurrence_relative = operator_relative;
+            if (operator_relative < tolerance)
+                break;
+            shadow = residual;
+            restarted = true;
+            if (++breakdown_restarts > 4)
+                throw std::runtime_error("CGS-RR repeated rho breakdown");
+            continue;
+        }
+
+        if (restarted) {
+            u = residual;
+            direction = residual;
+            std::fill(q.begin(), q.end(), cdouble(0.0));
+            restarted = false;
+        } else {
+            const cdouble beta = rho / previous_rho;
+#pragma omp parallel for schedule(static)
+            for (int i = 0; i < n; i++) {
+                u[i] = residual[i] + beta * q[i];
+                direction[i] =
+                    u[i] + beta * (q[i] + beta * direction[i]);
+            }
+        }
+
+        const auto preconditioner_start =
+            std::chrono::steady_clock::now();
+        apply_preconditioner(direction, preconditioned_direction);
+        double preconditioner_seconds =
+            std::chrono::duration<double>(
+                std::chrono::steady_clock::now() -
+                preconditioner_start).count();
+        const auto matvec_start = std::chrono::steady_clock::now();
+        matvec(preconditioned_direction.data(), action_direction.data());
+        double matvec_seconds =
+            std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - matvec_start).count();
+        const cdouble sigma = inner_product(
+            shadow.data(), action_direction.data(), n);
+        if (!std::isfinite(sigma.real()) || !std::isfinite(sigma.imag()) ||
+            std::abs(sigma) <= 1.0e-30) {
+            operator_relative = compute_true_residual();
+            recurrence_relative = operator_relative;
+            shadow = residual;
+            restarted = true;
+            if (++breakdown_restarts > 4)
+                throw std::runtime_error("CGS-RR repeated sigma breakdown");
+            continue;
+        }
+        const cdouble alpha = rho / sigma;
+#pragma omp parallel for schedule(static)
+        for (int i = 0; i < n; i++) {
+            q[i] = u[i] - alpha * action_direction[i];
+            update_direction[i] = u[i] + q[i];
+        }
+
+        const auto second_preconditioner_start =
+            std::chrono::steady_clock::now();
+        apply_preconditioner(update_direction, preconditioned_update);
+        preconditioner_seconds +=
+            std::chrono::duration<double>(
+                std::chrono::steady_clock::now() -
+                second_preconditioner_start).count();
+        const auto second_matvec_start =
+            std::chrono::steady_clock::now();
+        matvec(preconditioned_update.data(), work.data());
+        matvec_seconds +=
+            std::chrono::duration<double>(
+                std::chrono::steady_clock::now() -
+                second_matvec_start).count();
+#pragma omp parallel for schedule(static)
+        for (int i = 0; i < n; i++) {
+            result.solution[i] += alpha * preconditioned_update[i];
+            residual[i] -= alpha * work[i];
+        }
+        total_iterations++;
+        recurrence_relative = norm(residual.data(), n) / rhs_norm;
+
+        const bool replace_residual =
+            total_iterations % replacement_interval == 0 ||
+            recurrence_relative <= 2.0 * tolerance;
+        if (replace_residual) {
+            const auto verification_start =
+                std::chrono::steady_clock::now();
+            operator_relative = compute_true_residual();
+            matvec_seconds +=
+                std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() -
+                    verification_start).count();
+            recurrence_relative = operator_relative;
+            shadow = residual;
+            restarted = true;
+            previous_rho = cdouble(1.0);
+            save_solver_checkpoint(
+                checkpoint, rhs_hash, total_iterations,
+                operator_relative, result.solution);
+            log_iteration(
+                label, "replacement", total_iterations,
+                recurrence_relative, operator_relative,
+                matvec_seconds, preconditioner_seconds, 0.0,
+                std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - start).count());
+        } else {
+            previous_rho = rho;
+        }
+
+        log_iteration(
+            label, "iteration", total_iterations,
+            recurrence_relative, operator_relative,
+            matvec_seconds, preconditioner_seconds, 0.0,
+            std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - start).count());
+        if (total_iterations == 1 ||
+            total_iterations % 10 == 0 || replace_residual) {
+            std::printf(
+                "  [%s %d] recurrence %.3e, true %.3e%s; "
+                "matvec %.3fs, preconditioner %.3fs\n",
+                label, total_iterations, recurrence_relative,
+                operator_relative,
+                replace_residual ? " (replaced)" : "",
+                matvec_seconds, preconditioner_seconds);
+            std::fflush(stdout);
+        }
+    }
+
+    operator_relative = compute_true_residual();
+    recurrence_relative = operator_relative;
+    save_solver_checkpoint(
+        checkpoint, rhs_hash, total_iterations,
+        operator_relative, result.solution);
+    result.iterations = total_iterations;
+    result.projected_residual = recurrence_relative;
+    result.operator_residual = operator_relative;
+    result.operator_residual_verified = true;
+    result.seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - start).count();
+    log_iteration(
+        label, "final", total_iterations,
+        recurrence_relative, operator_relative,
+        0.0, 0.0, 0.0, result.seconds);
+    return result;
+}
+
+GmresResult solve_outer_krylov(
+    const char* krylov_kind,
+    const Matvec& matvec,
+    const cdouble* rhs,
+    int n,
+    double tolerance,
+    int maximum_iterations,
+    int gmres_restart,
+    int residual_replacement_interval,
+    const MullerMbjPreconditioner* preconditioner,
+    const char* label,
+    const std::vector<cdouble>* initial_guess,
+    const cdouble* recycle_rhs,
+    std::vector<cdouble>* recycle_guess,
+    const std::function<void(
+        const std::vector<cdouble>&,
+        std::vector<cdouble>&)>* recycle_transform,
+    const SolverCheckpointOptions& checkpoint,
+    const Matvec* residual_matvec,
+    GmresDeflationSpace* deflation = nullptr)
+{
+    if (std::strcmp(krylov_kind, "bicgstab-rr") == 0 ||
+        std::strcmp(krylov_kind, "bicgstab_rr") == 0 ||
+        std::strcmp(krylov_kind, "bicgstab") == 0) {
+        return solve_bicgstab_rr(
+            matvec, rhs, n, tolerance, maximum_iterations,
+            residual_replacement_interval, preconditioner, label,
+            initial_guess, checkpoint, residual_matvec);
+    }
+    if (std::strcmp(krylov_kind, "cgs-rr") == 0 ||
+        std::strcmp(krylov_kind, "cgs_rr") == 0 ||
+        std::strcmp(krylov_kind, "cgs") == 0) {
+        return solve_cgs_rr(
+            matvec, rhs, n, tolerance, maximum_iterations,
+            residual_replacement_interval, preconditioner, label,
+            initial_guess, checkpoint, residual_matvec);
+    }
+    return solve_gmres(
+        matvec, rhs, n, tolerance, maximum_iterations,
+        gmres_restart, preconditioner, label, initial_guess,
+        recycle_rhs, recycle_guess, recycle_transform,
+        checkpoint, false, residual_matvec, deflation);
 }
 
 GmresResult solve_flexible_gmres(
@@ -3113,6 +4239,8 @@ int run_orientation_average(
     double tolerance,
     int maximum_iterations,
     int gmres_restart,
+    int gmres_deflation_rank,
+    const std::string& gmres_deflation_path,
     int ntheta,
     double setup_seconds,
     double mbj_setup_seconds,
@@ -3231,6 +4359,10 @@ int run_orientation_average(
     std::uint64_t checkpoint_signature = FNV_OFFSET;
     const std::uint64_t operator_signature =
         muller_operator_hash(fmm);
+    GmresDeflationSpace gmres_deflation(
+        gmres_deflation_rank, fmm.system_dofs,
+        operator_signature, gmres_deflation_path);
+    gmres_deflation.load();
     hash_bytes(
         checkpoint_signature, &operator_signature,
         sizeof(operator_signature));
@@ -3278,6 +4410,9 @@ int run_orientation_average(
     hash_bytes(
         checkpoint_signature, &gmres_restart,
         sizeof(gmres_restart));
+    hash_bytes(
+        checkpoint_signature, &gmres_deflation_rank,
+        sizeof(gmres_deflation_rank));
     hash_bytes(checkpoint_signature, &ntheta, sizeof(ntheta));
     hash_bytes(
         checkpoint_signature, &adaptive_minimum_level,
@@ -3703,11 +4838,17 @@ int run_orientation_average(
             solution_x = solve_gmres(
                 current_action, rhs_x.data(), fmm.system_dofs,
                 tolerance, maximum_iterations, gmres_restart,
-                &mbj, label_x, guess_x);
+                &mbj, label_x, guess_x,
+                nullptr, nullptr, nullptr,
+                SolverCheckpointOptions(), false, nullptr,
+                &gmres_deflation);
             solution_y = solve_gmres(
                 current_action, rhs_y.data(), fmm.system_dofs,
                 tolerance, maximum_iterations, gmres_restart,
-                &mbj, label_y, guess_y);
+                &mbj, label_y, guess_y,
+                nullptr, nullptr, nullptr,
+                SolverCheckpointOptions(), false, nullptr,
+                &gmres_deflation);
         }
         recycle_basis.add(rhs_x, solution_x.solution);
         recycle_basis.add(rhs_y, solution_y.solution);
@@ -4060,6 +5201,23 @@ int run_orientation_average(
            << "  \"refinements\": " << refinement << ",\n"
            << "  \"system_dofs\": " << fmm.system_dofs << ",\n"
            << "  \"tolerance\": " << tolerance << ",\n"
+           << "  \"gmres_deflation\": {\"rank_requested\": "
+           << gmres_deflation_rank
+           << ", \"rank_built\": " << gmres_deflation.rank()
+           << ", \"loaded\": "
+           << (gmres_deflation.loaded ? "true" : "false")
+           << ", \"basis_file\": ";
+    if (gmres_deflation_path.empty())
+        output << "null";
+    else
+        output << "\"" << gmres_deflation_path << "\"";
+    output << ", \"setup_s\": " << gmres_deflation.setup_seconds
+           << ", \"application_s\": "
+           << gmres_deflation.application_seconds
+           << ", \"storage_mb\": "
+           << 2.0 * gmres_deflation.image_basis.size() * sizeof(cdouble) /
+                  (1024.0 * 1024.0)
+           << "},\n"
            << "  \"gpu_operator_assembly\": "
            << (fmm.gpu_operator_assembly ? "true" : "false")
            << ",\n"
@@ -4203,6 +5361,10 @@ int run_main(int argc, char** argv)
     int mbj_coarse_rank = 0;
     int maximum_iterations = 500;
     int gmres_restart = 0;
+    int gmres_deflation_rank = 0;
+    int residual_replacement_interval = 20;
+    const char* krylov_kind = "gmres";
+    const char* preconditioner_kind = "mbj";
     double ka = 6.0;
     double refractive_real = 1.5;
     double tolerance = 1.0e-5;
@@ -4253,6 +5415,7 @@ int run_main(int argc, char** argv)
     int ntheta = 73;
     const char* iteration_log_path = nullptr;
     const char* checkpoint_path = nullptr;
+    const char* gmres_deflation_file = nullptr;
     bool checkpoint_disabled = false;
     bool allow_checkpoint_migration = false;
     const char* neural_preconditioner_path = nullptr;
@@ -4400,6 +5563,24 @@ int run_main(int argc, char** argv)
         else if (std::strcmp(argv[i], "--gmres-restart") == 0 &&
                  i + 1 < argc)
             gmres_restart = std::atoi(argv[++i]);
+        else if (std::strcmp(
+                     argv[i], "--gmres-deflation-rank") == 0 &&
+                 i + 1 < argc)
+            gmres_deflation_rank = std::atoi(argv[++i]);
+        else if (std::strcmp(
+                     argv[i], "--gmres-deflation-file") == 0 &&
+                 i + 1 < argc)
+            gmres_deflation_file = argv[++i];
+        else if (std::strcmp(argv[i], "--krylov") == 0 &&
+                 i + 1 < argc)
+            krylov_kind = argv[++i];
+        else if (std::strcmp(argv[i], "--preconditioner") == 0 &&
+                 i + 1 < argc)
+            preconditioner_kind = argv[++i];
+        else if (std::strcmp(
+                     argv[i], "--residual-replacement") == 0 &&
+                 i + 1 < argc)
+            residual_replacement_interval = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--iteration-log") == 0 &&
                  i + 1 < argc)
             iteration_log_path = argv[++i];
@@ -4581,9 +5762,49 @@ int run_main(int argc, char** argv)
         }
     }
 
+    const bool use_bicgstab_rr =
+        std::strcmp(krylov_kind, "bicgstab-rr") == 0 ||
+        std::strcmp(krylov_kind, "bicgstab_rr") == 0 ||
+        std::strcmp(krylov_kind, "bicgstab") == 0;
+    const bool use_cgs_rr =
+        std::strcmp(krylov_kind, "cgs-rr") == 0 ||
+        std::strcmp(krylov_kind, "cgs_rr") == 0 ||
+        std::strcmp(krylov_kind, "cgs") == 0;
+    const bool use_gmres = std::strcmp(krylov_kind, "gmres") == 0;
+    if (!use_gmres && !use_bicgstab_rr && !use_cgs_rr) {
+        std::fprintf(
+            stderr, "--krylov must be gmres, bicgstab-rr, or cgs-rr\n");
+        return 2;
+    }
+    const bool use_mbj_preconditioner =
+        std::strcmp(preconditioner_kind, "mbj") == 0;
+    const bool use_no_preconditioner =
+        std::strcmp(preconditioner_kind, "none") == 0;
+    if (!use_mbj_preconditioner && !use_no_preconditioner) {
+        std::fprintf(
+            stderr, "--preconditioner must be mbj or none\n");
+        return 2;
+    }
+    if (residual_replacement_interval < 1) {
+        std::fprintf(
+            stderr, "--residual-replacement must be positive\n");
+        return 2;
+    }
+    if (use_no_preconditioner)
+        mbj_only = true;
+    if ((hybrid_pfft_fmm || pfft_fgmres) &&
+        (!use_gmres || use_no_preconditioner)) {
+        std::fprintf(
+            stderr,
+            "pFFT-FGMRES requires --krylov gmres and "
+            "--preconditioner mbj\n");
+        return 2;
+    }
+
     create_parent_directory(output_path);
     create_parent_directory(iteration_log_path);
     create_parent_directory(checkpoint_path);
+    create_parent_directory(gmres_deflation_file);
     create_parent_directory(near_correction_cache_path);
     create_parent_directory(mbj_cache_path);
     if (orient_parts_directory)
@@ -4594,6 +5815,13 @@ int run_main(int argc, char** argv)
         : (checkpoint_path
                ? std::string(checkpoint_path)
                : std::string(output_path) + ".checkpoint");
+    const std::string gmres_deflation_path =
+        gmres_deflation_rank > 0
+            ? (gmres_deflation_file
+                   ? std::string(gmres_deflation_file)
+                   : std::string(output_path) + ".deflation.bin")
+            : std::string();
+    create_parent_directory(gmres_deflation_path.c_str());
     const bool prism_mode = std::strcmp(shape, "prism") == 0;
     const bool cube_mode = std::strcmp(shape, "cube") == 0;
     const bool sphere_mode = std::strcmp(shape, "sphere") == 0;
@@ -4783,14 +6011,26 @@ int run_main(int argc, char** argv)
     }
     if (mbj_nodes < 1 || mbj_overlap < 0 || gmres_restart < 0 ||
         iteration_log_every < 1 ||
-        mbj_coarse_rank < 0 || mbj_coarse_rank > 64) {
+        mbj_coarse_rank < 0 || mbj_coarse_rank > 64 ||
+        gmres_deflation_rank < 0 || gmres_deflation_rank > 32) {
         std::fprintf(
             stderr,
             "--mbj-nodes must be positive and "
             "--iteration-log-every must be positive; "
             "--mbj-overlap/--mbj-coarse-rank/--gmres-restart must be "
             "non-negative; "
-            "coarse rank is limited to 64\n");
+            "coarse rank is limited to 64 and GMRES deflation rank "
+            "to 32\n");
+        return 2;
+    }
+    if (gmres_deflation_rank > 0 &&
+        (!use_gmres || pfft_fgmres || hybrid_pfft_fmm ||
+         gmres_restart <= gmres_deflation_rank + 1)) {
+        std::fprintf(
+            stderr,
+            "--gmres-deflation-rank requires plain GMRES and "
+            "--gmres-restart greater than rank+1; it is not combined "
+            "with pFFT/hybrid outer solvers\n");
         return 2;
     }
     if (ntheta < 2) {
@@ -4841,13 +6081,16 @@ int run_main(int argc, char** argv)
          orient_average_gamma < 1 ||
          orient_warm_max_angle_degrees <= 0.0 ||
          hybrid_pfft_fmm ||
+         !use_gmres ||
+         use_no_preconditioner ||
          !mbj_only ||
          dense_validation ||
          neural_preconditioner_path)) {
         std::fprintf(
             stderr,
             "--orient-average Na Nb Ng requires positive counts, "
-            "--mbj-only, --no-dense-validation, no neural preconditioner, "
+            "GMRES with MBJ, --mbj-only, --no-dense-validation, "
+            "no neural preconditioner, "
             "and does not support --hybrid-pfft-fmm\n");
         return 2;
     }
@@ -4994,6 +6237,7 @@ int run_main(int argc, char** argv)
         rotate_mesh_about_z(
             mesh, prism_azimuth_degrees * M_PI / 180.0);
     }
+    const int max_leaf_requested = max_leaf;
     {
         double coordinate_min[3] = {1.0e300, 1.0e300, 1.0e300};
         double coordinate_max[3] = {-1.0e300, -1.0e300, -1.0e300};
@@ -5066,8 +6310,14 @@ int run_main(int argc, char** argv)
     const cdouble refractive_index(refractive_real, 0.0);
     const double max_element_edge = maximum_mesh_edge(mesh);
     const double ka_h_element = ka * max_element_edge;
-    const double p2_nodes_per_wavelength =
+    const double p2_nodes_per_exterior_wavelength =
         ka_h_element > 0.0 ? 4.0 * M_PI / ka_h_element : 0.0;
+    const double p2_nodes_per_interior_wavelength =
+        p2_nodes_per_exterior_wavelength /
+        std::max(std::abs(refractive_real), 1.0e-300);
+    const double p2_nodes_per_shortest_wavelength =
+        p2_nodes_per_exterior_wavelength /
+        std::max(1.0, std::abs(refractive_real));
     size_t gpu_free_before = 0;
     size_t gpu_total_bytes = 0;
     const bool gpu_memory_before_valid =
@@ -5155,6 +6405,9 @@ int run_main(int argc, char** argv)
         checkpoint_signature, &fmm.system_dofs,
         sizeof(fmm.system_dofs));
     hash_bytes(
+        checkpoint_signature, &gmres_deflation_rank,
+        sizeof(gmres_deflation_rank));
+    hash_bytes(
         checkpoint_signature, &axial_slab_start,
         sizeof(axial_slab_start));
     const std::size_t quadrature_points =
@@ -5190,7 +6443,7 @@ int run_main(int argc, char** argv)
         };
     MullerMbjPreconditioner mbj;
     const auto mbj_setup_start = std::chrono::steady_clock::now();
-    if (!symmetry_operator_check_only) {
+    if (!symmetry_operator_check_only && use_mbj_preconditioner) {
         if (mbj_cache_path) {
             mbj.build_cached(
                 fmm, mbj_nodes, mbj_overlap, mbj_cache_path);
@@ -5201,9 +6454,14 @@ int run_main(int argc, char** argv)
     const double mbj_local_setup_seconds =
         std::chrono::duration<double>(
             std::chrono::steady_clock::now() - mbj_setup_start).count();
-    if (!symmetry_operator_check_only)
+    if (!symmetry_operator_check_only && use_mbj_preconditioner)
         mbj.build_coarse(fmm, mbj_coarse_rank);
     const double mbj_coarse_setup_seconds = mbj.coarse_setup_seconds;
+    GmresDeflationSpace gmres_deflation(
+        orientation_average ? 0 : gmres_deflation_rank,
+        fmm.system_dofs,
+        checkpoint_signature, gmres_deflation_path);
+    gmres_deflation.load();
     size_t gpu_free_after = 0;
     size_t gpu_total_after = 0;
     const bool gpu_memory_after_valid =
@@ -5274,16 +6532,26 @@ int run_main(int argc, char** argv)
                << (mesh.edge_refine_uniform_fallback ? "true" : "false")
                << ",\n"
                << "  \"system_dofs\": " << fmm.system_dofs << ",\n"
+               << "  \"mesh_vertices\": " << mesh.nv() << ",\n"
+               << "  \"mesh_triangles\": " << mesh.nt() << ",\n"
+               << "  \"surface_scalar_nodes\": "
+               << fmm.mesh.scalar_nodes() << ",\n"
+               << "  \"surface_current_dofs\": "
+               << fmm.mesh.current_dofs() << ",\n"
                << "  \"quadrature_points\": "
                << fmm.quadrature.size() << ",\n"
                << "  \"regular_quadrature\": "
                << regular_quadrature << ",\n"
                << "  \"duffy_order\": " << duffy_order << ",\n"
                << "  \"fmm_digits\": "
-               << std::min(digits, 5) << ",\n"
+               << fmm.fmm_digits_effective << ",\n"
                << "  \"fmm_digits_requested\": " << digits << ",\n"
                << "  \"fmm_max_leaf_points\": " << max_leaf << ",\n"
+               << "  \"fmm_max_leaf_points_requested\": "
+               << max_leaf_requested << ",\n"
                << "  \"fmm_near_radius\": "
+               << fmm.fmm_near_radius << ",\n"
+               << "  \"fmm_near_radius_requested\": "
                << fmm_near_radius << ",\n"
                << "  \"fmm_banded\": "
                << (fmm.banded_fmm ? "true" : "false") << ",\n"
@@ -5296,6 +6564,15 @@ int run_main(int argc, char** argv)
                << "  \"fmm_near_precision\": \""
                << (fmm_near_fp32 ? "fp32" : "fp64") << "\",\n"
                << "  \"gmres_restart\": " << gmres_restart << ",\n"
+               << "  \"krylov_solver\": \""
+               << (use_bicgstab_rr ? "bicgstab_rr"
+                   : (use_cgs_rr ? "cgs_rr" : "gmres"))
+               << "\",\n"
+               << "  \"preconditioner\": \""
+               << (use_mbj_preconditioner ? "mbj" : "none")
+               << "\",\n"
+               << "  \"residual_replacement_interval\": "
+               << residual_replacement_interval << ",\n"
                << "  \"cyclic_polarization_requested\": "
                << (cyclic_polarization ? "true" : "false") << ",\n"
                << "  \"cyclic_exact_geometry_requested\": "
@@ -5317,8 +6594,14 @@ int run_main(int argc, char** argv)
                << "  \"max_element_edge\": "
                << max_element_edge << ",\n"
                << "  \"ka_h_element\": " << ka_h_element << ",\n"
+               << "  \"p2_nodes_per_exterior_wavelength\": "
+               << p2_nodes_per_exterior_wavelength << ",\n"
+               << "  \"p2_nodes_per_interior_wavelength\": "
+               << p2_nodes_per_interior_wavelength << ",\n"
+               << "  \"p2_nodes_per_shortest_wavelength\": "
+               << p2_nodes_per_shortest_wavelength << ",\n"
                << "  \"p2_nodes_per_wavelength_min\": "
-               << p2_nodes_per_wavelength << ",\n"
+               << p2_nodes_per_shortest_wavelength << ",\n"
                << "  \"fmm_setup_s\": " << fmm_setup_seconds << ",\n"
                << "  \"fmm_setup_breakdown\": {\"geometry_s\": "
                << fmm.geometry_setup_seconds
@@ -5505,7 +6788,7 @@ int run_main(int argc, char** argv)
         };
     if (orientation_average) {
         if (pfft_fgmres || !fmm.device_matvec_available() ||
-            mbj.coarse_rank != 0) {
+            mbj.coarse_rank != 0 || gmres_deflation_rank > 0) {
             if (orient_paired_gpu_gmres) {
                 std::printf(
                     "  [orientation] paired GPU GMRES unavailable for "
@@ -5543,6 +6826,8 @@ int run_main(int argc, char** argv)
             tolerance,
             maximum_iterations,
             gmres_restart,
+            gmres_deflation_rank,
+            gmres_deflation_path,
             ntheta,
             fmm_setup_seconds,
             mbj_local_setup_seconds,
@@ -5787,10 +7072,15 @@ int run_main(int argc, char** argv)
                     << "  \"refinements\": " << refinement << ",\n"
                     << "  \"system_dofs\": " << fmm.system_dofs
                     << ",\n"
-                    << "  \"fmm_digits\": " << std::min(digits, 5)
+                    << "  \"fmm_digits\": "
+                    << fmm.fmm_digits_effective
                     << ",\n"
                     << "  \"fmm_digits_requested\": " << digits
                     << ",\n"
+                    << "  \"fmm_max_leaf_points\": " << max_leaf
+                    << ",\n"
+                    << "  \"fmm_max_leaf_points_requested\": "
+                    << max_leaf_requested << ",\n"
                     << "  \"fmm_expansion\": {\"exterior\": "
                     << "{\"tree_depth\": "
                     << fmm.fmm_exterior.tree.max_level
@@ -6058,10 +7348,19 @@ int run_main(int argc, char** argv)
             pfft_inner_total_seconds - primary_seconds_before;
         fmm.select_fmm_backend();
     } else {
-        preconditioned = solve_gmres(
+        const MullerMbjPreconditioner* outer_preconditioner =
+            use_mbj_preconditioner ? &mbj : nullptr;
+        const char* outer_label = use_mbj_preconditioner
+            ? (use_bicgstab_rr ? "MBJ-BiCGSTAB-RR"
+                : (use_cgs_rr ? "MBJ-CGS-RR" : "MBJ"))
+            : (use_bicgstab_rr ? "BiCGSTAB-RR"
+                : (use_cgs_rr ? "CGS-RR" : "GMRES"));
+        preconditioned = solve_outer_krylov(
+            krylov_kind,
             action, rhs.data(), fmm.system_dofs,
             tolerance, maximum_iterations, gmres_restart,
-            &mbj, "MBJ",
+            residual_replacement_interval,
+            outer_preconditioner, outer_label,
             current_primary_initial_guess,
             symmetry_polarization && !cyclic_exact_geometry
                 ? rhs_parallel.data() : nullptr,
@@ -6069,8 +7368,8 @@ int run_main(int argc, char** argv)
                 ? &recycled_parallel_guess : nullptr,
             symmetry_polarization && !cyclic_exact_geometry
                 ? &symmetry_solution_transform : nullptr,
-            solver_checkpoint("MBJ"), false,
-            strict_verification_action);
+            solver_checkpoint(outer_label),
+            strict_verification_action, &gmres_deflation);
     }
         parallel_preconditioned = GmresResult();
         cyclic_polarization_used = false;
@@ -6277,14 +7576,29 @@ int run_main(int argc, char** argv)
                     parallel_pfft_inner_seconds +=
                         pfft_inner_total_seconds - seconds_before;
                 } else {
-                    parallel_preconditioned = solve_gmres(
+                    const MullerMbjPreconditioner* outer_preconditioner =
+                        use_mbj_preconditioner ? &mbj : nullptr;
+                    const char* outer_label = use_mbj_preconditioner
+                        ? (use_bicgstab_rr
+                               ? "MBJ-BiCGSTAB-RR-symmetry-correction"
+                               : (use_cgs_rr
+                                      ? "MBJ-CGS-RR-symmetry-correction"
+                                      : "MBJ-symmetry-correction"))
+                        : (use_bicgstab_rr
+                               ? "BiCGSTAB-RR-symmetry-correction"
+                               : (use_cgs_rr
+                                      ? "CGS-RR-symmetry-correction"
+                                      : "GMRES-symmetry-correction"));
+                    parallel_preconditioned = solve_outer_krylov(
+                        krylov_kind,
                         action, rhs_parallel.data(), fmm.system_dofs,
                         tolerance, maximum_iterations, gmres_restart,
-                        &mbj, "MBJ-symmetry-correction",
+                        residual_replacement_interval,
+                        outer_preconditioner, outer_label,
                         selected_guess, nullptr, nullptr, nullptr,
                         solver_checkpoint(
-                            "MBJ-symmetry-correction"), false,
-                        strict_verification_action);
+                            outer_label),
+                        strict_verification_action, &gmres_deflation);
                 }
                 parallel_preconditioned.seconds += candidate_seconds;
                 if (parallel_preconditioned.operator_residual <=
@@ -6300,12 +7614,28 @@ int run_main(int argc, char** argv)
                         "  [%s symmetry] correction did not converge; "
                         "falling back to zero-start GMRES\n",
                         symmetry_name);
-                    parallel_preconditioned = solve_gmres(
+                    const MullerMbjPreconditioner* outer_preconditioner =
+                        use_mbj_preconditioner ? &mbj : nullptr;
+                    const char* outer_label = use_mbj_preconditioner
+                        ? (use_bicgstab_rr
+                               ? "MBJ-BiCGSTAB-RR-parallel"
+                               : (use_cgs_rr
+                                      ? "MBJ-CGS-RR-parallel"
+                                      : "MBJ-parallel"))
+                        : (use_bicgstab_rr
+                               ? "BiCGSTAB-RR-parallel"
+                               : (use_cgs_rr
+                                      ? "CGS-RR-parallel"
+                                      : "GMRES-parallel"));
+                    parallel_preconditioned = solve_outer_krylov(
+                        krylov_kind,
                         action, rhs_parallel.data(), fmm.system_dofs,
                         tolerance, maximum_iterations, gmres_restart,
-                        &mbj, "MBJ-parallel", nullptr, nullptr, nullptr,
-                        nullptr, solver_checkpoint("MBJ-parallel"),
-                        false, strict_verification_action);
+                        residual_replacement_interval,
+                        outer_preconditioner, outer_label,
+                        nullptr, nullptr, nullptr, nullptr,
+                        solver_checkpoint(outer_label),
+                        strict_verification_action, &gmres_deflation);
                     parallel_preconditioned.seconds +=
                         correction_seconds;
                 }
@@ -6337,13 +7667,28 @@ int run_main(int argc, char** argv)
                 parallel_pfft_inner_seconds =
                     pfft_inner_total_seconds - seconds_before;
             } else {
-                parallel_preconditioned = solve_gmres(
+                const MullerMbjPreconditioner* outer_preconditioner =
+                    use_mbj_preconditioner ? &mbj : nullptr;
+                const char* outer_label = use_mbj_preconditioner
+                    ? (use_bicgstab_rr
+                           ? "MBJ-BiCGSTAB-RR-parallel"
+                           : (use_cgs_rr
+                                  ? "MBJ-CGS-RR-parallel"
+                                  : "MBJ-parallel"))
+                    : (use_bicgstab_rr
+                           ? "BiCGSTAB-RR-parallel"
+                           : (use_cgs_rr
+                                  ? "CGS-RR-parallel"
+                                  : "GMRES-parallel"));
+                parallel_preconditioned = solve_outer_krylov(
+                    krylov_kind,
                     action, rhs_parallel.data(), fmm.system_dofs,
                     tolerance, maximum_iterations, gmres_restart,
-                    &mbj, "MBJ-parallel",
+                    residual_replacement_interval,
+                    outer_preconditioner, outer_label,
                     current_parallel_initial_guess, nullptr, nullptr,
-                    nullptr, solver_checkpoint("MBJ-parallel"),
-                    false, strict_verification_action);
+                    nullptr, solver_checkpoint(outer_label),
+                    strict_verification_action, &gmres_deflation);
             }
         }
 
@@ -6680,15 +8025,27 @@ int run_main(int argc, char** argv)
            << (mesh.edge_refine_uniform_fallback ? "true" : "false")
            << ",\n"
            << "  \"system_dofs\": " << fmm.system_dofs << ",\n"
+           << "  \"mesh_vertices\": " << mesh.nv() << ",\n"
+           << "  \"mesh_triangles\": " << mesh.nt() << ",\n"
+           << "  \"surface_scalar_nodes\": "
+           << fmm.mesh.scalar_nodes() << ",\n"
+           << "  \"surface_current_dofs\": "
+           << fmm.mesh.current_dofs() << ",\n"
            << "  \"quadrature_points\": "
            << fmm.quadrature.size() << ",\n"
            << "  \"regular_quadrature\": "
            << regular_quadrature << ",\n"
            << "  \"duffy_order\": " << duffy_order << ",\n"
            << "  \"fmm_digits\": "
-           << std::min(digits, 5) << ",\n"
+           << fmm.fmm_digits_effective << ",\n"
            << "  \"fmm_digits_requested\": " << digits << ",\n"
            << "  \"fmm_max_leaf_points\": " << max_leaf << ",\n"
+           << "  \"fmm_max_leaf_points_requested\": "
+           << max_leaf_requested << ",\n"
+           << "  \"fmm_near_radius\": "
+           << fmm.fmm_near_radius << ",\n"
+           << "  \"fmm_near_radius_requested\": "
+           << fmm_near_radius << ",\n"
            << "  \"fmm_expansion\": ";
     if (fmm.fmm_exterior.initialized && fmm.fmm_interior.initialized) {
         output << "{\"exterior\": {\"tree_depth\": "
@@ -6704,8 +8061,6 @@ int run_main(int argc, char** argv)
         output << "null";
     }
     output << ",\n"
-           << "  \"fmm_near_radius\": "
-           << fmm_near_radius << ",\n"
            << "  \"fmm_banded\": "
            << (fmm.banded_fmm ? "true" : "false") << ",\n"
            << "  \"fmm_banded_split_depth\": "
@@ -6717,6 +8072,17 @@ int run_main(int argc, char** argv)
            << "  \"fmm_near_precision\": \""
            << (fmm_near_fp32 ? "fp32" : "fp64") << "\",\n"
            << "  \"gmres_restart\": " << gmres_restart << ",\n"
+           << "  \"krylov_solver\": \""
+           << (use_bicgstab_rr ? "bicgstab_rr"
+               : (use_cgs_rr ? "cgs_rr" : "gmres"))
+           << "\",\n"
+           << "  \"preconditioner\": \""
+           << (use_mbj_preconditioner ? "mbj" : "none")
+           << "\",\n"
+           << "  \"residual_replacement_interval\": "
+           << residual_replacement_interval << ",\n"
+           << "  \"gmres_deflation_rank_requested\": "
+           << gmres_deflation_rank << ",\n"
            << "  \"cyclic_polarization_requested\": "
            << (cyclic_polarization ? "true" : "false") << ",\n"
            << "  \"auto_polarization_symmetry_requested\": "
@@ -6740,8 +8106,14 @@ int run_main(int argc, char** argv)
            << "  \"max_element_edge\": "
            << max_element_edge << ",\n"
            << "  \"ka_h_element\": " << ka_h_element << ",\n"
+           << "  \"p2_nodes_per_exterior_wavelength\": "
+           << p2_nodes_per_exterior_wavelength << ",\n"
+           << "  \"p2_nodes_per_interior_wavelength\": "
+           << p2_nodes_per_interior_wavelength << ",\n"
+           << "  \"p2_nodes_per_shortest_wavelength\": "
+           << p2_nodes_per_shortest_wavelength << ",\n"
            << "  \"p2_nodes_per_wavelength_min\": "
-           << p2_nodes_per_wavelength << ",\n"
+           << p2_nodes_per_shortest_wavelength << ",\n"
            << "  \"gpu_memory_delta_mb\": "
            << gpu_memory_delta_mb << ",\n"
            << "  \"edge_mode\": \""
@@ -6866,6 +8238,31 @@ int run_main(int argc, char** argv)
     output
            << ", \"storage_mb\": " << mbj.storage_megabytes()
            << "},\n"
+           << "  \"gmres_deflation\": {\"rank_requested\": "
+           << gmres_deflation_rank
+           << ", \"rank_built\": " << gmres_deflation.rank()
+           << ", \"loaded\": "
+           << (gmres_deflation.loaded ? "true" : "false")
+           << ", \"basis_file\": ";
+    if (gmres_deflation_path.empty())
+        output << "null";
+    else
+        output << "\"" << gmres_deflation_path << "\"";
+    output << ", \"setup_s\": " << gmres_deflation.setup_seconds
+           << ", \"application_s\": "
+           << gmres_deflation.application_seconds
+           << ", \"storage_mb\": "
+           << 2.0 * gmres_deflation.image_basis.size() * sizeof(cdouble) /
+                  (1024.0 * 1024.0)
+           << ", \"operator_image_norms\": [";
+    for (std::size_t index = 0;
+         index < gmres_deflation.harmonic_residual_indicators.size();
+         index++) {
+        if (index)
+            output << ", ";
+        output << gmres_deflation.harmonic_residual_indicators[index];
+    }
+    output << "]},\n"
            << "  \"hybrid\": ";
     if (!hybrid_pfft_fmm) {
         output << "null,\n";

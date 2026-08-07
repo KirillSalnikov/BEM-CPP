@@ -7,6 +7,14 @@ src/*.o
 *.json
 !reference/**/*.json
 !benchmarks/**/*.json
+!studies/**/study_config.json
+studies/**/generated/*
+!studies/**/generated/*.png
+!studies/**/generated/*_table.tex
+studies/**/*.aux
+studies/**/*.log
+studies/**/*.out
+studies/**/*.toc
 *.npz
 *.pyc
 __pycache__/

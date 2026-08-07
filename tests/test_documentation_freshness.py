@@ -51,9 +51,14 @@ def main() -> int:
     assert "не заявляется" in documents["MANUAL.tex"]
 
     documented = set(re.findall(r"--[a-z][a-z0-9-]*", joined))
-    implementation = "\n".join(
-        read(name) for name in ("bem", "tools/muller_nodal_fmm_demo.cpp", "src/main.cpp")
+    implementation_sources = (
+        "bem",
+        "tools/muller_nodal_fmm_demo.cpp",
+        "src/main.cpp",
+        "scripts/profile_command.py",
+        "scripts/run_convergence_study.py",
     )
+    implementation = "\n".join(read(name) for name in implementation_sources)
     implemented = set(re.findall(r"--[a-z][a-z0-9-]*", implementation))
     documentation_tool_options = {
         "--host",

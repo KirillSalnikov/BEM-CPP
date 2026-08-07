@@ -1,0 +1,468 @@
+{
+  "schema_version": 1,
+  "study_id": "bem_ref_ka_fmm_convergence_20260805",
+  "runs_root": "runs/convergence_study_20260805",
+  "defaults": {
+    "ri": 1.3,
+    "precision": "fp64",
+    "near_precision": "fp64",
+    "edge_mode": "smooth",
+    "quad": 13,
+    "duffy_order": 6,
+    "digits": 7,
+    "digits_cap": 7,
+    "max_leaf": 64,
+    "near_radius": 5,
+    "tolerance": 2e-6,
+    "max_iterations": 2000,
+    "gmres_restart": 100,
+    "mbj_nodes": 50,
+    "mbj_overlap": 0,
+    "physical_check": true,
+    "ntheta": 181,
+    "threads": 16,
+    "binary_fp64": "bin/muller_nodal_fmm_demo",
+    "binary_mixed": "bin/muller_nodal_fmm_demo_fp32"
+  },
+  "analysis_reuse": [
+    {
+      "series": "mesh_sphere_m13",
+      "phase": "fmm_radius_scale",
+      "shape": "sphere",
+      "ka": 40,
+      "ri": 1.3,
+      "ref": 6,
+      "near_radius": 3
+    },
+    {
+      "series": "fmm_radius_scale",
+      "include_in_current_plan": true,
+      "phase": "mesh_sphere_m13",
+      "shape": "sphere",
+      "ka": 40,
+      "ri": 1.3,
+      "ref": 6,
+      "near_radius": 1
+    },
+    {
+      "series": "mesh_sphere_contrast",
+      "include_in_current_plan": true,
+      "phase": "fmm_radius_dependency",
+      "shape": "sphere",
+      "ka": 10,
+      "ri": 2.0,
+      "ref": 4,
+      "near_radius": 3
+    }
+  ],
+  "phases": [
+    {
+      "name": "calibration",
+      "description": "Small end-to-end controls for repeatability, cache state, precision, and profiler overhead.",
+      "defaults": {
+        "shape": "sphere",
+        "ka": 2,
+        "ref": 1,
+        "quad": 7,
+        "duffy_order": 4,
+        "digits": 6,
+        "near_radius": 4,
+        "tolerance": 1e-5,
+        "max_iterations": 300,
+        "ntheta": 37,
+        "repeats": 2
+      },
+      "sweeps": [
+        {
+          "name": "fp64_control",
+          "precision": "fp64",
+          "near_precision": "fp64"
+        },
+        {
+          "name": "mixed_control",
+          "precision": "mixed",
+          "near_precision": "fp32"
+        }
+      ]
+    },
+    {
+      "name": "mesh_sphere_m13",
+      "description": "Spatial convergence against exact Lorenz-Mie theory for m=1.3.",
+      "defaults": {
+        "shape": "sphere",
+        "ri": 1.3
+      },
+      "sweeps": [
+        {"ka": 2, "ref": [0, 1, 2, 3, 4]},
+        {"ka": 5, "ref": [1, 2, 3, 4, 5]},
+        {"ka": 10, "ref": [2, 3, 4, 5]},
+        {"ka": 20, "ref": [3, 4, 5, 6]},
+        {
+          "ka": 40, "ref": [4, 5],
+          "near_radius": 3, "tolerance": 0.0001,
+          "max_iterations": 2000,
+          "cache_variant": "mesh_sphere_high_ka_r3"
+        },
+        {
+          "ka": 60, "ref": [4, 5],
+          "near_radius": 3, "tolerance": 0.0001,
+          "max_iterations": 2000,
+          "cache_variant": "mesh_sphere_high_ka_r3"
+        }
+      ]
+    },
+    {
+      "name": "mesh_sphere_contrast",
+      "description": "Dependence of required shortest-wavelength resolution on refractive index.",
+      "defaults": {
+        "shape": "sphere",
+        "near_radius": 3
+      },
+      "sweeps": [
+        {"ka": 10, "ri": 1.1, "ref": [2, 3, 4]},
+        {
+          "ka": 10, "ri": 1.1, "ref": 5,
+          "tolerance": 0.0001,
+          "max_iterations": 2000
+        },
+        {"ka": 10, "ri": 1.5, "ref": [2, 3, 4]},
+        {"ka": 10, "ri": 2.0, "ref": [2, 3]},
+        {
+          "ka": 10, "ri": 2.0, "ref": 5,
+          "tolerance": 0.0001,
+          "max_iterations": 2000
+        },
+        {"ka": 10, "ri": 2.5, "ref": [2, 3]},
+        {
+          "ka": 40, "ri": 1.5, "ref": 5,
+          "tolerance": 0.001,
+          "max_iterations": 2000,
+          "gmres_restart": 100,
+          "mbj_nodes": 50,
+          "checkpoint_seed": "runs/convergence_study_20260805/mesh_sphere_contrast/sphere_ka40_m1p5_r5_8e4283433c0c/repeat_00/checkpoint",
+          "cache_variant": "mesh_sphere_contrast_high_ka_r3"
+        },
+        {
+          "ka": 40, "ri": 2.0, "ref": 5,
+          "tolerance": 0.001,
+          "max_iterations": 2000,
+          "gmres_restart": 200,
+          "mbj_nodes": 50,
+          "checkpoint_seed": "runs/convergence_study_20260805/mesh_sphere_contrast/sphere_ka40_m2p0_r5_733d09dbf36e/repeat_00/checkpoint",
+          "cache_variant": "mesh_sphere_contrast_high_ka_r3"
+        }
+      ]
+    },
+    {
+      "name": "mesh_prism",
+      "description": "Self-convergence of a unit-aspect hexagonal prism with the H(div)-conforming edge basis.",
+      "defaults": {
+        "shape": "prism",
+        "sides": 6,
+        "aspect": 1.0,
+        "edge_mode": "hdiv",
+        "digits": 7,
+        "near_radius": 1,
+        "max_leaf": 64,
+        "tolerance": 0.0001,
+        "max_iterations": 2000,
+        "cache_variant": "independent_mesh_prism"
+      },
+      "sweeps": [
+        {"ka": 10, "ri": [1.3, 1.5], "ref": [2, 3, 4, 5]},
+        {"ka": 30, "ri": [1.3, 1.5], "ref": [4, 5, 6]}
+      ]
+    },
+    {
+      "name": "mesh_polyhedra_hdiv_strict",
+      "description": "Independent H(div)-BDM1 self-convergence of a prism and cube with the validated three-cell FMM near radius.",
+      "defaults": {
+        "ka": 10,
+        "ri": 1.3,
+        "edge_mode": "hdiv",
+        "digits": 7,
+        "near_radius": 3,
+        "max_leaf": 64,
+        "tolerance": 2e-6,
+        "max_iterations": 2000,
+        "cache_variant": "strict_hdiv_polyhedra_r3"
+      },
+      "sweeps": [
+        {"shape": "prism", "sides": 6, "aspect": 1.0, "ref": [2, 3, 4, 5]},
+        {"shape": "cube", "ref": [2, 3, 4, 5]}
+      ]
+    },
+    {
+      "name": "basis_edge_control",
+      "description": "Controlled comparison of smooth nodal P2 and H(div)-BDM1 representations on sharp edges.",
+      "defaults": {
+        "shape": "prism",
+        "sides": 6,
+        "aspect": 1.0,
+        "ka": 10,
+        "ri": 1.3,
+        "digits": 7,
+        "near_radius": 1,
+        "max_leaf": 64,
+        "tolerance": 0.0001,
+        "max_iterations": 1000,
+        "cache_variant": "independent_basis_edge_control"
+      },
+      "sweeps": [
+        {"edge_mode": ["smooth", "hdiv"], "ref": [2, 3, 4, 5]}
+      ]
+    },
+    {
+      "name": "fmm_digits",
+      "description": "FMM truncation convergence at fixed spatial discretization.",
+      "defaults": {
+        "shape": "sphere",
+        "ka": 10,
+        "ref": 4,
+        "near_radius": 5,
+        "max_leaf": 64,
+        "tolerance": 1e-4,
+        "max_iterations": 500
+      },
+      "sweeps": [
+        {"digits": [3, 4, 5, 6, 7]}
+      ]
+    },
+    {
+      "name": "fmm_near_radius",
+      "description": "Convergence and cost versus direct near-cell radius at fixed mesh and high FMM order.",
+      "defaults": {
+        "shape": "sphere",
+        "ka": 10,
+        "ref": 4,
+        "digits": 7,
+        "max_leaf": 64,
+        "tolerance": 1e-4,
+        "max_iterations": 500
+      },
+      "sweeps": [
+        {"near_radius": [1, 2, 3, 4, 5, 6]}
+      ]
+    },
+    {
+      "name": "fmm_leaf",
+      "description": "FMM tree depth and leaf-size cost/accuracy study.",
+      "defaults": {
+        "shape": "sphere",
+        "ka": 10,
+        "ref": 4,
+        "digits": 7,
+        "near_radius": 5,
+        "tolerance": 1e-4,
+        "max_iterations": 500
+      },
+      "sweeps": [
+        {"max_leaf": [32, 64, 128, 256]}
+      ]
+    },
+    {
+      "name": "fmm_shared_cold_audit",
+      "description": "Independent cold-cache timing shared by the near-radius R=5 and max-leaf=64 one-factor studies.",
+      "defaults": {
+        "shape": "sphere",
+        "ka": 10,
+        "ri": 1.3,
+        "ref": 4,
+        "digits": 7,
+        "near_radius": 5,
+        "max_leaf": 64,
+        "tolerance": 1e-4,
+        "max_iterations": 500,
+        "cache_variant": "shared_r5_leaf64_cold_audit"
+      },
+      "sweeps": [
+        {"name": "shared_r5_leaf64_cold"}
+      ]
+    },
+    {
+      "name": "fmm_radius_scale",
+      "description": "Near-radius dependence at several electrical sizes with similar shortest-wavelength resolution.",
+      "defaults": {
+        "shape": "sphere",
+        "digits": 7,
+        "max_leaf": 64,
+        "tolerance": 1e-4,
+        "max_iterations": 500
+      },
+      "sweeps": [
+        {"ka": 5, "ref": 3, "near_radius": [1, 3, 5]},
+        {"ka": 20, "ref": 5, "near_radius": [1, 3, 5]},
+        {
+          "ka": 40, "ref": 6, "near_radius": [2, 3],
+          "cache_variant": "fmm_radius_scale_ka40"
+        }
+      ]
+    },
+    {
+      "name": "fmm_radius_digits_grid",
+      "description": "Coupled near-radius/digits error-time-memory frontier at a representative resolved sphere.",
+      "defaults": {
+        "shape": "sphere",
+        "ka": 10,
+        "ri": 1.3,
+        "ref": 4,
+        "max_leaf": 64,
+        "tolerance": 0.0001,
+        "max_iterations": 500,
+        "cache_variant": "independent_radius_digits_grid"
+      },
+      "sweeps": [
+        {"near_radius": [1, 3, 5], "digits": [3, 5, 7]}
+      ]
+    },
+    {
+      "name": "fmm_radius_dependency",
+      "description": "Transfer the radius conclusion to higher contrast and a sharp H(div) prism.",
+      "defaults": {
+        "ka": 10,
+        "ref": 4,
+        "digits": 7,
+        "max_leaf": 64,
+        "tolerance": 0.0001,
+        "max_iterations": 500,
+        "cache_variant": "independent_radius_dependency"
+      },
+      "sweeps": [
+        {"shape": "sphere", "ri": 2.0, "near_radius": [1, 3, 5]},
+        {
+          "shape": "prism", "ri": 1.3, "sides": 6, "aspect": 1.0,
+          "edge_mode": "hdiv", "near_radius": [1, 3, 5]
+        }
+      ]
+    },
+    {
+      "name": "fmm_radius_cold_audit",
+      "description": "Independent cold-cache timing for the radius-one case previously resumed after a strict-tolerance stall.",
+      "defaults": {
+        "shape": "sphere",
+        "ka": 5,
+        "ri": 1.3,
+        "ref": 3,
+        "digits": 7,
+        "max_leaf": 64,
+        "near_radius": 1,
+        "tolerance": 1e-4,
+        "max_iterations": 500,
+        "cache_variant": "independent_cold_audit"
+      },
+      "sweeps": [
+        {"name": "radius1_cold"}
+      ]
+    },
+    {
+      "name": "solver_controls",
+      "description": "Isolate GMRES restart, MBJ block size/overlap, and algebraic tolerance at one resolved Mie case.",
+      "defaults": {
+        "shape": "sphere",
+        "ka": 10,
+        "ri": 1.3,
+        "ref": 4,
+        "digits": 7,
+        "near_radius": 1,
+        "max_leaf": 64,
+        "tolerance": 0.0001,
+        "max_iterations": 1000,
+        "repeats": 2,
+        "cache_variant": "independent_solver_controls"
+      },
+      "sweeps": [
+        {"name": "baseline"},
+        {"name": "gmres_restart", "gmres_restart": [25, 50, 200]},
+        {"name": "mbj_nodes", "mbj_nodes": [25, 100, 200]},
+        {"name": "mbj_overlap", "mbj_overlap": [5, 10, 20]},
+        {"name": "solver_tolerance", "tolerance": [0.001, 0.00001, 0.000002]}
+      ]
+    },
+    {
+      "name": "farfield_grid",
+      "description": "Separate far-field angular sampling cost and quadrature convergence from the surface discretization.",
+      "defaults": {
+        "shape": "sphere",
+        "ka": 10,
+        "ri": 1.3,
+        "ref": 4,
+        "digits": 7,
+        "near_radius": 1,
+        "max_leaf": 64,
+        "tolerance": 0.0001,
+        "max_iterations": 500,
+        "cache_variant": "independent_farfield_grid"
+      },
+      "sweeps": [
+        {"ntheta": [37, 73, 181, 361]}
+      ]
+    },
+    {
+      "name": "quadrature",
+      "description": "Regular and singular quadrature convergence after fixing mesh and FMM errors.",
+      "defaults": {
+        "ka": 10,
+        "ref": 4,
+        "digits": 7,
+        "near_radius": 1,
+        "max_leaf": 64,
+        "tolerance": 0.0001,
+        "max_iterations": 500,
+        "cache_variant": "independent_quadrature"
+      },
+      "sweeps": [
+        {"shape": "sphere", "edge_mode": "smooth", "quad": [4, 7, 13], "duffy_order": [4, 6, 8]},
+        {"shape": "prism", "sides": 6, "aspect": 1.0, "edge_mode": "hdiv", "quad": [4, 7, 13], "duffy_order": [4, 6, 8]}
+      ]
+    },
+    {
+      "name": "resource_scaling",
+      "description": "Cold/warm wall time, CPU, RAM, VRAM, power and energy scaling for the production mixed-precision path.",
+      "defaults": {
+        "shape": "prism",
+        "sides": 6,
+        "aspect": 1.0,
+        "edge_mode": "hdiv",
+        "precision": "mixed",
+        "near_precision": "fp32",
+        "quad": 7,
+        "duffy_order": 4,
+        "digits": 5,
+        "digits_cap": 5,
+        "near_radius": 3,
+        "tolerance": 1e-5,
+        "max_iterations": 1000,
+        "repeats": 3
+      },
+      "sweeps": [
+        {"ka": 5, "ref": 2},
+        {"ka": 10, "ref": 3},
+        {"ka": 20, "ref": 4},
+        {"ka": 30, "ref": 5},
+        {"ka": 40, "ref": 6}
+      ]
+    },
+    {
+      "name": "memory_gates",
+      "description": "Setup-only feasibility measurements before the largest solves.",
+      "defaults": {
+        "shape": "sphere",
+        "setup_only": true,
+        "physical_check": false
+      },
+      "sweeps": [
+        {"ka": 20, "ref": 6, "ri": 1.3},
+        {
+          "ka": 40, "ref": 6, "ri": 1.3,
+          "near_radius": [3, 5],
+          "cache_variant": "fmm_radius_scale_ka40"
+        },
+        {
+          "ka": 60, "ref": 6, "ri": 1.3,
+          "near_radius": 3,
+          "cache_variant": "mesh_sphere_high_ka_r3"
+        }
+      ]
+    }
+  ]
+}

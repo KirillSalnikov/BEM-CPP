@@ -2733,7 +2733,8 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
                           cdouble k_val, int digits, int max_leaf,
                           int near_radius,
                           bool request_batch4_workspace,
-                          bool request_vector_pair)
+                          bool request_vector_pair,
+                          bool request_batch3_device)
 {
     if (initialized)
         cleanup();
@@ -3383,6 +3384,34 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
             free_batch4_workspace();
     }
     batch4_allocated = alloc_batch4;
+    batch3_device_allocated = batch4_allocated;
+    if (request_batch3_device && !batch3_device_allocated) {
+        bool allocated = true;
+        allocated = allocated &&
+            try_malloc_double(&d_charges3_re, Ns, "charges3_re");
+        allocated = allocated &&
+            try_malloc_double(&d_charges3_im, Ns, "charges3_im");
+        allocated = allocated && try_malloc_double(
+            &d_multi3_re, (size_t)n_nodes * L, "multi3_re");
+        allocated = allocated && try_malloc_double(
+            &d_multi3_im, (size_t)n_nodes * L, "multi3_im");
+        allocated = allocated && try_malloc_double(
+            &d_local3_re, (size_t)n_nodes * L, "local3_re");
+        allocated = allocated && try_malloc_double(
+            &d_local3_im, (size_t)n_nodes * L, "local3_im");
+        if (!allocated) {
+            cudaFree(d_charges3_re); d_charges3_re = nullptr;
+            cudaFree(d_charges3_im); d_charges3_im = nullptr;
+            cudaFree(d_multi3_re); d_multi3_re = nullptr;
+            cudaFree(d_multi3_im); d_multi3_im = nullptr;
+            cudaFree(d_local3_re); d_local3_re = nullptr;
+            cudaFree(d_local3_im); d_local3_im = nullptr;
+            cudaGetLastError();
+            throw std::runtime_error(
+                "minimal batch3 FMM workspace is unavailable");
+        }
+        batch3_device_allocated = true;
+    }
     pair_l2p_allocated = false;
     bool local_storage_fp32_default = false;
     bool local_m2l_fp32_default = false;
@@ -4632,7 +4661,7 @@ void HelmholtzFMM::evaluate_vector_actions_batch3_device(
     const double* charges_z_re,
     const double* charges_z_im)
 {
-    if (!batch4_allocated)
+    if (!batch3_device_allocated)
         throw std::runtime_error(
             "device vector actions require batch3 FMM buffers");
 
@@ -7090,6 +7119,7 @@ void HelmholtzFMM::cleanup()
     d_leaf_near_source_offsets_cached = nullptr;
     d_leaf_near_source_ids_cached = nullptr;
     initialized = false;
+    batch3_device_allocated = false;
     batch4_allocated = false;
     pair_l2p_allocated = false;
     pair_workspace_fields = 0;

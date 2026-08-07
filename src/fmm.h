@@ -218,6 +218,7 @@ struct HelmholtzFMM {
     double2* d_complex_tmp2;
 
     bool initialized;
+    bool batch3_device_allocated;
     bool batch4_allocated;
     bool pair_l2p_allocated;
     bool near_field_fp32;
@@ -273,7 +274,8 @@ struct HelmholtzFMM {
         d_gy4_re_cached(0), d_gy4_im_cached(0), d_gz4_re_cached(0), d_gz4_im_cached(0),
         d_gx4_re_tmp_cached(0), d_gx4_im_tmp_cached(0),
         d_complex_tmp1(0), d_complex_tmp2(0), initialized(false),
-        batch4_allocated(false), pair_l2p_allocated(false),
+        batch3_device_allocated(false), batch4_allocated(false),
+        pair_l2p_allocated(false),
         near_field_fp32(false), order_reference_depth(0),
         minimum_m2l_level(1),
         maximum_m2l_level(INT_MAX), p2p_enabled(true) {}
@@ -295,7 +297,8 @@ struct HelmholtzFMM {
               const double* sources, int n_src,
               cdouble k_val, int digits = 3, int max_leaf = 64,
               int near_radius = 1, bool request_batch4 = false,
-              bool request_vector_pair = false);
+              bool request_vector_pair = false,
+              bool request_batch3_device = false);
 
     // Evaluate: y[i] = sum_j G(r_i, r_j) * q[j]
     // charges: host array (Ns), result: host array (Nt)

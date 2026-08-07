@@ -31,6 +31,7 @@ HOST_CHECKS = \
 	$(HOST_TEST_DIR)/precond_policy_check \
 	$(HOST_TEST_DIR)/solver_policy_check \
 	$(HOST_TEST_DIR)/mesh_quality_check \
+	$(HOST_TEST_DIR)/krylov_deflation_check \
 	$(HOST_TEST_DIR)/muller_nodal_check \
 	$(HOST_TEST_DIR)/muller_dense_check \
 	$(HOST_TEST_DIR)/output_json_mesh_check
@@ -240,6 +241,9 @@ $(HOST_TEST_DIR)/solver_policy_check: $(HOST_TEST_DIR)/solver_policy_check.cpp $
 $(HOST_TEST_DIR)/mesh_quality_check: $(HOST_TEST_DIR)/mesh_quality_check.cpp $(SRCDIR)/mesh.cpp $(SRCDIR)/mesh.h
 	$(CXX) $(CXXFLAGS) -I$(SRCDIR) -o $@ $(HOST_TEST_DIR)/mesh_quality_check.cpp $(SRCDIR)/mesh.cpp
 
+$(HOST_TEST_DIR)/krylov_deflation_check: $(HOST_TEST_DIR)/krylov_deflation_check.cpp $(SRCDIR)/krylov_deflation.h
+	$(CXX) $(CXXFLAGS) -I$(SRCDIR) -o $@ $<
+
 $(HOST_TEST_DIR)/muller_nodal_check: $(HOST_TEST_DIR)/muller_nodal_check.cpp $(SRCDIR)/muller_nodal.cpp $(SRCDIR)/muller_nodal.h $(SRCDIR)/muller_duffy.cpp $(SRCDIR)/muller_duffy.h $(SRCDIR)/mesh.cpp $(SRCDIR)/mesh.h
 	$(CXX) $(CXXFLAGS) -I$(SRCDIR) -o $@ $(HOST_TEST_DIR)/muller_nodal_check.cpp $(SRCDIR)/muller_nodal.cpp $(SRCDIR)/muller_duffy.cpp $(SRCDIR)/mesh.cpp
 
@@ -254,6 +258,7 @@ host-checks: $(HOST_CHECKS)
 	$(HOST_TEST_DIR)/precond_policy_check
 	$(HOST_TEST_DIR)/solver_policy_check
 	$(HOST_TEST_DIR)/mesh_quality_check
+	$(HOST_TEST_DIR)/krylov_deflation_check
 	$(HOST_TEST_DIR)/muller_nodal_check
 	$(HOST_TEST_DIR)/muller_dense_check
 	$(HOST_TEST_DIR)/output_json_mesh_check

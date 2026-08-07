@@ -242,8 +242,17 @@ factors, quadrature, and FP64 true-residual check remain unchanged.
 For `ka=60, ref=6`, the launcher estimates about 15.34 GiB for the new
 `standard` policy and 12.02 GiB for `memory`; these estimates are conservative
 and the actual allocation depends on the FMM tree.
-It cannot make a mesh whose irreducible operator storage exceeds GPU memory
-fit; in particular, automatic `ref=7` at `ka=60` remains too large for 24 GiB.
+The sequential FMM path now allocates only the three vector-component buffers
+needed by a fixed-orientation action instead of reserving the four-field paired
+workspace. On the measured `ka=40, ref=7` H(div)-BDM1 prism this reduced the
+operator to a 16,290 MiB (15.91 GiB) peak increment for 3,225,600 unknowns;
+total board use reached 16,587 MiB (16.20 GiB), and a real FMM action and a
+checkpointed GMRES+MBJ solve both run on the 24 GiB release GPU. The solve
+reached a directly verified FMM residual of `9.842e-6` after 123 accumulated
+iterations. `MBJ(12)` uses another 2.39 GiB of host RAM, not VRAM, and loads
+from its cache in under one second. The corresponding `ka=60, ref=7`
+allocation has not yet been measured and must not be inferred from either the
+old 78.7 GiB projection or the `ka=40` result.
 Before starting, `bem` compares the estimate with both total and currently
 free VRAM. Sequential-current plans may use up to 92% of total memory while
 retaining a 0.75 GiB free-memory reserve; other plans use an 85% ceiling. It
@@ -812,6 +821,139 @@ declared cases. The optimized cold `ADDA wall / BEM wall` ratios are
 These results must not be extrapolated to large particles or orientation
 averaging.
 
+## Krylov and Preconditioner Controls
+
+The strict H(div)-BDM1 prism control at `ka=10`, `m=1.3`, `ref=4`, FP64 near
+field, `digits=7`, near radius 3, and a verified `2e-6` residual compared the
+three implemented right-MBJ Krylov methods on the same operator:
+
+| outer method | reported iterations | solve time | verified residual |
+|---|---:|---:|---:|
+| GMRES | 26 | 63.45 s | `1.923e-6` |
+| BiCGSTAB-RR | 14 | 74.35 s | `1.205e-6` |
+| CGS-RR | 16 | 84.17 s | `3.604e-7` |
+
+Reproduce one row by replacing `METHOD` with `gmres`, `bicgstab-rr`, or
+`cgs-rr`:
+
+```bash
+BEM_MULLER_FMM_DIGITS_CAP=7 bin/muller_nodal_fmm_demo \
+  --shape prism --ref 4 --ka 10 --ri 1.3 --edge-mode hdiv \
+  --quad 13 --duffy-order 6 --digits 7 --max-leaf 64 \
+  --fmm-near-radius 3 --fmm-near-fp64 --tol 2e-6 --max-iters 300 \
+  --gmres-restart 100 --krylov METHOD --residual-replacement 10 \
+  --preconditioner mbj --mbj-only --mbj-nodes 50 --no-dense-validation \
+  --out runs/krylov_METHOD.json
+```
+
+BiCGSTAB-RR and CGS-RR use about two FMM actions per reported iteration and
+therefore lose once the operator action dominates. They can be slightly faster
+on small systems, but GMRES remains the automatic production choice. The
+existing geometric coarse correction was also tested at ranks 4, 8, and 16:
+all variants retained 25 GMRES iterations while increasing solve time and
+storage. It is therefore disabled by default.
+
+An opt-in operator-informed alternative is now available. After the first
+Arnoldi cycle it extracts harmonic Ritz vectors associated with the
+smallest-magnitude eigenvalues of the right-MBJ Muller operator. The solver
+stores paired bases `U` and `C=A*U`, applies the GCRO projection at later
+restarts, and can reuse the same basis for another polarization, incident
+orientation, or resumed run. The basis file is accepted only when its operator
+signature and vector size match exactly.
+
+```bash
+./bem run --shape sphere --ka 10 --ri 2 --ref 3 --quality strict --single-stage \
+  --gmres-restart 100 --gmres-deflation-rank 32 \
+  --gmres-deflation-file runs/sphere_ka10_m2/ritz.bin \
+  --out runs/sphere_ka10_m2
+```
+
+The controlled FP64 sphere case `ka=10`, `m=2`, `ref=3`, tolerance `2e-6`
+gave the following two-polarization results. These are algorithm-development
+measurements, not a broad performance claim:
+
+| deflation rank | total iterations | solve time | speedup | Mueller L2 change |
+|---:|---:|---:|---:|---:|
+| 0 | 446 | 85.25 s | `1.000x` | reference |
+| 4 | 438 | 84.69 s | `1.007x` | `3.80e-7` |
+| 8 | 435 | 83.91 s | `1.016x` | `3.95e-7` |
+| 16 | 428 | 82.84 s | `1.029x` | `5.08e-7` |
+| 32 | 422 | 81.90 s | `1.041x` | `4.96e-7` |
+
+Loading the already-built rank-32 basis for the same operator reduced the
+first polarization from 224 iterations and 42.57 s to 200 iterations and
+38.49 s (`1.106x`). The extra storage is `2*N*rank` complex FP64 values:
+about 98.4 MiB for rank 1 at `ref=7`, or 1.54 GiB for rank 16. Deflation is
+disabled by default because its benefit is problem- and right-hand-side
+dependent. Orientation averaging uses host-managed GMRES when this option is
+enabled; the current paired GPU GMRES path does not yet support the GCRO
+projection.
+
+The orientation-reuse control used a hexagonal prism with `ka=5`, `m=2`,
+`ref=2`, 16 independently solved beta/gamma orientations, two polarizations,
+and 8 alpha samples. Sixfold rotational symmetry made these solves represent
+768 full orientation samples. Warm starts, Krylov recycling, and paired GPU
+GMRES were disabled in both runs, leaving harmonic-Ritz deflation as the only
+algorithmic difference:
+
+| orientation-average mode | iterations | total time with setup | maximum residual |
+|---|---:|---:|---:|
+| baseline GMRES | 3,161 | 179.52 s | `1.996e-6` |
+| rank-32 deflation | 2,258 | 129.40 s | `1.997e-6` |
+
+This is `1.400x` fewer iterations and `1.387x` lower wall time. The rank-32
+basis cost 0.022 s to build, 1.568 s to apply over the complete run, and
+3.09 MiB to store. The relative Frobenius change of the complete Mueller
+matrix was `3.63e-7`. This is a same-discretization solver comparison, not an
+absolute surface-convergence claim for `ref=2`.
+The [benchmark report](benchmarks/ritz_orientation_20260807/REPORT.md) includes
+the per-orientation CSV, aggregate JSON, and comparison plot.
+
+## Reproducible Convergence and Resource Study
+
+The completed 185-case study separates surface-discretization, quadrature,
+FMM, iterative-solver, precision, and output-angle errors. It records true
+residuals, complete wall time, CPU/RAM/swap/disk I/O, GPU/VRAM/power/energy,
+cache state, mesh sizes, basis counts, and points per shortest wavelength.
+The original production series reached 806,400 unknowns and 19.67 GiB VRAM
+with the former paired workspace. A separate post-study memory control now
+reaches `ka=40, ref=7`, 3,225,600 unknowns, at a measured 16,290 MiB
+(15.91 GiB) peak increment by using the minimal three-component workspace.
+The old 78.7 GiB linear
+projection is retained only as evidence that the former storage policy did not
+scale; it is not a limit of the current implementation.
+An independent FP64 H(div)-BDM1 series with `digits=7`, near radius 3, and
+true residuals below `2e-6` refined both a regular prism and a cube from
+`ref=2` through `ref=5`. Comparing each mesh with the next one confirms a 1%
+Mueller-matrix target at `ref=3` for the prism (5.63 points per shortest
+interior wavelength) and at `ref=4` for the cube (6.78 points per shortest
+interior wavelength). The `ref=4 -> 5` full-matrix changes are 0.0163% and
+0.166%, respectively. Thus `ref` cannot be selected from particle size alone;
+shape and edge resolution matter. The plot is
+[`mesh_polyhedra_hdiv_strict.png`](studies/bem_convergence_20260805/generated/mesh_polyhedra_hdiv_strict.png).
+The Russian scientific article and the step-by-step protocol are in
+[`studies/bem_convergence_20260805`](studies/bem_convergence_20260805).
+The generated `production_resource_scaling.csv/.json` files contain the five
+cold/warm prism aggregates, while `production_resource_limit.json` records the
+explicit next-ref memory projection and its measured assumptions.
+
+```bash
+python3 -m pip install -r requirements-analysis.txt
+python3 scripts/run_convergence_study.py --list
+python3 scripts/run_convergence_study.py --phase calibration --dry-run
+python3 scripts/run_convergence_study.py --phase memory_gates --interval 1
+python3 scripts/run_convergence_study.py --phase mesh_sphere_m13 --interval 1
+python3 scripts/run_convergence_study.py --phase mesh_polyhedra_hdiv_strict --interval 1
+python3 scripts/analyze_convergence_study.py
+studies/bem_convergence_20260805/build_article.sh
+```
+
+Every newly run case is resumable and stores its exact command, Git state,
+binary/cache identity, iteration history, physical output, and sampled resources. A large
+physical case is blocked until its matching setup-only memory gate succeeds.
+The generated `automatic_recommendations.json` remains explicitly interim
+until the transfer series over `ka`, refractive index, and shape is complete.
+
 ## Documentation
 
 - [`MANUAL.md`](MANUAL.md): operational manual.
@@ -821,6 +963,10 @@ averaging.
 - [`docs/muller_pfft.md`](docs/muller_pfft.md): pFFT-FGMRES implementation.
 - [`docs/preconditioner_comparison.md`](docs/preconditioner_comparison.md):
   classical PMCHWT preconditioners.
+- [`studies/bem_convergence_20260805/PROTOCOL.md`](studies/bem_convergence_20260805/PROTOCOL.md):
+  reproducible convergence and resource protocol.
+- [`studies/bem_convergence_20260805/article_ru.pdf`](studies/bem_convergence_20260805/article_ru.pdf):
+  detailed Russian study article.
 
 Rebuild the PDF manual with:
 

@@ -55,6 +55,8 @@ struct MullerFmmOperator {
     bool gpu_operator_assembly = false;
     bool gpu_operator_assembly_requested = false;
     bool fmm_near_fp32 = false;
+    int fmm_digits_requested = 5;
+    int fmm_digits_effective = 5;
     int fmm_near_radius = 3;
     bool banded_fmm = false;
     bool banded_fmm_middle = false;

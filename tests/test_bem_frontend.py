@@ -357,6 +357,22 @@ def main() -> int:
         standard_same_mesh["estimate"]["gpu_memory_gib"]
     )
 
+    memory_ref7 = plan(
+        "run", "--shape", "prism", "--ka", "40", "--ri", "1.3",
+        "--quality", "memory", "--ref", "7",
+        "--out", "/tmp/bem-frontend-memory-ref7-plan",
+    )
+    assert memory_ref7["kind"] == "run"
+    assert memory_ref7["estimate"]["system_dofs"] == 3_225_600
+    assert memory_ref7["estimate"]["gpu_memory_gib"] == 16.88
+    assert memory_ref7["effective_parameters"]["solver"] == "fmm_mbj"
+    assert memory_ref7["effective_parameters"]["mbj_nodes"] == 12
+    assert "--pfft-fgmres" not in memory_ref7["command"]
+    assert command_value(memory_ref7, "--mbj-nodes") == "12"
+    assert memory_ref7["runtime"]["environment"][
+        "BEM_FMM_PAIR_CURRENTS"
+    ] == "0"
+
     small = plan(
         "run", "--shape", "sphere", "--ka", "1", "--ri", "1.3",
         "--out", "/tmp/bem-frontend-small-plan",
@@ -427,7 +443,10 @@ def main() -> int:
         "--ref", "3", "--solver", "fmm", "--tol", "2e-6",
         "--quad", "13", "--duffy-order", "7", "--digits", "6",
         "--ntheta", "91", "--max-iters", "777", "--gmres-restart", "64",
-        "--max-leaf", "48", "--mbj-nodes", "72", "--mbj-overlap", "4",
+        "--gmres-deflation-rank", "16",
+        "--gmres-deflation-file", "/tmp/bem-frontend-ritz.bin",
+        "--max-leaf", "48", "--fmm-near-radius", "4",
+        "--mbj-nodes", "72", "--mbj-overlap", "4",
         "--out", "/tmp/bem-frontend-overrides-plan",
     )
     assert overrides["inputs"]["refinement"] == 3
@@ -437,13 +456,42 @@ def main() -> int:
     assert command_value(overrides, "--tol") == "2.0e-06"
     assert command_value(overrides, "--quad") == "13"
     assert command_value(overrides, "--digits") == "6"
+    assert command_value(overrides, "--fmm-near-radius") == "4"
     assert command_value(overrides, "--ntheta") == "91"
     assert command_value(overrides, "--mbj-nodes") == "72"
+    assert command_value(overrides, "--gmres-deflation-rank") == "16"
+    assert command_value(overrides, "--gmres-deflation-file") == (
+        "/tmp/bem-frontend-ritz.bin"
+    )
+    assert overrides["effective_parameters"]["gmres_deflation_rank"] == 16
     assert command_value(overrides, "--mbj-cache").endswith(
         "/mbj_n72_o4.cache"
     )
-    for option in ("--tol", "--quad", "--digits", "--ntheta", "--mbj-nodes"):
+    for option in (
+        "--tol", "--quad", "--digits", "--fmm-near-radius",
+        "--ntheta", "--mbj-nodes",
+    ):
         assert overrides["command"].count(option) == 1
+    assert overrides["effective_parameters"]["fmm_near_radius"] == 4
+
+    auto_deflation = plan(
+        "run", "--shape", "sphere", "--ka", "10", "--ri", "2",
+        "--ref", "3", "--single-stage", "--gmres-restart", "100",
+        "--gmres-deflation-rank", "8",
+        "--out", "/tmp/bem-frontend-auto-deflation-plan",
+    )
+    assert auto_deflation["effective_parameters"]["solver"] == "fmm_mbj"
+    assert "--pfft-fgmres" not in auto_deflation["command"]
+    assert command_value(auto_deflation, "--gmres-deflation-rank") == "8"
+
+    invoke(
+        "run", "--shape", "sphere", "--ka", "2", "--ri", "1.3",
+        "--fmm-near-radius", "7", "--dry-run", expected=2,
+    )
+    invoke(
+        "run", "--shape", "sphere", "--ka", "2", "--ri", "1.3",
+        "--fmm-near-radius", "0", "--dry-run", expected=2,
+    )
 
     pfft_overrides = plan(
         "run", "--shape", "prism", "--ka", "10", "--ri", "1.3",

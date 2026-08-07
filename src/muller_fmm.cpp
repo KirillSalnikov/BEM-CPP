@@ -1301,6 +1301,9 @@ void MullerFmmOperator::init(
         std::chrono::steady_clock::now();
     cleanup();
     use_pfft = use_pfft_value;
+    fmm_digits_requested = fmm_digits;
+    fmm_digits_effective = std::min(
+        fmm_digits, muller_fmm_digits_cap());
 #ifdef BEM_MULLER_GPU_ASSEMBLY_DEFAULT
     gpu_operator_assembly_requested = true;
 #else
@@ -1527,8 +1530,7 @@ void MullerFmmOperator::init(
             common_grid_spacing, pfft_correction_radius_cells);
 #endif
     } else {
-        const int stable_fmm_digits =
-            std::min(fmm_digits, muller_fmm_digits_cap());
+        const int stable_fmm_digits = fmm_digits_effective;
         const char* pair_currents =
             std::getenv("BEM_FMM_PAIR_CURRENTS");
         const bool request_pair_workspace =
@@ -1575,12 +1577,14 @@ void MullerFmmOperator::init(
             points.data(), point_count,
             points.data(), point_count,
             k_exterior, stable_fmm_digits, max_leaf,
-            fmm_near_radius, true, request_pair_workspace);
+            fmm_near_radius, request_pair_workspace,
+            request_pair_workspace, true);
         fmm_interior.init(
             points.data(), point_count,
             points.data(), point_count,
             k_interior, stable_fmm_digits, max_leaf,
-            fmm_near_radius, true, request_pair_workspace);
+            fmm_near_radius, request_pair_workspace,
+            request_pair_workspace, true);
         fmm_exterior.near_field_fp32 = fmm_near_fp32;
         fmm_interior.near_field_fp32 = fmm_near_fp32;
         if (banded_fmm) {
@@ -2626,6 +2630,8 @@ double MullerFmmOperator::switch_pfft_to_fmm(
     const int point_count = static_cast<int>(quadrature.size());
     const int stable_fmm_digits =
         std::min(fmm_digits, muller_fmm_digits_cap());
+    fmm_digits_requested = fmm_digits;
+    fmm_digits_effective = stable_fmm_digits;
     banded_fmm = banded_fmm_split_depth > 0;
     banded_fmm_middle = false;
     if (banded_fmm && gpu_operator_assembly_requested) {
@@ -2680,14 +2686,16 @@ double MullerFmmOperator::switch_pfft_to_fmm(
             points.data(), point_count,
             points.data(), point_count,
             k_exterior, stable_fmm_digits, max_leaf,
-            fmm_near_radius, true, request_pair_workspace);
+            fmm_near_radius, request_pair_workspace,
+            request_pair_workspace, true);
     };
     const auto initialize_interior = [&]() {
         fmm_interior.init(
             points.data(), point_count,
             points.data(), point_count,
             k_interior, stable_fmm_digits, max_leaf,
-            fmm_near_radius, true, request_pair_workspace);
+            fmm_near_radius, request_pair_workspace,
+            request_pair_workspace, true);
     };
     const char* interior_first_environment =
         std::getenv("BEM_FMM_INTERIOR_FIRST");

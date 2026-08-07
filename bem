@@ -325,6 +325,11 @@ def estimate_memory_gib(profile: Profile, dofs: int, pfft_fgmres: bool) -> float
     if profile.name == "preview":
         # Measured ka=80/ref=6 peak with one interior FP32 phase table.
         return 22.7
+    if profile.name == "memory" and not pfft_fgmres:
+        # Minimal batch3 measurements on the release machine:
+        # Peak increments: ref6/0.806M DOFs 5140 MiB; ref7/3.226M 16290 MiB.
+        # This envelope is slightly conservative at both measured points.
+        return 1.5 + dofs * (5 * 1024) / (1024.0 ** 3)
     # Conservative empirical envelope from the 24 GiB release-machine runs.
     if profile.sequential_currents and pfft_fgmres:
         # Sequential electric/magnetic FMM actions avoid both mixed and
@@ -431,11 +436,18 @@ def operator_cache_directory(
     return root / "operators" / "v2" / key
 
 
-def use_pfft_fgmres(args: argparse.Namespace, profile: Profile) -> bool:
+def use_pfft_fgmres(
+    args: argparse.Namespace, profile: Profile, dofs: int | None = None,
+) -> bool:
     if args.solver == "fmm":
         return False
     if args.solver == "pfft":
         return True
+    if profile.name == "memory" and dofs is not None and dofs >= 2_000_000:
+        # The minimal three-component FMM workspace is measured at 16290 MiB
+        # for the 3.23M-unknown ref7 prism.  The pFFT/banded path needs extra
+        # workspaces and is therefore not the safe automatic choice here.
+        return False
     return profile.solver_policy == "adaptive_pfft" and args.ka >= 10.0
 
 
@@ -492,7 +504,13 @@ def default_maximum_iterations(args: argparse.Namespace, profile: Profile) -> in
     return profile.maximum_iterations
 
 
-def default_mbj_nodes(args: argparse.Namespace, profile: Profile) -> int:
+def default_mbj_nodes(
+    args: argparse.Namespace, profile: Profile, dofs: int | None = None,
+) -> int:
+    if profile.name == "memory" and dofs is not None and dofs >= 2_000_000:
+        # ref7: MBJ12 uses 2.39 GiB of host RAM and loads from cache in <1 s.
+        # MBJ50 would be about four times larger and much slower to assemble.
+        return 12
     if profile.name in {"fast", "standard", "memory"} and abs(args.ri) >= 2.5:
         return 100
     return 50
@@ -518,6 +536,7 @@ def orientation_parameters(
     profile: Profile,
     output: Path,
     pfft_fgmres: bool,
+    force_host_gmres: bool = False,
 ) -> tuple[list[str], dict[str, Any]]:
     adaptive_override = any(
         value is not None
@@ -638,7 +657,12 @@ def orientation_parameters(
     ]
     if args.orient_zero_start:
         arguments.append("--orient-zero-start")
-    paired = selected(args, "orient_paired_gpu_gmres", not pfft_fgmres)
+    paired = selected(
+        args, "orient_paired_gpu_gmres",
+        not pfft_fgmres and not force_host_gmres,
+    )
+    if force_host_gmres and paired:
+        fail("GMRES deflation requires host GMRES during orientation averaging")
     if pfft_fgmres and paired:
         fail("paired GPU GMRES is incompatible with pFFT-FGMRES averaging")
     arguments.append(
@@ -668,19 +692,35 @@ def make_single_plan(
     binary, build_target = binary_for(args, profile)
     edge_mode = "smooth" if args.shape == "sphere" else "hdiv"
     max_leaf = effective_max_leaf(args, profile)
-    pfft_fgmres = use_pfft_fgmres(args, profile)
+    dofs = estimate_dofs(args, refinement)
+    pfft_fgmres = use_pfft_fgmres(args, profile, dofs)
     tolerance = selected(args, "tolerance", profile.tolerance)
     quadrature = selected(args, "quadrature", profile.quadrature)
     duffy_order = selected(args, "duffy_order", profile.duffy_order)
     fmm_digits = selected(args, "fmm_digits", profile.fmm_digits)
+    fmm_near_radius = selected(args, "fmm_near_radius", 3)
     maximum_iterations = selected(
         args, "maximum_iterations", default_maximum_iterations(args, profile)
     )
     gmres_restart = selected(args, "gmres_restart", profile.gmres_restart)
+    gmres_deflation_rank = selected(args, "gmres_deflation_rank", 0)
+    if gmres_deflation_rank < 0 or gmres_deflation_rank > 32:
+        fail("--gmres-deflation-rank must be in [0,32]")
+    if gmres_deflation_rank and gmres_restart <= gmres_deflation_rank + 1:
+        fail("--gmres-restart must exceed GMRES deflation rank by at least 2")
+    if gmres_deflation_rank and pfft_fgmres:
+        if args.solver == "auto":
+            pfft_fgmres = False
+        else:
+            fail(
+                "GMRES deflation is currently available only with the "
+                "FMM+MBJ solver"
+            )
     ntheta = selected(args, "ntheta", profile.ntheta)
-    mbj_nodes = selected(args, "mbj_nodes", default_mbj_nodes(args, profile))
+    mbj_nodes = selected(
+        args, "mbj_nodes", default_mbj_nodes(args, profile, dofs)
+    )
     mbj_overlap = selected(args, "mbj_overlap", 0)
-    dofs = estimate_dofs(args, refinement)
     pfft_inner_tolerance = selected(
         args,
         "pfft_inner_tolerance",
@@ -723,7 +763,7 @@ def make_single_plan(
         "--duffy-order", str(duffy_order),
         "--digits", str(fmm_digits),
         "--max-leaf", str(max_leaf),
-        "--fmm-near-radius", "3",
+        "--fmm-near-radius", str(fmm_near_radius),
         "--tol", f"{tolerance:.1e}",
         "--max-iters", str(maximum_iterations),
         "--gmres-restart", str(gmres_restart),
@@ -739,6 +779,17 @@ def make_single_plan(
         pfft_correction_radius,
         pfft_grid_safety,
     )
+    gmres_deflation_file: Path | None = None
+    if gmres_deflation_rank:
+        gmres_deflation_file = (
+            Path(args.gmres_deflation_file).expanduser().resolve()
+            if args.gmres_deflation_file
+            else output / "gmres_deflation.bin"
+        )
+        command += [
+            "--gmres-deflation-rank", str(gmres_deflation_rank),
+            "--gmres-deflation-file", str(gmres_deflation_file),
+        ]
     if profile.name == "preview":
         command += ["--trust-final-projected-residual"]
     command += [
@@ -772,7 +823,8 @@ def make_single_plan(
     orientation: dict[str, Any] | None = None
     if kind == "average":
         orientation_arguments, orientation = orientation_parameters(
-            args, profile, output, pfft_fgmres
+            args, profile, output, pfft_fgmres,
+            force_host_gmres=gmres_deflation_rank > 0,
         )
         orientation.update({
             "operator_setup_reused": True,
@@ -841,8 +893,17 @@ def make_single_plan(
             "quadrature": quadrature,
             "duffy_order": duffy_order,
             "fmm_digits": fmm_digits,
+            "fmm_near_radius": fmm_near_radius,
             "maximum_iterations": maximum_iterations,
             "gmres_restart": gmres_restart,
+            "gmres_deflation_rank": gmres_deflation_rank,
+            "gmres_deflation_file": (
+                str(gmres_deflation_file)
+                if gmres_deflation_file is not None else None
+            ),
+            "gmres_deflation_storage_gib": (
+                2.0 * dofs * gmres_deflation_rank * 16.0 / (1024.0 ** 3)
+            ),
             "ntheta": ntheta,
             "mbj_nodes": mbj_nodes,
             "mbj_overlap": mbj_overlap,
@@ -1040,7 +1101,10 @@ def make_two_stage_plan(
         "maximum_iterations",
         default_maximum_iterations(args, profile),
     )
-    mbj_nodes = selected(args, "mbj_nodes", default_mbj_nodes(args, profile))
+    dofs = estimate_dofs(args, refinement)
+    mbj_nodes = selected(
+        args, "mbj_nodes", default_mbj_nodes(args, profile, dofs)
+    )
     mbj_overlap = selected(args, "mbj_overlap", 0)
     cache_directory = operator_cache_directory(
         args,
@@ -1472,6 +1536,8 @@ def use_automatic_acceleration(
     refinement: int,
 ) -> bool:
     dofs = estimate_dofs(args, refinement)
+    if profile.name == "memory" and dofs >= 2_000_000:
+        return False
     return (
         not args.single_stage
         and profile.name in {"quick", "standard", "memory"}
@@ -1533,6 +1599,7 @@ def create_plan(args: argparse.Namespace, kind: str) -> dict[str, Any]:
             args, "maximum_iterations", profile.maximum_iterations
         ),
         "--max-leaf": selected(args, "max_leaf", profile.max_leaf),
+        "--fmm-near-radius": selected(args, "fmm_near_radius", 3),
         "--mbj-nodes": selected(args, "mbj_nodes", 50),
         "--pfft-inner-tol": selected(args, "pfft_inner_tolerance", 4.0e-2),
         "--pfft-outer-restart": selected(args, "pfft_outer_restart", 40),
@@ -1551,6 +1618,8 @@ def create_plan(args: argparse.Namespace, kind: str) -> dict[str, Any]:
         fail("adaptive fast requires --ntheta at least 3 for angular integrals")
     if selected(args, "gmres_restart", profile.gmres_restart) < 0:
         fail("--gmres-restart must be non-negative")
+    if not 1 <= selected(args, "fmm_near_radius", 3) <= 6:
+        fail("--fmm-near-radius must be in [1,6]")
     if selected(args, "mbj_overlap", 0) < 0:
         fail("--mbj-overlap must be non-negative")
     if selected(args, "pfft_correction_radius", 0.0) < 0.0:
@@ -3003,7 +3072,20 @@ def add_calculation_arguments(parser: argparse.ArgumentParser, average: bool) ->
     parser.add_argument("--ntheta", type=int)
     parser.add_argument("--max-iters", dest="maximum_iterations", type=int)
     parser.add_argument("--gmres-restart", type=int)
+    parser.add_argument(
+        "--gmres-deflation-rank", type=int,
+        help="harmonic-Ritz GCRO deflation rank (0 disables it)",
+    )
+    parser.add_argument(
+        "--gmres-deflation-file",
+        help="persistent operator deflation basis",
+    )
     parser.add_argument("--max-leaf", type=int)
+    parser.add_argument(
+        "--fmm-near-radius",
+        type=int,
+        help="FMM neighboring-cell radius evaluated by the direct near field",
+    )
     parser.add_argument("--mbj-nodes", type=int)
     parser.add_argument("--mbj-overlap", type=int)
     parser.add_argument("--pfft-inner-tol", dest="pfft_inner_tolerance", type=float)
