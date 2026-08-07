@@ -1,8 +1,9 @@
 # BEM-CPP Operational Manual
 
-This manual describes release `0.1.0-alpha.5`. Automatic hierarchy selection
-is available for large built-in meshes, but published speed and physical-error
-claims remain limited to the explicitly documented regular-prism controls.
+This manual describes release `0.1.0-alpha.6`. Automatic hierarchy selection,
+operator-informed harmonic-Ritz deflation, and the reproducible convergence
+study are included. Published speed and physical-error claims remain limited
+to the explicitly documented controls.
 For every new shape, refractive index, or refinement range, compare two meshes
 before treating the result as publication quality.
 
@@ -324,6 +325,42 @@ target or the fixed outer-iteration limit has been exhausted. The result JSON
 then records `fmm_residual_verified=false` and preserves the projected value;
 normal profiles never enable this option. The launcher uses it only in the
 case-specific `preview` profile described below.
+
+### 4.5 Harmonic-Ritz deflation
+
+`--gmres-deflation-rank K` enables an operator-informed low-rank correction
+for ordinary right-MBJ GMRES. After the first Arnoldi cycle, the solver
+extracts harmonic Ritz vectors associated with the smallest-magnitude modes
+of the right-preconditioned full FMM operator. It stores paired column bases
+`U` and `C=A*U`, orthonormalizes `C`, and projects later GMRES cycles onto the
+orthogonal complement of `span(C)`. The corresponding solution correction is
+taken from `span(U)`.
+
+`--gmres-deflation-file FILE` atomically stores this basis. A file is loaded
+only when its operator signature, vector size, and requested rank are
+compatible. It can therefore be reused safely for another polarization or
+incident orientation of the same particle and material. It must not be copied
+between different meshes, FMM controls, materials, or geometries.
+
+The current implementation requires ordinary FMM+MBJ GMRES and
+`--gmres-restart K+2` or larger. It is incompatible with pFFT-FGMRES and uses
+host-managed GMRES during orientation averaging; the paired GPU-GMRES path is
+disabled automatically. Rank zero preserves the former path exactly.
+
+Example:
+
+```bash
+./bem average --shape prism --ka 5 --ri 2 --ref 2 \
+  --quality strict --single-stage --fixed-grid \
+  --alpha 8 --beta 4 --gamma 4 \
+  --gmres-restart 100 --gmres-deflation-rank 32 \
+  --gmres-deflation-file runs/prism_ka5_m2/ritz.bin \
+  --out runs/prism_ka5_m2
+```
+
+On the controlled 16-base-orientation prism run described in Section 9,
+rank 32 reduced complete time from 179.52 s to 129.40 s. This does not imply
+the same acceleration for a single right-hand side or a different operator.
 
 ## 5. Precision
 
@@ -742,6 +779,16 @@ rank-8 case reduced 312 to 298 iterations and solve time from 1.653 s to
 path because they require a flexible or coarse application not implemented by
 the paired GPU solver.
 
+The alpha.6 harmonic-Ritz control used a hexagonal prism with `ka=5`, `m=2`,
+`ref=2`, 16 independently solved beta/gamma orientations, two polarizations,
+8 alpha samples, and sixfold symmetry, representing 768 complete orientation
+samples. Warm starts, the older recycling basis, and paired GPU-GMRES were
+disabled in both variants. Rank-32 deflation reduced 3,161 iterations to 2,258
+and complete time from 179.52 s to 129.40 s (`1.387x`). Maximum true residuals
+were `1.996e-6` and `1.997e-6`; the complete Mueller matrices differed by
+`3.63e-7` in relative Frobenius norm. This is a same-discretization solver
+comparison, not a surface-convergence claim for `ref=2`.
+
 The orientation checkpoint stores accumulated weights, Mueller values, timing,
 the next orientation, and previous solutions. It is replaced atomically after
 every completed base orientation.
@@ -847,6 +894,8 @@ elements and integrated quantities.
 | `--tol F` | requested relative residual |
 | `--max-iters N` | maximum outer iterations |
 | `--gmres-restart N` | restart size; zero requests unrestarted mode |
+| `--gmres-deflation-rank N` | harmonic-Ritz deflation rank; zero disables it |
+| `--gmres-deflation-file FILE` | persistent operator-validated `U,C=A*U` basis |
 | `--mbj-nodes N` | nominal MBJ block size |
 | `--mbj-overlap N` | Schwarz overlap |
 | `--pfft-fgmres` | pFFT-preconditioned FGMRES |

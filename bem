@@ -1662,7 +1662,7 @@ def create_plan(args: argparse.Namespace, kind: str) -> dict[str, Any]:
             args, profile, output, refinement
         )
 
-    if not profile.two_meshes:
+    if not profile.two_meshes or args.single_stage:
         return make_single_plan(args, profile, output, refinement, kind)
 
     coarse = make_single_plan(args, profile, output / "coarse", refinement, kind)

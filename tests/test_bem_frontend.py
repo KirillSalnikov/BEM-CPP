@@ -484,6 +484,20 @@ def main() -> int:
     assert "--pfft-fgmres" not in auto_deflation["command"]
     assert command_value(auto_deflation, "--gmres-deflation-rank") == "8"
 
+    strict_single_stage = plan(
+        "average", "--shape", "prism", "--ka", "5", "--ri", "2",
+        "--ref", "2", "--quality", "strict", "--single-stage",
+        "--fixed-grid", "--alpha", "8", "--beta", "4", "--gamma", "4",
+        "--gmres-restart", "100", "--gmres-deflation-rank", "32",
+        "--out", "/tmp/bem-frontend-strict-single-stage-deflation",
+    )
+    assert strict_single_stage["kind"] == "average"
+    assert strict_single_stage["inputs"]["refinement"] == 2
+    assert strict_single_stage["effective_parameters"]["solver"] == "fmm_mbj"
+    assert command_value(
+        strict_single_stage, "--gmres-deflation-rank"
+    ) == "32"
+
     invoke(
         "run", "--shape", "sphere", "--ka", "2", "--ri", "1.3",
         "--fmm-near-radius", "7", "--dry-run", expected=2,

@@ -5,6 +5,8 @@ Semantic Versioning while its public interfaces are stabilizing.
 
 ## Unreleased
 
+## [0.1.0-alpha.6] - 2026-08-07
+
 ### Added
 
 - added a reproducible ten-case BEM/ADDA benchmark with three wall-time
@@ -23,7 +25,17 @@ Semantic Versioning while its public interfaces are stabilizing.
   atomic final-result publication, and an automatic `1e-5` standard fallback;
 - keep FMM/pFFT operators, MBJ factors, and Krylov solutions resident across
   the adaptive residual ladder, and evaluate both fixed-orientation far fields
-  in one OpenMP-parallel element traversal.
+  in one OpenMP-parallel element traversal;
+- added opt-in harmonic-Ritz deflation for right-MBJ GMRES, persistent
+  operator-validated `U,C=A*U` bases, and GCRO-like projection across
+  polarizations and incident orientations;
+- added a reproducible 185-case convergence and resource study, its Russian
+  article, resource profiler, resumable runner, analysis tools, and generated
+  figures;
+- added a controlled 768-sample orientation-average benchmark. Rank-32
+  deflation reduced 3,161 iterations to 2,258 and complete time from 179.52 s
+  to 129.40 s (`1.387x`) while changing the complete Mueller matrix by
+  `3.63e-7` in relative Frobenius norm.
 
 ### Fixed
 
@@ -33,6 +45,16 @@ Semantic Versioning while its public interfaces are stabilizing.
   remove stale speedups based on stored, non-comparable ADDA timings;
 - count quadratic P2 edge-midpoint nodes when selecting automatic surface
   refinement and compare differing angular grids on the coarser native grid.
+
+### Validation
+
+- all native and Python host audits pass, including physical Mueller checks,
+  release metadata, command-line documentation freshness, and the synthetic
+  harmonic-Ritz subspace test;
+- the orientation benchmark reached a maximum true residual of `1.997e-6`;
+  the reported deflation time includes basis construction and all projection
+  applications;
+- no equal-accuracy BEM speedup over ADDA is claimed by this release.
 
 ## [0.1.0-alpha.5] - 2026-08-03
 
@@ -147,3 +169,4 @@ Semantic Versioning while its public interfaces are stabilizing.
 [0.1.0-alpha.3]: https://github.com/KirillSalnikov/BEM-CPP/releases/tag/v0.1.0-alpha.3
 [0.1.0-alpha.4]: https://github.com/KirillSalnikov/BEM-CPP/releases/tag/v0.1.0-alpha.4
 [0.1.0-alpha.5]: https://github.com/KirillSalnikov/BEM-CPP/releases/tag/v0.1.0-alpha.5
+[0.1.0-alpha.6]: https://github.com/KirillSalnikov/BEM-CPP/releases/tag/v0.1.0-alpha.6

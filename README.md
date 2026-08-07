@@ -1,15 +1,16 @@
 # BEM-CPP
 
-Current release: `0.1.0-alpha.5`. The command-line and file formats may still
+Current release: `0.1.0-alpha.6`. The command-line and file formats may still
 change before `1.0`; numerical results must include independent convergence
 checks described below.
 
-This release includes the automatic hierarchy and restart work from alpha.2,
-the CUDA-independent host audit from alpha.3, and a release audit that works
-both in a Git checkout and in the published source archive. The primary manual
-is checked against the current `./bem` interface. The experimental banded-pFFT
-averaging path remains opt-in because validation found it slower than the
-default paired GPU solve.
+Alpha.6 adds operator-informed harmonic-Ritz deflation for repeated
+right-hand sides, a reproducible convergence/resource study, and persistent
+operator-validated deflation bases. A controlled orientation average measured
+`1.387x` complete wall-time acceleration with a `3.63e-7` relative change in
+the full Mueller matrix. Deflation remains opt-in because the benefit depends
+on the operator and right-hand-side family. The release does not claim an
+equal-accuracy BEM speedup over ADDA.
 
 GPU-accelerated boundary-element solvers for electromagnetic scattering by
 homogeneous dielectric particles. The repository contains two independent
@@ -28,6 +29,7 @@ regression tests, OBJ workflows, and neural GraphSAI experiments.
 - GPU FMM gradient and Hessian kernels;
 - pFFT as an inner operator for flexible GMRES;
 - Morton block-Jacobi (MBJ) right preconditioning;
+- optional harmonic-Ritz/GCRO-like deflation across repeated right-hand sides;
 - FP32 FFT/near-field work with FP64 Krylov algebra and residual norms;
 - P2 nodal currents on smooth surfaces;
 - H(div)-BDM1 currents on prisms, cubes, and sharp OBJ meshes;
@@ -781,7 +783,7 @@ examples/run_small_sphere_mie_check.sh
 ```
 
 The measured alpha-release reference and its acceptance thresholds are stored
-in [`reference/v0.1.0-alpha.5/small_sphere.json`](reference/v0.1.0-alpha.5/small_sphere.json).
+in [`reference/v0.1.0-alpha.6/small_sphere.json`](reference/v0.1.0-alpha.6/small_sphere.json).
 The same directory contains the raw solver output, validation log, and their
 SHA-256 checksums.
 

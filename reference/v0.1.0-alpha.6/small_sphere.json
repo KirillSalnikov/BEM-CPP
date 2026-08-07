@@ -1,0 +1,32 @@
+{
+  "case": "mixed-precision Muller sphere smoke and Mie gate",
+  "software_version": "0.1.0-alpha.6",
+  "parameters": {
+    "shape": "sphere",
+    "refinement": 2,
+    "ka": 1.0,
+    "relative_refractive_index": 1.3,
+    "residual_tolerance": 1e-5,
+    "scattering_angles": 73
+  },
+  "acceptance": {
+    "maximum_true_residual": 2e-5,
+    "maximum_m11_solid_angle_relative_l2": 0.04,
+    "maximum_main_normalized_mueller_error": 0.05
+  },
+  "observed_on_release_machine": {
+    "maximum_true_residual": 7.705e-6,
+    "m11_solid_angle_relative_l2": 0.032276,
+    "main_normalized_mueller_error": 0.043028,
+    "m11_forward_bem_over_mie": 0.98094978
+  },
+  "machine": {
+    "gpu": "NVIDIA GeForce RTX 3090 Ti",
+    "gpu_memory_mib": 24564,
+    "gpu_driver": "595.84",
+    "cuda": "12.0.140",
+    "compiler": "GCC 12.4.0",
+    "operating_system": "Ubuntu 24.04"
+  },
+  "command": "OUT=runs/release_small_sphere_alpha6 OMP_NUM_THREADS=4 examples/run_small_sphere_mie_check.sh"
+}
