@@ -1,0 +1,21 @@
+{
+  "method": "analytic_full_SO3_Mackowski_GSF",
+  "Euler_quadrature_nodes": 0,
+  "all_16_mueller_entries": true,
+  "order": 48,
+  "mode_count": 4800,
+  "reciprocity_relative_defect": 0.0,
+  "cyclic_relative_defect": 0.0,
+  "reciprocity_projection_applied": false,
+  "reciprocal_partner_passes": 1,
+  "cyclic_order": 6,
+  "T_storage_precision": "fp32",
+  "contraction_precision": "fp64",
+  "threads": 4,
+  "estimated_peak_ram_gib": 0.57952880859375,
+  "contractions_s": 3.7863626439993823,
+  "end_to_end_s": 4.191621429001316,
+  "source": "https://github.com/dmckwski/MSTM/tree/a0c982121cf9ac352531f4816639a07d814385bd",
+  "energy_integral_relative_error": 1.080779715810684e-09,
+  "wall_s": 4.219515148999562
+}

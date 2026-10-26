@@ -23,6 +23,18 @@ namespace {
 
 using cdouble = std::complex<double>;
 
+bool multilevel_device_enabled() {
+    const char* multilevel=std::getenv("BEM_FMM_MULTILEVEL");
+    const char* device=std::getenv("BEM_FMM_MULTILEVEL_GPU_ASSEMBLY");
+    return multilevel && std::strcmp(multilevel,"0")!=0 &&
+        device && std::strcmp(device,"0")!=0;
+}
+
+bool multilevel_pair_enabled() {
+    const char* value=std::getenv("BEM_FMM_MULTILEVEL_PAIR");
+    return multilevel_device_enabled() && value && std::strcmp(value,"0")!=0;
+}
+
 struct ElementAdjacency {
     int shared_count = 0;
     int test_local[3] = {-1, -1, -1};
@@ -1330,7 +1342,7 @@ void MullerFmmOperator::init(
     banded_fmm_middle_max_leaf = banded_middle_leaf_environment
         ? std::max(1, std::atoi(banded_middle_leaf_environment))
         : std::max(1, banded_fmm_coarse_max_leaf / 8);
-    if (banded_fmm && gpu_operator_assembly_requested) {
+    if (banded_fmm && gpu_operator_assembly_requested && !multilevel_device_enabled()) {
         std::fprintf(
             stderr,
             "  [Muller] Banded FMM uses host Galerkin assembly "
@@ -1547,6 +1559,12 @@ void MullerFmmOperator::init(
             1, std::numeric_limits<int>::max(), true);
         fmm_interior.configure_interaction_band(
             1, std::numeric_limits<int>::max(), true);
+        // Contracted curl/Hessian actions need three charge/expansion
+        // channels, without four complete scalar derivative workspaces.
+        const char* minimal_environment = std::getenv(
+            "BEM_FMM_BANDED_MINIMAL_WORKSPACE");
+        const bool minimal_bands = minimal_environment == nullptr ||
+            std::strcmp(minimal_environment, "0") != 0;
         if (banded_fmm) {
             const double fine_depth_ratio =
                 2.0 * point_count / std::max(1, max_leaf);
@@ -1611,13 +1629,13 @@ void MullerFmmOperator::init(
                 points.data(), point_count,
                 k_exterior, stable_fmm_digits,
                 banded_fmm_coarse_max_leaf,
-                fmm_near_radius, true, false);
+                fmm_near_radius, !minimal_bands, false, minimal_bands);
             fmm_interior_coarse.init(
                 points.data(), point_count,
                 points.data(), point_count,
                 k_interior, stable_fmm_digits,
                 banded_fmm_coarse_max_leaf,
-                fmm_near_radius, true, false);
+                fmm_near_radius, !minimal_bands, false, minimal_bands);
             if (banded_fmm_middle) {
                 fmm_exterior_middle.configure_interaction_band(
                     banded_fmm_split_depth + 1,
@@ -1630,13 +1648,13 @@ void MullerFmmOperator::init(
                     points.data(), point_count,
                     k_exterior, stable_fmm_digits,
                     banded_fmm_middle_max_leaf,
-                    fmm_near_radius, true, false);
+                    fmm_near_radius, !minimal_bands, false, minimal_bands);
                 fmm_interior_middle.init(
                     points.data(), point_count,
                     points.data(), point_count,
                     k_interior, stable_fmm_digits,
                     banded_fmm_middle_max_leaf,
-                    fmm_near_radius, true, false);
+                    fmm_near_radius, !minimal_bands, false, minimal_bands);
                 if (fmm_exterior_middle.tree.max_level !=
                         banded_fmm_split_depth + 1 ||
                     fmm_interior_middle.tree.max_level !=
@@ -1682,10 +1700,8 @@ void MullerFmmOperator::init(
 
     for (int axis = 0; axis < 3; axis++) {
         charges[axis].resize(point_count);
-        gradient_exterior[axis].resize((size_t)point_count * 3);
-        gradient_interior[axis].resize((size_t)point_count * 3);
-        hessian_exterior[axis].resize((size_t)point_count * 6);
-        hessian_interior[axis].resize((size_t)point_count * 6);
+        // Current operators use contracted curl/Hessian actions below.
+        // Full scalar derivative arrays would never be populated or read.
     }
     curl_exterior.resize((size_t)point_count * 3);
     curl_interior.resize((size_t)point_count * 3);
@@ -1711,7 +1727,7 @@ void MullerFmmOperator::init(
     k2_mu_work.resize(current_dofs);
     if (!use_pfft && gpu_operator_assembly_requested) {
         prepare_gpu_assembly();
-        if (banded_fmm) {
+        if (banded_fmm && !multilevel_device_enabled()) {
             // The current GPU assembly path evaluates one uniform FMM tree.
             // Keep its projection buffers for batched far fields, but retain
             // the host Galerkin path that combines all FMM bands for matvecs.
@@ -1723,7 +1739,7 @@ void MullerFmmOperator::init(
 
 void MullerFmmOperator::prepare_gpu_assembly()
 {
-    if (gpu_assembly.initialized) {
+    if (gpu_assembly.initialized && !gpu_assembly.farfield_only) {
         gpu_operator_assembly = true;
         return;
     }
@@ -1820,9 +1836,11 @@ void MullerFmmOperator::farfield(
     const std::vector<Vec3>& directions,
     std::vector<cdouble>& field)
 {
-    if (!gpu_assembly.initialized)
-        throw std::runtime_error(
-            "GPU farfield requires GPU operator assembly");
+    if (!gpu_assembly.initialized || gpu_assembly.farfield_only) {
+        std::vector<cdouble> unused;
+        farfield_pair(solution,solution,directions,field,unused);
+        return;
+    }
     gpu_assembly.farfield(
         solution, k_exterior, directions, field);
 }
@@ -1834,9 +1852,34 @@ void MullerFmmOperator::farfield_pair(
     std::vector<cdouble>& field_x,
     std::vector<cdouble>& field_y)
 {
-    if (!gpu_assembly.initialized)
-        throw std::runtime_error(
-            "GPU paired farfield requires GPU operator assembly");
+    if (!gpu_assembly.initialized || gpu_assembly.farfield_only) {
+        std::vector<double> positions(mass_quadrature.size()*3);
+        std::vector<cdouble> currents[2]={
+            std::vector<cdouble>(mass_quadrature.size()*6),
+            std::vector<cdouble>(mass_quadrature.size()*6)};
+        const cdouble* solutions[2]={solution_x,solution_y};
+#pragma omp parallel for schedule(static)
+        for(size_t q=0;q<mass_quadrature.size();++q) {
+            const auto& point=mass_quadrature[q];
+            const auto basis=evaluate_muller_basis(mesh,point.element,point.sample);
+            positions[3*q]=point.sample.position.x;
+            positions[3*q+1]=point.sample.position.y;
+            positions[3*q+2]=point.sample.position.z;
+            for(int p=0;p<2;++p)
+                for(int a=0;a<basis.count;++a) {
+                    const Vec3 value=basis.values[a]*point.weight;
+                    const auto j=solutions[p][basis.dofs[a]];
+                    const auto m=solutions[p][current_dofs+basis.dofs[a]];
+                    currents[p][6*q]+=j*value.x;
+                    currents[p][6*q+1]+=j*value.y;
+                    currents[p][6*q+2]+=j*value.z;
+                    currents[p][6*q+3]+=m*value.x;
+                    currents[p][6*q+4]+=m*value.y;
+                    currents[p][6*q+5]+=m*value.z;
+                }
+        }
+        gpu_assembly.upload_farfield_samples(positions,currents[0],currents[1]);
+    }
     gpu_assembly.farfield_pair(
         solution_x, solution_y, k_exterior,
         directions, field_x, field_y);
@@ -1853,7 +1896,9 @@ void MullerFmmOperator::apply_current_operators_gpu(
             gpu_assembly.charge_re(1, slot),
             gpu_assembly.charge_im(1, slot),
             gpu_assembly.charge_re(2, slot),
-            gpu_assembly.charge_im(2, slot));
+            gpu_assembly.charge_im(2, slot),
+            banded_fmm && banded_fmm_middle ? &fmm_exterior_middle : nullptr,
+            banded_fmm ? &fmm_exterior_coarse : nullptr);
     };
     const auto evaluate_interior = [&]() {
         fmm_interior.evaluate_vector_actions_batch3_device(
@@ -1862,7 +1907,9 @@ void MullerFmmOperator::apply_current_operators_gpu(
             gpu_assembly.charge_re(1, slot),
             gpu_assembly.charge_im(1, slot),
             gpu_assembly.charge_re(2, slot),
-            gpu_assembly.charge_im(2, slot));
+            gpu_assembly.charge_im(2, slot),
+            banded_fmm && banded_fmm_middle ? &fmm_interior_middle : nullptr,
+            banded_fmm ? &fmm_interior_coarse : nullptr);
     };
     const char* concurrent_media =
         std::getenv("BEM_FMM_CONCURRENT_MEDIA");
@@ -1902,6 +1949,18 @@ void MullerFmmOperator::apply_current_operator_pair_gpu(bool strict)
     gpu_assembly.project_charges_and_mass(0, 0);
     gpu_assembly.project_charges_and_mass(current_dofs, 1);
     const auto evaluate = [&](HelmholtzFMM& fmm) {
+        if (banded_fmm && multilevel_pair_enabled()) {
+            const double* real[6];const double* imag[6];
+            for(int slot=0;slot<2;++slot)for(int d=0;d<3;++d) {
+                real[3*slot+d]=gpu_assembly.charge_re(d,slot);
+                imag[3*slot+d]=gpu_assembly.charge_im(d,slot);
+            }
+            const bool exterior=&fmm==&fmm_exterior;
+            fmm.evaluate_multilevel_pair_device(real,imag,
+                banded_fmm_middle?(exterior?&fmm_exterior_middle:&fmm_interior_middle):nullptr,
+                exterior?fmm_exterior_coarse:fmm_interior_coarse);
+            return;
+        }
         const auto normal = [&]() {
             fmm.evaluate_vector_actions_pair_batch3_device(
             gpu_assembly.charge_re(0, 0),
@@ -2098,6 +2157,15 @@ void MullerFmmOperator::apply_current_operators(
 #endif
     } else {
         const auto evaluate_exterior = [&]() {
+            const char* multilevel = std::getenv("BEM_FMM_MULTILEVEL");
+            if (banded_fmm && multilevel && std::strcmp(multilevel,"0") != 0) {
+                fmm_exterior.evaluate_vector_actions_batch3(
+                    charges[0].data(), charges[1].data(), charges[2].data(),
+                    curl_exterior.data(), hessian_action_exterior.data(),
+                    banded_fmm_middle ? &fmm_exterior_middle : nullptr,
+                    &fmm_exterior_coarse);
+                return;
+            }
             fmm_exterior.evaluate_vector_actions_batch3(
                 charges[0].data(), charges[1].data(), charges[2].data(),
                 curl_exterior.data(),
@@ -2130,6 +2198,15 @@ void MullerFmmOperator::apply_current_operators(
             }
         };
         const auto evaluate_interior = [&]() {
+            const char* multilevel = std::getenv("BEM_FMM_MULTILEVEL");
+            if (banded_fmm && multilevel && std::strcmp(multilevel,"0") != 0) {
+                fmm_interior.evaluate_vector_actions_batch3(
+                    charges[0].data(), charges[1].data(), charges[2].data(),
+                    curl_interior.data(), hessian_action_interior.data(),
+                    banded_fmm_middle ? &fmm_interior_middle : nullptr,
+                    &fmm_interior_coarse);
+                return;
+            }
             fmm_interior.evaluate_vector_actions_batch3(
                 charges[0].data(), charges[1].data(), charges[2].data(),
                 curl_interior.data(),
@@ -2407,7 +2484,7 @@ void MullerFmmOperator::matvec_device(
             fmm_exterior.vector_actions_pair_available() &&
             fmm_interior.vector_actions_pair_available();
     }
-    if (pair_currents) {
+    if (pair_currents || (banded_fmm && multilevel_pair_enabled())) {
         apply_current_operator_pair_gpu();
     } else {
         apply_current_operators_gpu(0, 0);
@@ -2471,9 +2548,9 @@ void MullerFmmOperator::matvec_batch2_device_strict(
             "strict device Muller matvec requires the FMM backend");
     const bool previous_near_fp32 = fmm_near_fp32;
     set_fmm_near_fp32(false);
-    const bool strict_pair =
-        fmm_exterior.strict_vector_pair_available() &&
-        fmm_interior.strict_vector_pair_available();
+    const bool strict_pair = (banded_fmm && multilevel_pair_enabled()) ||
+        (fmm_exterior.strict_vector_pair_available() &&
+        fmm_interior.strict_vector_pair_available());
     const auto apply_one = [&](const void* input, void* output) {
         gpu_assembly.upload_system_input_device(input);
         if (strict_pair) {
@@ -2524,8 +2601,9 @@ void MullerFmmOperator::matvec_strict(
     set_fmm_near_fp32(false);
     try {
         gpu_assembly.upload_system_input(input);
-        if (fmm_exterior.strict_vector_pair_available() &&
-            fmm_interior.strict_vector_pair_available()) {
+        if ((banded_fmm && multilevel_pair_enabled()) ||
+            (fmm_exterior.strict_vector_pair_available() &&
+            fmm_interior.strict_vector_pair_available())) {
             apply_current_operator_pair_gpu(true);
         } else {
             apply_current_operators_gpu(0, 0);
@@ -2563,7 +2641,7 @@ void MullerFmmOperator::matvec(
                 std::strcmp(pair_current_override, "0") != 0 &&
                 fmm_exterior.vector_actions_pair_available() &&
                 fmm_interior.vector_actions_pair_available();
-        if (pair_currents) {
+        if (pair_currents || (banded_fmm && multilevel_pair_enabled())) {
             apply_current_operator_pair_gpu();
         } else {
             apply_current_operators_gpu(0, 0);
@@ -2807,7 +2885,7 @@ double MullerFmmOperator::switch_pfft_to_fmm(
     use_pfft = false;
     if (gpu_operator_assembly_requested) {
         prepare_gpu_assembly();
-        if (banded_fmm) {
+        if (banded_fmm && !multilevel_device_enabled()) {
             gpu_operator_assembly = false;
             gpu_operator_assembly_requested = false;
         }

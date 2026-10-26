@@ -82,7 +82,8 @@ Mesh icosphere(double radius, int refinements);
 // edges while preserving the uniform base mesh quality.
 Mesh regular_prism(int sides, double aspect, int refinements, double equiv_radius,
                    int edge_refine = 0,
-                   bool mirror_symmetric_sides = false);
+                   bool mirror_symmetric_sides = false,
+                   bool dihedral_symmetric_sides = false);
 
 // Generate a cube with a conforming tensor grid on all six faces.
 // Each face has (2^refinements)^2 square cells split into triangles.

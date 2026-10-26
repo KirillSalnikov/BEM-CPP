@@ -1,0 +1,22 @@
+{
+  "diagnostic_only": true,
+  "actions": 2,
+  "system_dofs": 3225600,
+  "ka": 112,
+  "ref": 7,
+  "max_leaf": 29,
+  "ri_imag": 0,
+  "seed": 0,
+  "strict": false,
+  "warm_mixed": false,
+  "setup_s": 53.8315,
+  "matvec_s": 9.60253,
+  "action_seconds": [
+    9.58803,
+    9.60253
+  ],
+  "relative_to_baseline": 2.2673885534835084e-06,
+  "relative_to_strict": 1.7985657140074077e-06,
+  "peak_gpu_mib": 21375.0,
+  "peak_rss_gib": 15.603935241699219
+}

@@ -1,0 +1,123 @@
+{
+  "hardware": "RTX 3090 Ti, Ryzen 7950X, 61 GiB RAM",
+  "worktree": "/home/kirill/neuro/BEM-CPP-analytic-alpha",
+  "changes": [
+    "Joint electric/magnetic current L2P and near evaluation on the GPU, using sequential three-field far traversals",
+    "Target-row M2L and removal of unused tree traversals and synchronous clears",
+    "Opt-in FP32 P2M/M2L/L2P/interpolation arithmetic with FP64 expansion storage and strict residual actions",
+    "Adaptive projected GMRES target, retaining FP64 acceptance and fallback after rejection",
+    "Reusable --fast-mlfma preset with environment settings in checkpoint identity"
+  ],
+  "ka28_ref5_four_column_pilot": {
+    "pairs": [
+      {
+        "old_s": 124.837125004,
+        "new_s": 61.457976811,
+        "speedup": 2.0312599190811005,
+        "old_iterations": 80,
+        "new_iterations": 80
+      },
+      {
+        "old_s": 214.692755914,
+        "new_s": 87.037915329,
+        "speedup": 2.4666578364436873,
+        "old_iterations": 134,
+        "new_iterations": 108
+      }
+    ],
+    "total_old_s": 339.529880918,
+    "total_new_s": 148.49589214,
+    "speedup": 2.286459753364057,
+    "column_relative_errors": {
+      "000783": 3.730690922635514e-06,
+      "000000": 1.6762903493079068e-06,
+      "000839": 5.131817306635091e-06,
+      "000002": 1.6656562672958395e-06
+    },
+    "maximum_strict_residual": 6.480949298312087e-06,
+    "linear_system_tolerance": 1e-05,
+    "columns": [
+      0,
+      2,
+      783,
+      839
+    ],
+    "complete_T": false,
+    "operator": {
+      "system_dofs": 202752,
+      "rhs_points": 439296,
+      "directions": 26922,
+      "radius": 1.2916486355634877,
+      "operator_setup_s": 4.306984329,
+      "mbj_setup_s": 0.734349949,
+      "mbj_storage_mb": 620.185546875,
+      "solver_backend": "paired_device_gmres",
+      "fmm_max_leaf": 64,
+      "mbj_nodes": 50,
+      "multilevel_fmm": true,
+      "fmm_depth": 5,
+      "fmm_order_exterior": 13,
+      "fmm_order_interior": 14,
+      "near_field_fp32": true,
+      "dense_matrix_formed": false,
+      "resident_solution_columns": 2
+    },
+    "cold_setup_comparison_valid": false
+  },
+  "ka112_ref7_operator": {
+    "diagnostic_only": true,
+    "actions": 2,
+    "system_dofs": 3225600,
+    "ka": 112,
+    "ref": 7,
+    "max_leaf": 29,
+    "ri_imag": 0,
+    "seed": 0,
+    "strict": false,
+    "setup_s": 52.8209,
+    "matvec_s": 10.3173,
+    "action_seconds": [
+      10.3252,
+      10.3173
+    ],
+    "relative_to_previous_mixed": 9.234433288190659e-08,
+    "relative_to_strict": 2.7079297380535283e-06,
+    "peak_rss_gib": 15.619281768798828,
+    "peak_gpu_mib": 16987.0,
+    "previous_action_s": 16.7289,
+    "speedup": 1.621441656247274,
+    "layout": "fine depth 6 max_leaf 29; middle depth 5 max_leaf 230; coarse depth 4 max_leaf 2048; coarse angular reference depth 3",
+    "full_T_built": false,
+    "mesh_convergence_established": false
+  },
+  "preconditioner_trial": {
+    "mbj50_s": 167.884903994,
+    "mbj100_s": 165.8499098,
+    "mbj50_iterations": [
+      80,
+      134
+    ],
+    "mbj100_iterations": [
+      80,
+      129
+    ],
+    "mbj50_storage_mib": 620.185546875,
+    "mbj100_storage_mib": 1238.7890625,
+    "default_retained": 50
+  },
+  "validation": {
+    "host_checks": "passed",
+    "strict_operator": "passed: 3 geometries/media cases, 3 paths each; relative agreement below 1e-9",
+    "streaming_integration": "4 tests passed before adaptive policy; expanded host/device/fast/tight integration passed after adaptive policy",
+    "tight_fallback": "tolerance 1e-8 reached; test requires observed FP64 rejection and tightened inner target",
+    "git_diff_check": "passed"
+  },
+  "orientation_averaging": "Unchanged analytical SO(3) over all three Euler angles. Not executed on partial T pilots.",
+  "disk_free_gib": 816.1258163452148,
+  "limitations": [
+    "No complete T at ka112 yet; ref convergence at this size is not established",
+    "Four sampled columns do not establish full-matrix C2 covariance or full-T timing",
+    "At ka28/ref5, the l=28 sampled modal energy-balance defect is about 1.8%, already present before optimization; linear residual is not a discretization error estimate"
+  ],
+  "worker_binary_sha256": "aacbb62f80c8bb6b2e88490b0fc28e5e9822b3b01d4197151864be439d0235d0"
+}

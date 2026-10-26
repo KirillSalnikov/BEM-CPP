@@ -1,0 +1,48 @@
+[
+  {
+    "diagnostic_only": true,
+    "actions": 2,
+    "system_dofs": 3225600,
+    "ka": 112,
+    "ref": 7,
+    "max_leaf": 29,
+    "ri_imag": 0,
+    "seed": 0,
+    "strict": false,
+    "warm_mixed": false,
+    "setup_s": 53.9025,
+    "matvec_s": 9.62739,
+    "action_seconds": [
+      9.67623,
+      9.62739
+    ],
+    "name": "ref7_factored",
+    "relative_to_baseline": 2.2685984811393226e-06,
+    "relative_to_strict": 1.7985690839743983e-06,
+    "peak_gpu_mib": 21357.0,
+    "peak_rss_gib": 15.620201110839844
+  },
+  {
+    "diagnostic_only": true,
+    "actions": 2,
+    "system_dofs": 3225600,
+    "ka": 112,
+    "ref": 7,
+    "max_leaf": 29,
+    "ri_imag": 0,
+    "seed": 0,
+    "strict": false,
+    "warm_mixed": false,
+    "setup_s": 53.9406,
+    "matvec_s": 9.67449,
+    "action_seconds": [
+      9.6271,
+      9.67449
+    ],
+    "name": "ref7_warp",
+    "relative_to_baseline": 2.268028697295143e-06,
+    "relative_to_strict": 1.797874902110518e-06,
+    "peak_gpu_mib": 21361.0,
+    "peak_rss_gib": 15.616924285888672
+  }
+]

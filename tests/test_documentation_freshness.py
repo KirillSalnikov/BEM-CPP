@@ -57,6 +57,12 @@ def main() -> int:
         "src/main.cpp",
         "scripts/profile_command.py",
         "scripts/run_convergence_study.py",
+        "scripts/benchmark_analytic_alpha.py",
+        "scripts/benchmark_bem_tmatrix.py",
+        "scripts/build_fmm_tmatrix.py",
+        "scripts/run_tmatrix_day.py",
+        "scripts/max_ka_study.py",
+        "scripts/plot_ka20_bem_average.py",
     )
     implementation = "\n".join(read(name) for name in implementation_sources)
     implemented = set(re.findall(r"--[a-z][a-z0-9-]*", implementation))

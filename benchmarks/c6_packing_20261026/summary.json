@@ -1,0 +1,44 @@
+{
+  "state": "implemented_not_started",
+  "date_local": "2026-10-26T00:30:27.568905+07:00",
+  "production_run_stopped": true,
+  "production_auto_restart": false,
+  "gpu_solver_launched_for_C6": false,
+  "preserved_checkpoint_columns": 706,
+  "preserved_independent_columns": 376,
+  "preserved_C2_columns": 330,
+  "stopped_run": "/home/kirill/neuro/BEM-CPP-analytic-alpha/runs/ka20_day_20261025_205127_tol1e6",
+  "original_frozen_runtime_unchanged": true,
+  "configuration": {
+    "ka": 20,
+    "ref": 5,
+    "order": 44,
+    "tol": 1e-06,
+    "c6_pack": true,
+    "c6_audit_tol": 0.0001
+  },
+  "algorithm": {
+    "max_columns_per_packet": 6,
+    "phase_codes_per_packet": 2,
+    "independent_reference_audits": true,
+    "failed_production_packet_falls_back_to_individual_solves": true,
+    "packet_receipts_and_column_hashes": true,
+    "bounded_incident_arrays": 3,
+    "resident_surface_solutions": 2
+  },
+  "validation": {
+    "cpu_tests_passed": 23,
+    "cpu_test_log": "cpu_tests.log",
+    "saved_column_packets_tested": 72,
+    "saved_column_maximum_relative_error": 1.6485740573776829e-06,
+    "real_checkpoint_import_verified": 706,
+    "gpu_timing_or_new_packed_BEM_solution_validated": false
+  },
+  "source_sha256": {
+    "scripts/tmatrix_c6.py": "996b72008b9f693a7f95265fbdd72e8fbf93b5b2dae251a7d6295b9e0f9edcb5",
+    "scripts/build_fmm_tmatrix.py": "4fc3d8b93ab21eb2b0016acfa70f83271190245d79a9e2dfd5e2d21f7d526af4",
+    "scripts/run_tmatrix_day.py": "2bc44758e7957c8d6fc580775ebc64d7a3d427c450c85affbb7ac4a96bceae4e",
+    "tests/test_tmatrix_c6.py": "1ca395f2edd771e334984d3621f88a6ed8b8115e4b795e85d9d5f792a20148f0",
+    "tests/c6_fake_worker.py": "7796b3bc4eba06d6578148c477e17e5a6ec7eb9ac292e5e191f8be93a1af518c"
+  }
+}

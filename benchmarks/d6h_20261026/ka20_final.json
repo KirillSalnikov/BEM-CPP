@@ -1,0 +1,35 @@
+{
+  "complete": true,
+  "run": "/home/kirill/neuro/BEM-CPP-analytic-alpha/runs/ka20_d6h_q6_20261026_170903",
+  "finished_utc": "2026-10-26T13:27:41.268902+00:00",
+  "corrected_run_elapsed_s": 11917.197808,
+  "ka": 20,
+  "main_ref": 5,
+  "system_dofs": 202752,
+  "L": 44,
+  "T_shape": [
+    4048,
+    4048
+  ],
+  "T_size_bytes": 262180992,
+  "T_sha256": "894d80971c1ddcc45cdf197ff49a98014320835083402091286a9ef34271254f",
+  "mueller_shape": [
+    4,
+    4,
+    181
+  ],
+  "analytic_average_s": 5.911533082995447,
+  "Euler_quadrature_nodes": 0,
+  "all_16_mueller_entries": true,
+  "new_direction_field_relative_error": 1.3746195845624956e-07,
+  "sampled_mesh_maximum_active_relative_difference": 0.0019292900841947251,
+  "sampled_order_maximum_active_relative_difference": 4.233517457936022e-07,
+  "sampled_mirror_maximum_relative_difference": 1.3090928754105652e-05,
+  "sampled_controls_do_not_bound_global_discretization_error": true,
+  "accepted_packets": 189,
+  "rejected_packets": 0,
+  "run_logical_disk_gib": 5.311773776076734,
+  "scattering_cross_section": 8.627000232761965,
+  "extinction_cross_section": 8.631318143580604,
+  "relative_lossless_energy_mismatch": 0.0005002608809930162
+}

@@ -1,0 +1,35 @@
+{
+  "purpose": "Record rejected configurations and preserve unchanged acceptance tolerances. These were not production runs.",
+  "cases": [
+    {
+      "directory": "runs/d6h_20261026/full_control_direct",
+      "state": "failed",
+      "reason": "Default non-banded FMM could not meet the strict residual gate; no columns accepted."
+    },
+    {
+      "directory": "runs/d6h_20261026/full_banded_packed",
+      "state": "failed",
+      "reason": "ka=3/ref=3 mirror packet cross-talk exceeds 1e-4."
+    },
+    {
+      "directory": "runs/d6h_20261026/full_banded_packed_tight",
+      "state": "failed",
+      "reason": "Tighter GMRES tolerance did not remove numerical operator mirror leakage."
+    },
+    {
+      "directory": "runs/d6h_20261026/ka6_packed",
+      "state": "failed",
+      "reason": "ka=6/ref=3/L=14 high-order C2 covariance exceeds 1e-4."
+    },
+    {
+      "directory": "runs/d6h_20261026/ref4_packed",
+      "state": "failed",
+      "reason": "Band layout rejected at setup: middle tree had incompatible depth."
+    },
+    {
+      "directory": "runs/d6h_20261026/ref4_bands_packed",
+      "state": "failed",
+      "reason": "ka=3/ref=4 mirror packet cross-talk exceeds 1e-4."
+    }
+  ]
+}

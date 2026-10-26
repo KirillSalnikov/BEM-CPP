@@ -1,0 +1,21 @@
+{
+  "diagnostic_only": true,
+  "actions": 4,
+  "system_dofs": 202752,
+  "ka": 28,
+  "ref": 5,
+  "max_leaf": 64,
+  "ri_imag": 0,
+  "seed": 0,
+  "strict": false,
+  "setup_s": 4.54264,
+  "matvec_s": 0.356398,
+  "action_seconds": [
+    0.390291,
+    0.37429,
+    0.347983,
+    0.346921
+  ],
+  "relative_to_baseline": 4.606690427427316e-07,
+  "peak_gpu_mib": 2502.0
+}

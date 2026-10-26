@@ -1037,7 +1037,8 @@ double refine_feature_edges(
 }
 
 Mesh regular_prism(int sides, double aspect, int refinements, double equiv_radius,
-                   int edge_refine, bool mirror_symmetric_sides) {
+                   int edge_refine, bool mirror_symmetric_sides,
+                   bool dihedral_symmetric_sides) {
     if (sides < 3) sides = 3;
     if (aspect <= 0.0) aspect = 1.0;
     int seg = 1 << std::max(0, refinements);
@@ -1090,6 +1091,9 @@ Mesh regular_prism(int sides, double aspect, int refinements, double equiv_radiu
     double ztop = 0.5 * h, zbot = -0.5 * h;
     double side_len = (poly[1] - poly[0]).norm();
     int side_zseg = std::max(seg, (int)std::ceil((h / side_len) * seg));
+    // An even number of vertical cells permits opposite diagonals above
+    // and below z=0, with no cells crossing the reflection plane.
+    if (dihedral_symmetric_sides && side_zseg % 2) ++side_zseg;
     std::vector<double> u_grid = uniform_grid(seg);
     std::vector<double> z_grid = uniform_grid(side_zseg);
 
@@ -1111,8 +1115,18 @@ Mesh regular_prism(int sides, double aspect, int refinements, double equiv_radiu
                 int v10 = add_vertex(Vec3(p10.x, p10.y, z0));
                 int v01 = add_vertex(Vec3(p00.x, p00.y, z1));
                 int v11 = add_vertex(Vec3(p10.x, p10.y, z1));
-                const bool forward_diagonal =
-                    !mirror_symmetric_sides || (e % 2 == 0);
+                if (dihedral_symmetric_sides && seg % 2) {
+                    // The ref=0 side cell crosses its vertical mirror plane.
+                    // A centre fan preserves both mirrors without hanging nodes.
+                    const int vc = add_vertex(Vec3(.5*(p00.x+p10.x),
+                                                   .5*(p00.y+p10.y), .5*(z0+z1)));
+                    add_tri(v00, v10, vc); add_tri(v10, v11, vc);
+                    add_tri(v11, v01, vc); add_tri(v01, v00, vc);
+                    continue;
+                }
+                const bool forward_diagonal = dihedral_symmetric_sides
+                    ? ((2*iu < seg) == (2*iz < side_zseg))
+                    : (!mirror_symmetric_sides || (e % 2 == 0));
                 if (forward_diagonal) {
                     add_tri(v00, v10, v11);
                     add_tri(v00, v11, v01);

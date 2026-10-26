@@ -1379,6 +1379,44 @@ void MullerGpuAssembly::farfield(
         "download Muller farfield");
 }
 
+void MullerGpuAssembly::upload_farfield_samples(
+    const std::vector<double>& positions,
+    const std::vector<std::complex<double>>& currents_x,
+    const std::vector<std::complex<double>>& currents_y)
+{
+    const size_t points=positions.size()/3;
+    if (!points || positions.size()!=points*3 ||
+        currents_x.size()!=points*6 || currents_y.size()!=points*6)
+        throw std::invalid_argument("invalid projected farfield samples");
+    if (!initialized || !farfield_only || static_cast<size_t>(mass_points)!=points) {
+        cleanup();
+        mass_points=static_cast<int>(points);
+        // Mark ownership before allocation so cleanup handles partial setup.
+        initialized=true; farfield_only=true;
+        allocate_and_upload(&d_mass_positions,positions,"upload standalone farfield positions");
+        for(int p=0;p<2;++p)
+            for(int c=0;c<6;++c) {
+                cuda_check(cudaMalloc(reinterpret_cast<void**>(&d_farfield_current_re[p][c]),points*sizeof(double)),
+                           "allocate standalone farfield current real");
+                cuda_check(cudaMalloc(reinterpret_cast<void**>(&d_farfield_current_im[p][c]),points*sizeof(double)),
+                           "allocate standalone farfield current imaginary");
+            }
+    }
+    std::vector<double> real(points),imaginary(points);
+    const std::vector<std::complex<double>>* currents[2]={&currents_x,&currents_y};
+    for(int p=0;p<2;++p)
+        for(int c=0;c<6;++c) {
+            for(size_t q=0;q<points;++q) {
+                const auto value=(*currents[p])[q*6+c];
+                real[q]=value.real(); imaginary[q]=value.imag();
+            }
+            cuda_check(cudaMemcpy(d_farfield_current_re[p][c],real.data(),points*sizeof(double),cudaMemcpyHostToDevice),
+                       "upload standalone farfield current real");
+            cuda_check(cudaMemcpy(d_farfield_current_im[p][c],imaginary.data(),points*sizeof(double),cudaMemcpyHostToDevice),
+                       "upload standalone farfield current imaginary");
+        }
+}
+
 void MullerGpuAssembly::farfield_pair(
     const std::complex<double>* solution_x,
     const std::complex<double>* solution_y,
@@ -1397,7 +1435,7 @@ void MullerGpuAssembly::farfield_pair(
     const int block = 256;
     const int point_grid = (mass_points + block - 1) / block;
     const std::complex<double>* solutions[2] = {solution_x, solution_y};
-    for (int polarization = 0; polarization < 2; polarization++) {
+    for (int polarization = 0; !farfield_only && polarization < 2; polarization++) {
         cuda_check(
             cudaMemcpy(
                 d_input, solutions[polarization],
@@ -1678,4 +1716,5 @@ void MullerGpuAssembly::cleanup()
     regular_points = 0;
     mass_points = 0;
     initialized = false;
+    farfield_only = false;
 }

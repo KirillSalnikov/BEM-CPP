@@ -1,0 +1,15 @@
+{
+  "mbj50_s": 167.884903994,
+  "mbj100_s": 165.8499098,
+  "mbj50_iterations": [
+    80,
+    134
+  ],
+  "mbj100_iterations": [
+    80,
+    129
+  ],
+  "mbj50_storage_mib": 620.185546875,
+  "mbj100_storage_mib": 1238.7890625,
+  "default_retained": 50
+}

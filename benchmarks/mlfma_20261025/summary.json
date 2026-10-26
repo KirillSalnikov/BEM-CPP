@@ -1,0 +1,188 @@
+{
+  "worktree": "/home/kirill/neuro/BEM-CPP-analytic-alpha",
+  "method": "FP64 multilevel angular transfers; finest-level point evaluation; full analytic SO3 unchanged",
+  "operator_benchmarks": {
+    "same_depth5": {
+      "relative_difference": 1.0331518202266454e-15,
+      "baseline": {
+        "diagnostic_only": true,
+        "actions": 1,
+        "system_dofs": 3225600,
+        "ka": 112,
+        "ref": 7,
+        "setup_s": 34.5738,
+        "matvec_s": 164.347
+      },
+      "multilevel": {
+        "diagnostic_only": true,
+        "actions": 1,
+        "system_dofs": 3225600,
+        "ka": 112,
+        "ref": 7,
+        "setup_s": 33.9686,
+        "matvec_s": 37.908
+      },
+      "speedup": 4.335417326158067
+    },
+    "depth6_compact": {
+      "relative_difference": 4.930588801712894e-06,
+      "baseline": {
+        "diagnostic_only": true,
+        "actions": 1,
+        "system_dofs": 3225600,
+        "ka": 112,
+        "ref": 7,
+        "setup_s": 34.5738,
+        "matvec_s": 164.347
+      },
+      "multilevel": {
+        "diagnostic_only": true,
+        "actions": 1,
+        "system_dofs": 3225600,
+        "ka": 112,
+        "ref": 7,
+        "max_leaf": 29,
+        "ri_imag": 0,
+        "seed": 0,
+        "strict": false,
+        "setup_s": 53.1867,
+        "matvec_s": 16.7289
+      },
+      "speedup": 9.824136673660552
+    },
+    "depth6_floor5": {
+      "relative_difference": 4.930588787686005e-06,
+      "baseline": {
+        "diagnostic_only": true,
+        "actions": 1,
+        "system_dofs": 3225600,
+        "ka": 112,
+        "ref": 7,
+        "setup_s": 34.5738,
+        "matvec_s": 164.347
+      },
+      "candidate": {
+        "diagnostic_only": true,
+        "actions": 1,
+        "system_dofs": 3225600,
+        "ka": 112,
+        "ref": 7,
+        "max_leaf": 29,
+        "ri_imag": 0,
+        "seed": 0,
+        "strict": false,
+        "setup_s": 57.0298,
+        "matvec_s": 24.4114
+      },
+      "speedup": 6.732387327232359
+    }
+  },
+  "strict_controls": {
+    "ref6": {
+      "strict_depth_change_relative_difference": 6.338639731010142e-09
+    },
+    "ref7": {
+      "strict_action": {
+        "diagnostic_only": true,
+        "actions": 1,
+        "system_dofs": 3225600,
+        "ka": 112,
+        "ref": 7,
+        "max_leaf": 29,
+        "ri_imag": 0,
+        "seed": 0,
+        "strict": true,
+        "setup_s": 53.195,
+        "matvec_s": 115.812
+      },
+      "cases": {
+        "old_depth5_mixed": {
+          "relative_to_new_depth6_strict": 4.8642193719088376e-06
+        },
+        "new_depth6_mixed": {
+          "relative_to_new_depth6_strict": 2.7064096493077374e-06
+        },
+        "new_depth6_floor5_mixed": {
+          "relative_to_new_depth6_strict": 2.7064095671445044e-06
+        }
+      },
+      "limitation": "Strict depth5 vs depth6 comparison was measured separately at ref6; no full ref7 physical solution or mesh convergence is implied."
+    }
+  },
+  "complete_T_and_analytic_average": {
+    "complete_columns": 198,
+    "maximum_strict_residual": 9.893353636354552e-07,
+    "direct_new_direction_field_error": 4.718036256974268e-06,
+    "end_to_end_s": 803.5502777099991,
+    "analytic_so3_s": 0.021854525999515317,
+    "Euler_quadrature_nodes": 0,
+    "all_16_relative_difference_vs_independent_analytic_reference": 5.532029104422664e-16,
+    "reference_angles_degrees": [
+      0,
+      30,
+      90,
+      150,
+      180
+    ],
+    "C2_reconstruction_full_matrix_relative_difference": 3.6237777631306266e-07,
+    "ref3_to_ref4_full_Mueller_relative_change": 0.00032281752777011167,
+    "mesh_comparison_note": "ka=3 only; ref3 tolerance 1e-4 and ref4 1e-5; not a ka112 mesh validation",
+    "C2_sampled_max_relative_column_error": 1.5863021015982815e-05,
+    "C2_reconstruction_independently_retained_columns": 118
+  },
+  "observed_depth6_peak_gpu_mib": 16783.0,
+  "tests": {
+    "spherical_polynomial_max_absolute_error": 3.718e-14,
+    "real_and_absorbing_two_and_three_level_GPU_operator_comparisons": "passed",
+    "GPU_T_builder_C2_restart_and_device_checks": 4,
+    "analytic_SO3_tests": 5,
+    "C2_field_covariance_and_reconstruction_tests": 2,
+    "host_checks": "passed"
+  },
+  "C2_reuse": {
+    "L168_total_columns": 57120,
+    "L168_independent_columns_including_audits": 28738,
+    "sampled_audit_default_tolerance": 0.0001,
+    "reconstructed_columns_have_independent_BEM_residuals": false
+  },
+  "rejected_or_limited": {
+    "depth6_before_point_buffer_release": "CUDA OOM; fixed by releasing unused upper-band buffers",
+    "depth5_angular_floor_for_depth6": "24.411s versus 16.729s, no measured accuracy improvement over native depth6 in this test",
+    "coarse_C2_audit": "default 1e-4 audit rejects the ref3 tolerance1e-4 test with maximum relative column discrepancy 1.354e-4; relaxed coarse-test tolerance is explicit"
+  },
+  "limitations": [
+    "Single-action timings are not full T construction times.",
+    "No complete ka112 T exists.",
+    "High-ka physical mesh and T-order convergence are not yet established.",
+    "C2 sample audits do not bound the covariance defect over every column."
+  ],
+  "disk_free_gib": 817.4366912841797,
+  "practical_ka28_pilot": {
+    "ka": 28,
+    "ref": 5,
+    "order": 56,
+    "mode_count": 6496,
+    "completed_columns": 4,
+    "complete": false,
+    "maximum_strict_residual": 6.102492655773129e-06,
+    "pair_seconds": [
+      126.40704175400121,
+      217.5854823200004
+    ],
+    "C2_independent_columns_if_audits_pass": 3314,
+    "C2_audit_complete": false,
+    "estimated_full_days_from_observed_pair_range": [
+      2.424264678083102,
+      4.172906761623156
+    ],
+    "estimated_full_days_midpoint": 3.2985857198531288,
+    "estimate_is_extrapolation_from_two_pairs": true,
+    "full_T_kernel_checkpoints_gib": 1.8863983154296875,
+    "SO3_scratch_gib": 0.31439971923828125,
+    "operator_cache_gib": 0.9126637391746044,
+    "estimated_peak_artifact_gib": 3.113461773842573,
+    "disk_free_gib": 817.4366912841797,
+    "mesh_validation": "ref5 has approximately eight equivalent P2 points per shortest wavelength at ka28; ref-to-ref physical convergence not yet measured",
+    "status": "bounded pilot completed; no full production T build launched"
+  }
+}

@@ -1,0 +1,886 @@
+{
+  "method": "CPU superposition of saved individually solved ka20 columns; no new GPU solve",
+  "packets_checked": 72,
+  "accepted_packets": 72,
+  "fallback_packets": 0,
+  "accepted_but_reference_failed": 0,
+  "maximum_reference_error_among_accepted": 1.6485740573776829e-06,
+  "checks": [
+    {
+      "columns": [
+        0,
+        1,
+        2
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.2331018673525138e-07
+    },
+    {
+      "columns": [
+        5,
+        6,
+        7
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.0891750912435755e-07
+    },
+    {
+      "columns": [
+        11,
+        12,
+        13,
+        14
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.0870916292327265e-07
+    },
+    {
+      "columns": [
+        19,
+        20,
+        21,
+        22,
+        23
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.2382773918921487e-07
+    },
+    {
+      "columns": [
+        29,
+        30,
+        31,
+        32,
+        33,
+        34
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.3289784214289246e-07
+    },
+    {
+      "columns": [
+        41,
+        42,
+        43,
+        44,
+        45,
+        46
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.5975576407768508e-07
+    },
+    {
+      "columns": [
+        55,
+        56,
+        57,
+        58,
+        59,
+        60
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.4758079467815895e-07
+    },
+    {
+      "columns": [
+        61,
+        62
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 8.597824334535701e-08
+    },
+    {
+      "columns": [
+        71,
+        72,
+        73,
+        74,
+        75,
+        76
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.1163686439069033e-07
+    },
+    {
+      "columns": [
+        77,
+        78,
+        79
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 8.770221664337309e-08
+    },
+    {
+      "columns": [
+        89,
+        90,
+        91,
+        92,
+        93,
+        94
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.329880440585794e-07
+    },
+    {
+      "columns": [
+        95,
+        96,
+        97,
+        98
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.1274624944927563e-07
+    },
+    {
+      "columns": [
+        109,
+        110,
+        111,
+        112,
+        113,
+        114
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.1119653787319128e-07
+    },
+    {
+      "columns": [
+        115,
+        116,
+        117,
+        118,
+        119
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.0471865617766418e-07
+    },
+    {
+      "columns": [
+        131,
+        132,
+        133,
+        134,
+        135,
+        136
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 9.915710662302502e-08
+    },
+    {
+      "columns": [
+        137,
+        138,
+        139,
+        140,
+        141,
+        142
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.0247158022068085e-07
+    },
+    {
+      "columns": [
+        155,
+        156,
+        157,
+        158,
+        159,
+        160
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.0891697457532282e-07
+    },
+    {
+      "columns": [
+        161,
+        162,
+        163,
+        164,
+        165,
+        166
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 9.880568875438334e-08
+    },
+    {
+      "columns": [
+        181,
+        182,
+        183,
+        184,
+        185,
+        186
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.2665472804462552e-07
+    },
+    {
+      "columns": [
+        187,
+        188,
+        189,
+        190,
+        191,
+        192
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 8.859111652561539e-08
+    },
+    {
+      "columns": [
+        193,
+        194
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 9.163280641253201e-08
+    },
+    {
+      "columns": [
+        209,
+        210,
+        211,
+        212,
+        213,
+        214
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 2.2679684251967906e-07
+    },
+    {
+      "columns": [
+        215,
+        216,
+        217,
+        218,
+        219,
+        220
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 8.785497542552765e-08
+    },
+    {
+      "columns": [
+        221,
+        222,
+        223
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.1669093411009882e-07
+    },
+    {
+      "columns": [
+        239,
+        240,
+        241,
+        242,
+        243,
+        244
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 2.645650832782632e-07
+    },
+    {
+      "columns": [
+        245,
+        246,
+        247,
+        248,
+        249,
+        250
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 9.211009935987861e-08
+    },
+    {
+      "columns": [
+        251,
+        252,
+        253,
+        254
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.638989129294376e-07
+    },
+    {
+      "columns": [
+        271,
+        272,
+        273,
+        274,
+        275,
+        276
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.6376578679491663e-07
+    },
+    {
+      "columns": [
+        277,
+        278,
+        279,
+        280,
+        281,
+        282
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.271517527259134e-07
+    },
+    {
+      "columns": [
+        283,
+        284,
+        285,
+        286,
+        287
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 3.0035670646859354e-07
+    },
+    {
+      "columns": [
+        305,
+        306,
+        307,
+        308,
+        309,
+        310
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.5362573852960733e-07
+    },
+    {
+      "columns": [
+        311,
+        312,
+        313,
+        314,
+        315,
+        316
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.2173453557224993e-07
+    },
+    {
+      "columns": [
+        317,
+        318,
+        319,
+        320,
+        321,
+        322
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 3.6136329782227253e-07
+    },
+    {
+      "columns": [
+        341,
+        342,
+        343,
+        344,
+        345,
+        346
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.38818998377057e-07
+    },
+    {
+      "columns": [
+        347,
+        348,
+        349,
+        350,
+        351,
+        352
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.1921339520820975e-07
+    },
+    {
+      "columns": [
+        353,
+        354,
+        355,
+        356,
+        357,
+        358
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 2.903041566419872e-07
+    },
+    {
+      "columns": [
+        379,
+        380,
+        381,
+        382,
+        383,
+        384
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.5808317079401346e-07
+    },
+    {
+      "columns": [
+        385,
+        386,
+        387,
+        388,
+        389,
+        390
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.6968735168394422e-07
+    },
+    {
+      "columns": [
+        391,
+        392,
+        393,
+        394,
+        395,
+        396
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 2.7502136594423984e-07
+    },
+    {
+      "columns": [
+        397,
+        398
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 7.569651569627589e-08
+    },
+    {
+      "columns": [
+        419,
+        420,
+        421,
+        422,
+        423,
+        424
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.1556843764980113e-07
+    },
+    {
+      "columns": [
+        425,
+        426,
+        427,
+        428,
+        429,
+        430
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.7057416160316176e-07
+    },
+    {
+      "columns": [
+        431,
+        432,
+        433,
+        434,
+        435,
+        436
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 2.767194976838092e-07
+    },
+    {
+      "columns": [
+        437,
+        438,
+        439
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.0549905926995165e-07
+    },
+    {
+      "columns": [
+        461,
+        462,
+        463,
+        464,
+        465,
+        466
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 9.917145614180447e-08
+    },
+    {
+      "columns": [
+        467,
+        468,
+        469,
+        470,
+        471,
+        472
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.0199418593026577e-07
+    },
+    {
+      "columns": [
+        473,
+        474,
+        475,
+        476,
+        477,
+        478
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.807802223823122e-07
+    },
+    {
+      "columns": [
+        479,
+        480,
+        481,
+        482
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 2.276480459297689e-07
+    },
+    {
+      "columns": [
+        483,
+        504,
+        505,
+        506
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.770189359766448e-07
+    },
+    {
+      "columns": [
+        507,
+        508,
+        509,
+        510,
+        511,
+        512
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.0024171929525964e-07
+    },
+    {
+      "columns": [
+        513,
+        514,
+        515,
+        516,
+        517,
+        518
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 9.569375560624088e-08
+    },
+    {
+      "columns": [
+        519,
+        520,
+        521,
+        522,
+        523,
+        524
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.3359741289134382e-07
+    },
+    {
+      "columns": [
+        525,
+        526,
+        527
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.4908115681893744e-07
+    },
+    {
+      "columns": [
+        551,
+        552,
+        553,
+        554,
+        555,
+        556
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.280983828518633e-07
+    },
+    {
+      "columns": [
+        557,
+        558,
+        559,
+        560,
+        561,
+        562
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.275792934329307e-07
+    },
+    {
+      "columns": [
+        563,
+        564,
+        565,
+        566,
+        567,
+        568
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.059298980327962e-07
+    },
+    {
+      "columns": [
+        569,
+        570,
+        571,
+        572,
+        573,
+        574
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 3.303333882099261e-07
+    },
+    {
+      "columns": [
+        599,
+        600,
+        601,
+        602,
+        603,
+        604
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.6925891973858154e-07
+    },
+    {
+      "columns": [
+        605,
+        606,
+        607,
+        608,
+        609,
+        610
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.748920251154854e-07
+    },
+    {
+      "columns": [
+        611,
+        612,
+        613,
+        614,
+        615,
+        616
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.5296117548963067e-07
+    },
+    {
+      "columns": [
+        617,
+        618,
+        619,
+        620,
+        621,
+        622
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 3.276882044195352e-07
+    },
+    {
+      "columns": [
+        649,
+        650,
+        651,
+        652,
+        653,
+        654
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 2.0492493830754454e-07
+    },
+    {
+      "columns": [
+        655,
+        656,
+        657,
+        658,
+        659,
+        660
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.7542883100885906e-07
+    },
+    {
+      "columns": [
+        661,
+        662,
+        663,
+        664,
+        665,
+        666
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 2.3394086535119575e-07
+    },
+    {
+      "columns": [
+        667,
+        668,
+        669,
+        670,
+        671,
+        672
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 3.1207083119454797e-07
+    },
+    {
+      "columns": [
+        673,
+        674
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 7.645129121279367e-07
+    },
+    {
+      "columns": [
+        701,
+        702,
+        703,
+        704,
+        705,
+        706
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 2.1026602013952327e-07
+    },
+    {
+      "columns": [
+        707,
+        708,
+        709
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.8916556531140528e-07
+    },
+    {
+      "columns": [
+        1935,
+        1978,
+        1980,
+        2023
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.6485740573776829e-06
+    },
+    {
+      "columns": [
+        2024,
+        2026
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 9.178940522576938e-08
+    },
+    {
+      "columns": [
+        2507,
+        2528,
+        2530,
+        2551
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 2.059610985595115e-07
+    },
+    {
+      "columns": [
+        3959,
+        4002,
+        4004,
+        4047
+      ],
+      "phase_check_passed": true,
+      "reference_check_passed": true,
+      "maximum_reference_relative_error": 1.040379099444981e-06
+    }
+  ]
+}

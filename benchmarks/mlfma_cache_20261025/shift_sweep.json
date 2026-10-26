@@ -1,0 +1,46 @@
+[
+  {
+    "diagnostic_only": true,
+    "actions": 4,
+    "system_dofs": 202752,
+    "ka": 28,
+    "ref": 5,
+    "max_leaf": 64,
+    "ri_imag": 0,
+    "seed": 0,
+    "strict": false,
+    "setup_s": 4.44333,
+    "matvec_s": 0.349277,
+    "action_seconds": [
+      0.376943,
+      0.34778,
+      0.351232,
+      0.348819
+    ],
+    "name": "baseline",
+    "relative_to_previous": 1.2333320664180033e-16,
+    "peak_gpu_mib": 2627.0
+  },
+  {
+    "diagnostic_only": true,
+    "actions": 4,
+    "system_dofs": 202752,
+    "ka": 28,
+    "ref": 5,
+    "max_leaf": 64,
+    "ri_imag": 0,
+    "seed": 0,
+    "strict": false,
+    "setup_s": 4.50906,
+    "matvec_s": 0.353859,
+    "action_seconds": [
+      0.358611,
+      0.339024,
+      0.364857,
+      0.357695
+    ],
+    "name": "shift_cache",
+    "relative_to_previous": 1.2279639109086595e-16,
+    "peak_gpu_mib": 2419.0
+  }
+]

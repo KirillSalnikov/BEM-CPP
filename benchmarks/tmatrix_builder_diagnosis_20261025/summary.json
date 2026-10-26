@@ -1,0 +1,27 @@
+{
+  "baseline": {
+    "diagnostic_only": true,
+    "actions": 1,
+    "system_dofs": 3225600,
+    "ka": 112,
+    "ref": 7,
+    "setup_s": 34.5738,
+    "matvec_s": 164.347
+  },
+  "candidate": {
+    "diagnostic_only": true,
+    "actions": 1,
+    "system_dofs": 3225600,
+    "ka": 112,
+    "ref": 7,
+    "setup_s": 34.6168,
+    "matvec_s": 164.688
+  },
+  "candidate_relative_output_difference": 1.5907724209712892e-16,
+  "speedup": 0.9979294180511028,
+  "decision": "rejected; no demonstrated speedup; original coarse M2L restored",
+  "complete_T_job": "stopped; no full large-ka T claimed",
+  "current_status": "full analytic SO3 postprocessor verified; practical high-ka BEM T construction remains unresolved",
+  "known_algorithmic_cost": "Each independent T column is obtained with a separate iterative BEM solve. Each FMM band evaluates the full surface point set.",
+  "timing_interpretation": "GPU event intervals include cross-stream waits around host transfers. They do not isolate PCIe transfer duration."
+}

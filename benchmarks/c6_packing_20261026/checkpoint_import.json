@@ -1,0 +1,9 @@
+{
+  "source": "/home/kirill/neuro/BEM-CPP-analytic-alpha/runs/ka20_day_20261025_205127_tol1e6/main_ref5_L44",
+  "source_signature": "394418fcb987d5b430a2acc381b892d019ce77127020102f5bc8633f58a43714",
+  "copied_columns": 706,
+  "skipped_packed_columns": 0,
+  "original_files_unchanged": true,
+  "copied_arrays_bitwise_identical": true,
+  "no_solver_started": true
+}

@@ -16,6 +16,7 @@ struct MullerGpuCorrectionValue {
 class MullerGpuAssembly {
 public:
     bool initialized = false;
+    bool farfield_only = false;
     int current_dofs = 0;
     int regular_points = 0;
     int mass_points = 0;
@@ -85,6 +86,12 @@ public:
         const std::vector<Vec3>& directions,
         std::vector<std::complex<double>>& field_x,
         std::vector<std::complex<double>>& field_y);
+
+    // GPU radiation integral without the Galerkin operator and basis caches.
+    void upload_farfield_samples(
+        const std::vector<double>& positions,
+        const std::vector<std::complex<double>>& currents_x,
+        const std::vector<std::complex<double>>& currents_y);
 
     void cleanup();
 

@@ -1,0 +1,112 @@
+[
+  {
+    "name": "traversal",
+    "diagnostic_only": true,
+    "actions": 4,
+    "system_dofs": 202752,
+    "ka": 28,
+    "ref": 5,
+    "max_leaf": 64,
+    "ri_imag": 0,
+    "seed": 0,
+    "strict": false,
+    "setup_s": 4.43233,
+    "matvec_s": 0.747375,
+    "action_seconds": [
+      0.772684,
+      0.746713,
+      0.745952,
+      0.749461
+    ],
+    "relative_to_baseline": 3.2442620654889547e-16,
+    "peak_gpu_mib": 3426.0
+  },
+  {
+    "name": "rows",
+    "diagnostic_only": true,
+    "actions": 4,
+    "system_dofs": 202752,
+    "ka": 28,
+    "ref": 5,
+    "max_leaf": 64,
+    "ri_imag": 0,
+    "seed": 0,
+    "strict": false,
+    "setup_s": 4.35943,
+    "matvec_s": 0.697891,
+    "action_seconds": [
+      0.724219,
+      0.696949,
+      0.697877,
+      0.698847
+    ],
+    "relative_to_baseline": 3.212205470773417e-16,
+    "peak_gpu_mib": 3426.0
+  },
+  {
+    "name": "mixed_m2l",
+    "diagnostic_only": true,
+    "actions": 4,
+    "system_dofs": 202752,
+    "ka": 28,
+    "ref": 5,
+    "max_leaf": 64,
+    "ri_imag": 0,
+    "seed": 0,
+    "strict": false,
+    "setup_s": 4.27084,
+    "matvec_s": 0.61936,
+    "action_seconds": [
+      0.628015,
+      0.61798,
+      0.619214,
+      0.620886
+    ],
+    "relative_to_baseline": 3.779855814436445e-07,
+    "peak_gpu_mib": 3430.0
+  },
+  {
+    "name": "paired",
+    "diagnostic_only": true,
+    "actions": 4,
+    "system_dofs": 202752,
+    "ka": 28,
+    "ref": 5,
+    "max_leaf": 64,
+    "ri_imag": 0,
+    "seed": 0,
+    "strict": false,
+    "setup_s": 4.32396,
+    "matvec_s": 0.668587,
+    "action_seconds": [
+      0.692815,
+      0.669702,
+      0.667461,
+      0.668597
+    ],
+    "relative_to_baseline": 4.547128426151418e-16,
+    "peak_gpu_mib": 3710.0
+  },
+  {
+    "name": "paired_mixed",
+    "diagnostic_only": true,
+    "actions": 4,
+    "system_dofs": 202752,
+    "ka": 28,
+    "ref": 5,
+    "max_leaf": 64,
+    "ri_imag": 0,
+    "seed": 0,
+    "strict": false,
+    "setup_s": 4.28741,
+    "matvec_s": 0.411898,
+    "action_seconds": [
+      0.426043,
+      0.412254,
+      0.411307,
+      0.412133
+    ],
+    "relative_to_baseline": 4.1375563958080565e-07,
+    "peak_gpu_mib": 2700.0
+  }
+]

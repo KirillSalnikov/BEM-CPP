@@ -1,0 +1,389 @@
+{
+  "base_commit": "aa66bfe1bc84b0288dfd731f68b2ca1fab05424c",
+  "branch": "experiment/analytic-alpha",
+  "hardware": "NVIDIA GeForce RTX 3090 Ti, 24564 MiB, 595.99.02",
+  "omp_threads": 8,
+  "method": "Fourier transform of coarse complex fields, degree-two frame/polarization convolution, Parseval mean of all 16 Mueller elements",
+  "scope": "Opt-in analytic alpha only; beta/gamma quadrature and BEM linear solves remain in place.",
+  "stage_benchmark": "Same converged two-polarization currents; replay linear-solver iteration counts were zero. Median of round-robin repetitions. 181 scattering angles.",
+  "accuracy": "Relative Frobenius error over the complete Mueller array. These comparisons do not establish absolute surface discretization accuracy.",
+  "rows": [
+    {
+      "case": "prism",
+      "ka": 5,
+      "ref": 2,
+      "alpha": 256,
+      "system_dofs": 3168,
+      "field_samples": 48,
+      "direct_farfield_s": 0.034735488,
+      "spectral_farfield_s": 0.010839235,
+      "analytic_farfield_s": 0.007345646,
+      "speedup_vs_spectral": 1.4755999676543083,
+      "speedup_vs_direct": 4.728717937129015,
+      "relative_error_vs_spectral": 5.890972391710534e-16,
+      "relative_error_vs_direct": 6.899064935886432e-09,
+      "max_error_over_peak_vs_direct": 9.73078039773877e-09,
+      "repeats": 5,
+      "timing_spread": {
+        "direct": {
+          "minimum_s": 0.032060765,
+          "maximum_s": 0.035995745,
+          "median_s": 0.034735488
+        },
+        "spectral": {
+          "minimum_s": 0.010427378,
+          "maximum_s": 0.011080611,
+          "median_s": 0.010839235
+        },
+        "analytic": {
+          "minimum_s": 0.006811237,
+          "maximum_s": 0.007413354,
+          "median_s": 0.007345646
+        }
+      }
+    },
+    {
+      "case": "prism",
+      "ka": 5,
+      "ref": 2,
+      "alpha": 1024,
+      "system_dofs": 3168,
+      "field_samples": 48,
+      "direct_farfield_s": 0.130670729,
+      "spectral_farfield_s": 0.02129856,
+      "analytic_farfield_s": 0.006837134,
+      "speedup_vs_spectral": 3.11512981901481,
+      "speedup_vs_direct": 19.111915753004112,
+      "relative_error_vs_spectral": 1.4147625693453897e-15,
+      "relative_error_vs_direct": 6.861039658118838e-09,
+      "max_error_over_peak_vs_direct": 9.783085396750401e-09,
+      "repeats": 5,
+      "timing_spread": {
+        "direct": {
+          "minimum_s": 0.128957851,
+          "maximum_s": 0.141059873,
+          "median_s": 0.130670729
+        },
+        "spectral": {
+          "minimum_s": 0.021087249,
+          "maximum_s": 0.021568751,
+          "median_s": 0.02129856
+        },
+        "analytic": {
+          "minimum_s": 0.006819792,
+          "maximum_s": 0.007340876,
+          "median_s": 0.006837134
+        }
+      }
+    },
+    {
+      "case": "sphere",
+      "ka": 10,
+      "ref": 3,
+      "alpha": 256,
+      "system_dofs": 7680,
+      "field_samples": 48,
+      "direct_farfield_s": 0.077912697,
+      "spectral_farfield_s": 0.017555176,
+      "analytic_farfield_s": 0.01461889,
+      "speedup_vs_spectral": 1.2008556053161354,
+      "speedup_vs_direct": 5.329590481903892,
+      "relative_error_vs_spectral": 6.943145801612944e-16,
+      "relative_error_vs_direct": 8.189569931932404e-09,
+      "max_error_over_peak_vs_direct": 8.171002392140004e-09,
+      "repeats": 5,
+      "timing_spread": {
+        "direct": {
+          "minimum_s": 0.072706401,
+          "maximum_s": 0.081462806,
+          "median_s": 0.077912697
+        },
+        "spectral": {
+          "minimum_s": 0.017250078,
+          "maximum_s": 0.018945059,
+          "median_s": 0.017555176
+        },
+        "analytic": {
+          "minimum_s": 0.014274751,
+          "maximum_s": 0.01609704,
+          "median_s": 0.01461889
+        }
+      }
+    },
+    {
+      "case": "sphere",
+      "ka": 10,
+      "ref": 3,
+      "alpha": 1024,
+      "system_dofs": 7680,
+      "field_samples": 48,
+      "direct_farfield_s": 0.305091465,
+      "spectral_farfield_s": 0.028186206,
+      "analytic_farfield_s": 0.014290825,
+      "speedup_vs_spectral": 1.972328819364872,
+      "speedup_vs_direct": 21.348765029310766,
+      "relative_error_vs_spectral": 1.0048175593868402e-15,
+      "relative_error_vs_direct": 7.239224026024535e-09,
+      "max_error_over_peak_vs_direct": 7.760487366064797e-09,
+      "repeats": 5,
+      "timing_spread": {
+        "direct": {
+          "minimum_s": 0.298770455,
+          "maximum_s": 0.316286419,
+          "median_s": 0.305091465
+        },
+        "spectral": {
+          "minimum_s": 0.02809761,
+          "maximum_s": 0.028684836,
+          "median_s": 0.028186206
+        },
+        "analytic": {
+          "minimum_s": 0.014214894,
+          "maximum_s": 0.015461118,
+          "median_s": 0.014290825
+        }
+      }
+    },
+    {
+      "case": "asymmetric",
+      "ka": 8,
+      "ref": 3,
+      "alpha": 256,
+      "system_dofs": 1536,
+      "field_samples": 48,
+      "direct_farfield_s": 0.018861295,
+      "spectral_farfield_s": 0.007936155,
+      "analytic_farfield_s": 0.004337029,
+      "speedup_vs_spectral": 1.8298597957265217,
+      "speedup_vs_direct": 4.348897597871723,
+      "relative_error_vs_spectral": 5.546499722439601e-16,
+      "relative_error_vs_direct": 7.989468387049702e-06,
+      "max_error_over_peak_vs_direct": 5.324574631874643e-06,
+      "repeats": 5,
+      "timing_spread": {
+        "direct": {
+          "minimum_s": 0.017815059,
+          "maximum_s": 0.019082561,
+          "median_s": 0.018861295
+        },
+        "spectral": {
+          "minimum_s": 0.007812221,
+          "maximum_s": 0.008099784,
+          "median_s": 0.007936155
+        },
+        "analytic": {
+          "minimum_s": 0.004185042,
+          "maximum_s": 0.004398275,
+          "median_s": 0.004337029
+        }
+      }
+    },
+    {
+      "case": "asymmetric",
+      "ka": 8,
+      "ref": 3,
+      "alpha": 1024,
+      "system_dofs": 1536,
+      "field_samples": 48,
+      "direct_farfield_s": 0.07402962,
+      "spectral_farfield_s": 0.018777204,
+      "analytic_farfield_s": 0.004373999,
+      "speedup_vs_spectral": 4.292914561708861,
+      "speedup_vs_direct": 16.924928423623328,
+      "relative_error_vs_spectral": 2.350141166108693e-15,
+      "relative_error_vs_direct": 7.98948283556203e-06,
+      "max_error_over_peak_vs_direct": 5.32455364213869e-06,
+      "repeats": 5,
+      "timing_spread": {
+        "direct": {
+          "minimum_s": 0.072683506,
+          "maximum_s": 0.078730351,
+          "median_s": 0.07402962
+        },
+        "spectral": {
+          "minimum_s": 0.018617582,
+          "maximum_s": 0.022402288,
+          "median_s": 0.018777204
+        },
+        "analytic": {
+          "minimum_s": 0.004176736,
+          "maximum_s": 0.004481872,
+          "median_s": 0.004373999
+        }
+      }
+    },
+    {
+      "case": "prism25",
+      "ka": 25,
+      "ref": 4,
+      "alpha": 256,
+      "system_dofs": 50688,
+      "field_samples": 80,
+      "direct_farfield_s": 0.47125121,
+      "spectral_farfield_s": 0.155038898,
+      "analytic_farfield_s": 0.158226191,
+      "speedup_vs_spectral": 0.9798560972753242,
+      "speedup_vs_direct": 2.9783388389852603,
+      "relative_error_vs_spectral": 7.76233093679002e-16,
+      "relative_error_vs_direct": 5.107702510686576e-09,
+      "max_error_over_peak_vs_direct": 5.379568429447398e-09,
+      "repeats": 5,
+      "timing_spread": {
+        "direct": {
+          "minimum_s": 0.460064794,
+          "maximum_s": 0.474928273,
+          "median_s": 0.47125121
+        },
+        "spectral": {
+          "minimum_s": 0.148866423,
+          "maximum_s": 0.159264105,
+          "median_s": 0.155038898
+        },
+        "analytic": {
+          "minimum_s": 0.154028638,
+          "maximum_s": 0.163437791,
+          "median_s": 0.158226191
+        }
+      }
+    },
+    {
+      "case": "prism25",
+      "ka": 25,
+      "ref": 4,
+      "alpha": 1024,
+      "system_dofs": 50688,
+      "field_samples": 80,
+      "direct_farfield_s": 1.85377755,
+      "spectral_farfield_s": 0.164622393,
+      "analytic_farfield_s": 0.153852484,
+      "speedup_vs_spectral": 1.07000152821712,
+      "speedup_vs_direct": 12.049058304447005,
+      "relative_error_vs_spectral": 4.294900996935391e-15,
+      "relative_error_vs_direct": 5.377664890039598e-09,
+      "max_error_over_peak_vs_direct": 4.886616304728062e-09,
+      "repeats": 5,
+      "timing_spread": {
+        "direct": {
+          "minimum_s": 1.842110891,
+          "maximum_s": 1.870224339,
+          "median_s": 1.85377755
+        },
+        "spectral": {
+          "minimum_s": 0.161360819,
+          "maximum_s": 0.171218239,
+          "median_s": 0.164622393
+        },
+        "analytic": {
+          "minimum_s": 0.148939232,
+          "maximum_s": 0.156865291,
+          "median_s": 0.153852484
+        }
+      }
+    },
+    {
+      "case": "asymmetric",
+      "ka": 8,
+      "ref": 3,
+      "alpha": 256,
+      "system_dofs": 1536,
+      "field_samples": 96,
+      "direct_farfield_s": 0.018087063,
+      "spectral_farfield_s": 0.013028362,
+      "analytic_farfield_s": 0.008082495,
+      "speedup_vs_spectral": 1.6119232984369305,
+      "speedup_vs_direct": 2.2378068900754036,
+      "relative_error_vs_spectral": 6.016464834417078e-16,
+      "relative_error_vs_direct": 5.527818309571767e-09,
+      "max_error_over_peak_vs_direct": 6.271156364116702e-09,
+      "repeats": 3,
+      "timing_spread": {
+        "direct": {
+          "minimum_s": 0.017767741,
+          "maximum_s": 0.018158118,
+          "median_s": 0.018087063
+        },
+        "spectral": {
+          "minimum_s": 0.012675557,
+          "maximum_s": 0.013053079,
+          "median_s": 0.013028362
+        },
+        "analytic": {
+          "minimum_s": 0.008010729,
+          "maximum_s": 0.008544635,
+          "median_s": 0.008082495
+        }
+      }
+    }
+  ],
+  "grid_checks": [
+    {
+      "case": "prism",
+      "grid": [
+        256,
+        3,
+        4
+      ],
+      "error": {
+        "relative_frobenius": 1.2147878477732928e-08,
+        "max_over_global_peak": 1.7235379584910575e-08
+      },
+      "spectral_timing": {
+        "operator_setup_s": 0.272007871,
+        "mbj_setup_s": 0.000747901,
+        "fmm_switch_s": 0,
+        "solve_s": 1.4879092130000002,
+        "farfield_s": 0.112739946,
+        "average_loop_s": 1.617532249,
+        "total_with_setup_s": 1.890288021
+      },
+      "analytic_timing": {
+        "operator_setup_s": 0.279107986,
+        "mbj_setup_s": 0.00074766,
+        "fmm_switch_s": 0,
+        "solve_s": 1.47451693,
+        "farfield_s": 0.084099439,
+        "average_loop_s": 1.575479012,
+        "total_with_setup_s": 1.8553346579999999
+      },
+      "spectral_iterations": {
+        "total": 620,
+        "mean_per_polarization": 25.833333333333332,
+        "maximum_per_orientation": 52,
+        "maximum_residual": 9.719167209980023e-06
+      },
+      "analytic_iterations": {
+        "total": 620,
+        "mean_per_polarization": 25.833333333333332,
+        "maximum_per_orientation": 52,
+        "maximum_residual": 9.71916720998651e-06
+      }
+    }
+  ],
+  "whole_solver_speedup_established": false,
+  "validation": {
+    "synthetic_coherency_max_error": 2.017e-15,
+    "host_checks": "passed",
+    "cuda_build": "passed",
+    "git_diff_check": "passed"
+  },
+  "reproduce": "make bin/muller_nodal_fmm_demo_fp32 CXX=g++-12 CUDA_HOME=/usr -j6; python3 scripts/benchmark_analytic_alpha.py --grid-check",
+  "bandwidth_control": "python3 scripts/benchmark_analytic_alpha.py --cases asymmetric --field-samples 96 --alpha 256 --repeats 3 --out runs/analytic_alpha_bandwidth",
+  "literature": [
+    {
+      "year": 2022,
+      "doi": "10.1021/acsphotonics.1c01710",
+      "use": "Basis-independent analytical averages of absorption/scattering and asymmetry; not a full Mueller angular curve."
+    },
+    {
+      "year": 2025,
+      "doi": "10.1016/j.jqsrt.2025.109346",
+      "use": "Stable SIE-to-T-matrix construction; possible next route for complete orientation averaging."
+    },
+    {
+      "year": 2026,
+      "doi": "10.1016/j.jqsrt.2026.110087",
+      "use": "Trace formulas for polarization-dependent averaged observables; indexed journal issue is December 2026."
+    }
+  ],
+  "assessment": "At ka=25 and alpha=256 Parseval did not improve the existing spectral far-field stage. At alpha=1024 its improvement was about 7%. Larger gains on small meshes do not imply comparable complete BEM speedups. Spectral truncation must be checked separately."
+}

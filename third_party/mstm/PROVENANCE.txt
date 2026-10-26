@@ -1,0 +1,6 @@
+Source: https://github.com/dmckwski/MSTM
+Commit: a0c982121cf9ac352531f4816639a07d814385bd
+File: code/mstm-v4.0.f90
+License: MIT (LICENSE included).
+Changes: extracted VC/rotation recurrences and random-orientation contractions; supplied complete T tensor replaces file/MPI setup; bounded constants table; explicit zeroed outputs; corrected accumulation of sm(3,1) in GSF evaluation; selectable complex storage kind.
+Further adapter changes: OpenMP reduction over coupling indices; optional declared cyclic selection; corrected d(2,-2) factors in M23/M32 for nonreciprocal input; Python reciprocal-partner contraction supplies M12/M43 without projecting the input onto reciprocity.

@@ -8,3 +8,10 @@ reference triangle. Bempp-cl is distributed under the MIT License:
 https://github.com/bempp/bempp-cl
 
 No Bempp-cl binary dependency is required by the BEM-CPP solver.
+
+The analytic full-SO(3) postprocessor under third_party/mstm is derived from
+Daniel Mackowski's MSTM code, commit a0c982121cf9ac352531f4816639a07d814385bd.
+Its MIT license is included as third_party/mstm/LICENSE. The extraction,
+convention adapter, OpenMP execution, and general-T completion are described
+in third_party/mstm/PROVENANCE.txt and scripts/tmatrix_so3_mstm.py.
+https://github.com/dmckwski/MSTM

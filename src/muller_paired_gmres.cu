@@ -457,15 +457,27 @@ MullerPairedGmresResult solve_muller_paired_gmres_device(
     std::vector<cdouble> inner_x, inner_y;
     std::vector<cdouble> coefficients_host_x;
     std::vector<cdouble> coefficients_host_y;
-    // A mixed-precision correction must be solved substantially more tightly
-    // than the FP64 residual target; otherwise operator roundoff can make the
-    // outer refinement stagnate above that target.
-    const double projected_tolerance =
-        tolerance * (strict_residual ? 0.05 : 0.9);
+    // With accurate inner actions, always solving twenty times below the
+    // requested residual wastes iterations. Try a less conservative target,
+    // but keep FP64 acceptance unchanged. If its true residual fails, revert
+    // to the original tight correction target on the next refinement cycle.
+    const bool adaptive_inner = strict_residual &&
+        env_flag_enabled("BEM_MIXED_ADAPTIVE_INNER", false);
+    double projected_factor = strict_residual
+        ? (adaptive_inner ? 0.5 : 0.05) : 0.9;
+    double correction_factor = 0.05;
+    if (const char* value = std::getenv("BEM_MIXED_CORRECTION_FACTOR")) {
+        const double requested = std::atof(value);
+        if (std::isfinite(requested) && requested >= 0.05 && requested <= 0.5)
+            correction_factor = requested;
+    }
+    int rejected_cycles = 0;
 
     while (result.iterations < maximum_iterations &&
            (result.final_residual_x >= tolerance ||
             result.final_residual_y >= tolerance)) {
+        const double projected_tolerance = tolerance * projected_factor;
+        bool projected_target_reached = false;
         std::fill(
             hessenberg_x.begin(), hessenberg_x.end(), cdouble(0.0));
         std::fill(
@@ -562,6 +574,7 @@ MullerPairedGmresResult solve_muller_paired_gmres_device(
             }
             if (projected_relative_x < projected_tolerance &&
                 projected_relative_y < projected_tolerance) {
+                projected_target_reached = true;
                 break;
             }
         }
@@ -609,6 +622,14 @@ MullerPairedGmresResult solve_muller_paired_gmres_device(
             vector_norm(handle.value, n, r_y.complex_data());
         result.final_residual_x = residual_norm_x / rhs_norm_x;
         result.final_residual_y = residual_norm_y / rhs_norm_y;
+        if (adaptive_inner && projected_target_reached &&
+            (result.final_residual_x >= tolerance ||
+             result.final_residual_y >= tolerance)) {
+            ++rejected_cycles;
+            projected_factor = rejected_cycles == 1 ? correction_factor : 0.05;
+            if (verbose)
+                std::printf("  [Muller paired GPU GMRES] tightening inner target after FP64 residual rejection (factor %.3g)\n", projected_factor);
+        }
         if (verbose) {
             std::printf(
                 "  [Muller paired GPU GMRES %d] true residual: "

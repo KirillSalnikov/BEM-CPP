@@ -1,0 +1,71 @@
+[
+  {
+    "diagnostic_only": true,
+    "actions": 4,
+    "system_dofs": 202752,
+    "ka": 28,
+    "ref": 5,
+    "max_leaf": 64,
+    "ri_imag": 0,
+    "seed": 0,
+    "strict": false,
+    "warm_mixed": false,
+    "setup_s": 4.52586,
+    "matvec_s": 0.306111,
+    "action_seconds": [
+      0.325883,
+      0.316505,
+      0.305659,
+      0.296169
+    ],
+    "name": "m2l_cache",
+    "relative_to_baseline": 1.2088998506709603e-16,
+    "peak_gpu_mib": 2429.0
+  },
+  {
+    "diagnostic_only": true,
+    "actions": 4,
+    "system_dofs": 202752,
+    "ka": 28,
+    "ref": 5,
+    "max_leaf": 64,
+    "ri_imag": 0,
+    "seed": 0,
+    "strict": false,
+    "warm_mixed": false,
+    "setup_s": 4.38736,
+    "matvec_s": 0.286856,
+    "action_seconds": [
+      0.302511,
+      0.283896,
+      0.284294,
+      0.292379
+    ],
+    "name": "m2l_shifts_flat",
+    "relative_to_baseline": 1.2542340953411632e-06,
+    "peak_gpu_mib": 2761.0
+  },
+  {
+    "diagnostic_only": true,
+    "actions": 4,
+    "system_dofs": 202752,
+    "ka": 28,
+    "ref": 5,
+    "max_leaf": 64,
+    "ri_imag": 0,
+    "seed": 0,
+    "strict": false,
+    "warm_mixed": false,
+    "setup_s": 4.28593,
+    "matvec_s": 0.30023,
+    "action_seconds": [
+      0.312956,
+      0.30121,
+      0.300608,
+      0.298872
+    ],
+    "name": "m2l_shifts",
+    "relative_to_baseline": 1.2168440760789123e-16,
+    "peak_gpu_mib": 2641.0
+  }
+]

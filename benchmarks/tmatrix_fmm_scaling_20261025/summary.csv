@@ -1,0 +1,4 @@
+case,surface_system_dofs,ka,multipole_order,T_channels,completed_columns,complete,maximum_strict_residual,independent_new_direction_field_error,analytic_so3_seconds,worker_phase_seconds
+small_dense_crosscheck,648,1.0,5,70,70,True,7.029115781823107e-07,2.5872830633009756e-06,0.17722567800001343,2.8359917369998584
+complete_above_dense_limit,12672,3.0,8,160,160,True,7.43358259482132e-05,4.364995388844312e-05,5.452523657000256,57.03539913500026
+large_four_column_pilot,202752,25.0,48,4800,4,False,4.21015230377905e-06,,,54.1666650369998

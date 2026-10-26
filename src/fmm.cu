@@ -401,13 +401,19 @@ __global__ void p2m_kernel_batch4(
     }
 }
 
+__device__ __forceinline__ float fmm_point_exp(float x) { return expf(x); }
+__device__ __forceinline__ double fmm_point_exp(double x) { return exp(x); }
+__device__ __forceinline__ void fmm_point_sincos(float x,float* a,float* b) { sincosf(x,a,b); }
+__device__ __forceinline__ void fmm_point_sincos(double x,double* a,double* b) { sincos(x,a,b); }
+
+template <typename Real>
 __global__ void p2m_kernel_batch3(
     const double* __restrict__ src_pts,
     const double* __restrict__ q1_re, const double* __restrict__ q1_im,
     const double* __restrict__ q2_re, const double* __restrict__ q2_im,
     const double* __restrict__ q3_re, const double* __restrict__ q3_im,
     const double* __restrict__ dirs,
-    double k_re, double k_im,
+    Real k_re, Real k_im,
     double* __restrict__ m1_re, double* __restrict__ m1_im,
     double* __restrict__ m2_re, double* __restrict__ m2_im,
     double* __restrict__ m3_re, double* __restrict__ m3_im,
@@ -431,30 +437,30 @@ __global__ void p2m_kernel_batch3(
     const int base = node * L;
     const bool real_wavenumber = k_im == 0.0;
     for (int l = threadIdx.x; l < L; l += blockDim.x) {
-        const double dx = dirs[3 * l];
-        const double dy = dirs[3 * l + 1];
-        const double dz = dirs[3 * l + 2];
-        double a1r = 0.0, a1i = 0.0;
-        double a2r = 0.0, a2i = 0.0;
-        double a3r = 0.0, a3i = 0.0;
+        const Real dx = dirs[3 * l];
+        const Real dy = dirs[3 * l + 1];
+        const Real dz = dirs[3 * l + 2];
+        Real a1r = 0.0, a1i = 0.0;
+        Real a2r = 0.0, a2i = 0.0;
+        Real a3r = 0.0, a3i = 0.0;
         for (int source = start; source < end; source++) {
             const int sid = src_ids[source];
-            const double dot =
-                dx * (src_pts[3 * sid] - cx) +
-                dy * (src_pts[3 * sid + 1] - cy) +
-                dz * (src_pts[3 * sid + 2] - cz);
-            const double exponential =
-                real_wavenumber ? 1.0 : exp(k_im * dot);
-            const double phase = -k_re * dot;
-            double phase_sine = 0;
-            double phase_cosine = 0;
-            sincos(phase, &phase_sine, &phase_cosine);
-            const double exp_re = exponential * phase_cosine;
-            const double exp_im = exponential * phase_sine;
+            const Real dot =
+                dx * Real(src_pts[3 * sid] - cx) +
+                dy * Real(src_pts[3 * sid + 1] - cy) +
+                dz * Real(src_pts[3 * sid + 2] - cz);
+            const Real exponential =
+                real_wavenumber ? 1.0 : fmm_point_exp(k_im * dot);
+            const Real phase = -k_re * dot;
+            Real phase_sine = 0;
+            Real phase_cosine = 0;
+            fmm_point_sincos(phase, &phase_sine, &phase_cosine);
+            const Real exp_re = exponential * phase_cosine;
+            const Real exp_im = exponential * phase_sine;
 #define ACCUMULATE_P2M(Q_RE, Q_IM, ACC_RE, ACC_IM) \
             do { \
-                const double qr = (Q_RE)[sid]; \
-                const double qi = (Q_IM)[sid]; \
+                const Real qr = (Q_RE)[sid]; \
+                const Real qi = (Q_IM)[sid]; \
                 (ACC_RE) += exp_re * qr - exp_im * qi; \
                 (ACC_IM) += exp_re * qi + exp_im * qr; \
             } while (0)
@@ -760,20 +766,21 @@ __global__ void m2l_kernel_batch4_target_rows(
     }
 }
 
+template <typename ComputeReal, typename StorageReal = double>
 __global__ void m2l_kernel_batch3_target_rows(
     const int* __restrict__ row_target,
     const int* __restrict__ row_start,
     const int* __restrict__ row_end,
     const int* __restrict__ src_idx,
     const int* __restrict__ transfer_idx,
-    const double* __restrict__ transfer_re,
-    const double* __restrict__ transfer_im,
-    const double* __restrict__ m1_re,
-    const double* __restrict__ m1_im,
-    const double* __restrict__ m2_re,
-    const double* __restrict__ m2_im,
-    const double* __restrict__ m3_re,
-    const double* __restrict__ m3_im,
+    const StorageReal* __restrict__ transfer_re,
+    const StorageReal* __restrict__ transfer_im,
+    const StorageReal* __restrict__ m1_re,
+    const StorageReal* __restrict__ m1_im,
+    const StorageReal* __restrict__ m2_re,
+    const StorageReal* __restrict__ m2_im,
+    const StorageReal* __restrict__ m3_re,
+    const StorageReal* __restrict__ m3_im,
     double* __restrict__ l1_re,
     double* __restrict__ l1_im,
     double* __restrict__ l2_re,
@@ -787,20 +794,20 @@ __global__ void m2l_kernel_batch3_target_rows(
         return;
     const int local_base = row_target[row] * L;
     for (int l = threadIdx.x; l < L; l += blockDim.x) {
-        double a1r = 0.0, a1i = 0.0;
-        double a2r = 0.0, a2i = 0.0;
-        double a3r = 0.0, a3i = 0.0;
+        ComputeReal a1r = 0.0, a1i = 0.0;
+        ComputeReal a2r = 0.0, a2i = 0.0;
+        ComputeReal a3r = 0.0, a3i = 0.0;
         for (int pair = row_start[row];
              pair < row_end[row]; pair++) {
             const int transfer_base =
                 transfer_idx[pair] * L + l;
             const int source_base = src_idx[pair] * L + l;
-            const double tr = transfer_re[transfer_base];
-            const double ti = transfer_im[transfer_base];
+            const ComputeReal tr = static_cast<ComputeReal>(transfer_re[transfer_base]);
+            const ComputeReal ti = static_cast<ComputeReal>(transfer_im[transfer_base]);
 #define ACCUMULATE_M2L3(MULTI_RE, MULTI_IM, ACC_RE, ACC_IM) \
             do { \
-                const double mr = (MULTI_RE)[source_base]; \
-                const double mi = (MULTI_IM)[source_base]; \
+                const ComputeReal mr = static_cast<ComputeReal>((MULTI_RE)[source_base]); \
+                const ComputeReal mi = static_cast<ComputeReal>((MULTI_IM)[source_base]); \
                 (ACC_RE) += tr * mr - ti * mi; \
                 (ACC_IM) += tr * mi + ti * mr; \
             } while (0)
@@ -1848,183 +1855,6 @@ __global__ void l2p_hessian_kernel_batch3(
 
 // Directly contract the derivatives needed by the Muller current operator.
 // This avoids writing three full gradients and three full Hessians.
-__global__ void l2p_vector_actions_kernel_batch3(
-    const double* __restrict__ tgt_pts,
-    const double* __restrict__ dirs,
-    const double* __restrict__ weights,
-    const double* __restrict__ local_x_re,
-    const double* __restrict__ local_x_im,
-    const double* __restrict__ local_y_re,
-    const double* __restrict__ local_y_im,
-    const double* __restrict__ local_z_re,
-    const double* __restrict__ local_z_im,
-    double k_re, double k_im,
-    double prefac_re, double prefac_im,
-    double ik_re, double ik_im,
-    double neg_k2_re, double neg_k2_im,
-    double* __restrict__ curl_re,
-    double* __restrict__ curl_im,
-    double* __restrict__ hessian_action_re,
-    double* __restrict__ hessian_action_im,
-    const int* __restrict__ leaf_indices,
-    const int* __restrict__ tgt_id_offsets,
-    const int* __restrict__ tgt_ids,
-    const double* __restrict__ node_centers,
-    int L, int n_leaves)
-{
-    const int leaf_id = blockIdx.x;
-    if (leaf_id >= n_leaves)
-        return;
-    const int node = leaf_indices[leaf_id];
-    const int start = tgt_id_offsets[leaf_id];
-    const int end = tgt_id_offsets[leaf_id + 1];
-    const double cx = node_centers[3 * node];
-    const double cy = node_centers[3 * node + 1];
-    const double cz = node_centers[3 * node + 2];
-    const int local_base = node * L;
-    const bool real_wavenumber = k_im == 0.0;
-
-    for (int target = start + threadIdx.x;
-         target < end; target += blockDim.x) {
-        const int tid = tgt_ids[target];
-        const double rx = tgt_pts[3 * tid] - cx;
-        const double ry = tgt_pts[3 * tid + 1] - cy;
-        const double rz = tgt_pts[3 * tid + 2] - cz;
-        double curl_acc_re[3] = {0, 0, 0};
-        double curl_acc_im[3] = {0, 0, 0};
-        double action_acc_re[3] = {0, 0, 0};
-        double action_acc_im[3] = {0, 0, 0};
-
-        for (int l = 0; l < L; l++) {
-            const double dx = dirs[3 * l];
-            const double dy = dirs[3 * l + 1];
-            const double dz = dirs[3 * l + 2];
-            const double dot = dx * rx + dy * ry + dz * rz;
-            const double exponential =
-                real_wavenumber ? 1.0 : exp(-k_im * dot);
-            const double phase = k_re * dot;
-            double phase_sine = 0;
-            double phase_cosine = 0;
-            sincos(phase, &phase_sine, &phase_cosine);
-            const double exp_re = exponential * phase_cosine;
-            const double exp_im = exponential * phase_sine;
-            const double weight = weights[l];
-            const double weighted_re[3] = {
-                weight * local_x_re[local_base + l],
-                weight * local_y_re[local_base + l],
-                weight * local_z_re[local_base + l]
-            };
-            const double weighted_im[3] = {
-                weight * local_x_im[local_base + l],
-                weight * local_y_im[local_base + l],
-                weight * local_z_im[local_base + l]
-            };
-            double plane_re[3];
-            double plane_im[3];
-            double gradient_re[3];
-            double gradient_im[3];
-            double second_re[3];
-            double second_im[3];
-            for (int component = 0; component < 3; component++) {
-                plane_re[component] =
-                    weighted_re[component] * exp_re -
-                    weighted_im[component] * exp_im;
-                plane_im[component] =
-                    weighted_re[component] * exp_im +
-                    weighted_im[component] * exp_re;
-                gradient_re[component] =
-                    ik_re * plane_re[component] -
-                    ik_im * plane_im[component];
-                gradient_im[component] =
-                    ik_re * plane_im[component] +
-                    ik_im * plane_re[component];
-                second_re[component] =
-                    neg_k2_re * plane_re[component] -
-                    neg_k2_im * plane_im[component];
-                second_im[component] =
-                    neg_k2_re * plane_im[component] +
-                    neg_k2_im * plane_re[component];
-            }
-
-            curl_acc_re[0] +=
-                dy * gradient_re[0] - dx * gradient_re[1];
-            curl_acc_im[0] +=
-                dy * gradient_im[0] - dx * gradient_im[1];
-            curl_acc_re[1] +=
-                dz * gradient_re[0] - dx * gradient_re[2];
-            curl_acc_im[1] +=
-                dz * gradient_im[0] - dx * gradient_im[2];
-            curl_acc_re[2] +=
-                dz * gradient_re[1] - dy * gradient_re[2];
-            curl_acc_im[2] +=
-                dz * gradient_im[1] - dy * gradient_im[2];
-
-            action_acc_re[0] +=
-                -(dy * dy + dz * dz) * second_re[0] +
-                dx * dy * second_re[1] +
-                dx * dz * second_re[2];
-            action_acc_im[0] +=
-                -(dy * dy + dz * dz) * second_im[0] +
-                dx * dy * second_im[1] +
-                dx * dz * second_im[2];
-            action_acc_re[1] +=
-                dx * dy * second_re[0] -
-                (dx * dx + dz * dz) * second_re[1] +
-                dy * dz * second_re[2];
-            action_acc_im[1] +=
-                dx * dy * second_im[0] -
-                (dx * dx + dz * dz) * second_im[1] +
-                dy * dz * second_im[2];
-            action_acc_re[2] +=
-                dx * dz * second_re[0] +
-                dy * dz * second_re[1] -
-                (dx * dx + dy * dy) * second_re[2];
-            action_acc_im[2] +=
-                dx * dz * second_im[0] +
-                dy * dz * second_im[1] -
-                (dx * dx + dy * dy) * second_im[2];
-        }
-
-        for (int component = 0; component < 3; component++) {
-            const int offset = 3 * tid + component;
-            curl_re[offset] =
-                prefac_re * curl_acc_re[component] -
-                prefac_im * curl_acc_im[component];
-            curl_im[offset] =
-                prefac_re * curl_acc_im[component] +
-                prefac_im * curl_acc_re[component];
-            hessian_action_re[offset] =
-                prefac_re * action_acc_re[component] -
-                prefac_im * action_acc_im[component];
-            hessian_action_im[offset] =
-                prefac_re * action_acc_im[component] +
-                prefac_im * action_acc_re[component];
-        }
-    }
-}
-
-__device__ __forceinline__ float fmm_l2p_attenuation(float value)
-{
-    return expf(value);
-}
-
-__device__ __forceinline__ double fmm_l2p_attenuation(double value)
-{
-    return exp(value);
-}
-
-__device__ __forceinline__ void fmm_l2p_sine_cosine(
-    float value, float* sine, float* cosine)
-{
-    sincosf(value, sine, cosine);
-}
-
-__device__ __forceinline__ void fmm_l2p_sine_cosine(
-    double value, double* sine, double* cosine)
-{
-    sincos(value, sine, cosine);
-}
-
 template <typename ComputeReal>
 __device__ __forceinline__ void accumulate_l2p_vector_field(
     ComputeReal weight,
@@ -2098,6 +1928,153 @@ __device__ __forceinline__ void accumulate_l2p_vector_field(
             direction[component] * direction_dot_im -
             direction_norm_squared * plane_im[component];
     }
+}
+
+template <typename Real, bool WarpTargets = false>
+__global__ void l2p_vector_actions_kernel_batch3(
+    const double* __restrict__ tgt_pts,
+    const double* __restrict__ dirs,
+    const double* __restrict__ weights,
+    const double* __restrict__ local_x_re,
+    const double* __restrict__ local_x_im,
+    const double* __restrict__ local_y_re,
+    const double* __restrict__ local_y_im,
+    const double* __restrict__ local_z_re,
+    const double* __restrict__ local_z_im,
+    Real k_re, Real k_im,
+    Real prefac_re, Real prefac_im,
+    Real ik_re, Real ik_im,
+    Real neg_k2_re, Real neg_k2_im,
+    double* __restrict__ curl_re,
+    double* __restrict__ curl_im,
+    double* __restrict__ hessian_action_re,
+    double* __restrict__ hessian_action_im,
+    const int* __restrict__ leaf_indices,
+    const int* __restrict__ tgt_id_offsets,
+    const int* __restrict__ tgt_ids,
+    const double* __restrict__ node_centers,
+    int L, int n_leaves, int target_splits = 1)
+{
+    const int leaf_id = blockIdx.x / target_splits;
+    const int leaf_part = blockIdx.x % target_splits;
+    if (leaf_id >= n_leaves)
+        return;
+    const int node = leaf_indices[leaf_id];
+    const int start = tgt_id_offsets[leaf_id];
+    const int end = tgt_id_offsets[leaf_id + 1];
+    const double cx = node_centers[3 * node];
+    const double cy = node_centers[3 * node + 1];
+    const double cz = node_centers[3 * node + 2];
+    const int local_base = node * L;
+    const bool real_wavenumber = k_im == 0.0;
+
+    const Real curl_scale_re=prefac_re*ik_re-prefac_im*ik_im;
+    const Real curl_scale_im=prefac_re*ik_im+prefac_im*ik_re;
+    const Real action_scale_re=prefac_re*neg_k2_re-prefac_im*neg_k2_im;
+    const Real action_scale_im=prefac_re*neg_k2_im+prefac_im*neg_k2_re;
+    const int lane=WarpTargets?threadIdx.x%32:0;
+    const int target_start=WarpTargets?(leaf_part*blockDim.x+threadIdx.x)/32:threadIdx.x;
+    const int target_stride=WarpTargets?target_splits*blockDim.x/32:blockDim.x;
+    for (int target = start + target_start;
+         target < end; target += target_stride) {
+        const int tid = tgt_ids[target];
+        const Real rx = tgt_pts[3 * tid] - cx;
+        const Real ry = tgt_pts[3 * tid + 1] - cy;
+        const Real rz = tgt_pts[3 * tid + 2] - cz;
+        Real curl_acc_re[3] = {0, 0, 0};
+        Real curl_acc_im[3] = {0, 0, 0};
+        Real action_acc_re[3] = {0, 0, 0};
+        Real action_acc_im[3] = {0, 0, 0};
+
+        for (int l = lane; l < L; l += WarpTargets?32:1) {
+            const Real dx = dirs[3 * l];
+            const Real dy = dirs[3 * l + 1];
+            const Real dz = dirs[3 * l + 2];
+            const Real dot = dx * rx + dy * ry + dz * rz;
+            const Real exponential =
+                real_wavenumber ? 1.0 : fmm_point_exp(-k_im * dot);
+            const Real phase = k_re * dot;
+            Real phase_sine = 0;
+            Real phase_cosine = 0;
+            fmm_point_sincos(phase, &phase_sine, &phase_cosine);
+            const Real exp_re = exponential * phase_cosine;
+            const Real exp_im = exponential * phase_sine;
+            accumulate_l2p_vector_field<Real>(Real(weights[l]),exp_re,exp_im,dx,dy,dz,
+                Real(local_x_re[local_base+l]),Real(local_x_im[local_base+l]),
+                Real(local_y_re[local_base+l]),Real(local_y_im[local_base+l]),
+                Real(local_z_re[local_base+l]),Real(local_z_im[local_base+l]),
+                curl_acc_re,curl_acc_im,action_acc_re,action_acc_im);
+        }
+        if(WarpTargets) {
+            for(int offset=16;offset>0;offset/=2) {
+#pragma unroll
+                for(int d=0;d<3;++d) {
+                    curl_acc_re[d]+=__shfl_down_sync(0xffffffff,curl_acc_re[d],offset);
+                    curl_acc_im[d]+=__shfl_down_sync(0xffffffff,curl_acc_im[d],offset);
+                    action_acc_re[d]+=__shfl_down_sync(0xffffffff,action_acc_re[d],offset);
+                    action_acc_im[d]+=__shfl_down_sync(0xffffffff,action_acc_im[d],offset);
+                }
+            }
+        }
+        if(WarpTargets && lane!=0)continue;
+        for (int component = 0; component < 3; component++) {
+            const int offset = 3 * tid + component;
+            curl_re[offset] =
+                curl_scale_re * curl_acc_re[component] -
+                curl_scale_im * curl_acc_im[component];
+            curl_im[offset] =
+                curl_scale_re * curl_acc_im[component] +
+                curl_scale_im * curl_acc_re[component];
+            hessian_action_re[offset] =
+                action_scale_re * action_acc_re[component] -
+                action_scale_im * action_acc_im[component];
+            hessian_action_im[offset] =
+                action_scale_re * action_acc_im[component] +
+                action_scale_im * action_acc_re[component];
+        }
+    }
+}
+
+static void launch_point_vector_actions(HelmholtzFMM& f,
+    double* curl_re,double* curl_im,double* action_re,double* action_im) {
+    const cdouble ik=cdouble(0,1)*f.k,prefactor=ik/(16*M_PI*M_PI),neg=-f.k*f.k;
+    const int leaves=int(f.leaf_info.size());
+    if(!leaves)return;
+#define LAUNCH_POINT_ACTION(REAL, WARP, SPLITS) \
+    l2p_vector_actions_kernel_batch3<REAL,WARP><<<leaves*(SPLITS),256>>>( \
+        f.d_tgt_pts,f.d_dirs_cached,f.d_weights_cached,f.d_local_re,f.d_local_im, \
+        f.d_local2_re,f.d_local2_im,f.d_local3_re,f.d_local3_im, \
+        f.k.real(),f.k.imag(),prefactor.real(),prefactor.imag(),ik.real(),ik.imag(),neg.real(),neg.imag(), \
+        curl_re,curl_im,action_re,action_im,f.d_leaf_idx_cached,f.d_tgt_id_offsets_cached, \
+        f.d_tgt_ids_cached,f.d_node_centers_cached,f.L,leaves,SPLITS)
+    if(f.near_field_fp32 && bem_env_flag_enabled("BEM_FMM_MULTILEVEL_L2P_FP32")) {
+        if(bem_env_flag_enabled("BEM_FMM_MULTILEVEL_L2P_WARP")) {
+            LAUNCH_POINT_ACTION(float,true,4);
+        } else { LAUNCH_POINT_ACTION(float,false,1); }
+    } else { LAUNCH_POINT_ACTION(double,false,1); }
+#undef LAUNCH_POINT_ACTION
+}
+
+__device__ __forceinline__ float fmm_l2p_attenuation(float value)
+{
+    return expf(value);
+}
+
+__device__ __forceinline__ double fmm_l2p_attenuation(double value)
+{
+    return exp(value);
+}
+
+__device__ __forceinline__ void fmm_l2p_sine_cosine(
+    float value, float* sine, float* cosine)
+{
+    sincosf(value, sine, cosine);
+}
+
+__device__ __forceinline__ void fmm_l2p_sine_cosine(
+    double value, double* sine, double* cosine)
+{
+    sincos(value, sine, cosine);
 }
 
 template <
@@ -2726,6 +2703,46 @@ __global__ void double_to_float_kernel(
         threadIdx.x;
     if (index < count)
         output[index] = static_cast<float>(input[index]);
+}
+
+namespace {
+struct Batch3M2lCache {
+    float* data = nullptr;
+    size_t stride, transfers;
+    explicit Batch3M2lCache(HelmholtzFMM& f)
+        : stride(size_t(f.n_nodes)*f.L), transfers(size_t(f.n_unique_transfers)*f.L) {
+        const size_t bytes=(6*stride+2*transfers)*sizeof(float);
+        size_t free_bytes=0,total_bytes=0;
+        CUDA_CHECK(cudaMemGetInfo(&free_bytes,&total_bytes));
+        const size_t reserve=size_t(std::max(512,bem_env_int(
+            "BEM_FMM_MULTILEVEL_CACHE_RESERVE_MB",2048)))*1024*1024;
+        if(bytes+reserve>free_bytes) {
+            std::printf("  [MLFMA] M2L read cache skipped: %.1f MiB plus reserve do not fit\n",bytes/(1024.*1024.));
+            return;
+        }
+        const cudaError_t error=cudaMalloc(&data,bytes);
+        if(error==cudaErrorMemoryAllocation) { cudaGetLastError();data=nullptr;return; }
+        CUDA_CHECK(error);
+        if(transfers) {
+            double_to_float_kernel<<<(transfers+255)/256,256>>>(f.d_transfer_re,data,transfers);
+            double_to_float_kernel<<<(transfers+255)/256,256>>>(f.d_transfer_im,data+transfers,transfers);
+            CUDA_CHECK(cudaGetLastError());
+        }
+        std::printf("  [MLFMA] FP32 M2L read cache: %.1f MiB; FP64 originals retained\n",bytes/(1024.*1024.));
+    }
+    ~Batch3M2lCache() { cudaFree(data); }
+    float* field(int index) { return data+2*transfers+index*stride; }
+};
+
+__global__ void pack_batch3_m2l_sources(const double* r1,const double* i1,
+    const double* r2,const double* i2,const double* r3,const double* i3,
+    float* out,size_t count) {
+    const size_t index=size_t(blockIdx.x)*blockDim.x+threadIdx.x;
+    if(index>=count)return;
+    out[index]=float(r1[index]);out[count+index]=float(i1[index]);
+    out[2*count+index]=float(r2[index]);out[3*count+index]=float(i2[index]);
+    out[4*count+index]=float(r3[index]);out[5*count+index]=float(i3[index]);
+}
 }
 
 void HelmholtzFMM::init(const double* targets, int n_tgt,
@@ -3918,10 +3935,11 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
     flat_near_sources_default = true;
 #endif
     const bool request_flat_near_sources =
-        request_vector_pair &&
+        (request_vector_pair &&
         bem_env_flag_enabled(
             "BEM_FMM_FLAT_NEAR_SOURCES",
-            flat_near_sources_default);
+            flat_near_sources_default)) ||
+        (p2p_enabled && bem_env_flag_enabled("BEM_FMM_MULTILEVEL_FLAT_NEAR"));
     if (request_flat_near_sources && n_leaves > 0) {
         std::uint64_t flat_source_count = 0;
         for (int leaf = 0; leaf < n_leaves; leaf++) {
@@ -4026,6 +4044,45 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
         }
     }
 
+    // Multilevel upper bands only translate expansions. Keeping full surface
+    // charge, derivative and staging arrays here would waste O(N) memory for
+    // each band and prevent finer near-field partitions on a single GPU.
+    if (!p2p_enabled && bem_env_flag_enabled("BEM_FMM_MULTILEVEL") &&
+        !bem_env_flag_enabled("BEM_FMM_MULTILEVEL_KEEP_POINT_WORKSPACE")) {
+#define RELEASE_POINT_BUFFER(name) do { CUDA_CHECK(cudaFree(name)); name=nullptr; } while(0)
+        RELEASE_POINT_BUFFER(d_tgt_pts); RELEASE_POINT_BUFFER(d_src_pts);
+        RELEASE_POINT_BUFFER(d_tgt_pts_fp32); RELEASE_POINT_BUFFER(d_src_pts_fp32);
+        RELEASE_POINT_BUFFER(d_charges_re); RELEASE_POINT_BUFFER(d_charges_im);
+        RELEASE_POINT_BUFFER(d_charges2_re); RELEASE_POINT_BUFFER(d_charges2_im);
+        RELEASE_POINT_BUFFER(d_charges3_re); RELEASE_POINT_BUFFER(d_charges3_im);
+        RELEASE_POINT_BUFFER(d_charges4_re); RELEASE_POINT_BUFFER(d_charges4_im);
+        RELEASE_POINT_BUFFER(d_result_re); RELEASE_POINT_BUFFER(d_result_im);
+        RELEASE_POINT_BUFFER(d_result2_re); RELEASE_POINT_BUFFER(d_result2_im);
+        RELEASE_POINT_BUFFER(d_result3_re); RELEASE_POINT_BUFFER(d_result3_im);
+        RELEASE_POINT_BUFFER(d_result4_re); RELEASE_POINT_BUFFER(d_result4_im);
+        RELEASE_POINT_BUFFER(d_grad_re); RELEASE_POINT_BUFFER(d_grad_im);
+        RELEASE_POINT_BUFFER(d_grad2_re); RELEASE_POINT_BUFFER(d_grad2_im);
+        RELEASE_POINT_BUFFER(d_grad3_re); RELEASE_POINT_BUFFER(d_grad3_im);
+        RELEASE_POINT_BUFFER(d_grad4_re); RELEASE_POINT_BUFFER(d_grad4_im);
+        RELEASE_POINT_BUFFER(d_hess_re); RELEASE_POINT_BUFFER(d_hess_im);
+        RELEASE_POINT_BUFFER(d_hess2_re); RELEASE_POINT_BUFFER(d_hess2_im);
+        RELEASE_POINT_BUFFER(d_hess3_re); RELEASE_POINT_BUFFER(d_hess3_im);
+        RELEASE_POINT_BUFFER(d_hess4_re); RELEASE_POINT_BUFFER(d_hess4_im);
+        RELEASE_POINT_BUFFER(d_gy_re_cached); RELEASE_POINT_BUFFER(d_gy_im_cached);
+        RELEASE_POINT_BUFFER(d_gz_re_cached); RELEASE_POINT_BUFFER(d_gz_im_cached);
+        RELEASE_POINT_BUFFER(d_gx_re_tmp_cached); RELEASE_POINT_BUFFER(d_gx_im_tmp_cached);
+        RELEASE_POINT_BUFFER(d_gy2_re_cached); RELEASE_POINT_BUFFER(d_gy2_im_cached);
+        RELEASE_POINT_BUFFER(d_gz2_re_cached); RELEASE_POINT_BUFFER(d_gz2_im_cached);
+        RELEASE_POINT_BUFFER(d_gx2_re_tmp_cached); RELEASE_POINT_BUFFER(d_gx2_im_tmp_cached);
+        RELEASE_POINT_BUFFER(d_gy3_re_cached); RELEASE_POINT_BUFFER(d_gy3_im_cached);
+        RELEASE_POINT_BUFFER(d_gz3_re_cached); RELEASE_POINT_BUFFER(d_gz3_im_cached);
+        RELEASE_POINT_BUFFER(d_gx3_re_tmp_cached); RELEASE_POINT_BUFFER(d_gx3_im_tmp_cached);
+        RELEASE_POINT_BUFFER(d_gy4_re_cached); RELEASE_POINT_BUFFER(d_gy4_im_cached);
+        RELEASE_POINT_BUFFER(d_gz4_re_cached); RELEASE_POINT_BUFFER(d_gz4_im_cached);
+        RELEASE_POINT_BUFFER(d_gx4_re_tmp_cached); RELEASE_POINT_BUFFER(d_gx4_im_tmp_cached);
+        RELEASE_POINT_BUFFER(d_complex_tmp1); RELEASE_POINT_BUFFER(d_complex_tmp2);
+#undef RELEASE_POINT_BUFFER
+    }
     initialized = true;
     printf("  [FMM] Init complete: p=%d L=%d, %d nodes, %.1fms\n",
            p, L, n_nodes, timer.elapsed_ms());
@@ -4492,14 +4549,20 @@ void HelmholtzFMM::evaluate_grad_hessian_batch3(
     }
 }
 
+#include "fmm_multilevel.cuh"
+
 void HelmholtzFMM::evaluate_vector_actions_batch3(
     const cdouble* charges_x,
     const cdouble* charges_y,
     const cdouble* charges_z,
     cdouble* curl_result,
-    cdouble* hessian_action)
+    cdouble* hessian_action,
+    HelmholtzFMM* middle,
+    HelmholtzFMM* coarse)
 {
-    if (!batch4_allocated) {
+    if (!d_src_pts || !d_complex_tmp1)
+        throw std::runtime_error("this multilevel band has no point-evaluation workspace");
+    if (!batch4_allocated && !batch3_device_allocated) {
         std::vector<cdouble> gradient_x((size_t)Nt * 3);
         std::vector<cdouble> gradient_y((size_t)Nt * 3);
         std::vector<cdouble> gradient_z((size_t)Nt * 3);
@@ -4552,7 +4615,7 @@ void HelmholtzFMM::evaluate_vector_actions_batch3(
     const int source_grid = (Ns + block - 1) / block;
     auto upload = [&](const cdouble* charges,
                       double* real, double* imaginary) {
-        CUDA_CHECK(cudaMemcpy(
+        CUDA_CHECK(cudaMemcpyAsync(
             d_complex_tmp1, charges,
             (size_t)Ns * sizeof(double2), cudaMemcpyHostToDevice));
         split_complex_kernel<<<source_grid, block>>>(
@@ -4565,36 +4628,21 @@ void HelmholtzFMM::evaluate_vector_actions_batch3(
     if (profile)
         CUDA_CHECK(cudaEventRecord(profile_events[1]));
 
-    evaluate_batch3_far_uploaded();
+    if (coarse) evaluate_multilevel_far_uploaded(middle, *coarse);
+    else evaluate_batch3_far_uploaded();
     if (profile)
         CUDA_CHECK(cudaEventRecord(profile_events[2]));
 
     const int output_count = 3 * Nt;
     const size_t output_bytes =
         (size_t)output_count * sizeof(double);
-    CUDA_CHECK(cudaMemset(d_grad_re, 0, output_bytes));
-    CUDA_CHECK(cudaMemset(d_grad_im, 0, output_bytes));
-    CUDA_CHECK(cudaMemset(d_hess_re, 0, output_bytes));
-    CUDA_CHECK(cudaMemset(d_hess_im, 0, output_bytes));
-    const cdouble ik_val = cdouble(0, 1) * k;
-    const cdouble prefactor =
-        ik_val / (16.0 * M_PI * M_PI);
-    const cdouble negative_k_squared = -k * k;
+    CUDA_CHECK(cudaMemsetAsync(d_grad_re, 0, output_bytes));
+    CUDA_CHECK(cudaMemsetAsync(d_grad_im, 0, output_bytes));
+    CUDA_CHECK(cudaMemsetAsync(d_hess_re, 0, output_bytes));
+    CUDA_CHECK(cudaMemsetAsync(d_hess_im, 0, output_bytes));
     const int n_leaves = (int)leaf_info.size();
     if (n_leaves > 0) {
-        l2p_vector_actions_kernel_batch3<<<n_leaves, 256>>>(
-            d_tgt_pts, d_dirs_cached, d_weights_cached,
-            d_local_re, d_local_im,
-            d_local2_re, d_local2_im,
-            d_local3_re, d_local3_im,
-            k.real(), k.imag(),
-            prefactor.real(), prefactor.imag(),
-            ik_val.real(), ik_val.imag(),
-            negative_k_squared.real(), negative_k_squared.imag(),
-            d_grad_re, d_grad_im,
-            d_hess_re, d_hess_im,
-            d_leaf_idx_cached, d_tgt_id_offsets_cached, d_tgt_ids_cached,
-            d_node_centers_cached, L, n_leaves);
+        launch_point_vector_actions(*this, d_grad_re, d_grad_im, d_hess_re, d_hess_im);
         CUDA_CHECK(cudaGetLastError());
         if (p2p_enabled) {
             launch_p2p_vector_actions_batch3_leaf(
@@ -4622,14 +4670,14 @@ void HelmholtzFMM::evaluate_vector_actions_batch3(
     pack_complex_kernel<<<output_grid, block>>>(
         d_grad_re, d_grad_im, d_complex_tmp1, output_count);
     CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaMemcpy(
+    CUDA_CHECK(cudaMemcpyAsync(
         curl_result, d_complex_tmp1,
         (size_t)output_count * sizeof(double2),
         cudaMemcpyDeviceToHost));
     pack_complex_kernel<<<output_grid, block>>>(
         d_hess_re, d_hess_im, d_complex_tmp1, output_count);
     CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaMemcpy(
+    CUDA_CHECK(cudaMemcpyAsync(
         hessian_action, d_complex_tmp1,
         (size_t)output_count * sizeof(double2),
         cudaMemcpyDeviceToHost));
@@ -4650,6 +4698,9 @@ void HelmholtzFMM::evaluate_vector_actions_batch3(
             milliseconds[2], milliseconds[3]);
         for (cudaEvent_t& event : profile_events)
             CUDA_CHECK(cudaEventDestroy(event));
+    } else {
+        // Only this medium must finish before its host outputs are consumed.
+        CUDA_CHECK(cudaStreamSynchronize(0));
     }
 }
 
@@ -4659,7 +4710,9 @@ void HelmholtzFMM::evaluate_vector_actions_batch3_device(
     const double* charges_y_re,
     const double* charges_y_im,
     const double* charges_z_re,
-    const double* charges_z_im)
+    const double* charges_z_im,
+    HelmholtzFMM* middle,
+    HelmholtzFMM* coarse)
 {
     if (!batch3_device_allocated)
         throw std::runtime_error(
@@ -4696,7 +4749,8 @@ void HelmholtzFMM::evaluate_vector_actions_batch3_device(
     if (profile)
         CUDA_CHECK(cudaEventRecord(profile_events[1]));
 
-    evaluate_batch3_far_uploaded();
+    if (coarse) evaluate_multilevel_far_uploaded(middle, *coarse);
+    else evaluate_batch3_far_uploaded();
     if (profile)
         CUDA_CHECK(cudaEventRecord(profile_events[2]));
 
@@ -4707,25 +4761,9 @@ void HelmholtzFMM::evaluate_vector_actions_batch3_device(
     CUDA_CHECK(cudaMemsetAsync(d_grad_im, 0, output_bytes));
     CUDA_CHECK(cudaMemsetAsync(d_hess_re, 0, output_bytes));
     CUDA_CHECK(cudaMemsetAsync(d_hess_im, 0, output_bytes));
-    const cdouble ik_val = cdouble(0, 1) * k;
-    const cdouble prefactor =
-        ik_val / (16.0 * M_PI * M_PI);
-    const cdouble negative_k_squared = -k * k;
     const int n_leaves = (int)leaf_info.size();
     if (n_leaves > 0) {
-        l2p_vector_actions_kernel_batch3<<<n_leaves, 256>>>(
-            d_tgt_pts, d_dirs_cached, d_weights_cached,
-            d_local_re, d_local_im,
-            d_local2_re, d_local2_im,
-            d_local3_re, d_local3_im,
-            k.real(), k.imag(),
-            prefactor.real(), prefactor.imag(),
-            ik_val.real(), ik_val.imag(),
-            negative_k_squared.real(), negative_k_squared.imag(),
-            d_grad_re, d_grad_im,
-            d_hess_re, d_hess_im,
-            d_leaf_idx_cached, d_tgt_id_offsets_cached, d_tgt_ids_cached,
-            d_node_centers_cached, L, n_leaves);
+        launch_point_vector_actions(*this, d_grad_re, d_grad_im, d_hess_re, d_hess_im);
         CUDA_CHECK(cudaGetLastError());
         if (profile)
             CUDA_CHECK(cudaEventRecord(profile_events[3]));
@@ -4800,6 +4838,81 @@ __global__ void pack_pair_charges_fp32_kernel(
     for (int field = 0; field < 12; field++)
         packed[field * source_count + source] =
             static_cast<float>(fields[field][source]);
+}
+
+void HelmholtzFMM::evaluate_multilevel_pair_device(
+    const double* const charges_re[6], const double* const charges_im[6],
+    HelmholtzFMM* middle, HelmholtzFMM& coarse)
+{
+    if (!batch3_device_allocated || !p2p_enabled)
+        throw std::runtime_error("multilevel pair needs a finest-level three-channel workspace");
+    const size_t stride=size_t(n_nodes)*L, field_bytes=stride*sizeof(double);
+    const size_t output_bytes=size_t(Nt)*3*sizeof(double);
+    // These buffers are owned and freed by the ordinary FMM cleanup path.
+    if (!d_pair_local_re) CUDA_CHECK(cudaMalloc(&d_pair_local_re,3*field_bytes));
+    if (!d_pair_local_im) CUDA_CHECK(cudaMalloc(&d_pair_local_im,3*field_bytes));
+    if (!d_hess2_re) CUDA_CHECK(cudaMalloc(&d_hess2_re,output_bytes));
+    if (!d_hess2_im) CUDA_CHECK(cudaMalloc(&d_hess2_im,output_bytes));
+    double* local_re[3]={d_local_re,d_local2_re,d_local3_re};
+    double* local_im[3]={d_local_im,d_local2_im,d_local3_im};
+    double* source_re[3]={d_charges_re,d_charges2_re,d_charges3_re};
+    double* source_im[3]={d_charges_im,d_charges2_im,d_charges3_im};
+    const bool profile=bem_env_flag_enabled("BEM_FMM_PROFILE_BATCH3");
+    cudaEvent_t events[4]={};
+    if(profile) {
+        for(auto& event:events)CUDA_CHECK(cudaEventCreate(&event));
+        CUDA_CHECK(cudaEventRecord(events[0]));
+    }
+    for(int current=0;current<2;++current) {
+        for(int d=0;d<3;++d) {
+            CUDA_CHECK(cudaMemcpyAsync(source_re[d],charges_re[3*current+d],size_t(Ns)*sizeof(double),cudaMemcpyDeviceToDevice));
+            CUDA_CHECK(cudaMemcpyAsync(source_im[d],charges_im[3*current+d],size_t(Ns)*sizeof(double),cudaMemcpyDeviceToDevice));
+        }
+        evaluate_multilevel_far_uploaded(middle,coarse);
+        if(current==0)for(int d=0;d<3;++d) {
+            CUDA_CHECK(cudaMemcpyAsync(d_pair_local_re+d*stride,local_re[d],field_bytes,cudaMemcpyDeviceToDevice));
+            CUDA_CHECK(cudaMemcpyAsync(d_pair_local_im+d*stride,local_im[d],field_bytes,cudaMemcpyDeviceToDevice));
+        }
+    }
+    if(profile)CUDA_CHECK(cudaEventRecord(events[1]));
+    double* output[8]={d_grad_re,d_grad_im,d_hess_re,d_hess_im,d_grad2_re,d_grad2_im,d_hess2_re,d_hess2_im};
+    for(auto ptr:output)CUDA_CHECK(cudaMemsetAsync(ptr,0,output_bytes));
+    const cdouble ik=cdouble(0,1)*k,prefactor=ik/(16*M_PI*M_PI),negative_k_squared=-k*k;
+    const int leaves=int(leaf_info.size());
+    const bool mixed_l2p=near_field_fp32 && bem_env_flag_enabled("BEM_FMM_MULTILEVEL_L2P_FP32");
+#define LAUNCH_MULTILEVEL_PAIR_L2P(REAL) \
+    l2p_vector_actions_pair_batch3_kernel<false,false,REAL,double><<<leaves,256>>>( \
+        d_tgt_pts,d_dirs_cached,d_weights_cached,nullptr,d_pair_local_re,d_pair_local_im, \
+        d_local_re,d_local_im,d_local2_re,d_local2_im,d_local3_re,d_local3_im, \
+        int(stride),Nt,k.real(),k.imag(),prefactor.real(),prefactor.imag(),ik.real(),ik.imag(), \
+        negative_k_squared.real(),negative_k_squared.imag(), \
+        d_grad_re,d_grad_im,d_hess_re,d_hess_im,d_grad2_re,d_grad2_im,d_hess2_re,d_hess2_im, \
+        d_leaf_idx_cached,d_tgt_id_offsets_cached,d_tgt_ids_cached,d_node_centers_cached,L,leaves)
+    if(leaves>0) {
+        if(mixed_l2p) { LAUNCH_MULTILEVEL_PAIR_L2P(float); }
+        else { LAUNCH_MULTILEVEL_PAIR_L2P(double); }
+    }
+#undef LAUNCH_MULTILEVEL_PAIR_L2P
+    CUDA_CHECK(cudaGetLastError());
+    if(profile)CUDA_CHECK(cudaEventRecord(events[2]));
+    if(leaves>0)launch_p2p_vector_actions_pair_batch3_leaf(
+        d_tgt_pts,d_src_pts,
+        charges_re[0],charges_im[0],charges_re[1],charges_im[1],charges_re[2],charges_im[2],
+        charges_re[3],charges_im[3],charges_re[4],charges_im[4],charges_re[5],charges_im[5],
+        d_tgt_id_offsets_cached,d_tgt_ids_cached,d_src_id_offsets_cached,d_src_ids_cached,
+        d_leaf_near_offsets_cached,d_leaf_near_ids_cached,
+        d_leaf_near_source_offsets_cached,d_leaf_near_source_ids_cached,
+        leaves,k.real(),k.imag(),d_grad_re,d_grad_im,d_hess_re,d_hess_im,
+        d_grad2_re,d_grad2_im,d_hess2_re,d_hess2_im,d_tgt_pts_fp32,d_src_pts_fp32,
+        nullptr,Ns,near_field_fp32);
+    CUDA_CHECK(cudaGetLastError());
+    if(profile) {
+        CUDA_CHECK(cudaEventRecord(events[3]));CUDA_CHECK(cudaEventSynchronize(events[3]));
+        float ms[3]={};
+        for(int i=0;i<3;++i)CUDA_CHECK(cudaEventElapsedTime(&ms[i],events[i],events[i+1]));
+        std::printf("  [MLFMA pair k=%.4g] far=%.3fms L2P=%.3fms P2P=%.3fms strict=%d\n",k.real(),ms[0],ms[1],ms[2],!near_field_fp32);
+        for(auto event:events)CUDA_CHECK(cudaEventDestroy(event));
+    } else CUDA_CHECK(cudaStreamSynchronize(0));
 }
 
 void HelmholtzFMM::evaluate_vector_actions_pair_batch3_device(
@@ -4923,19 +5036,7 @@ void HelmholtzFMM::evaluate_vector_actions_pair_batch3_device(
         CUDA_CHECK(cudaMemsetAsync(action_im, 0, output_bytes));
         if (n_leaves <= 0)
             return;
-        l2p_vector_actions_kernel_batch3<<<n_leaves, 256>>>(
-            d_tgt_pts, d_dirs_cached, d_weights_cached,
-            d_local_re, d_local_im,
-            d_local2_re, d_local2_im,
-            d_local3_re, d_local3_im,
-            k.real(), k.imag(),
-            prefactor.real(), prefactor.imag(),
-            ik_val.real(), ik_val.imag(),
-            negative_k_squared.real(), negative_k_squared.imag(),
-            curl_re, curl_im, action_re, action_im,
-            d_leaf_idx_cached, d_tgt_id_offsets_cached,
-            d_tgt_ids_cached, d_node_centers_cached,
-            L, n_leaves);
+        launch_point_vector_actions(*this, curl_re, curl_im, action_re, action_im);
         CUDA_CHECK(cudaGetLastError());
     };
     auto evaluate_pair_far = [&]() {
@@ -6473,27 +6574,32 @@ void HelmholtzFMM::evaluate_batch2_uploaded()
     CUDA_CHECK(cudaGetLastError());
 }
 
-void HelmholtzFMM::evaluate_batch3_far_uploaded()
+void HelmholtzFMM::evaluate_batch3_far_uploaded(bool multipoles_ready)
 {
+    if (!multipoles_ready && !d_src_pts)
+        throw std::runtime_error("upper multilevel band requires transferred multipoles");
     const int n_leaves = (int)leaf_info.size();
     const size_t expansion_bytes =
         (size_t)n_nodes * L * sizeof(double);
-    CUDA_CHECK(cudaMemset(d_multi_re, 0, expansion_bytes));
-    CUDA_CHECK(cudaMemset(d_multi_im, 0, expansion_bytes));
-    CUDA_CHECK(cudaMemset(d_local_re, 0, expansion_bytes));
-    CUDA_CHECK(cudaMemset(d_local_im, 0, expansion_bytes));
-    CUDA_CHECK(cudaMemset(d_multi2_re, 0, expansion_bytes));
-    CUDA_CHECK(cudaMemset(d_multi2_im, 0, expansion_bytes));
-    CUDA_CHECK(cudaMemset(d_local2_re, 0, expansion_bytes));
-    CUDA_CHECK(cudaMemset(d_local2_im, 0, expansion_bytes));
-    CUDA_CHECK(cudaMemset(d_multi3_re, 0, expansion_bytes));
-    CUDA_CHECK(cudaMemset(d_multi3_im, 0, expansion_bytes));
-    CUDA_CHECK(cudaMemset(d_local3_re, 0, expansion_bytes));
-    CUDA_CHECK(cudaMemset(d_local3_im, 0, expansion_bytes));
+    if (!multipoles_ready) {
+        CUDA_CHECK(cudaMemsetAsync(d_multi_re, 0, expansion_bytes));
+        CUDA_CHECK(cudaMemsetAsync(d_multi_im, 0, expansion_bytes));
+        CUDA_CHECK(cudaMemsetAsync(d_multi2_re, 0, expansion_bytes));
+        CUDA_CHECK(cudaMemsetAsync(d_multi2_im, 0, expansion_bytes));
+        CUDA_CHECK(cudaMemsetAsync(d_multi3_re, 0, expansion_bytes));
+        CUDA_CHECK(cudaMemsetAsync(d_multi3_im, 0, expansion_bytes));
+    }
+    CUDA_CHECK(cudaMemsetAsync(d_local_re, 0, expansion_bytes));
+    CUDA_CHECK(cudaMemsetAsync(d_local_im, 0, expansion_bytes));
+    CUDA_CHECK(cudaMemsetAsync(d_local2_re, 0, expansion_bytes));
+    CUDA_CHECK(cudaMemsetAsync(d_local2_im, 0, expansion_bytes));
+    CUDA_CHECK(cudaMemsetAsync(d_local3_re, 0, expansion_bytes));
+    CUDA_CHECK(cudaMemsetAsync(d_local3_im, 0, expansion_bytes));
 
     const int block_L = std::min(L, 256);
-    if (n_leaves > 0) {
-        p2m_kernel_batch3<<<n_leaves, block_L>>>(
+    if (!multipoles_ready && n_leaves > 0) {
+        if(near_field_fp32 && bem_env_flag_enabled("BEM_FMM_MULTILEVEL_P2M_FP32")) {
+        p2m_kernel_batch3<float><<<n_leaves, block_L>>>(
             d_src_pts,
             d_charges_re, d_charges_im,
             d_charges2_re, d_charges2_im,
@@ -6505,10 +6611,24 @@ void HelmholtzFMM::evaluate_batch3_far_uploaded()
             d_leaf_idx_cached,
             d_src_id_offsets_cached, d_src_ids_cached,
             d_node_centers_cached, L, n_leaves);
+        } else {
+        p2m_kernel_batch3<double><<<n_leaves, block_L>>>(
+            d_src_pts,
+            d_charges_re, d_charges_im,
+            d_charges2_re, d_charges2_im,
+            d_charges3_re, d_charges3_im,
+            d_dirs_cached, k.real(), k.imag(),
+            d_multi_re, d_multi_im,
+            d_multi2_re, d_multi2_im,
+            d_multi3_re, d_multi3_im,
+            d_leaf_idx_cached,
+            d_src_id_offsets_cached, d_src_ids_cached,
+            d_node_centers_cached, L, n_leaves);
+        }
         CUDA_CHECK(cudaGetLastError());
     }
 
-    for (int level = tree.max_level - 1; level >= 1; level--) {
+    for (int level = tree.max_level - 1; level >= std::max(1, minimum_m2l_level); level--) {
         if (level < (int)m2m_level_info.size() &&
             m2m_level_info[level].count > 0) {
             const int offset = m2m_level_info[level].offset;
@@ -6524,8 +6644,23 @@ void HelmholtzFMM::evaluate_batch3_far_uploaded()
         }
     }
 
+    const bool mixed_m2l = near_field_fp32 &&
+        bem_env_flag_enabled("BEM_FMM_MULTILEVEL_M2L_FP32");
+    Batch3M2lCache* read_cache=nullptr;
+    if(mixed_m2l && bem_env_flag_enabled("BEM_FMM_MULTILEVEL_M2L_CACHE")) {
+        if(!batch3_m2l_cache)batch3_m2l_cache=new Batch3M2lCache(*this);
+        read_cache=static_cast<Batch3M2lCache*>(batch3_m2l_cache);
+        if(read_cache->data) {
+            pack_batch3_m2l_sources<<<(read_cache->stride+255)/256,256>>>(
+                d_multi_re,d_multi_im,d_multi2_re,d_multi2_im,d_multi3_re,d_multi3_im,
+                read_cache->field(0),read_cache->stride);
+            CUDA_CHECK(cudaGetLastError());
+        } else read_cache=nullptr;
+    }
+    const bool row_m2l = mixed_m2l ||
+        bem_env_flag_enabled("BEM_FMM_MULTILEVEL_M2L_ROWS");
     for (int level = 1; level <= tree.max_level; level++) {
-        if (!p2p_enabled) {
+        if (!p2p_enabled && !row_m2l) {
             if (level >= (int)m2l_level_info.size() ||
                 m2l_level_info[level].count <= 0)
                 continue;
@@ -6547,7 +6682,23 @@ void HelmholtzFMM::evaluate_batch3_far_uploaded()
                 continue;
             const int offset = m2l_row_level_info[level].offset;
             const int count = m2l_row_level_info[level].count;
-            m2l_kernel_batch3_target_rows<<<count, block_L>>>(
+            if (read_cache) {
+                m2l_kernel_batch3_target_rows<float,float><<<count, block_L>>>(
+                    d_m2l_row_target,d_m2l_row_start,d_m2l_row_end,d_m2l_src,d_m2l_tidx,
+                    read_cache->data,read_cache->data+read_cache->transfers,
+                    read_cache->field(0),read_cache->field(1),read_cache->field(2),
+                    read_cache->field(3),read_cache->field(4),read_cache->field(5),
+                    d_local_re,d_local_im,d_local2_re,d_local2_im,d_local3_re,d_local3_im,
+                    L,count,offset);
+            } else if (mixed_m2l) {
+                m2l_kernel_batch3_target_rows<float><<<count, block_L>>>(
+                    d_m2l_row_target, d_m2l_row_start, d_m2l_row_end,
+                    d_m2l_src, d_m2l_tidx, d_transfer_re, d_transfer_im,
+                    d_multi_re, d_multi_im, d_multi2_re, d_multi2_im,
+                    d_multi3_re, d_multi3_im, d_local_re, d_local_im,
+                    d_local2_re, d_local2_im, d_local3_re, d_local3_im,
+                    L, count, offset);
+            } else m2l_kernel_batch3_target_rows<double><<<count, block_L>>>(
                 d_m2l_row_target, d_m2l_row_start, d_m2l_row_end,
                 d_m2l_src, d_m2l_tidx,
                 d_transfer_re, d_transfer_im,
@@ -6562,7 +6713,7 @@ void HelmholtzFMM::evaluate_batch3_far_uploaded()
         CUDA_CHECK(cudaGetLastError());
     }
 
-    for (int level = 2; level <= tree.max_level; level++) {
+    for (int level = std::max(2, minimum_m2l_level + 1); level <= tree.max_level; level++) {
         if (level < (int)l2l_level_info.size() &&
             l2l_level_info[level].count > 0) {
             const int offset = l2l_level_info[level].offset;
@@ -6965,6 +7116,9 @@ void HelmholtzFMM::evaluate_pot_grad_batch4_uploaded()
 
 void HelmholtzFMM::cleanup()
 {
+    delete static_cast<Batch3M2lCache*>(batch3_m2l_cache);
+    batch3_m2l_cache=nullptr;
+    cleanup_multilevel_link(*this);
     if (!initialized) return;
     cudaFree(d_tgt_pts); cudaFree(d_src_pts);
     cudaFree(d_tgt_pts_fp32); cudaFree(d_src_pts_fp32);

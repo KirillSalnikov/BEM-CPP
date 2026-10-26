@@ -1,0 +1,91 @@
+{
+  "hardware": "RTX 3090 Ti; Ryzen 7950X; 61 GiB RAM",
+  "worktree": "/home/kirill/neuro/BEM-CPP-analytic-alpha",
+  "accepted_changes": [
+    "FP64 cache of exact interlevel displacements and both translation phases",
+    "Compact FP32 M2L read copies; FP64 originals retained and always used for strict residuals",
+    "Optional balanced near-source lists on the finest multilevel band",
+    "Shared scalar/paired L2P contraction with constants outside the direction sum",
+    "Host copies/clears ordered on each medium stream, with synchronization before returning host outputs",
+    "Consistent sm_86/O3 compilation even for direct optimized object rebuilds"
+  ],
+  "new_fast_preset_defaults": {
+    "BEM_FMM_MULTILEVEL_SHIFT_CACHE": "1",
+    "BEM_FMM_MULTILEVEL_M2L_CACHE": "1",
+    "BEM_FMM_MULTILEVEL_FLAT_NEAR": "1"
+  },
+  "ka28_ref5_four_columns": {
+    "pairs": [
+      {
+        "previous_s": 61.457976811,
+        "new_s": 51.972759528,
+        "iterations": 80
+      },
+      {
+        "previous_s": 87.037915329,
+        "new_s": 73.356367275,
+        "iterations": 108
+      }
+    ],
+    "relative_column_errors": {
+      "000783": 2.023350577173273e-07,
+      "000000": 1.3565914549317013e-06,
+      "000839": 2.0126363721891688e-07,
+      "000002": 1.3683503377542528e-06
+    },
+    "maximum_strict_residual": 5.522573980541494e-06,
+    "previous_total_s": 148.49589214,
+    "new_total_s": 125.329126803,
+    "speedup": 1.1848474167813756,
+    "time_saved_fraction": 0.15600946937413374,
+    "complete_T": false,
+    "worker_binary_sha256": "38a2c23915b7e2c9747a58b0cc1e3ce884639a9b7bf7097a8dc3bba63ca96962"
+  },
+  "ka112_ref7_operator": {
+    "diagnostic_only": true,
+    "actions": 2,
+    "system_dofs": 3225600,
+    "ka": 112,
+    "ref": 7,
+    "max_leaf": 29,
+    "ri_imag": 0,
+    "seed": 0,
+    "strict": false,
+    "warm_mixed": false,
+    "setup_s": 54.0524,
+    "matvec_s": 9.66283,
+    "action_seconds": [
+      9.63589,
+      9.66283
+    ],
+    "relative_to_previous_stage": 2.2685984811393467e-06,
+    "relative_to_strict": 1.7985690839743945e-06,
+    "peak_gpu_mib": 21359.0,
+    "peak_rss_gib": 15.615978240966797,
+    "previous_action_s": 10.3173,
+    "speedup": 1.0677306751748712,
+    "complete_T": false,
+    "ref_convergence_established": false
+  },
+  "validation": {
+    "strict_gpu_operator": "2 tests passed: real and absorbing media, two/three levels, strict actions after mixed cache population, device and host assembly; relative agreement <1e-9",
+    "cache_budget_fallback": "Forced huge memory reserve skips cache, action agrees with cached path to <1e-12",
+    "builder": "Expanded host/device/fast/tight integration passed; tight path reached 1e-8 after observed FP64 rejection and refinement fallback",
+    "syntax_and_diff": "passed"
+  },
+  "measured_without_additional_gain": [
+    "Warp-per-target L2P: 9.67 s vs 9.63 s; excluded from fast preset",
+    "Stream-ordered host copies/clears alone: 9.66 s vs 9.63 s; no measurable gain claimed",
+    "Shift cache alone at ka28: no measurable gain; retained with composite profile"
+  ],
+  "memory_tradeoff": "Large action observed peak GPU memory rose from 16987 to 21359 MiB including desktop. M2L caches are skipped if they do not fit with the configured reserve; near lists use the existing separate memory guard.",
+  "orientation_averaging": "Analytical SO(3) over all three Euler angles is unchanged; partial matrices were not averaged.",
+  "limitations": [
+    "No complete ka112 T-matrix or high-ka ref-convergence result",
+    "Four sample columns do not establish full C2 covariance or full-T execution time",
+    "The existing roughly 1.8% l=28 modal energy-balance defect at ka28/ref5 is a separate discretization issue, not bounded by the linear residual"
+  ],
+  "disk_free_gib": 815.8860511779785,
+  "current_server_sha256": "54ba8bfd6de0ec2e2c4dc67a19c434a31b0dc62ed9c9c802cacba54b039e1a80",
+  "frozen_pilot_worker": "runs/mlfma_cache_20261025/cache_server"
+}

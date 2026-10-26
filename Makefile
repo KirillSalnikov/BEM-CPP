@@ -1,6 +1,7 @@
 CUDA_HOME ?= $(if $(wildcard /usr/local/cuda/bin/nvcc),/usr/local/cuda,/usr)
 NVCC ?= $(CUDA_HOME)/bin/nvcc
 CXX ?= g++
+MSTM_FC ?= gfortran
 VERSION := $(strip $(shell cat VERSION 2>/dev/null || printf unknown))
 ARCH ?= -arch=sm_70
 OPENMP ?= 1
@@ -27,6 +28,10 @@ CUDA_HESSIAN_CHECK = $(HOST_TEST_DIR)/fmm_hessian_check
 CUDA_PFFT_HESSIAN_CHECK = $(HOST_TEST_DIR)/pfft_hessian_check
 CUDA_MULLER_FMM_CHECK = $(HOST_TEST_DIR)/muller_fmm_check
 HOST_CHECKS = \
+	$(HOST_TEST_DIR)/streaming_host_gmres_check \
+	$(HOST_TEST_DIR)/sphere_interpolation_check \
+	$(HOST_TEST_DIR)/alpha_fourier_check \
+	$(HOST_TEST_DIR)/prism_dihedral_check \
 	$(HOST_TEST_DIR)/operator_config_check \
 	$(HOST_TEST_DIR)/precond_policy_check \
 	$(HOST_TEST_DIR)/solver_policy_check \
@@ -107,6 +112,11 @@ MULLER_FP32_OBJS = \
 
 $(CU_OBJS) $(CPP_OBJS) $(CU_OBJS_FMM) $(CPP_OBJS_FMM) $(MULLER_FP32_OBJS): Makefile
 
+# Direct object rebuilds must use the same architecture/optimization as the
+# optimized executables. Otherwise a later link silently reuses sm_70/O2 code.
+$(MULLER_FP32_OBJS): HOST_OPT=-O3 -march=native
+$(MULLER_FP32_OBJS): ARCH=-arch=sm_86
+
 all: cuda-toolchain-check $(TARGET)
 
 $(TARGET): $(OBJS)
@@ -119,7 +129,11 @@ $(MULLER_DEMO): tools/muller_nodal_demo.cpp $(SRCDIR)/muller_dense.cpp $(SRCDIR)
 	$(CXX) $(HOST_OPT) -Wall -std=c++11 -I$(SRCDIR) -o $@ $^
 	@echo "Built: $@"
 
-$(MULLER_FMM_DEMO): tools/muller_nodal_fmm_demo.cpp \
+$(BINDIR)/muller_tmatrix_probe: tools/muller_tmatrix_probe.cpp $(SRCDIR)/muller_dense.cpp $(SRCDIR)/muller_nodal.cpp $(SRCDIR)/muller_duffy.cpp $(SRCDIR)/mesh.cpp
+	@mkdir -p $(BINDIR)
+	$(CXX) $(HOST_OPT) -Wall -std=c++11 $(if $(filter 1,$(OPENMP)),-fopenmp) -I$(SRCDIR) -o $@ $^
+
+$(MULLER_FMM_DEMO): tools/muller_nodal_fmm_demo.cpp $(SRCDIR)/alpha_fourier.h \
 		$(SRCDIR)/muller_fmm.o $(SRCDIR)/muller_dense.o \
 		$(SRCDIR)/muller_mbj.o $(SRCDIR)/muller_mbj_fmm.o \
 		$(SRCDIR)/muller_nodal.o \
@@ -130,17 +144,56 @@ $(MULLER_FMM_DEMO): tools/muller_nodal_fmm_demo.cpp \
 		$(SRCDIR)/muller_paired_gmres.o \
 		$(SRCDIR)/p2p.o $(SRCDIR)/pfft.o
 	@mkdir -p $(BINDIR)
-	$(NVCC) $(NVFLAGS) -I$(SRCDIR) -o $@ $^ $(LDFLAGS) -lcublas
+	$(NVCC) $(NVFLAGS) -I$(SRCDIR) -o $@ $(filter-out %.h,$^) $(LDFLAGS) -lcublas
 	@echo "Built: $@"
 
 $(MULLER_FMM_FP32_DEMO): HOST_OPT=-O3 -march=native
 $(MULLER_FMM_FP32_DEMO): ARCH=-arch=sm_86
-$(MULLER_FMM_FP32_DEMO): tools/muller_nodal_fmm_demo.cpp \
+$(MULLER_FMM_FP32_DEMO): tools/muller_nodal_fmm_demo.cpp $(SRCDIR)/alpha_fourier.h \
 		$(MULLER_FP32_OBJS)
 	@mkdir -p $(BINDIR)
 	$(NVCC) $(NVFLAGS) $(FP32_PRECISION_FLAGS) \
-		-I$(SRCDIR) -o $@ $^ $(LDFLAGS) -lcublas
+		-I$(SRCDIR) -o $@ $(filter-out %.h,$^) $(LDFLAGS) -lcublas
 	@echo "Built optimized mixed-precision solver: $@"
+
+$(BINDIR)/muller_tmatrix_fmm_server: HOST_OPT=-O3 -march=native
+$(BINDIR)/muller_tmatrix_fmm_server: ARCH=-arch=sm_86
+$(BINDIR)/muller_tmatrix_fmm_server: tools/muller_tmatrix_fmm_server.cpp $(MULLER_FP32_OBJS)
+	@mkdir -p $(BINDIR)
+	$(NVCC) $(NVFLAGS) $(FP32_PRECISION_FLAGS) -I$(SRCDIR) -o $@ $^ $(LDFLAGS) -lcublas
+
+$(BINDIR)/muller_fmm_action_probe: HOST_OPT=-O3 -march=native
+$(BINDIR)/muller_fmm_action_probe: ARCH=-arch=sm_86
+$(BINDIR)/muller_fmm_action_probe: tools/muller_fmm_action_probe.cpp $(MULLER_FP32_OBJS)
+	@mkdir -p $(BINDIR)
+	$(NVCC) $(NVFLAGS) $(FP32_PRECISION_FLAGS) -I$(SRCDIR) -o $@ $^ $(LDFLAGS) -lcublas
+
+$(FP32_BUILD_DIR)/fmm.o $(SRCDIR)/fmm.o $(SRCDIR)/fmm.fmm.o: $(SRCDIR)/fmm_multilevel.cuh
+
+$(HOST_TEST_DIR)/sphere_interpolation_check: $(HOST_TEST_DIR)/sphere_interpolation_check.cpp $(SRCDIR)/sphere_interpolation.h $(SRCDIR)/sphere_quad.h
+	$(CXX) -O2 -std=c++11 -I$(SRCDIR) $< -o $@
+
+$(HOST_TEST_DIR)/streaming_host_gmres_check: $(HOST_TEST_DIR)/streaming_host_gmres_check.cpp $(SRCDIR)/streaming_host_gmres.h
+	$(CXX) -O2 -std=c++11 -I$(SRCDIR) $< -o $@
+
+$(BINDIR)/mesh_capacity_probe: tools/mesh_capacity_probe.cpp $(SRCDIR)/mesh.cpp $(SRCDIR)/mesh.h
+	mkdir -p $(BINDIR)
+	$(CXX) -O3 -std=c++11 -I$(SRCDIR) -o $@ $(filter-out %.h,$^)
+
+MSTM_SO3_SOURCES = third_party/mstm/so3_recurrences.f90 third_party/mstm/so3_average.f90 tools/tmatrix_so3_mstm.f90
+$(BINDIR)/tmatrix_so3_mstm: $(MSTM_SO3_SOURCES)
+	mkdir -p $(BINDIR) build/mstm64
+	cd build/mstm64 && $(MSTM_FC) -O3 -fopenmp -ffree-line-length-none -cpp -DBEM_SO3_STORAGE_KIND=8 $(addprefix ../../,$^) -o ../../$@
+
+$(BINDIR)/tmatrix_so3_mstm_fp32: $(MSTM_SO3_SOURCES)
+	mkdir -p $(BINDIR) build/mstm32
+	cd build/mstm32 && $(MSTM_FC) -O3 -fopenmp -ffree-line-length-none -cpp -DBEM_SO3_STORAGE_KIND=4 $(addprefix ../../,$^) -o ../../$@
+
+$(HOST_TEST_DIR)/alpha_fourier_check: $(HOST_TEST_DIR)/alpha_fourier_check.cpp $(SRCDIR)/alpha_fourier.h
+	$(CXX) $(CXXFLAGS) -I$(SRCDIR) -o $@ $<
+
+$(HOST_TEST_DIR)/prism_dihedral_check: $(HOST_TEST_DIR)/prism_dihedral_check.cpp $(SRCDIR)/mesh.cpp $(SRCDIR)/mesh.h
+	$(CXX) -O2 -std=c++11 -I$(SRCDIR) -o $@ $(filter-out %.h,$^)
 
 muller-fp32: cuda-toolchain-check $(MULLER_FMM_FP32_DEMO)
 
@@ -195,9 +248,13 @@ clean:
 	rm -f $(SRCDIR)/*.o $(TARGET) $(TARGET_FMM) $(HOST_CHECKS) \
 		$(MULLER_DEMO) $(MULLER_FMM_DEMO) $(MULLER_TRAINING_DUMP) \
 		$(MULLER_FMM_FP32_DEMO) \
+		$(BINDIR)/muller_tmatrix_probe \
+		$(BINDIR)/muller_tmatrix_fmm_server \
+		$(BINDIR)/tmatrix_so3_mstm $(BINDIR)/tmatrix_so3_mstm_fp32 \
 		$(CUDA_HESSIAN_CHECK) $(CUDA_PFFT_HESSIAN_CHECK) \
 		$(CUDA_MULLER_FMM_CHECK)
 	rm -rf $(FP32_BUILD_DIR)
+	rm -rf build/mstm64 build/mstm32
 
 $(CUDA_HESSIAN_CHECK): $(HOST_TEST_DIR)/fmm_hessian_check.cu $(SRCDIR)/fmm.o $(SRCDIR)/p2p.o
 	$(NVCC) $(NVFLAGS) -I$(SRCDIR) -o $@ $^ $(LDFLAGS)
@@ -254,6 +311,10 @@ $(HOST_TEST_DIR)/output_json_mesh_check: $(HOST_TEST_DIR)/output_json_mesh_check
 	$(CXX) $(CXXFLAGS) -I$(SRCDIR) -o $@ $(HOST_TEST_DIR)/output_json_mesh_check.cpp $(SRCDIR)/output.cpp
 
 host-checks: $(HOST_CHECKS)
+	$(HOST_TEST_DIR)/streaming_host_gmres_check
+	$(HOST_TEST_DIR)/sphere_interpolation_check
+	$(HOST_TEST_DIR)/alpha_fourier_check
+	$(HOST_TEST_DIR)/prism_dihedral_check
 	$(HOST_TEST_DIR)/operator_config_check
 	$(HOST_TEST_DIR)/precond_policy_check
 	$(HOST_TEST_DIR)/solver_policy_check

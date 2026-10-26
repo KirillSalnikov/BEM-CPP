@@ -1,0 +1,10 @@
+{
+  "rhs_points": 439296,
+  "packet_modes": 12,
+  "direct_s": 21.008950053999797,
+  "cache_setup_s": 0.04088817999991079,
+  "cached_packet_s": 6.151855242000238,
+  "including_setup_speedup": 3.3925109797644857,
+  "relative_field_error": 0.0,
+  "new_GPU_solve": false
+}

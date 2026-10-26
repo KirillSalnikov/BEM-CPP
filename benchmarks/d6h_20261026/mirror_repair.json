@@ -1,0 +1,148 @@
+{
+  "failed_run_stopped_utc": "2026-10-26T03:42:03.645695+00:00",
+  "failed_run_columns_preserved": 182,
+  "problem_modes": [
+    [
+      1,
+      44,
+      1
+    ],
+    [
+      1,
+      44,
+      -1
+    ]
+  ],
+  "ka": 20,
+  "ref": 5,
+  "mirror_tolerance_unchanged": 0.0001,
+  "diagnosis": "Increasing GMRES accuracy by 100x did not remove the defect. Increasing the near-singular Duffy integration order from 4 to 6 reduced it below the unchanged gate.",
+  "records": [
+    {
+      "directory": "/home/kirill/neuro/BEM-CPP-analytic-alpha/runs/ka20_d6h_20261026_101947/main_ref5_L44",
+      "duffy_order": 4,
+      "solver_tolerance": 1e-06,
+      "strict_residual": 4.52822978469815e-07,
+      "paired_solve_s": 38.072991678,
+      "mirror_audit": {
+        "horizontal_columns": [
+          {
+            "column": 4002,
+            "relative_forbidden_norm": 6.322864297005725e-05
+          },
+          {
+            "column": 4004,
+            "relative_forbidden_norm": 6.300349235562364e-05
+          }
+        ],
+        "vertical_column_pairs": [
+          {
+            "source": 4004,
+            "target": 4002,
+            "relative_column_error": 0.00012618305413478805
+          }
+        ],
+        "maximum_horizontal_error": 6.322864297005725e-05,
+        "maximum_vertical_error": 0.00012618305413478805,
+        "tolerance": 0.0001,
+        "passed": false,
+        "sampled_not_an_operator_norm_bound": true
+      }
+    },
+    {
+      "directory": "/home/kirill/neuro/BEM-CPP-analytic-alpha/runs/mirror_repair_20261026/tol_1e-7",
+      "duffy_order": 4,
+      "solver_tolerance": 1e-07,
+      "strict_residual": 4.5352187723368134e-08,
+      "paired_solve_s": 48.858660983,
+      "mirror_audit": {
+        "horizontal_columns": [
+          {
+            "column": 4002,
+            "relative_forbidden_norm": 6.319646639270955e-05
+          },
+          {
+            "column": 4004,
+            "relative_forbidden_norm": 6.312502870000459e-05
+          }
+        ],
+        "vertical_column_pairs": [
+          {
+            "source": 4004,
+            "target": 4002,
+            "relative_column_error": 0.00012623491455291224
+          }
+        ],
+        "maximum_horizontal_error": 6.319646639270955e-05,
+        "maximum_vertical_error": 0.00012623491455291224,
+        "tolerance": 0.0001,
+        "passed": false,
+        "sampled_not_an_operator_norm_bound": true
+      }
+    },
+    {
+      "directory": "/home/kirill/neuro/BEM-CPP-analytic-alpha/runs/mirror_repair_20261026/tol_1e-8",
+      "duffy_order": 4,
+      "solver_tolerance": 1e-08,
+      "strict_residual": 4.926723354143093e-09,
+      "paired_solve_s": 59.440685145,
+      "mirror_audit": {
+        "horizontal_columns": [
+          {
+            "column": 4002,
+            "relative_forbidden_norm": 6.31899857482919e-05
+          },
+          {
+            "column": 4004,
+            "relative_forbidden_norm": 6.31368035189513e-05
+          }
+        ],
+        "vertical_column_pairs": [
+          {
+            "source": 4004,
+            "target": 4002,
+            "relative_column_error": 0.0001262399905045104
+          }
+        ],
+        "maximum_horizontal_error": 6.31899857482919e-05,
+        "maximum_vertical_error": 0.0001262399905045104,
+        "tolerance": 0.0001,
+        "passed": false,
+        "sampled_not_an_operator_norm_bound": true
+      }
+    },
+    {
+      "directory": "/home/kirill/neuro/BEM-CPP-analytic-alpha/runs/mirror_repair_20261026/duffy6",
+      "duffy_order": 6,
+      "solver_tolerance": 1e-06,
+      "strict_residual": 4.483149473909728e-07,
+      "paired_solve_s": 38.603416086,
+      "mirror_audit": {
+        "horizontal_columns": [
+          {
+            "column": 4002,
+            "relative_forbidden_norm": 4.037123790240039e-06
+          },
+          {
+            "column": 4004,
+            "relative_forbidden_norm": 4.4585280333359935e-06
+          }
+        ],
+        "vertical_column_pairs": [
+          {
+            "source": 4004,
+            "target": 4002,
+            "relative_column_error": 9.043601929771887e-06
+          }
+        ],
+        "maximum_horizontal_error": 4.4585280333359935e-06,
+        "maximum_vertical_error": 9.043601929771887e-06,
+        "tolerance": 0.0001,
+        "passed": true,
+        "sampled_not_an_operator_norm_bound": true
+      }
+    }
+  ],
+  "repair_passed": true,
+  "full_ref5_ref6_and_L44_L48_controls": "pending for repaired operator"
+}

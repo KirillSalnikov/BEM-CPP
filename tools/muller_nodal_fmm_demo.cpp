@@ -4,6 +4,7 @@
 #include "muller_paired_gmres.h"
 #include "krylov_deflation.h"
 #include "orient.h"
+#include "alpha_fourier.h"
 #include "solver_policy.h"
 
 #include <algorithm>
@@ -4255,10 +4256,17 @@ int run_orientation_average(
     const char* output_path)
 {
     const auto total_start = std::chrono::steady_clock::now();
+    const char* refinement_environment =
+        std::getenv("BEM_MIXED_ITERATIVE_REFINEMENT");
+    const bool strict_orientation_residual = refinement_environment &&
+        std::strcmp(refinement_environment, "0") != 0;
     const Matvec exact_action =
         [&](const cdouble* input, cdouble* output) {
             fmm.select_fmm_backend();
-            fmm.matvec(input, output);
+            if (strict_orientation_residual)
+                fmm.matvec_strict(input, output);
+            else
+                fmm.matvec(input, output);
         };
     const Matvec current_action =
         [&](const cdouble* input, cdouble* output) {
@@ -4356,6 +4364,11 @@ int run_orientation_average(
         : alpha_count *
               static_cast<int>(adaptive_levels.back().quadrature.size()) *
               symmetry_order;
+    const int sampled_alpha_count = farfield_spectral_alpha_count(alpha_count, ka);
+    const char* analytic_alpha_env = std::getenv("BEM_FARFIELD_ANALYTIC_ALPHA");
+    const bool analytic_alpha = analytic_alpha_env &&
+        std::strcmp(analytic_alpha_env, "1") == 0 &&
+        sampled_alpha_count + 4 <= alpha_count;
     std::uint64_t checkpoint_signature = FNV_OFFSET;
     const std::uint64_t operator_signature =
         muller_operator_hash(fmm);
@@ -4373,6 +4386,8 @@ int run_orientation_average(
     hash_bytes(checkpoint_signature, &refinement, sizeof(refinement));
     hash_bytes(checkpoint_signature, &prism_sides, sizeof(prism_sides));
     hash_bytes(checkpoint_signature, &alpha_count, sizeof(alpha_count));
+    hash_bytes(checkpoint_signature, &sampled_alpha_count, sizeof(sampled_alpha_count));
+    hash_bytes(checkpoint_signature, &analytic_alpha, sizeof(analytic_alpha));
     hash_bytes(checkpoint_signature, &beta_count, sizeof(beta_count));
     hash_bytes(checkpoint_signature, &gamma_count, sizeof(gamma_count));
     hash_bytes(
@@ -4840,14 +4855,16 @@ int run_orientation_average(
                 tolerance, maximum_iterations, gmres_restart,
                 &mbj, label_x, guess_x,
                 nullptr, nullptr, nullptr,
-                SolverCheckpointOptions(), false, nullptr,
+                SolverCheckpointOptions(), false,
+                strict_orientation_residual ? &exact_action : nullptr,
                 &gmres_deflation);
             solution_y = solve_gmres(
                 current_action, rhs_y.data(), fmm.system_dofs,
                 tolerance, maximum_iterations, gmres_restart,
                 &mbj, label_y, guess_y,
                 nullptr, nullptr, nullptr,
-                SolverCheckpointOptions(), false, nullptr,
+                SolverCheckpointOptions(), false,
+                strict_orientation_residual ? &exact_action : nullptr,
                 &gmres_deflation);
         }
         recycle_basis.add(rhs_x, solution_x.solution);
@@ -4888,15 +4905,14 @@ int run_orientation_average(
 
         const auto farfield_start =
             std::chrono::steady_clock::now();
-        const int farfield_alpha_count =
-            farfield_spectral_alpha_count(alpha_count, ka);
+        const int farfield_alpha_count = sampled_alpha_count;
         std::vector<Vec3> particle_directions(
             static_cast<size_t>(farfield_alpha_count) * ntheta);
-        std::vector<Mat3> rotations(alpha_count);
+        std::vector<Mat3> rotations(analytic_alpha ? 0 : alpha_count);
         std::vector<double> orientation_mueller(
             averaged_mueller.size(), 0.0);
         for (int alpha_index = 0;
-             alpha_index < alpha_count; alpha_index++) {
+             !analytic_alpha && alpha_index < alpha_count; alpha_index++) {
             const double alpha =
                 2.0 * M_PI * alpha_index /
                 static_cast<double>(alpha_count);
@@ -4926,73 +4942,114 @@ int run_orientation_average(
             solution_x.solution.data(),
             solution_y.solution.data(),
             particle_directions, field_x, field_y);
-        if (farfield_alpha_count != alpha_count) {
-            field_x = periodic_spectral_interpolate(
-                field_x, farfield_alpha_count, alpha_count,
-                3 * ntheta);
-            field_y = periodic_spectral_interpolate(
-                field_y, farfield_alpha_count, alpha_count,
-                3 * ntheta);
-            std::printf(
-                "  [farfield] angular spectral interpolation: "
-                "%d -> %d alpha samples\n",
-                farfield_alpha_count, alpha_count);
-        }
-
-        const cdouble amplitude_scale(0.0, -ka);
-        for (int alpha_index = 0;
-             alpha_index < alpha_count; alpha_index++) {
-            const double alpha =
-                2.0 * M_PI * alpha_index /
-                static_cast<double>(alpha_count);
-            const double cosine = std::cos(alpha);
-            const double sine = std::sin(alpha);
-            std::vector<cdouble> s1(ntheta);
-            std::vector<cdouble> s2(ntheta);
-            std::vector<cdouble> s3(ntheta);
-            std::vector<cdouble> s4(ntheta);
-            for (int angle = 0; angle < ntheta; angle++) {
-                const size_t direction =
-                    static_cast<size_t>(alpha_index) * ntheta + angle;
-                cdouble particle_x[3];
-                cdouble particle_y[3];
-                for (int axis = 0; axis < 3; axis++) {
-                    particle_x[axis] =
-                        cosine * field_x[3 * direction + axis] -
-                        sine * field_y[3 * direction + axis];
-                    particle_y[axis] =
-                        sine * field_x[3 * direction + axis] +
-                        cosine * field_y[3 * direction + axis];
+        if (analytic_alpha) {
+            const auto mapper = [&](double alpha, int angle,
+                                    const bem_alpha::Field& field) {
+                const double cosine = std::cos(alpha), sine = std::sin(alpha);
+                cdouble particle_x[3], particle_y[3];
+                for (int axis = 0; axis < 3; ++axis) {
+                    particle_x[axis] = cosine * field[axis] - sine * field[axis + 3];
+                    particle_y[axis] = sine * field[axis] + cosine * field[axis + 3];
                 }
-                const std::array<cdouble, 3> laboratory_x =
-                    rotate_complex_vector(
-                        rotations[alpha_index], particle_x);
-                const std::array<cdouble, 3> laboratory_y =
-                    rotate_complex_vector(
-                        rotations[alpha_index], particle_y);
-                const Vec3& theta_hat =
-                    laboratory_theta_hat[angle];
-                const cdouble theta_x =
-                    theta_hat.x * laboratory_x[0] +
-                    theta_hat.y * laboratory_x[1] +
-                    theta_hat.z * laboratory_x[2];
-                const cdouble theta_y =
-                    theta_hat.x * laboratory_y[0] +
-                    theta_hat.y * laboratory_y[1] +
-                    theta_hat.z * laboratory_y[2];
-                s1[angle] = amplitude_scale * laboratory_x[0];
-                s2[angle] = amplitude_scale * theta_y;
-                s3[angle] = amplitude_scale * theta_x;
-                s4[angle] = amplitude_scale * laboratory_y[0];
+                const Mat3 rotation = euler_rotation(
+                    alpha, orientation.beta, orientation.gamma);
+                const auto laboratory_x = rotate_complex_vector(rotation, particle_x);
+                const auto laboratory_y = rotate_complex_vector(rotation, particle_y);
+                const Vec3& th = laboratory_theta_hat[angle];
+                const cdouble scale(0.0, -ka);
+                return bem_alpha::Jones{{
+                    scale * laboratory_x[0],
+                    scale * (th.x * laboratory_y[0] + th.y * laboratory_y[1] + th.z * laboratory_y[2]),
+                    scale * (th.x * laboratory_x[0] + th.y * laboratory_x[1] + th.z * laboratory_x[2]),
+                    scale * laboratory_y[0]}};
+            };
+            const auto modes = bem_alpha::jones_modes(
+                field_x, field_y, farfield_alpha_count, ntheta, mapper);
+            std::vector<cdouble> s1(ntheta), s2(ntheta), s3(ntheta), s4(ntheta);
+            std::vector<double> mode_mueller;
+            // Parseval: <s_i conj(s_j)> = sum_m s_im conj(s_jm).
+            // Apply the existing Mueller convention to each Jones coefficient.
+            for (int mode = 0; mode < farfield_alpha_count + 4; ++mode) {
+                for (int angle = 0; angle < ntheta; ++angle) {
+                    const auto& amplitude = modes[static_cast<size_t>(mode) * ntheta + angle];
+                    s1[angle] = amplitude[0]; s2[angle] = amplitude[1];
+                    s3[angle] = amplitude[2]; s4[angle] = amplitude[3];
+                }
+                amplitude_to_mueller(s1, s2, s3, s4, mode_mueller);
+                for (size_t index = 0; index < orientation_mueller.size(); ++index)
+                    orientation_mueller[index] += mode_mueller[index];
             }
-            std::vector<double> sample_mueller;
-            amplitude_to_mueller(
-                s1, s2, s3, s4, sample_mueller);
-            for (size_t index = 0;
-                 index < averaged_mueller.size(); index++) {
-                orientation_mueller[index] +=
-                    sample_mueller[index] /
+            std::printf("  [farfield] analytic alpha: %d field samples, %d Jones modes, no %d-point reconstruction\n",
+                        farfield_alpha_count, farfield_alpha_count + 4, alpha_count);
+        } else {
+            if (farfield_alpha_count != alpha_count) {
+                field_x = periodic_spectral_interpolate(
+                    field_x, farfield_alpha_count, alpha_count,
+                    3 * ntheta);
+                field_y = periodic_spectral_interpolate(
+                    field_y, farfield_alpha_count, alpha_count,
+                    3 * ntheta);
+                std::printf(
+                    "  [farfield] angular spectral interpolation: "
+                    "%d -> %d alpha samples\n",
+                    farfield_alpha_count, alpha_count);
+            }
+
+            const cdouble amplitude_scale(0.0, -ka);
+            for (int alpha_index = 0;
+                 alpha_index < alpha_count; alpha_index++) {
+                const double alpha =
+                    2.0 * M_PI * alpha_index /
                     static_cast<double>(alpha_count);
+                const double cosine = std::cos(alpha);
+                const double sine = std::sin(alpha);
+                std::vector<cdouble> s1(ntheta);
+                std::vector<cdouble> s2(ntheta);
+                std::vector<cdouble> s3(ntheta);
+                std::vector<cdouble> s4(ntheta);
+                for (int angle = 0; angle < ntheta; angle++) {
+                    const size_t direction =
+                        static_cast<size_t>(alpha_index) * ntheta + angle;
+                    cdouble particle_x[3];
+                    cdouble particle_y[3];
+                    for (int axis = 0; axis < 3; axis++) {
+                        particle_x[axis] =
+                            cosine * field_x[3 * direction + axis] -
+                            sine * field_y[3 * direction + axis];
+                        particle_y[axis] =
+                            sine * field_x[3 * direction + axis] +
+                            cosine * field_y[3 * direction + axis];
+                    }
+                    const std::array<cdouble, 3> laboratory_x =
+                        rotate_complex_vector(
+                            rotations[alpha_index], particle_x);
+                    const std::array<cdouble, 3> laboratory_y =
+                        rotate_complex_vector(
+                            rotations[alpha_index], particle_y);
+                    const Vec3& theta_hat =
+                        laboratory_theta_hat[angle];
+                    const cdouble theta_x =
+                        theta_hat.x * laboratory_x[0] +
+                        theta_hat.y * laboratory_x[1] +
+                        theta_hat.z * laboratory_x[2];
+                    const cdouble theta_y =
+                        theta_hat.x * laboratory_y[0] +
+                        theta_hat.y * laboratory_y[1] +
+                        theta_hat.z * laboratory_y[2];
+                    s1[angle] = amplitude_scale * laboratory_x[0];
+                    s2[angle] = amplitude_scale * theta_y;
+                    s3[angle] = amplitude_scale * theta_x;
+                    s4[angle] = amplitude_scale * laboratory_y[0];
+                }
+                std::vector<double> sample_mueller;
+                amplitude_to_mueller(
+                    s1, s2, s3, s4, sample_mueller);
+                for (size_t index = 0;
+                     index < averaged_mueller.size(); index++) {
+                    orientation_mueller[index] +=
+                        sample_mueller[index] /
+                        static_cast<double>(alpha_count);
+                }
             }
         }
         for (size_t index = 0;
@@ -5223,6 +5280,9 @@ int run_orientation_average(
            << ",\n"
            << "  \"orientation\": {\"alpha_samples\": "
            << alpha_count
+           << ", \"farfield_alpha_samples\": " << sampled_alpha_count
+           << ", \"alpha_average_method\": \""
+           << (analytic_alpha ? "fourier_parseval" : "sample_mean") << "\""
            << ", \"beta_nodes\": " << beta_count
            << ", \"gamma_nodes_in_fundamental_sector\": "
            << gamma_count

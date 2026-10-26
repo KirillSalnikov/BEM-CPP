@@ -1,0 +1,90 @@
+[
+  {
+    "name": "chunk256",
+    "diagnostic_only": true,
+    "actions": 4,
+    "system_dofs": 202752,
+    "ka": 28,
+    "ref": 5,
+    "max_leaf": 64,
+    "ri_imag": 0,
+    "seed": 0,
+    "strict": false,
+    "setup_s": 4.40292,
+    "matvec_s": 0.406683,
+    "action_seconds": [
+      0.429748,
+      0.407803,
+      0.406324,
+      0.405922
+    ],
+    "relative_to_baseline": 4.13755639580894e-07,
+    "peak_gpu_mib": 3006.0
+  },
+  {
+    "name": "chunk1024",
+    "diagnostic_only": true,
+    "actions": 4,
+    "system_dofs": 202752,
+    "ka": 28,
+    "ref": 5,
+    "max_leaf": 64,
+    "ri_imag": 0,
+    "seed": 0,
+    "strict": false,
+    "setup_s": 4.27218,
+    "matvec_s": 0.406,
+    "action_seconds": [
+      0.427212,
+      0.406268,
+      0.406382,
+      0.405349
+    ],
+    "relative_to_baseline": 4.137556395809151e-07,
+    "peak_gpu_mib": 2698.0
+  },
+  {
+    "name": "chunk1024_mixed_transfer",
+    "diagnostic_only": true,
+    "actions": 4,
+    "system_dofs": 202752,
+    "ka": 28,
+    "ref": 5,
+    "max_leaf": 64,
+    "ri_imag": 0,
+    "seed": 0,
+    "strict": false,
+    "setup_s": 4.34158,
+    "matvec_s": 0.402181,
+    "action_seconds": [
+      0.414828,
+      0.401898,
+      0.402345,
+      0.4023
+    ],
+    "relative_to_baseline": 4.154929193116879e-07,
+    "peak_gpu_mib": 2698.0
+  },
+  {
+    "name": "chunk256_mixed_transfer",
+    "diagnostic_only": true,
+    "actions": 4,
+    "system_dofs": 202752,
+    "ka": 28,
+    "ref": 5,
+    "max_leaf": 64,
+    "ri_imag": 0,
+    "seed": 0,
+    "strict": false,
+    "setup_s": 4.23998,
+    "matvec_s": 0.399987,
+    "action_seconds": [
+      0.41861,
+      0.400278,
+      0.400191,
+      0.399493
+    ],
+    "relative_to_baseline": 4.1549291931168745e-07,
+    "peak_gpu_mib": 2702.0
+  }
+]

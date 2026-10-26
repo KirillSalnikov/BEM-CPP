@@ -218,6 +218,12 @@ struct HelmholtzFMM {
     double2* d_complex_tmp2;
 
     bool initialized;
+    // Lazily allocated angular transfer to the next coarser uniform tree.
+    // Owned by this engine and released by cleanup().
+    void* multilevel_link = nullptr;
+    // Optional read-only FP32 copies for the already-FP32 M2L arithmetic.
+    // FP64 multipoles/transfers remain the source of strict residual actions.
+    void* batch3_m2l_cache = nullptr;
     bool batch3_device_allocated;
     bool batch4_allocated;
     bool pair_l2p_allocated;
@@ -336,7 +342,9 @@ struct HelmholtzFMM {
         const cdouble* charges_y,
         const cdouble* charges_z,
         cdouble* curl_result,
-        cdouble* hessian_action);
+        cdouble* hessian_action,
+        HelmholtzFMM* middle = nullptr,
+        HelmholtzFMM* coarse = nullptr);
 
     // Keep the contracted vector action on the device. The source arrays are
     // split-complex device buffers. Results remain in d_grad_{re,im} (curl)
@@ -348,7 +356,9 @@ struct HelmholtzFMM {
         const double* charges_y_re,
         const double* charges_y_im,
         const double* charges_z_re,
-        const double* charges_z_im);
+        const double* charges_z_im,
+        HelmholtzFMM* middle = nullptr,
+        HelmholtzFMM* coarse = nullptr);
 
     // Evaluate two three-component source fields while sharing the far
     // traversal, L2P, and geometry-heavy near interaction. The first result
@@ -368,6 +378,11 @@ struct HelmholtzFMM {
         const double* second_z_im);
 
     bool strict_vector_pair_available() const;
+    // Minimal three-channel multilevel workspaces, shared two-current L2P/P2P.
+    // No six-channel multipole tree is allocated. Strict calls retain FP64.
+    void evaluate_multilevel_pair_device(
+        const double* const charges_re[6], const double* const charges_im[6],
+        HelmholtzFMM* middle, HelmholtzFMM& coarse);
     void evaluate_vector_actions_pair_batch3_device_strict(
         const double* first_x_re,
         const double* first_x_im,
@@ -413,7 +428,8 @@ struct HelmholtzFMM {
     void evaluate_pot_grad_uploaded();
     void evaluate_pot_grad_batch2_uploaded();
     void evaluate_batch4_uploaded();
-    void evaluate_batch3_far_uploaded();
+    void evaluate_batch3_far_uploaded(bool multipoles_ready = false);
+    void evaluate_multilevel_far_uploaded(HelmholtzFMM* middle, HelmholtzFMM& coarse);
     void evaluate_batch4_far_uploaded(bool evaluate_potential = true);
     void evaluate_gradient_batch4_l2p_uploaded();
     void evaluate_pot_grad_batch4_uploaded();
