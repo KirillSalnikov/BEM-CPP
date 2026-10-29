@@ -642,6 +642,124 @@ temporary disk and an estimated 42 GiB RAM with four contraction threads.
 Its memory preflight runs before allocation. A partial T matrix is never
 reported as a complete average.
 
+For host GMRES on a D6h prism, `BEM_TMATRIX_SYMMETRY_WARM_START=1`
+fits the second production-packet RHS in the twelve rotation/reflection
+images of the first RHS. The same coefficients transform the first surface
+solution into an initial guess for the second solve. Signed BDM1 edge moments
+and the different reflection parities of currents and tested equations are
+included. A complete FP64 residual accepts or rejects the guess; a rejected
+guess is refined by GMRES. Independent reference columns and coded symmetry
+audits always start from zero. Both production phase codes and their existing
+leakage checks remain present. This changes the linear solves, not the
+analytic SO(3) average or the modal cutoff.
+
+The `ka=3, ref=2, L=5` control reduced production-packet solve time from
+2.106 s to 1.190 s (1.77x), including adaptive inner stopping. Second-code
+iterations fell from 87 to 5 across three packets. The full T matrices
+differed by `2.93e-8` in relative Frobenius norm; all 16 analytically averaged
+Mueller entries differed by at most `6.02e-8` times the reference M11 over
+181 angles. Both runs passed the independent C2 and reflection/C6 audits.
+These are control-case measurements, not a measured ka=112 throughput.
+See `benchmarks/ka112_optimization_20261027/small_T_comparison.json`.
+
+The optional host-only `BEM_TMATRIX_RECYCLE_RANK=16` retains a bounded
+harmonic-Ritz subspace between restart cycles and T-matrix RHS. Its default
+is zero. Arnoldi images are reused without extra FMM actions; production
+packets project out the retained components and apply the coupled solution
+update. Independent reference columns and phase-code audits remain cold,
+but can teach the space. Rotation/reflection warm starts remain available.
+The stored inner-operator images never certify convergence: every accepted
+solution still passes the complete FP64 residual, including a coarse solve
+whose projected residual is zero.
+
+The builder binds `krylov_recycle.bin` to its exact manifest signature
+(including binary and solver settings). A checksum and atomic replacement
+protect each checkpoint, written after the first pair, every 16 pairs, and
+on a clean worker shutdown. An interrupted run can lose the updates since
+the latest checkpoint. Invalid or incompatible files are ignored. At
+3,225,600 DOFs, rank 16 adds 1.54 GiB of resident basis storage and roughly
+the same disk space; atomic replacement temporarily needs 3.08 GiB on disk,
+included in the builder's free-space check. Extraction temporarily adds up
+to 0.91 GiB of host memory. It does
+not add GPU storage. Changing rank requires a new run directory because
+solver settings are part of the manifest.
+
+CPU validation reduced subsequent-RHS iterations from 1011 to 150 on an
+ill-conditioned complex test system. On the small physical BEM operator
+(`ka=6, ref=1`, eight plane-wave RHS, MBJ-12, restart 40), rank 32 reduced
+iterations from 330 to 309, but increased solve time from 0.067 s to 0.108 s.
+The maximum strict residual stayed below `1e-8`; solution differences were
+below `1.2e-8`. Thus this mode is experimental and remains disabled by
+default: neither these CPU checks nor the synthetic speedup establish a
+ka=112 speedup or physical mesh convergence. Reproduce the BEM comparison
+with `bin/muller_recycle_cpu_probe 1 6`; records are in
+`benchmarks/ka112_optimization_20261027/recycle_dense_ka6.log`.
+At `ka=20` on the same small mesh, rank 8 reduced 348 iterations to 327
+and measured 0.090 s to 0.084 s, while ranks 16/32 were slower in wall time.
+These are single short timing samples, not a reliable throughput estimate;
+see `recycle_dense_ka20.log` in the same directory. The coarse mesh is used
+to test the solver algebra, not to validate ka=20 scattering accuracy.
+
+`bin/muller_recycle_fmm_probe` compares local MBJ, a frozen two-level
+right inverse `M^-1 (I-C C*) + U C*`, and projected recycling on a different
+oblique plane-wave RHS from the one used for training. The two-level inverse
+adds no FMM actions and rejects changes to its coarse space during a fixed
+solve, including replacements that leave its rank unchanged. It is a
+diagnostic option, not a new production default. Do not pass it to a GMRES
+call that learns into the same space through that inverse.
+The bounded runner and residual/time plots are in
+`benchmarks/global_solver_20261027/`; reproduce the full-size comparison with
+`python3 benchmarks/global_solver_20261027/run_probe.py NAME --rank 32 --train 64 --steps 32`.
+The small control adds `--small --rank 4 --train 12 --steps 12` instead.
+Every endpoint uses the original FP64 operator. A fixed iteration budget
+does not establish complete-solve throughput, T-matrix convergence, or
+one-percent accuracy of the analytically averaged Mueller matrix.
+For `ka=112, ref=7` (3,225,600 unknowns), 64 training iterations produced
+a rank-32 space in 481.58 s. On the different RHS, 32 iterations plus one
+FP64 check took 292.13 s with local MBJ, 301.46 s with the frozen two-level
+inverse, and 299.13 s with recycling. Their strict residuals were
+`1.45214e-2`, `1.43318e-2`, and `1.43276e-2`, respectively, all above
+`1e-5`. The modest residual reduction did not yield a measured speedup;
+these options remain disabled by default. This pilot does not rule out
+benefits from later training or other coarse spaces. It also shows why an
+axial-source iteration count alone is insufficient for a ka=112 T-matrix ETA.
+
+The host solver also honors `BEM_MIXED_ADAPTIVE_INNER=1`: it first attempts
+the FP64 acceptance check at half the requested tolerance instead of solving
+the projected system ten times below it. A failed check tightens the next
+correction. The final acceptance tolerance is unchanged.
+
+`BEM_HOST_GMRES_STRICT_INTERVAL=4` carries the inner Arnoldi residual
+through up to three restart boundaries before replacing it with a complete
+FP64 residual. Complex Givens rotations reconstruct the residual together
+with the solution update, without another FMM action or a large buffer.
+A projected residual at or below the requested tolerance, the iteration
+limit, breakdown, and every fourth cycle all force a strict check. Only the
+strict residual can accept a solution. Values 1--16 are supported; the
+general default 1 retains the original behavior. The large-run launcher
+selects 4, while Krylov recycling remains disabled by default. This setting
+is part of the run fingerprint and does not modify frozen older runs.
+
+Seven alternating-order CPU comparisons on the same `ka=6, ref=1` BEM
+operator (eight plane-wave RHS, MBJ-12, restart 40, tolerance `1e-8`) reduced
+full checks from 13 to 8 with the same 330 inner iterations. Relative
+solution differences were at most `3.31e-15`; maximum strict residual was
+`9.21e-9`. The small dense CPU timings overlap, so no reliable wall-time
+speedup is claimed from them. The earlier ka=112 diagnostic spent 229.097 s
+in two strict checks, making their removal more valuable for that operator;
+the new ka=112 throughput has not been measured. Tests also cover rounded
+FP32 inner actions, inaccurate coarse spaces, warm guesses, false inner
+convergence, and nonconverged iteration-limit exits. Results and reproduction
+commands are in `benchmarks/host_strict_restart_20261027/summary.json`.
+
+`bin/muller_mbj_cache_probe REF KA NODES CACHE REPORT` can prepare a prism
+MBJ cache on the CPU without allocating a GPU operator. Set
+`BEM_TMATRIX_D6H_MESH=1` for the reflection-invariant mesh. The regular
+quadrature is 7 and refractive index is 1.3; the worker verifies the complete
+MBJ cache identity before reuse. For `ka=112, ref=7`, MBJ-48 occupies
+9.25 GiB of host memory, versus 2.33 GiB for MBJ-12. Larger blocks must be
+selected by measured convergence, not their storage size alone.
+
 With `SOLVER=fmm`, both incident polarizations use GPU-resident FP64 Krylov
 vectors and GPU MBJ application; no Krylov vector is copied to the host between
 iterations. `RECYCLE_RANK=8` retains an updating basis from completed
@@ -929,6 +1047,39 @@ The [cache-stage report](benchmarks/mlfma_cache_20261025/summary.json)
 contains comparisons, resources, and validation; its run records preserve
 the exact environment and executable hashes.
 
+The subsequent host-action optimization enables
+`BEM_FMM_MULTILEVEL_COMPACT_TEMP=1` and `BEM_FMM_P2P_SHARED_SOURCES=1`
+in `--fast-mlfma` and the large-run preset. Interpolation intermediates that
+already have FP32 precision are stored as `float2` within the existing
+FP64-sized scratch allocation. The single-current P2P kernel loads tiles
+of 128 neighboring sources into shared memory for reuse by target threads.
+It uses 4,608 bytes of shared memory per block and adds no global GPU
+allocation. Both changes apply only to mixed actions; strict actions retain
+FP64 interpolation and the established FP64 P2P kernel. Setting either flag
+to `0` selects its previous implementation.
+
+On the complete `ka=112/ref=7` BEM operator (537,600 triangles and 3,225,600
+unknowns), a within-process ABBA comparison measured **9.422 s versus
+5.566 s per action**, a **1.693x** speedup. This includes both media, both
+currents, host assembly, and near correction. Maximum relative action
+change was `2.06e-10`; this is additional change against the previous mixed
+operator, not its error against an exact solution. A separate full-size
+single-medium comparison measured P2P at 2.297 s versus 0.956 s.
+The [hotspot report](benchmarks/fmm_hotspot_20261027/summary.json) records
+commands, hashes, resources, and numerical checks. These bounded probes
+did not construct a T matrix or establish total solve time or convergence.
+The direct P2P test covers 48 block/precision/medium cases; physical BEM
+tests cover two/three bands, absorption, and mixed-to-strict workspace reuse.
+The installed Compute Sanitizer could not instrument the test executable;
+its failed startup logs are retained with the report.
+
+For host vector actions, `BEM_FMM_PROFILE_BATCH3=1` now separates L2P
+and P2P and identifies the medium and precision. With
+`BEM_FMM_PROFILE_FAR_DETAIL=1`, a per-thread CUDA timeline additionally
+separates P2M, M2M, M2L, L2L, and interpolation at each depth. It records
+events without synchronizing between nested stages. Timings from concurrent
+media include contention and must not be summed as exclusive GPU time.
+
 For the built-in hexagonal prism, `build_fmm_tmatrix.py --c2-reuse` can
 reconstruct negative-`m` columns using the proper half turn about the x axis.
 It first independently solves up to ten positive/negative column pairs over
@@ -1019,6 +1170,48 @@ positions, preparing twelve `l=44` inputs took 6.19 s including cache setup,
 versus 21.01 s previously, with identical fields. This measures CPU field
 preparation only. `--no-incident-cache` retains the comparison path.
 
+Angular derivatives now use the ladder identity with one neighboring
+spherical harmonic, directed away from `m=0`. At `|m|=l`, no neighbor is
+needed. This replaces three harmonic evaluations with two (or two with
+one at the endpoints), retaining the analytic pole limits and FP64 fields.
+On 65,536 prism-surface samples at `ka=112, l=149`, three repeated comparisons
+of complete twelve-mode, two-code field packets measured 1.35--1.52x faster
+preparation. Relative field differences were at most `5.92e-15`. This is
+CPU incident-field preparation, not the full BEM solve or SO(3) average.
+Tests cover both signs of m, both poles, degrees through 400, and an
+independently differentiated harmonic recurrence. The optimization is on
+by default and uses the existing run/cache fingerprinting.
+
+Reproduce the field benchmark with:
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python3 scripts/benchmark_tmatrix_incident.py \
+  --degree 149 --ka 112 --points 65536 --repeats 3 \
+  --out /tmp/bem_incident_ladder.json
+```
+Measurements and the 39-test T-matrix regression log are in
+`benchmarks/incident_ladder_20261027/`.
+
+The T worker assembles incident RHS from the existing 13-point geometry
+cache. BDM1 tests share two Piola projections instead of rebuilding six
+physical basis vectors at every point. Element integrals run in parallel;
+their contributions to shared DOFs are then added in fixed mesh order.
+The default block has 2048 elements and uses at most four OpenMP threads.
+It also supports curved BDM1 and nodal P2 panels. Both independent phase
+codes still arrive as separate fields.
+
+On the full D6h `ref=7` mesh (537,600 triangles, 3,225,600 unknowns,
+6,988,800 quadrature points), three CPU trials with two `ka=112` plane-wave
+RHS reduced assembly from 0.927 s to 0.0832 s (11.1x). The relative RHS
+difference was `2.58e-16`. This saves about 0.84 s per pair in assembly;
+field generation, socket traffic, GMRES, far fields and averaging are
+excluded. Unit checks cover arbitrary complex E/H fields, independent
+plane-wave assembly, curved panels, and bit-identical results across thread
+and block counts. The temporary position array is freed after sending it,
+releasing a 159.96 MiB allocation at ref=7. The field/integral chunk workspace
+is 3.30 MiB; no additional full-surface geometry cache is allocated.
+Reproduce with `OMP_NUM_THREADS=4 bin/tmatrix_rhs_cpu_probe 7 3 2048`.
+Records are in `benchmarks/rhs_streaming_20261027/summary.json`.
+
 `BEM_MIXED_CORRECTION_FACTOR=0.5` (day launcher: `--correction-factor 0.5`)
 reduces the first corrective GMRES solve's excess accuracy; subsequent
 strict-residual rejections restore the original factor 0.05. The final
@@ -1064,12 +1257,224 @@ and surface-current checkpoints remain local artifacts, not repository files.
 Use `scripts/plot_ka20_bem_average.py --run RUN/main_ref5_L44 --out PLOTS`
 to evaluate and plot a completed analytic average at a finer output-angle grid.
 
+To measure the required multipole cutoff, `scripts/study_tmatrix_cutoff.py`
+selects both input and output modes of a completed T matrix, retaining both
+polarizations, and recomputes the full analytic SO(3) average for every integer
+order. Its primary angular error is `max(abs(M_L-M_ref)/M11_ref)` over all
+sixteen elements and the output scattering-angle grid; relative scattering
+and extinction cross-section errors must also pass. This treats zeros of
+polarization elements without dividing by them. Every larger tested cutoff
+must pass before the lowest one is accepted. This is convergence to the
+finite reference T on the same mesh, not a surface-error bound or a bound
+for every fixed orientation.
+
+```bash
+OPENBLAS_NUM_THREADS=1 python3 scripts/study_tmatrix_cutoff.py \
+  --run RUN/main_ref5_L44 --out runs/cutoff_scan
+```
+
+For the completed `ka=20` prism, `L=27` passes the 1% criterion with a maximum
+error of 0.6846%, whereas `L=26` gives 3.7246%. Re-evaluation at 0.025-degree
+output-angle spacing preserves the minimum. The reduced matrix is 1566-by-1566
+instead of 4048-by-4048 (6.68 times less T storage); the theoretical D6h packet
+count falls from 191 to 79 before audits/fallback. These packet counts are
+not end-to-end runtime measurements. See the
+[cutoff and size study](benchmarks/cutoff_study_20261027/summary.json).
+`scripts/report_tmatrix_cutoff_study.py` combines completed scans and labels
+larger-size extrapolations separately from measured minima. Surface-resource
+estimates for the mirror-symmetric geometry can be reproduced with
+`bin/mesh_capacity_probe 3 7 1.3 --d6h`; its wavelength-resolution heuristic
+still requires independent mesh convergence checks.
+
+`scripts/tmatrix_size_interpolation.py` provides an experimental size sweep
+for a fixed shape, material and modal basis. It fits complex T matrices with
+a shared-denominator matrix-valued AAA approximation, then evaluates the
+existing analytic SO(3) contraction. It does not interpolate Mueller entries
+or replace orientation integration with numerical quadrature. The algorithm
+follows the matrix-valued rational approximation approach of
+[Fischbach et al. (2026)](https://arxiv.org/abs/2602.18414), with relative
+Frobenius row scaling and streamed QR/SVD. Input T matrices can be memory
+mapped; C and Fortran storage orders are supported without copying the whole
+training family into RAM. Extrapolation outside the training interval is
+disabled.
+
+The reproducible small-prism pilot is in `benchmarks/size_sweep_20261028/`.
+Its training/validation protocol is saved before each refinement. Acceptance
+uses all sixteen analytically averaged Mueller entries divided by reference
+M11, plus relative Csca and Cext errors. Mesh and modal convergence are
+separate controls. Every direct training sample counts toward cost, including
+those not chosen as barycentric support nodes; independent validation also
+counts. A successful small-size test does not certify the large-ka regime,
+unobserved resonances, or every point in a continuous size interval.
+
+The new `RegularFaceFFT` block (`src/regular_face_fft.cu`) applies all vector
+gradient/Hessian combinations used by Muller to repeated quadrature offsets
+on a planar lattice. Zero padding implements a finite linear convolution.
+Unused triangle types are masked, including the D6h diagonal changes. It uses
+FP64 cuFFT with no auxiliary-grid interpolation. Coincident point terms are
+omitted; a Galerkin caller still needs its singular/adjacent correction.
+Kernel displacement parity shares opposite channel pairs without complex
+conjugation, including for complex wave numbers. An XY-plane specialization
+omits identically zero derivative components. General translated/oblique
+lattices retain the required full tensors.
+
+On one prism side at `ref=7, ka=112` (397,824 active quadrature points), the
+full kernel bank took about 0.046 s per action and 14.38 GiB. The compact bank
+took 0.070 s and 5.36 GiB. The tested three-band FMM took 0.103 s in mixed
+precision and 1.92 s in FP64. The FFT action differed from direct FP64 sums
+at 64 sampled targets by `1.16e-13`; smaller tests check every target and
+include shifted parallel grids, complex wave numbers, and an impulse that
+detects periodic wraparound. These are single-face, single-medium point
+actions including host transfers, not a complete BEM or T-build speedup.
+The opt-in `BEM_TMATRIX_FACE_FFT=1` backend now combines exact within-face
+FFT with cross-face FMM for all eight faces, both media and vector currents.
+It retains the Galerkin mass and singular/adjacent corrections. It requires
+the built-in regular D6h prism with quadrature order seven. Scatter, FFT,
+cross-face charge gathering and result accumulation stay on the GPU. Cross-face
+trees are grouped by receiving face; empty source/target translations and
+interpolation rows are skipped. Both media can run on separate CUDA streams.
+
+Use `BEM_FACE_FFT_STRICT_ONLY=1` with that switch to retain fast mixed MLFMA
+iterations and apply the hybrid only to strict FP64 actions. The worker then
+reports `operator_backend=fmm_mixed_prism_fft_strict`. Without strict-only
+selection it reports `prism_face_fft_cross_fmm`; using FFT for mixed iterations
+is slower on the measured meshes. All-face FFT remains opt-in.
+
+`BEM_FACE_FFT_NEAR_CACHE=1` additionally caches two complex FP64 radial
+coefficients per distinct squared distance. Equality is bit-exact; there is
+no distance rounding. Distance indices and squared radii are shared across
+media after checking ordered geometry and near-tree indexing; wave-dependent
+coefficients remain separate. Adjacent alpha/beta storage reduces random
+memory reads. The default allocation budget is 2 GiB per medium, configurable
+with `BEM_FACE_FFT_NEAR_CACHE_GIB`. The retained VRAM reserve defaults to 4 GiB
+(`BEM_FACE_FFT_NEAR_RESERVE_GIB`, minimum 2). Insufficient budget or free memory
+falls back to ordinary near evaluation per face. Setting
+`BEM_FACE_FFT_NEAR_CACHE_DEDUP=0` selects the larger raw pair cache.
+
+At `ref=5, ka=20` (202,752 unknowns), alternating ABBA measurements in one
+process gave median complete strict actions of 3.445 s for three-band MLFMA
+and 2.206 s for the strict-only hybrid with the shared near cache: 1.56x faster,
+or 36% less time. The relative action difference was `7.53e-9`. Mixed actions
+still use MLFMA. This test used a 2 GiB VRAM reserve and cached 15 of 16
+face/medium combinations; cache storage was about 2.84 GiB. Initial hybrid
+setup added 16.6 s, excluding lazy first-action initialization. These timings
+exclude T construction and averaging, and another graphics application was
+active. They establish a full-operator speedup, not a 1.56x whole-solve gain.
+
+The small complete-T comparison at `ka=5, ref=3, L=14, n=1.3116` checks
+C2/C6/mirror reuse and the analytic SO(3) average at 1,801 scattering angles.
+Both the pre-cache and shared-cache hybrids differed from MLFMA by at most
+`1.02e-8` in T norm and `1.47e-8` in maximum all16/M11 averaged Mueller error.
+The shared-cache regression reused the saved complete baseline T and passed
+the strict residual and independent-direction checks. On that small mesh the
+earlier complete T build was slower (75.2 versus 66.0 s), so FFT is not enabled automatically.
+The multi-size run uses a separately frozen MLFMA runtime.
+Current full-operator and T/averaging reports are in
+`benchmarks/face_fft_fix_20261028/`. Earlier host-transfer implementation
+measurements, which were slower, remain in `benchmarks/face_fft_full_20261028/`;
+single-face reports remain in `benchmarks/face_fft_20261028/`.
+
+MLFMA angular transfers now fold azimuths separated by pi: the even Fourier
+kernel is identical on each pair and the odd kernel changes sign. Upward
+interpolation computes both outputs together; downward interpolation uses
+the corresponding quadrature-weighted transpose. It retains the same angular
+orders and FP64 strict arithmetic. `BEM_FMM_MULTILEVEL_PARITY=0` selects the
+original kernels for comparison; folding is enabled by default and also
+accelerates ordinary MLFMA without the face-FFT backend.
+
+At `ref=5, ka=20`, an ABBA/BAAB comparison on the same prepared operator gave
+2.230 to 1.978 s for strict FFT-hybrid actions (another 1.13x), and 0.334 to
+0.310 s for mixed MLFMA actions (1.08x). Incremental relative differences were
+`4.40e-15` and `1.70e-7`, respectively. This is a full-action measurement, not
+whole-T timing. The GPU regression also compares absorbing media, partial
+chunks, both temporary storage precisions, uncached complex phases and a
+mixed-to-strict transition against the original interpolation.
+
+An audited size-sweep upgrade can use `--runtime-name` to preserve the original
+runtime and freeze a second one. Its plan records the original and optimized
+worker hashes plus validation evidence. Completed sample manifests remain
+unchanged; family comparisons normalize only those two approved binary
+identities and the explicitly enabled parity switch. Other parameter changes
+still fail. Supervisor logs use a new directory, and the original absolute
+deadline remains in force.
+
+`scripts/run_size_series.py` launches a frozen, resumable 12-hour prism
+series with analytic full-SO(3) output. It measures four pilot packets before
+admitting a full stage, retains atomic modal checkpoints, and applies the
+absolute deadline to both T construction and analytic postprocessing. A
+result is marked converged only if the adjacent-mesh change is at most 0.8%
+and the last-four-mode-shell change is at most 0.2%, using all16/M11 and
+relative Csca/Cext. These are numerical convergence indicators, not a proof
+of absolute or continuous-angle error. Larger sizes are deferred if the
+remaining budget is insufficient. `plan.json`, `status.json`, `eta.json`,
+per-size assessments and physical-unit Mueller CSVs record the outcome.
+The size-series driver does not claim a validated rational interpolant over
+the entire ka=10..40 interval from the narrow ka=5..7 pilot.
+
+`scripts/run_tmatrix_multisize.py` implements the actual local size surrogate
+workflow. It starts with five complete T matrices, freezes the rational model,
+and checks four independent sizes. If needed, those four become additional
+training samples and four *new* holdouts test the refined model. Geometry,
+material, mesh and modal basis are common throughout each training family.
+The output is 201 sizes with analytic SO(3) averaging, produced only after the
+holdout, modal-tail and endpoint mesh controls pass a combined empirical 1%
+budget. It does not establish a continuous-size error bound. An existing
+completed lower-endpoint mesh audit is retained separately from training.
+
+This driver inherits an existing absolute deadline with `--deadline-from
+<original-run>/plan.json`; it never starts a fresh twelve-hour budget. Its
+runtime is frozen, completed modal columns are resumable, and the deadline
+covers both direct solves and postprocessing. The current n=1.3116,
+wavelength=0.532 micrometre experiment starts with ka=10..12, ref=4 and L=24.
+It uses MLFMA for the direct anchors because the complete face-FFT variant
+failed the speed comparison. Thus size interpolation is active, whereas
+face FFT is explicitly disabled in `plan.json`.
+
 `run_tmatrix_day.py --no-time-limit` removes the wall-clock deadline from
 every stage and from the saved resume command. Numerical gates and RAM/disk
 reserves remain active. When upgrading only the launcher for an existing
 run, its new controller is frozen separately; the operator/basis runtime
 and checkpoint identities are preserved. `--no-time-limit` and an explicit
 `--deadline-utc` cannot be combined.
+
+`scripts/run_large_tmatrix.py` provides the large-prism host-GMRES profile.
+It freezes scripts/binaries, retains the first modal pair as a timing pilot,
+and then automatically resumes the full C2/C6/mirror build with analytic SO(3).
+It has no wall-clock deadline; strict residual, symmetry and resource gates
+remain active. `status.json`, `eta.json`, and the stage logs report progress.
+ETA scenarios distinguish assumed iteration counts from completed pair timings.
+The compact depth-six profile explicitly sets the fine-band order reference
+to depth six, matching the validated large-operator benchmark; leaving the
+worker's automatic depth-five floor active can exceed the 24-GiB GPU budget.
+
+```bash
+OPENBLAS_NUM_THREADS=1 python3 scripts/run_large_tmatrix.py \
+  --out runs/ka112_large --ka 112 --ref 7 --order 149
+```
+
+At this size the cutoff and surface-resolution choices are starting estimates;
+the 1% convergence target is not certified by the small-size cutoff fit.
+The full calculation can take weeks, depending on the measured GMRES iterations
+and packing fallbacks. Checkpoints remain resumable after an interruption.
+
+The optional large-prism `--sector-gmres --orbit-nodes 50` solver uses
+independent C6/horizontal-reflection Krylov recurrences and an orbit-local
+block inverse. With `--circulant-blend .25`, it also preserves these sectors
+in the FFT correction and its row blend. Identical side-patch transforms
+allow one side FFT application; only the caps require six rotated actions.
+Every accepted result still passes the original complete FP64 residual.
+The T basis, two phase codes, C2 reconstruction and analytic SO(3) average
+retain their existing numerical gates. Existing solver defaults are unchanged.
+
+On a complete twelve-mode packet at ka=40, ref=6 (1,032,192 unknowns),
+n=1.3116 and height/width=10/7, this reduced solve time from 232.67 to
+208.92 seconds, including the second-code residual check. Mixed FMM calls
+fell from 181 to 156. Local inverse storage fell from 3157.85 to 268.73 MiB;
+whole-process memory decreases less because FMM, Krylov bases and symmetry
+transforms also occupy memory. This packet measurement is not a universal
+throughput claim. [Implementation, controls and limitations](docs/muller_solver_sweep.md)
+include the unsuccessful larger-block trials, transpose/adjoint API and QMR
+comparison. `make host-symmetry-check` runs the new CPU algebra checks.
 
 Validation commands:
 

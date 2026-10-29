@@ -1,0 +1,136 @@
+{
+  "optimization": "one-buffer CPU incident prefetch while unchanged worker solves",
+  "incident_equivalence": [
+    {
+      "degree": 30,
+      "first_m": 5,
+      "points": 2236416,
+      "bitwise_identical_fields_scales_codes": true,
+      "serial_prepare_s": 10.28020161799941,
+      "threaded_prepare_s": 10.183810750997509,
+      "relative_field_difference": 0.0,
+      "fields_sha256": "e3e5ac65f60832de260beedb0153e7a03e32c05824db57e9197079a2dfe6baac"
+    },
+    {
+      "degree": 45,
+      "first_m": 20,
+      "points": 2236416,
+      "bitwise_identical_fields_scales_codes": true,
+      "serial_prepare_s": 18.81991279900103,
+      "threaded_prepare_s": 18.249144259993045,
+      "relative_field_difference": 0.0,
+      "fields_sha256": "814572c0b42bdcf22d430df7e2aaea0aef68f2cfe1749d7c77588a5fc9142304"
+    },
+    {
+      "degree": 64,
+      "first_m": 59,
+      "points": 2236416,
+      "bitwise_identical_fields_scales_codes": true,
+      "serial_prepare_s": 30.97006558100111,
+      "threaded_prepare_s": 30.63369615800184,
+      "relative_field_difference": 0.0,
+      "fields_sha256": "27abc72da7def820fe4a6991fb6e3cdb22fb1ba49cfaf75588ad9a05b6d871b2"
+    }
+  ],
+  "launch": {
+    "supervisor_pid": 929738,
+    "launched_unix": 1793284188.851982,
+    "out": "/home/kirill/neuro/BEM-CPP-analytic-alpha/runs/ka40_n1p3116_l0p532_aspect10over7_pipeline_20261029",
+    "source": "/home/kirill/neuro/BEM-CPP-analytic-alpha/runs/ka40_n1p3116_l0p532_aspect10over7_20261029/main_ref6_L64",
+    "retained_columns_expected": 2048,
+    "retained_packets_expected": 98,
+    "command": [
+      "/usr/bin/python3",
+      "/home/kirill/neuro/BEM-CPP-analytic-alpha/scripts/run_large_tmatrix.py",
+      "--out",
+      "/home/kirill/neuro/BEM-CPP-analytic-alpha/runs/ka40_n1p3116_l0p532_aspect10over7_pipeline_20261029",
+      "--ka",
+      "40",
+      "--ref",
+      "6",
+      "--order",
+      "64",
+      "--ri",
+      "1.3116",
+      "--wavelength",
+      ".532",
+      "--prism-aspect",
+      "1.4285714285714286",
+      "--restart",
+      "32",
+      "--max-iters",
+      "1000",
+      "--mbj-nodes",
+      "50",
+      "--tol",
+      "2e-6",
+      "--circulant-blend",
+      ".25",
+      "--strict-interval",
+      "4",
+      "--incident-prefetch",
+      "--worker-binary",
+      "/home/kirill/neuro/BEM-CPP-analytic-alpha/runs/ka40_n1p3116_l0p532_aspect10over7_20261029/runtime/bin/muller_tmatrix_fmm_server",
+      "--solver-restart-from",
+      "/home/kirill/neuro/BEM-CPP-analytic-alpha/runs/ka40_n1p3116_l0p532_aspect10over7_20261029/main_ref6_L64",
+      "--solver-restart-proof",
+      "/home/kirill/neuro/BEM-CPP-analytic-alpha/benchmarks/packet_pipeline_20261029/migration_proof.json",
+      "--cutoff-orders",
+      "60",
+      "62",
+      "64"
+    ],
+    "incident_fields_bitwise_identical": true,
+    "strict_interval_preserved": 4,
+    "rejected_control_s": 248.931655897,
+    "reference_s": 220.356934008,
+    "solver_time_improvement_claimed": false,
+    "optimization": "overlap incident preparation with GPU solve",
+    "wall_time_limit": null
+  },
+  "migration": {
+    "source": "/home/kirill/neuro/BEM-CPP-analytic-alpha/runs/ka40_n1p3116_l0p532_aspect10over7_20261029/main_ref6_L64",
+    "source_signature": "9432c8d07a1f8eb254ec3f48f5dec336736daa6c1b358d5bbfdec17ba50836d7",
+    "target_signature": "3f20ab7e7fc9eee0dec187337d9b560a818fbc066a7033b2ea3cb6b31cbbe342",
+    "proof_sha256": "a959a65c8f2845a1ac50b961783696ddd799680375399b221bb390982d312c5c",
+    "copied_columns": 2048,
+    "copied_packets": 98,
+    "skipped_uncommitted_columns": 0,
+    "new_coded_audits_required": false,
+    "old_residuals_are_retained_not_remeasured": true,
+    "identical_solver_coded_audits_reused": true
+  },
+  "tests": {
+    "pipeline": {
+      "log": "benchmarks/packet_pipeline_20261029/pipeline_tests.log",
+      "passed": true
+    },
+    "incident": {
+      "log": "benchmarks/packet_pipeline_20261029/incident_tests.log",
+      "passed": true
+    },
+    "migration": {
+      "log": "benchmarks/packet_pipeline_20261029/migration_tests.log",
+      "passed": true
+    },
+    "runner": {
+      "log": "benchmarks/packet_pipeline_20261029/runner_tests.log",
+      "passed": true
+    },
+    "c6": {
+      "log": "benchmarks/packet_pipeline_20261029/c6_tests.log",
+      "passed": true
+    },
+    "strict": {
+      "log": "benchmarks/packet_pipeline_20261029/strict_tests.log",
+      "passed": true
+    }
+  },
+  "strict_interval_experiment": {
+    "selected": false,
+    "reference_seconds": 220.356934008,
+    "trial_seconds": 248.931655897,
+    "reason": "Extra iterative correction after accumulated mixed-precision residual; preserve interval 4"
+  },
+  "solver_speedup_claimed": false
+}

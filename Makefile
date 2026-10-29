@@ -29,6 +29,12 @@ CUDA_PFFT_HESSIAN_CHECK = $(HOST_TEST_DIR)/pfft_hessian_check
 CUDA_MULLER_FMM_CHECK = $(HOST_TEST_DIR)/muller_fmm_check
 HOST_CHECKS = \
 	$(HOST_TEST_DIR)/streaming_host_gmres_check \
+	$(HOST_TEST_DIR)/streaming_flexible_check \
+	$(HOST_TEST_DIR)/streaming_recycle_check \
+	$(HOST_TEST_DIR)/streaming_two_level_check \
+	$(HOST_TEST_DIR)/streaming_deferred_strict_check \
+	$(HOST_TEST_DIR)/tmatrix_symmetry_warm_start_check \
+	$(HOST_TEST_DIR)/tmatrix_rhs_assembly_check \
 	$(HOST_TEST_DIR)/sphere_interpolation_check \
 	$(HOST_TEST_DIR)/alpha_fourier_check \
 	$(HOST_TEST_DIR)/prism_dihedral_check \
@@ -75,15 +81,15 @@ CU_SRCS = $(SRCDIR)/assembly.cu $(SRCDIR)/pmchwt.cu $(SRCDIR)/solver.cu $(SRCDIR
           $(SRCDIR)/p2p.cu $(SRCDIR)/fmm.cu $(SRCDIR)/bem_fmm.cu $(SRCDIR)/gmres.cu \
           $(SRCDIR)/block_gmres.cu $(SRCDIR)/device_linalg.cu $(SRCDIR)/precond.cu \
           $(SRCDIR)/pfft.cu $(SRCDIR)/surface_pfft.cu \
-          $(SRCDIR)/muller_fmm_gpu.cu
+          $(SRCDIR)/muller_fmm_gpu.cu $(SRCDIR)/regular_face_fft.cu
 CU_SRCS_FMM = $(SRCDIR)/assembly.cu $(SRCDIR)/pmchwt.cu $(SRCDIR)/solver.cu $(SRCDIR)/farfield.cu \
               $(SRCDIR)/p2p.cu $(SRCDIR)/fmm.cu $(SRCDIR)/bem_fmm.cu $(SRCDIR)/gmres.cu \
               $(SRCDIR)/block_gmres.cu $(SRCDIR)/device_linalg.cu $(SRCDIR)/precond.cu \
-              $(SRCDIR)/muller_fmm_gpu.cu
+              $(SRCDIR)/muller_fmm_gpu.cu $(SRCDIR)/regular_face_fft.cu
 CPP_SRCS = $(SRCDIR)/mesh.cpp $(SRCDIR)/rwg.cpp $(SRCDIR)/rhs.cpp \
            $(SRCDIR)/muller_nodal.cpp $(SRCDIR)/muller_duffy.cpp \
            $(SRCDIR)/muller_dense.cpp $(SRCDIR)/muller_mbj.cpp \
-           $(SRCDIR)/muller_fmm.cpp $(SRCDIR)/muller_mbj_fmm.cpp \
+           $(SRCDIR)/muller_fmm.cpp $(SRCDIR)/muller_mbj_fmm.cpp $(SRCDIR)/prism_face_fft.cpp \
            $(SRCDIR)/orient.cpp $(SRCDIR)/output.cpp \
            $(SRCDIR)/main.cpp
 
@@ -95,6 +101,7 @@ CU_OBJS_FMM = $(CU_SRCS_FMM:.cu=.fmm.o)
 CPP_OBJS_FMM = $(CPP_SRCS:.cpp=.fmm.o)
 OBJS_FMM = $(CU_OBJS_FMM) $(CPP_OBJS_FMM)
 MULLER_FP32_OBJS = \
+	$(FP32_BUILD_DIR)/prism_face_fft.o $(FP32_BUILD_DIR)/regular_face_fft.o \
 	$(FP32_BUILD_DIR)/muller_fmm.o \
 	$(FP32_BUILD_DIR)/muller_dense.o \
 	$(FP32_BUILD_DIR)/muller_mbj.o \
@@ -134,6 +141,7 @@ $(BINDIR)/muller_tmatrix_probe: tools/muller_tmatrix_probe.cpp $(SRCDIR)/muller_
 	$(CXX) $(HOST_OPT) -Wall -std=c++11 $(if $(filter 1,$(OPENMP)),-fopenmp) -I$(SRCDIR) -o $@ $^
 
 $(MULLER_FMM_DEMO): tools/muller_nodal_fmm_demo.cpp $(SRCDIR)/alpha_fourier.h \
+		$(SRCDIR)/prism_face_fft.o $(SRCDIR)/regular_face_fft.o \
 		$(SRCDIR)/muller_fmm.o $(SRCDIR)/muller_dense.o \
 		$(SRCDIR)/muller_mbj.o $(SRCDIR)/muller_mbj_fmm.o \
 		$(SRCDIR)/muller_nodal.o \
@@ -158,23 +166,93 @@ $(MULLER_FMM_FP32_DEMO): tools/muller_nodal_fmm_demo.cpp $(SRCDIR)/alpha_fourier
 
 $(BINDIR)/muller_tmatrix_fmm_server: HOST_OPT=-O3 -march=native
 $(BINDIR)/muller_tmatrix_fmm_server: ARCH=-arch=sm_86
-$(BINDIR)/muller_tmatrix_fmm_server: tools/muller_tmatrix_fmm_server.cpp $(MULLER_FP32_OBJS)
+STREAMING_HOST_HEADERS = $(SRCDIR)/streaming_host_gmres.h $(SRCDIR)/streaming_recycle_space.h $(SRCDIR)/streaming_two_level.h $(SRCDIR)/krylov_deflation.h
+$(BINDIR)/muller_tmatrix_fmm_server: tools/muller_tmatrix_fmm_server.cpp $(MULLER_FP32_OBJS) $(STREAMING_HOST_HEADERS) $(SRCDIR)/streaming_polynomial_inverse.h $(SRCDIR)/tmatrix_symmetry_warm_start.h $(SRCDIR)/tmatrix_rhs_assembly.h $(SRCDIR)/block_circulant_fft.cu $(SRCDIR)/prism_circulant_layout.cpp $(SRCDIR)/prism_circulant_inverse.cpp $(SRCDIR)/block_circulant_fft.h $(SRCDIR)/prism_circulant_layout.h $(SRCDIR)/prism_circulant_inverse.h $(SRCDIR)/global_coarse_inverse.cu $(SRCDIR)/global_coarse_inverse.h $(SRCDIR)/prism_wave_basis.h
 	@mkdir -p $(BINDIR)
-	$(NVCC) $(NVFLAGS) $(FP32_PRECISION_FLAGS) -I$(SRCDIR) -o $@ $^ $(LDFLAGS) -lcublas
+	$(NVCC) $(NVFLAGS) $(FP32_PRECISION_FLAGS) -I$(SRCDIR) -o $@ $(filter-out %.h,$^) $(LDFLAGS) -lcublas
 
 $(BINDIR)/muller_fmm_action_probe: HOST_OPT=-O3 -march=native
 $(BINDIR)/muller_fmm_action_probe: ARCH=-arch=sm_86
-$(BINDIR)/muller_fmm_action_probe: tools/muller_fmm_action_probe.cpp $(MULLER_FP32_OBJS)
+$(BINDIR)/muller_fmm_action_probe: tools/muller_fmm_action_probe.cpp $(MULLER_FP32_OBJS) $(STREAMING_HOST_HEADERS) $(SRCDIR)/tmatrix_symmetry_warm_start.h
+	@mkdir -p $(BINDIR)
+	$(NVCC) $(NVFLAGS) $(FP32_PRECISION_FLAGS) -I$(SRCDIR) -o $@ $(filter-out %.h,$^) $(LDFLAGS) -lcublas
+
+$(BINDIR)/muller_recycle_fmm_probe: HOST_OPT=-O3 -march=native
+$(BINDIR)/muller_recycle_fmm_probe: ARCH=-arch=sm_86
+$(BINDIR)/muller_recycle_fmm_probe: tools/muller_recycle_fmm_probe.cpp $(MULLER_FP32_OBJS) $(STREAMING_HOST_HEADERS)
+	@mkdir -p $(BINDIR)
+	$(NVCC) $(NVFLAGS) $(FP32_PRECISION_FLAGS) -I$(SRCDIR) -o $@ $(filter-out %.h,$^) $(LDFLAGS) -lcublas
+
+$(BINDIR)/muller_solver_fft_probe: HOST_OPT=-O3 -march=native
+$(BINDIR)/muller_solver_fft_probe: ARCH=-arch=sm_86
+$(BINDIR)/muller_solver_fft_probe: tools/muller_solver_fft_probe.cpp $(SRCDIR)/streaming_tfqmr.h $(MULLER_FP32_OBJS) $(STREAMING_HOST_HEADERS) $(SRCDIR)/streaming_polynomial_inverse.h $(SRCDIR)/streaming_idr.h $(SRCDIR)/block_circulant_fft.cu $(SRCDIR)/prism_circulant_layout.cpp $(SRCDIR)/prism_circulant_inverse.cpp $(SRCDIR)/block_circulant_fft.h $(SRCDIR)/prism_circulant_layout.h $(SRCDIR)/prism_circulant_inverse.h $(SRCDIR)/global_coarse_inverse.cu $(SRCDIR)/global_coarse_inverse.h $(SRCDIR)/prism_wave_basis.h
+	@mkdir -p $(BINDIR)
+	$(NVCC) $(NVFLAGS) $(FP32_PRECISION_FLAGS) -I$(SRCDIR) -o $@ $(filter-out %.h,$^) $(LDFLAGS) -lcublas
+
+$(HOST_TEST_DIR)/block_circulant_fft_check: tests/block_circulant_fft_check.cpp $(SRCDIR)/block_circulant_fft.cu $(SRCDIR)/block_circulant_fft.h $(SRCDIR)/krylov_deflation.h
+	$(NVCC) $(NVFLAGS) -I$(SRCDIR) -o $@ $(filter-out %.h,$^) $(LDFLAGS)
+
+$(HOST_TEST_DIR)/prism_circulant_layout_check: tests/prism_circulant_layout_check.cpp $(SRCDIR)/prism_circulant_layout.cpp $(SRCDIR)/prism_circulant_layout.h $(SRCDIR)/muller_nodal.cpp $(SRCDIR)/mesh.cpp
+	$(CXX) $(CXXFLAGS) -I$(SRCDIR) -o $@ $(filter-out %.h,$^)
+
+.PHONY: cuda-circulant-check
+cuda-circulant-check: $(HOST_TEST_DIR)/block_circulant_fft_check $(HOST_TEST_DIR)/prism_circulant_layout_check
+	$(HOST_TEST_DIR)/block_circulant_fft_check
+	$(HOST_TEST_DIR)/prism_circulant_layout_check
+
+$(HOST_TEST_DIR)/prism_circulant_blocks_check: tests/prism_circulant_blocks_check.cpp $(SRCDIR)/prism_circulant_layout.cpp $(MULLER_FP32_OBJS)
+	$(NVCC) $(NVFLAGS) $(FP32_PRECISION_FLAGS) -I$(SRCDIR) -o $@ $^ $(LDFLAGS) -lcublas
+
+$(BINDIR)/muller_mbj_cache_probe: HOST_OPT=-O3 -march=native
+$(BINDIR)/muller_mbj_cache_probe: ARCH=-arch=sm_86
+$(BINDIR)/muller_mbj_cache_probe: tools/muller_mbj_cache_probe.cpp $(MULLER_FP32_OBJS)
 	@mkdir -p $(BINDIR)
 	$(NVCC) $(NVFLAGS) $(FP32_PRECISION_FLAGS) -I$(SRCDIR) -o $@ $^ $(LDFLAGS) -lcublas
 
-$(FP32_BUILD_DIR)/fmm.o $(SRCDIR)/fmm.o $(SRCDIR)/fmm.fmm.o: $(SRCDIR)/fmm_multilevel.cuh
+$(FP32_BUILD_DIR)/fmm.o $(SRCDIR)/fmm.o $(SRCDIR)/fmm.fmm.o: $(SRCDIR)/fmm_multilevel.cuh $(SRCDIR)/fmm_profile.cuh $(SRCDIR)/fmm_transpose.cuh
+$(FP32_BUILD_DIR)/muller_fmm.o $(SRCDIR)/muller_fmm.o: $(SRCDIR)/muller_fmm_transpose.inc
+
+$(BINDIR)/fmm_vector_action_probe: HOST_OPT=-O3 -march=native
+$(BINDIR)/fmm_vector_action_probe: ARCH=-arch=sm_86
+$(BINDIR)/fmm_vector_action_probe: tools/fmm_vector_action_probe.cpp $(FP32_BUILD_DIR)/fmm.o $(FP32_BUILD_DIR)/p2p.o $(FP32_BUILD_DIR)/muller_nodal.o $(FP32_BUILD_DIR)/mesh.o
+	@mkdir -p $(BINDIR)
+	$(NVCC) $(NVFLAGS) $(FP32_PRECISION_FLAGS) -I$(SRCDIR) -o $@ $^ $(LDFLAGS)
+
+$(HOST_TEST_DIR)/p2p_shared_check: ARCH=-arch=sm_86
+$(HOST_TEST_DIR)/p2p_shared_check: $(HOST_TEST_DIR)/p2p_shared_check.cu $(FP32_BUILD_DIR)/p2p.o
+	$(NVCC) $(NVFLAGS) -I$(SRCDIR) -o $@ $^ $(LDFLAGS)
 
 $(HOST_TEST_DIR)/sphere_interpolation_check: $(HOST_TEST_DIR)/sphere_interpolation_check.cpp $(SRCDIR)/sphere_interpolation.h $(SRCDIR)/sphere_quad.h
 	$(CXX) -O2 -std=c++11 -I$(SRCDIR) $< -o $@
 
-$(HOST_TEST_DIR)/streaming_host_gmres_check: $(HOST_TEST_DIR)/streaming_host_gmres_check.cpp $(SRCDIR)/streaming_host_gmres.h
+$(HOST_TEST_DIR)/streaming_host_gmres_check: $(HOST_TEST_DIR)/streaming_host_gmres_check.cpp $(STREAMING_HOST_HEADERS)
 	$(CXX) -O2 -std=c++11 -I$(SRCDIR) $< -o $@
+
+$(HOST_TEST_DIR)/streaming_flexible_check: $(HOST_TEST_DIR)/streaming_flexible_check.cpp $(STREAMING_HOST_HEADERS) $(SRCDIR)/streaming_polynomial_inverse.h $(SRCDIR)/streaming_idr.h
+	$(CXX) -O2 -std=c++11 -I$(SRCDIR) $< -o $@
+
+$(HOST_TEST_DIR)/streaming_recycle_check: $(HOST_TEST_DIR)/streaming_recycle_check.cpp $(STREAMING_HOST_HEADERS)
+	$(CXX) -O2 -std=c++11 -I$(SRCDIR) $< -o $@
+
+$(HOST_TEST_DIR)/streaming_two_level_check: $(HOST_TEST_DIR)/streaming_two_level_check.cpp $(STREAMING_HOST_HEADERS)
+	$(CXX) -O2 -std=c++11 -I$(SRCDIR) $< -o $@
+
+$(HOST_TEST_DIR)/streaming_deferred_strict_check: $(HOST_TEST_DIR)/streaming_deferred_strict_check.cpp $(STREAMING_HOST_HEADERS)
+	$(CXX) -O2 -std=c++11 -I$(SRCDIR) $< -o $@
+
+$(BINDIR)/muller_recycle_cpu_probe: tools/muller_recycle_cpu_probe.cpp $(STREAMING_HOST_HEADERS) $(SRCDIR)/muller_dense.cpp $(SRCDIR)/muller_mbj.cpp $(SRCDIR)/muller_nodal.cpp $(SRCDIR)/muller_duffy.cpp $(SRCDIR)/mesh.cpp
+	@mkdir -p $(BINDIR)
+	$(CXX) -O3 -march=native -fopenmp -std=c++11 -I$(SRCDIR) $(filter-out %.h,$^) -o $@
+
+$(HOST_TEST_DIR)/tmatrix_symmetry_warm_start_check: $(HOST_TEST_DIR)/tmatrix_symmetry_warm_start_check.cpp $(SRCDIR)/tmatrix_symmetry_warm_start.h $(STREAMING_HOST_HEADERS) $(SRCDIR)/muller_dense.cpp $(SRCDIR)/muller_nodal.cpp $(SRCDIR)/muller_duffy.cpp $(SRCDIR)/mesh.cpp
+	$(CXX) $(CXXFLAGS) -I$(SRCDIR) $(filter-out %.h,$^) -o $@
+
+$(HOST_TEST_DIR)/tmatrix_rhs_assembly_check: $(HOST_TEST_DIR)/tmatrix_rhs_assembly_check.cpp $(SRCDIR)/tmatrix_rhs_assembly.h $(SRCDIR)/muller_nodal.h $(SRCDIR)/muller_dense.cpp $(SRCDIR)/muller_nodal.cpp $(SRCDIR)/muller_duffy.cpp $(SRCDIR)/mesh.cpp
+	$(CXX) -O3 -fopenmp -std=c++11 -I$(SRCDIR) $(filter-out %.h,$^) -o $@
+
+$(BINDIR)/tmatrix_rhs_cpu_probe: tools/tmatrix_rhs_cpu_probe.cpp $(SRCDIR)/tmatrix_rhs_assembly.h $(SRCDIR)/muller_nodal.h $(SRCDIR)/muller_nodal.cpp $(SRCDIR)/mesh.cpp $(SRCDIR)/quadrature.h
+	@mkdir -p $(BINDIR)
+	$(CXX) -O3 -march=native -fopenmp -std=c++11 -I$(SRCDIR) $(filter-out %.h,$^) -o $@
 
 $(BINDIR)/mesh_capacity_probe: tools/mesh_capacity_probe.cpp $(SRCDIR)/mesh.cpp $(SRCDIR)/mesh.h
 	mkdir -p $(BINDIR)
@@ -198,6 +276,7 @@ $(HOST_TEST_DIR)/prism_dihedral_check: $(HOST_TEST_DIR)/prism_dihedral_check.cpp
 muller-fp32: cuda-toolchain-check $(MULLER_FMM_FP32_DEMO)
 
 $(MULLER_TRAINING_DUMP): tools/muller_training_dump.cpp \
+		$(SRCDIR)/prism_face_fft.o $(SRCDIR)/regular_face_fft.o \
 		$(SRCDIR)/muller_fmm.o $(SRCDIR)/muller_nodal.o \
 		$(SRCDIR)/muller_duffy.o $(SRCDIR)/mesh.o \
 		$(SRCDIR)/muller_fmm_gpu.o $(SRCDIR)/fmm.o \
@@ -213,7 +292,7 @@ cuda-toolchain-check:
 
 $(TARGET_FMM): $(OBJS_FMM)
 	@mkdir -p $(BINDIR)
-	$(NVCC) $(ARCH) -o $@ $^ $(filter-out -lcufft,$(LDFLAGS))
+	$(NVCC) $(ARCH) -o $@ $^ $(LDFLAGS)
 	@echo "Built: $@"
 
 # CUDA sources
@@ -250,6 +329,12 @@ clean:
 		$(MULLER_FMM_FP32_DEMO) \
 		$(BINDIR)/muller_tmatrix_probe \
 		$(BINDIR)/muller_tmatrix_fmm_server \
+		$(BINDIR)/muller_recycle_fmm_probe \
+		$(BINDIR)/muller_solver_fft_probe \
+		$(HOST_TEST_DIR)/block_circulant_fft_check $(HOST_TEST_DIR)/prism_circulant_layout_check $(HOST_TEST_DIR)/prism_circulant_blocks_check \
+		$(HOST_TEST_DIR)/global_coarse_inverse_check $(HOST_TEST_DIR)/prism_wave_basis_check \
+		$(BINDIR)/fmm_vector_action_probe $(HOST_TEST_DIR)/p2p_shared_check \
+		$(BINDIR)/regular_face_fft_probe $(BINDIR)/regular_face_fft_fmm_probe \
 		$(BINDIR)/tmatrix_so3_mstm $(BINDIR)/tmatrix_so3_mstm_fp32 \
 		$(CUDA_HESSIAN_CHECK) $(CUDA_PFFT_HESSIAN_CHECK) \
 		$(CUDA_MULLER_FMM_CHECK)
@@ -268,7 +353,19 @@ $(CUDA_PFFT_HESSIAN_CHECK): $(HOST_TEST_DIR)/pfft_hessian_check.cu $(SRCDIR)/pff
 cuda-pfft-hessian-check: cuda-toolchain-check $(CUDA_PFFT_HESSIAN_CHECK)
 	$(CUDA_PFFT_HESSIAN_CHECK)
 
+$(BINDIR)/regular_face_fft_probe: tools/regular_face_fft_probe.cpp $(SRCDIR)/regular_face_fft.cu $(SRCDIR)/regular_face_fft.h $(SRCDIR)/quadrature.h
+	@mkdir -p $(BINDIR)
+	$(NVCC) $(NVFLAGS) -I$(SRCDIR) -o $@ tools/regular_face_fft_probe.cpp $(SRCDIR)/regular_face_fft.cu $(LDFLAGS)
+
+cuda-regular-face-fft-check: cuda-toolchain-check $(BINDIR)/regular_face_fft_probe
+	$(BINDIR)/regular_face_fft_probe --check
+
+$(BINDIR)/regular_face_fft_fmm_probe: tools/regular_face_fft_probe.cpp $(SRCDIR)/regular_face_fft.cu $(SRCDIR)/regular_face_fft.h $(FP32_BUILD_DIR)/fmm.o $(FP32_BUILD_DIR)/p2p.o
+	@mkdir -p $(BINDIR)
+	$(NVCC) $(NVFLAGS) -DBEM_FACE_FMM_COMPARE -I$(SRCDIR) -o $@ tools/regular_face_fft_probe.cpp $(SRCDIR)/regular_face_fft.cu $(FP32_BUILD_DIR)/fmm.o $(FP32_BUILD_DIR)/p2p.o $(LDFLAGS)
+
 $(CUDA_MULLER_FMM_CHECK): $(HOST_TEST_DIR)/muller_fmm_check.cpp \
+		$(SRCDIR)/prism_face_fft.o $(SRCDIR)/regular_face_fft.o \
 		$(SRCDIR)/muller_fmm.o $(SRCDIR)/muller_dense.o \
 		$(SRCDIR)/muller_mbj.o $(SRCDIR)/muller_mbj_fmm.o \
 		$(SRCDIR)/muller_nodal.o $(SRCDIR)/muller_duffy.o \
@@ -280,6 +377,10 @@ $(CUDA_MULLER_FMM_CHECK): $(HOST_TEST_DIR)/muller_fmm_check.cpp \
 
 cuda-muller-fmm-check: cuda-toolchain-check $(CUDA_MULLER_FMM_CHECK)
 	$(CUDA_MULLER_FMM_CHECK)
+
+$(BINDIR)/muller_face_fft_check: tools/muller_face_fft_check.cpp $(MULLER_FP32_OBJS)
+	@mkdir -p $(BINDIR)
+	$(NVCC) $(NVFLAGS) -I$(SRCDIR) -o $@ $^ $(LDFLAGS) -lcublas
 
 cuda-muller-edge-check: cuda-toolchain-check $(CUDA_MULLER_FMM_CHECK)
 	$(CUDA_MULLER_FMM_CHECK) --shape prism --ref 0 --ka 1 \
@@ -312,6 +413,12 @@ $(HOST_TEST_DIR)/output_json_mesh_check: $(HOST_TEST_DIR)/output_json_mesh_check
 
 host-checks: $(HOST_CHECKS)
 	$(HOST_TEST_DIR)/streaming_host_gmres_check
+	$(HOST_TEST_DIR)/streaming_flexible_check
+	$(HOST_TEST_DIR)/streaming_recycle_check
+	$(HOST_TEST_DIR)/streaming_two_level_check
+	$(HOST_TEST_DIR)/streaming_deferred_strict_check
+	$(HOST_TEST_DIR)/tmatrix_symmetry_warm_start_check
+	$(HOST_TEST_DIR)/tmatrix_rhs_assembly_check
 	$(HOST_TEST_DIR)/sphere_interpolation_check
 	$(HOST_TEST_DIR)/alpha_fourier_check
 	$(HOST_TEST_DIR)/prism_dihedral_check
@@ -338,3 +445,57 @@ cuda-runtime-check:
 	python3 scripts/detect_cuda_toolchain.py --json-out runs/audit_1_6_cuda/cuda_runtime_detect.json --require-runtime
 
 .PHONY: all fmm-only muller-fp32 cuda-toolchain-check host-checks host-audits cuda-runtime-check cuda-muller-edge-check clean
+
+$(HOST_TEST_DIR)/global_coarse_inverse_check: tests/global_coarse_inverse_check.cpp $(SRCDIR)/global_coarse_inverse.cu $(SRCDIR)/global_coarse_inverse.h $(SRCDIR)/krylov_deflation.h
+	$(NVCC) $(NVFLAGS) -I$(SRCDIR) -o $@ $(filter-out %.h,$^) $(LDFLAGS) -lcublas
+
+$(HOST_TEST_DIR)/prism_wave_basis_check: tests/prism_wave_basis_check.cpp $(SRCDIR)/prism_wave_basis.h $(SRCDIR)/muller_nodal.cpp $(SRCDIR)/mesh.cpp
+	$(CXX) -O2 -std=c++11 -I$(SRCDIR) -o $@ $(filter-out %.h,$^)
+
+.PHONY: cuda-global-coarse-check
+cuda-global-coarse-check: $(HOST_TEST_DIR)/global_coarse_inverse_check $(HOST_TEST_DIR)/prism_wave_basis_check
+	$(HOST_TEST_DIR)/global_coarse_inverse_check
+	$(HOST_TEST_DIR)/prism_wave_basis_check
+
+$(HOST_TEST_DIR)/streaming_tfqmr_check: tests/streaming_tfqmr_check.cpp $(SRCDIR)/streaming_tfqmr.h $(STREAMING_HOST_HEADERS)
+	$(CXX) -O3 -std=c++11 -fopenmp -I$(SRCDIR) -o $@ $<
+
+$(HOST_TEST_DIR)/streaming_qmr_check: tests/streaming_qmr_check.cpp $(SRCDIR)/streaming_qmr.h $(STREAMING_HOST_HEADERS)
+	$(CXX) -O3 -std=c++11 -fopenmp -I$(SRCDIR) -o $@ $<
+
+$(BINDIR)/muller_solver_fft_probe: $(SRCDIR)/streaming_qmr.h
+
+$(HOST_TEST_DIR)/mbj_adjoint_check: tests/mbj_adjoint_check.cpp $(SRCDIR)/muller_mbj.cpp $(SRCDIR)/muller_dense.cpp $(SRCDIR)/muller_nodal.cpp $(SRCDIR)/muller_duffy.cpp $(SRCDIR)/mesh.cpp $(SRCDIR)/muller_mbj.h
+	$(CXX) -O2 -std=c++11 -fopenmp -I$(SRCDIR) -o $@ $(filter-out %.h,$^)
+
+$(HOST_TEST_DIR)/fmm_transpose_check: ARCH=-arch=sm_86
+$(HOST_TEST_DIR)/fmm_transpose_check: tests/fmm_transpose_check.cpp $(FP32_BUILD_DIR)/fmm.o $(FP32_BUILD_DIR)/p2p.o
+	$(NVCC) $(NVFLAGS) $(FP32_PRECISION_FLAGS) -I$(SRCDIR) -o $@ $^ $(LDFLAGS)
+
+.PHONY: cuda-adjoint-check
+cuda-adjoint-check: $(HOST_TEST_DIR)/streaming_qmr_check $(HOST_TEST_DIR)/mbj_adjoint_check $(HOST_TEST_DIR)/block_circulant_fft_check $(HOST_TEST_DIR)/fmm_transpose_check
+	OMP_NUM_THREADS=2 $(HOST_TEST_DIR)/streaming_qmr_check
+	OMP_NUM_THREADS=2 $(HOST_TEST_DIR)/mbj_adjoint_check
+	$(HOST_TEST_DIR)/block_circulant_fft_check
+	$(HOST_TEST_DIR)/fmm_transpose_check
+
+$(BINDIR)/muller_solver_fft_probe: $(SRCDIR)/prism_orbit_inverse.cpp $(SRCDIR)/prism_orbit_inverse.h $(SRCDIR)/prism_symmetry_sectors.h $(SRCDIR)/tmatrix_symmetry_warm_start.h
+
+$(HOST_TEST_DIR)/prism_symmetry_sectors_check: tests/prism_symmetry_sectors_check.cpp $(SRCDIR)/prism_orbit_inverse.h $(SRCDIR)/prism_symmetry_sectors.h $(SRCDIR)/tmatrix_symmetry_warm_start.h $(SRCDIR)/muller_nodal.cpp $(SRCDIR)/mesh.cpp
+	$(CXX) -O3 -march=native -fopenmp -std=c++11 -I$(SRCDIR) $(filter-out %.h,$^) -o $@
+
+$(BINDIR)/muller_solver_fft_probe: $(SRCDIR)/streaming_sector_gmres.h
+$(HOST_TEST_DIR)/streaming_sector_gmres_check: tests/streaming_sector_gmres_check.cpp $(SRCDIR)/streaming_sector_gmres.h $(STREAMING_HOST_HEADERS)
+	$(CXX) -O3 -std=c++11 -I$(SRCDIR) $< -o $@
+
+$(BINDIR)/prism_packet_rhs: tools/prism_packet_rhs.cpp $(SRCDIR)/tmatrix_rhs_assembly.h $(SRCDIR)/muller_nodal.cpp $(SRCDIR)/mesh.cpp
+	$(CXX) -O3 -march=native -fopenmp -std=c++11 -I$(SRCDIR) $(filter-out %.h,$^) -o $@
+
+$(BINDIR)/muller_solver_fft_probe: $(SRCDIR)/prism_symmetric_circulant.h
+.PHONY: host-symmetry-check
+host-symmetry-check: $(HOST_TEST_DIR)/prism_symmetry_sectors_check $(HOST_TEST_DIR)/streaming_sector_gmres_check
+	OMP_NUM_THREADS=4 $(HOST_TEST_DIR)/prism_symmetry_sectors_check
+	$(HOST_TEST_DIR)/streaming_sector_gmres_check
+
+$(BINDIR)/muller_tmatrix_fmm_server: $(SRCDIR)/prism_orbit_inverse.cpp $(SRCDIR)/prism_orbit_inverse.h $(SRCDIR)/prism_symmetry_sectors.h $(SRCDIR)/prism_symmetric_circulant.h $(SRCDIR)/prism_sector_solver.h $(SRCDIR)/streaming_sector_gmres.h
+$(HOST_TEST_DIR)/prism_symmetry_sectors_check: $(SRCDIR)/prism_sector_solver.h $(SRCDIR)/streaming_sector_gmres.h $(STREAMING_HOST_HEADERS)

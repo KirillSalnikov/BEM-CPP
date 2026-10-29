@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <exception>
 #include <limits>
 #include <map>
 #include <string>
@@ -1889,6 +1890,26 @@ void MullerFmmOperator::apply_current_operators_gpu(
     int input_offset, int slot)
 {
     gpu_assembly.project_charges_and_mass(input_offset, slot);
+    if(prism_fft_active()) {
+        const double* real[3];const double* imag[3];
+        for(int d=0;d<3;++d){real[d]=gpu_assembly.charge_re(d,slot);imag[d]=gpu_assembly.charge_im(d,slot);}
+        const char* flag=std::getenv("BEM_FACE_FFT_CONCURRENT_MEDIA");
+        if(!flag || std::strcmp(flag,"0")!=0) {
+            std::exception_ptr errors[2];
+#pragma omp parallel for num_threads(2)
+            for(int medium=0;medium<2;++medium) {
+                try {(medium?prism_fft_interior:prism_fft_exterior)->evaluate_device(real,imag,fmm_near_fp32);}
+                catch(...){errors[medium]=std::current_exception();}
+            }
+            for(const auto& error:errors)if(error)std::rethrow_exception(error);
+        }else{
+            prism_fft_exterior->evaluate_device(real,imag,fmm_near_fp32);
+            prism_fft_interior->evaluate_device(real,imag,fmm_near_fp32);
+        }
+        gpu_assembly.assemble_media_and_correction(prism_fft_exterior->result_view(),prism_fft_interior->result_view(),
+            epsilon_exterior,epsilon_interior,mu_exterior,mu_interior,input_offset,slot);
+        return;
+    }
     const auto evaluate_exterior = [&]() {
         fmm_exterior.evaluate_vector_actions_batch3_device(
             gpu_assembly.charge_re(0, slot),
@@ -2110,6 +2131,9 @@ void MullerFmmOperator::apply_current_operators(
     std::vector<cdouble>& k2_epsilon,
     std::vector<cdouble>& k2_mu)
 {
+    const char* profile_setting = std::getenv("BEM_MULLER_PROFILE_HOST");
+    const bool profile = profile_setting && std::strcmp(profile_setting,"0")!=0;
+    const auto profile_start = std::chrono::steady_clock::now();
     const int point_count = (int)quadrature.size();
     apply_mass(coefficients, mass);
     k1.assign(current_dofs, cdouble(0.0));
@@ -2141,8 +2165,14 @@ void MullerFmmOperator::apply_current_operators(
 
     }
 
+    const auto profile_projected = std::chrono::steady_clock::now();
     const bool contracted_vector_actions = true;
-    if (use_pfft) {
+    if(prism_fft_active()) {
+        prism_fft_exterior->evaluate(charges[0].data(),charges[1].data(),charges[2].data(),
+            curl_exterior.data(),hessian_action_exterior.data(),fmm_near_fp32);
+        prism_fft_interior->evaluate(charges[0].data(),charges[1].data(),charges[2].data(),
+            curl_interior.data(),hessian_action_interior.data(),fmm_near_fp32);
+    } else if (use_pfft) {
 #ifndef BEM_FMM_ONLY
         pfft_exterior.evaluate_vector_actions(
             charges[0].data(),
@@ -2261,6 +2291,7 @@ void MullerFmmOperator::apply_current_operators(
         }
     }
 
+    const auto profile_fields = std::chrono::steady_clock::now();
     for (const std::vector<int>& color : assembly_colors) {
 #pragma omp parallel for schedule(static)
         for (int color_index = 0;
@@ -2447,6 +2478,7 @@ void MullerFmmOperator::apply_current_operators(
         }
     }
 
+    const auto profile_assembled = std::chrono::steady_clock::now();
 #pragma omp parallel for schedule(static)
     for (int row = 0; row < current_dofs; row++) {
         for (int index = correction.row_offsets[row];
@@ -2458,6 +2490,15 @@ void MullerFmmOperator::apply_current_operators(
             k2_epsilon[row] += entry.k2_epsilon * value;
             k2_mu[row] += entry.k2_mu * value;
         }
+    }
+    if (profile) {
+        const auto end = std::chrono::steady_clock::now();
+        const auto ms = [](std::chrono::steady_clock::time_point a, std::chrono::steady_clock::time_point b) {
+            return std::chrono::duration<double, std::milli>(b-a).count();
+        };
+        std::printf("  [Muller host profile] project+mass=%.3fms fields=%.3fms assemble=%.3fms correction=%.3fms\n",
+                    ms(profile_start,profile_projected),ms(profile_projected,profile_fields),
+                    ms(profile_fields,profile_assembled),ms(profile_assembled,end));
     }
 }
 
@@ -2484,7 +2525,7 @@ void MullerFmmOperator::matvec_device(
             fmm_exterior.vector_actions_pair_available() &&
             fmm_interior.vector_actions_pair_available();
     }
-    if (pair_currents || (banded_fmm && multilevel_pair_enabled())) {
+    if (!prism_fft_active() && (pair_currents || (banded_fmm && multilevel_pair_enabled()))) {
         apply_current_operator_pair_gpu();
     } else {
         apply_current_operators_gpu(0, 0);
@@ -2505,7 +2546,7 @@ void MullerFmmOperator::matvec_batch2_device(
     void* device_output_x,
     void* device_output_y)
 {
-    bool four_field =
+    bool four_field = !prism_fft_active() &&
         fmm_exterior.vector_actions_quad_available() &&
         fmm_interior.vector_actions_quad_available();
     const char* override = std::getenv("BEM_FMM_FOUR_FIELD");
@@ -2548,9 +2589,9 @@ void MullerFmmOperator::matvec_batch2_device_strict(
             "strict device Muller matvec requires the FMM backend");
     const bool previous_near_fp32 = fmm_near_fp32;
     set_fmm_near_fp32(false);
-    const bool strict_pair = (banded_fmm && multilevel_pair_enabled()) ||
+    const bool strict_pair = !prism_fft_active() && ((banded_fmm && multilevel_pair_enabled()) ||
         (fmm_exterior.strict_vector_pair_available() &&
-        fmm_interior.strict_vector_pair_available());
+        fmm_interior.strict_vector_pair_available()));
     const auto apply_one = [&](const void* input, void* output) {
         gpu_assembly.upload_system_input_device(input);
         if (strict_pair) {
@@ -2577,12 +2618,14 @@ void MullerFmmOperator::matvec_batch2_device_strict(
     set_fmm_near_fp32(previous_near_fp32);
 }
 
+#include "muller_fmm_transpose.inc"
+
 void MullerFmmOperator::matvec_strict(
     const cdouble* input, cdouble* output)
 {
     if (!device_matvec_available()) {
-        if (use_pfft || !fmm_exterior.initialized ||
-            !fmm_interior.initialized) {
+        if (use_pfft || (!prism_fft_exterior && (!fmm_exterior.initialized ||
+            !fmm_interior.initialized))) {
             throw std::runtime_error(
                 "strict Muller matvec requires the FMM backend");
         }
@@ -2601,9 +2644,9 @@ void MullerFmmOperator::matvec_strict(
     set_fmm_near_fp32(false);
     try {
         gpu_assembly.upload_system_input(input);
-        if ((banded_fmm && multilevel_pair_enabled()) ||
+        if (!prism_fft_active() && ((banded_fmm && multilevel_pair_enabled()) ||
             (fmm_exterior.strict_vector_pair_available() &&
-            fmm_interior.strict_vector_pair_available())) {
+            fmm_interior.strict_vector_pair_available()))) {
             apply_current_operator_pair_gpu(true);
         } else {
             apply_current_operators_gpu(0, 0);
@@ -2641,7 +2684,7 @@ void MullerFmmOperator::matvec(
                 std::strcmp(pair_current_override, "0") != 0 &&
                 fmm_exterior.vector_actions_pair_available() &&
                 fmm_interior.vector_actions_pair_available();
-        if (pair_currents || (banded_fmm && multilevel_pair_enabled())) {
+        if (!prism_fft_active() && (pair_currents || (banded_fmm && multilevel_pair_enabled()))) {
             apply_current_operator_pair_gpu();
         } else {
             apply_current_operators_gpu(0, 0);
@@ -3116,8 +3159,30 @@ void MullerFmmOperator::apply_mass(
     }
 }
 
+void MullerFmmOperator::enable_prism_face_fft(int refinement)
+{
+    if(use_pfft || quadrature_order!=7 || system_dofs<=0)
+        throw std::runtime_error("prism face FFT requires a quadrature-7 Muller operator");
+    std::vector<double> points;points.reserve(quadrature.size()*3);
+    for(const auto& q:quadrature){points.push_back(q.sample.position.x);points.push_back(q.sample.position.y);points.push_back(q.sample.position.z);}
+    const char* flag=std::getenv("BEM_FACE_FFT_STRICT_ONLY");
+    prism_fft_strict_only=flag && std::strcmp(flag,"0")!=0;
+    if(!prism_fft_strict_only) {
+        for(HelmholtzFMM* f:{&fmm_exterior,&fmm_interior,&fmm_exterior_middle,&fmm_interior_middle,
+                             &fmm_exterior_coarse,&fmm_interior_coarse})if(f->initialized)f->cleanup();
+        banded_fmm=false;banded_fmm_middle=false;
+    }
+    prism_fft_exterior.reset(new PrismFaceFFT);prism_fft_interior.reset(new PrismFaceFFT);
+    prism_fft_exterior->init(points,refinement,k_exterior,fmm_digits_effective);
+    prism_fft_interior->init(points,refinement,k_interior,fmm_digits_effective,prism_fft_exterior.get());
+    prepare_gpu_assembly();
+}
+
 void MullerFmmOperator::cleanup()
 {
+    transpose_correction_offsets.clear();transpose_correction_rows.clear();transpose_correction_indices.clear();
+    prism_fft_exterior.reset();prism_fft_interior.reset();
+    prism_fft_strict_only=false;
     gpu_assembly.cleanup();
 #ifndef BEM_FMM_ONLY
     if (pfft_exterior.initialized)

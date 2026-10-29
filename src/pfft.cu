@@ -1014,16 +1014,32 @@ void HelmholtzPFFT::init(const double* targets, int n_tgt,
             corr_nnz * sizeof(int), cudaMemcpyHostToDevice));
     }
 
+    // Optional RAM storage for the large immutable correction tables. With
+    // a CPU preferred location and GPU access advice, these managed pages
+    // remain in system memory and are read over PCIe (no oversubscription
+    // thrashing). Ordinary cudaFree also releases these allocations.
+    const char* corr_memory=std::getenv("BEM_PFFT_CORR_MEMORY");
+    const bool corr_in_ram=corr_memory && std::strcmp(corr_memory,"host")==0;
+    if(corr_memory && !corr_in_ram && std::strcmp(corr_memory,"device")!=0)
+        throw std::runtime_error("BEM_PFFT_CORR_MEMORY must be device or host");
+    int corr_device=0;
+    if(corr_in_ram)CUDA_CHECK(cudaGetDevice(&corr_device));
+    const auto upload_component=[&](std::vector<float>& host,float*& device) {
+        const size_t bytes=size_t(corr_nnz)*sizeof(float);
+        if(corr_in_ram) {
+            CUDA_CHECK(cudaMallocManaged(&device,bytes));
+            CUDA_CHECK(cudaMemAdvise(device,bytes,cudaMemAdviseSetPreferredLocation,cudaCpuDeviceId));
+            CUDA_CHECK(cudaMemAdvise(device,bytes,cudaMemAdviseSetAccessedBy,corr_device));
+            std::memcpy(device,host.data(),bytes);
+        } else {
+            CUDA_CHECK(cudaMalloc(&device,bytes));
+            CUDA_CHECK(cudaMemcpy(device,host.data(),bytes,cudaMemcpyHostToDevice));
+        }
+        std::vector<float>().swap(host);
+    };
     auto upload_corr = [&](std::vector<float>& h_re, std::vector<float>& h_im,
                            float*& d_re, float*& d_im) {
-        CUDA_CHECK(cudaMalloc(&d_re, corr_nnz * sizeof(float)));
-        CUDA_CHECK(cudaMalloc(&d_im, corr_nnz * sizeof(float)));
-        CUDA_CHECK(cudaMemcpy(
-            d_re, h_re.data(), corr_nnz * sizeof(float),
-            cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(
-            d_im, h_im.data(), corr_nnz * sizeof(float),
-            cudaMemcpyHostToDevice));
+        upload_component(h_re,d_re);upload_component(h_im,d_im);
     };
     if (corr_nnz > 0) {
         upload_corr(h_cG_re,  h_cG_im,  d_corr_G_re,    d_corr_G_im);
@@ -1048,7 +1064,8 @@ void HelmholtzPFFT::init(const double* targets, int n_tgt,
         }
     }
 
-    printf("  [pFFT] Near-field correction done: %.1fms\n", timer.elapsed_ms());
+    printf("  [pFFT] Near-field correction done: %.1fms; tables=%s %.1f MiB\n", timer.elapsed_ms(),
+        corr_in_ram?"RAM via PCIe":"GPU",double(corr_nnz)*80/1048576.);
     timer.reset();
 
     // --- Step 5: Allocate work buffers ---
@@ -1081,12 +1098,13 @@ void HelmholtzPFFT::init(const double* targets, int n_tgt,
     CUDA_CHECK(cudaMemcpy(d_tgt_pts, targets, Nt*3*sizeof(double), cudaMemcpyHostToDevice));
 
     initialized = true;
-    printf("  [pFFT] Total init: %.1fms, GPU memory: ~%.1f MB\n",
+    printf("  [pFFT] Work-buffer init: %.1fms, estimated GPU storage: ~%.1f MB, correction RAM: %.1f MB\n",
            timer.elapsed_ms(),
            (12 * grid_total * sizeof(PfftComplex) +
             (long long)(Ns + Nt) * stencil * 12.0 +
-            corr_nnz * 20.0 * 4 +
-            (Ns + Nt) * (5 * 8.0 + 3 * 8.0 * 2)) / 1e6);
+            corr_nnz * (corr_in_ram ? 4.0 : 84.0) +
+            (Ns + Nt) * (5 * 8.0 + 3 * 8.0 * 2)) / 1e6,
+            corr_in_ram ? corr_nnz * 80.0 / 1e6 : 0.);
 }
 
 void HelmholtzPFFT::prepare_charge_spectrum(

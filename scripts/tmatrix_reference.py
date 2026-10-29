@@ -35,13 +35,18 @@ def tangent_frame(directions):
 
 def magnetic_angular_components(theta, phi, l, m):
     y = sph_harm_y(l, m, theta, phi)
-    derivative = np.zeros_like(y)
-    if m < l:
-        derivative += .5*np.sqrt((l-m)*(l+m+1))*np.exp(-1j*phi)*sph_harm_y(l,m+1,theta,phi)
-    if m > -l:
-        derivative -= .5*np.sqrt((l+m)*(l-m+1))*np.exp(1j*phi)*sph_harm_y(l,m-1,theta,phi)
     s = np.sin(theta)
     pole = np.abs(s)<1e-10
+    # Use the ladder identity directed away from m=0. It requires only
+    # one neighboring harmonic (none at |m|=l), and its cot(theta)*Y term
+    # remains well scaled near a pole. The opposite identity would cancel
+    # the leading terms there. Analytic pole limits are applied below.
+    cot = np.divide(np.cos(theta),s,out=np.zeros_like(s),where=~pole)
+    derivative = abs(m)*cot*y
+    if 0 <= m < l:
+        derivative += np.sqrt((l-m)*(l+m+1))*np.exp(-1j*phi)*sph_harm_y(l,m+1,theta,phi)
+    elif -l < m < 0:
+        derivative -= np.sqrt((l+m)*(l-m+1))*np.exp(1j*phi)*sph_harm_y(l,m-1,theta,phi)
     xt = -m*y/(np.sqrt(l*(l+1))*np.where(pole,1.,s))
     xp = -1j*derivative/np.sqrt(l*(l+1))
     xt[pole]=0; xp[pole]=0

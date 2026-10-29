@@ -1,0 +1,30 @@
+{
+  "scope": "Experimental exact FFT point-quadrature action on one regular prism side; not integrated into complete Muller operator.",
+  "full_bank_action_s": 0.0454566825,
+  "compact_action_s": 0.06932629500000001,
+  "full_bank_storage_GiB": 14.380146101117134,
+  "compact_storage_GiB": 5.356707215309143,
+  "mixed_FMM_s": 0.102999816,
+  "FP64_FMM_s": 1.918528071,
+  "direct_FP64_relative_error": 1.15976811103287e-13,
+  "checked_targets_at_ref7": 64,
+  "unit_cases": "Four complete small-grid comparisons: prism mirror masks, translated parallel planes, general skew lattice, and impulse/no-wrap.",
+  "production_enabled": false,
+  "missing": "Complete inter-face Muller integration and full-solver regression.",
+  "source_sha256": {
+    "src/regular_face_fft.h": "1c842b03a36ae2544d2e0de3fd407a0f7d23885b486a3366cd940a6b68362026",
+    "src/regular_face_fft.cu": "e405b7df8b215cb10340f75a20525a6321808586d73f1048e9d539018fffd3d6",
+    "tools/regular_face_fft_probe.cpp": "1afdd21186208779b270ada8900b08a9bec68868afa0a62a337bedc35e0d26ff"
+  },
+  "FMM_benchmark_environment": {
+    "OMP_NUM_THREADS": "8",
+    "BEM_FMM_MULTILEVEL": "1",
+    "BEM_FMM_MULTILEVEL_M2L_FP32": "1",
+    "BEM_FMM_MULTILEVEL_P2M_FP32": "1",
+    "BEM_FMM_MULTILEVEL_L2P_FP32": "1",
+    "BEM_FMM_MULTILEVEL_INTERPOLATION_FP32": "1",
+    "BEM_FMM_MULTILEVEL_COMPACT_TEMP": "1",
+    "BEM_FMM_P2P_SHARED_SOURCES": "1",
+    "BEM_FMM_MULTILEVEL_FLAT_NEAR": "1"
+  }
+}

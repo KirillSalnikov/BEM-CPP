@@ -12,6 +12,73 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @unittest.skipUnless(os.environ.get('BEM_TEST_GPU') == '1', 'set BEM_TEST_GPU=1')
 class MultilevelTest(unittest.TestCase):
+    def test_azimuth_parity_real_absorbing_and_strict_switch(self):
+        with tempfile.TemporaryDirectory(prefix='bem-azimuth-parity-') as temporary:
+            out=Path(temporary)
+            # Three bands, partial chunks, both temporary precisions, cached
+            # and uncached complex translation phases; compare full actions.
+            for absorption,compact,shift in ((0.,'1','1'),(.03,'0','0')):
+                env={k:v for k,v in os.environ.items() if not k.startswith('BEM_')}
+                env.update(OMP_NUM_THREADS='4',OPENBLAS_NUM_THREADS='1',
+                    BEM_FMM_MULTILEVEL='1',BEM_FMM_BANDED_SPLIT_DEPTH='2',
+                    BEM_FMM_BANDED_COARSE_MAX_LEAF='512',BEM_FMM_BANDED_MIDDLE_MAX_LEAF='64',
+                    BEM_PROBE_MAX_LEAF='8',BEM_FMM_PAIR_CURRENTS='0',
+                    BEM_MULLER_GPU_ASSEMBLY='1',BEM_FMM_MULTILEVEL_GPU_ASSEMBLY='1',
+                    BEM_FMM_MULTILEVEL_PAIR='1',BEM_FMM_PHASE_CACHE='0',
+                    BEM_FMM_STRICT_PAIR_WORKSPACE='0',BEM_FMM_BANDED_MINIMAL_WORKSPACE='1',
+                    BEM_FMM_MULTILEVEL_CHUNK='37',BEM_FMM_MULTILEVEL_INTERPOLATION_FP32='1',
+                    BEM_FMM_MULTILEVEL_COMPACT_TEMP=compact,BEM_FMM_MULTILEVEL_SHIFT_CACHE=shift,
+                    BEM_PROBE_RI_IMAG=str(absorption),BEM_PROBE_SEED='219',
+                    BEM_PROBE_ACTIONS='2',BEM_PROBE_COMPARE_FLAG='BEM_FMM_MULTILEVEL_PARITY',
+                    BEM_FMM_MULTILEVEL_PARITY='0')
+                for strict in ('0','1'):
+                    env.update(BEM_PROBE_STRICT=strict,BEM_PROBE_WARM_MIXED=strict)
+                    prefix=out/f'{absorption}_{strict}'
+                    result=subprocess.run([str(ROOT/'bin/muller_fmm_action_probe'),'3','12',
+                        str(out/'operator'),str(prefix)],env=env,cwd=ROOT,text=True,
+                        stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=120)
+                    self.assertEqual(result.returncode,0,result.stdout)
+                    report=json.loads(Path(str(prefix)+'.json').read_text())
+                    self.assertEqual(len(report['comparison']),4)
+                    limit=2e-12 if strict=='1' else 2e-5
+                    for trial in report['comparison']:
+                        self.assertLess(trial['relative_to_initial'],limit,report)
+
+    def test_compact_and_shared_sources_strict_switch(self):
+        with tempfile.TemporaryDirectory(prefix='bem-compact-transfer-') as temporary:
+            out=Path(temporary)
+            # Two bands with a real k; three bands with absorption. Exercise
+            # partial chunks and the reuse of compact buffers by strict FP64.
+            for ka,middle,leaf,absorption in ((12,0,64,0.),(25,64,8,.03)):
+                case=out/f'{ka}_{absorption}'; case.mkdir()
+                env={k:v for k,v in os.environ.items() if not k.startswith('BEM_')}
+                env.update(OMP_NUM_THREADS='4',OPENBLAS_NUM_THREADS='1',
+                    BEM_FMM_MULTILEVEL='1',BEM_FMM_BANDED_SPLIT_DEPTH='3',
+                    BEM_FMM_BANDED_COARSE_MAX_LEAF='512',BEM_FMM_BANDED_MIDDLE_MAX_LEAF=str(middle),
+                    BEM_FMM_ORDER_REFERENCE_DEPTH='5',BEM_PROBE_MAX_LEAF=str(leaf),
+                    BEM_FMM_PAIR_CURRENTS='0',BEM_MULLER_GPU_ASSEMBLY='0',
+                    BEM_FMM_PHASE_CACHE='0',BEM_FMM_STRICT_PAIR_WORKSPACE='0',
+                    BEM_FMM_BANDED_MINIMAL_WORKSPACE='1',BEM_FMM_MULTILEVEL_CHUNK='37',
+                    BEM_FMM_MULTILEVEL_INTERPOLATION_FP32='1',BEM_FMM_MULTILEVEL_SHIFT_CACHE='1',
+                    BEM_FMM_MULTILEVEL_FLAT_NEAR='1',
+                    BEM_PROBE_RI_IMAG=str(absorption),BEM_PROBE_SEED='83',BEM_PROBE_ACTIONS='1')
+                for strict in (0,1):
+                    for compact in (0,1):
+                        env.update(BEM_PROBE_STRICT=str(strict),BEM_PROBE_WARM_MIXED=str(strict),
+                            BEM_FMM_MULTILEVEL_COMPACT_TEMP=str(compact),
+                            BEM_FMM_P2P_SHARED_SOURCES=str(compact))
+                        prefix=case/f'{strict}_{compact}'
+                        result=subprocess.run([str(ROOT/'bin/muller_fmm_action_probe'),'4',str(ka),
+                            str(case/'operator'),str(prefix)],env=env,cwd=ROOT,text=True,
+                            stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=120)
+                        self.assertEqual(result.returncode,0,result.stdout)
+                        if middle: self.assertIn('level 5 -> 4',result.stdout)
+                    a=np.fromfile(case/f'{strict}_0.bin',np.complex128)
+                    b=np.fromfile(case/f'{strict}_1.bin',np.complex128)
+                    self.assertTrue(np.isfinite(b).all())
+                    self.assertLess(np.linalg.norm(a-b)/np.linalg.norm(a),1e-12,
+                                    (ka,absorption,strict))
+
     def test_m2l_cache_budget_fallback(self):
         with tempfile.TemporaryDirectory(prefix='bem-cache-budget-') as temporary:
             directory=Path(temporary)

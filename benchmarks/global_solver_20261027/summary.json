@@ -1,0 +1,218 @@
+{
+  "production_running": false,
+  "production_changes_enabled": [],
+  "implemented": [
+    "Frozen operator-informed two-level right inverse",
+    "Coarse-space mutation guard including same-rank replacements",
+    "Bounded full-size MBJ/two-level/GCRO comparison with distinct training and test directions",
+    "FP64 P2P block-size ABBA diagnostic"
+  ],
+  "large_results": {
+    "train": {
+      "stage": "train",
+      "iterations": 64,
+      "rank": 32,
+      "seconds": 481.580571757,
+      "strict_residual": 0.0037746902623747754,
+      "action_s": 344.7086755989999,
+      "inverse_s": 3.0384703480000006,
+      "orthogonalization_s": 8.23983548,
+      "recycle_s": 10.43704796,
+      "strict_s": 114.177514343,
+      "strict_checks": 1,
+      "converged": false
+    },
+    "control": {
+      "stage": "control",
+      "iterations": 32,
+      "rank": 32,
+      "seconds": 292.132681504,
+      "strict_residual": 0.01452144651476307,
+      "action_s": 173.24081773399996,
+      "inverse_s": 1.5679034570000001,
+      "orthogonalization_s": 2.2464843830000003,
+      "recycle_s": 0,
+      "strict_s": 114.553990967,
+      "strict_checks": 1,
+      "converged": false
+    },
+    "two_level": {
+      "stage": "two_level",
+      "iterations": 32,
+      "rank": 32,
+      "seconds": 301.455589916,
+      "strict_residual": 0.014331821931241438,
+      "action_s": 172.66453867299995,
+      "inverse_s": 11.384669556000002,
+      "orthogonalization_s": 2.307066088,
+      "recycle_s": 0,
+      "strict_s": 114.572811398,
+      "strict_checks": 1,
+      "converged": false,
+      "strict_residual_ratio_to_control": 0.9869417565716437,
+      "elapsed_ratio_to_control": 1.0319132675057185
+    },
+    "gcro": {
+      "stage": "gcro",
+      "iterations": 32,
+      "rank": 32,
+      "seconds": 299.126700923,
+      "strict_residual": 0.014327550055754146,
+      "action_s": 172.28098682600003,
+      "inverse_s": 1.5468761420000001,
+      "orthogonalization_s": 6.215839595999999,
+      "recycle_s": 4.261322021,
+      "strict_s": 114.262273887,
+      "strict_checks": 1,
+      "converged": false,
+      "strict_residual_ratio_to_control": 0.9866475795774339,
+      "elapsed_ratio_to_control": 1.0239412426675178
+    }
+  },
+  "small_converged_control": {
+    "train": {
+      "stage": "train",
+      "iterations": 26,
+      "rank": 8,
+      "seconds": 0.177362772,
+      "strict_residual": 8.939127111857353e-07,
+      "action_s": 0.11206455100000001,
+      "inverse_s": 0.001787025,
+      "orthogonalization_s": 0.002004263,
+      "recycle_s": 0.00285074,
+      "strict_s": 0.058425485,
+      "strict_checks": 2,
+      "converged": true
+    },
+    "control": {
+      "stage": "control",
+      "iterations": 26,
+      "rank": 8,
+      "seconds": 0.165495329,
+      "strict_residual": 8.47102578708551e-07,
+      "action_s": 0.108121546,
+      "inverse_s": 0.0016054630000000001,
+      "orthogonalization_s": 0.001952559,
+      "recycle_s": 0,
+      "strict_s": 0.052544213,
+      "strict_checks": 2,
+      "converged": true
+    },
+    "two_level": {
+      "stage": "two_level",
+      "iterations": 25,
+      "rank": 8,
+      "seconds": 0.160401744,
+      "strict_residual": 8.787793457840254e-07,
+      "action_s": 0.10157773199999999,
+      "inverse_s": 0.004125660000000001,
+      "orthogonalization_s": 0.0018085890000000004,
+      "recycle_s": 0,
+      "strict_s": 0.052510167999999996,
+      "strict_checks": 2,
+      "converged": true,
+      "strict_residual_ratio_to_control": 1.0373942517372183,
+      "elapsed_ratio_to_control": 0.969222182699791
+    },
+    "gcro": {
+      "stage": "gcro",
+      "iterations": 25,
+      "rank": 8,
+      "seconds": 0.161925521,
+      "strict_residual": 8.293479849488369e-07,
+      "action_s": 0.10112746299999999,
+      "inverse_s": 0.001589324,
+      "orthogonalization_s": 0.0031330779999999996,
+      "recycle_s": 0.003156982,
+      "strict_s": 0.052529244,
+      "strict_checks": 2,
+      "converged": true,
+      "strict_residual_ratio_to_control": 0.9790407983566974,
+      "elapsed_ratio_to_control": 0.97842955434712
+    }
+  },
+  "decisions": {
+    "two_level": "Keep experimental: 1.31% lower residual at 3.19% greater elapsed time for 32 iterations",
+    "gcro": "Keep disabled by default: 1.34% lower residual at 2.39% greater elapsed time for 32 iterations",
+    "strict_threads": {
+      "accepted": false,
+      "reason": "No material speedup in the full-surface FP64 ABBA test",
+      "baseline_threads": 512,
+      "candidate_threads": 128,
+      "baseline_seconds": 28.975050511,
+      "candidate_seconds": 28.976378599999997,
+      "speedup": 0.9999541664947739,
+      "baseline_registers_per_thread": 90,
+      "maximum_relative_error": 5.492861295590563e-16,
+      "measurement": {
+        "diagnostic_only": true,
+        "single_medium": true,
+        "ref": 7,
+        "k_real": 145.6,
+        "k_imag": 0,
+        "points": 3763200,
+        "triangles": 537600,
+        "system_dofs": 3225600,
+        "strict": true,
+        "setup_s": 31.551778963,
+        "compare_flag": "strict_threads",
+        "comparison": [
+          {
+            "enabled": 0,
+            "seconds": 29.055209551,
+            "curl_relative_error": 5.139595610726909e-16,
+            "action_relative_error": 1.33550155124109e-16
+          },
+          {
+            "enabled": 1,
+            "seconds": 29.01276861,
+            "curl_relative_error": 5.48256325035881e-16,
+            "action_relative_error": 2.1494572673700733e-16
+          },
+          {
+            "enabled": 1,
+            "seconds": 28.93998859,
+            "curl_relative_error": 5.492861295590563e-16,
+            "action_relative_error": 2.1494795170844343e-16
+          },
+          {
+            "enabled": 0,
+            "seconds": 28.894891471,
+            "curl_relative_error": 5.148054366130577e-16,
+            "action_relative_error": 1.3529996607014956e-16
+          }
+        ],
+        "valid": true
+      },
+      "resources": {
+        "state": "complete",
+        "signature": "9f3456d44258c2f4a4d63efa27281f97c8d1a2abcaa286f117dd2d05316f71fd",
+        "pid": 72554,
+        "supervisor_pid": 72547,
+        "elapsed_s": 177.1311537750007,
+        "rss_gib": 4.343025207519531,
+        "available_ram_gib": 50.3326416015625,
+        "disk_free_gib": 761.3946952819824,
+        "gpu_used_mib": 11179.0,
+        "gpu_free_mib": 12902.0,
+        "peak_rss_gib": 4.343025207519531,
+        "peak_gpu_mib": 11179.0,
+        "returncode": 0,
+        "reason": null
+      }
+    }
+  },
+  "validation": [
+    "Native GMRES, deferred strict residual, recycling and two-level checks passed",
+    "Noncommuting complex local/coarse actions, aliased inputs and same-rank space mutation covered",
+    "All small physical solve endpoints passed the original FP64 tolerance",
+    "Documentation freshness passed"
+  ],
+  "eta_limits": {
+    "full_solve_speedup_established": false,
+    "full_ka112_T_completed": false,
+    "one_percent_physical_convergence_established": false,
+    "current_scheme_only_strict_checks_floor_days": 5.223874125115509,
+    "floor_assumptions": "1970 pairs, at least one 114.554-second full FP64 residual per code, same serial pipeline; excludes all iterations, assembly and averaging"
+  }
+}

@@ -1606,6 +1606,148 @@ __global__ void p2p_vector_actions_batch3_leaf_kernel(
     }
 }
 
+// Shared source tile, using the established arithmetic by default. The
+// optional real-wave mixed variant may select fast FP32 trigonometry;
+// strict FP64 actions never select that variant.
+template <typename ComputeReal, bool FastTrig = false>
+__device__ __forceinline__ void p2p_shared_source_action(
+    ComputeReal dx, ComputeReal dy, ComputeReal dz,
+    ComputeReal real_k, ComputeReal imaginary_k, ComputeReal inv4pi,
+    ComputeReal k2_re, ComputeReal k2_im,
+    const ComputeReal qr[3], const ComputeReal qi[3],
+    ComputeReal curl_acc_re[3], ComputeReal curl_acc_im[3],
+    ComputeReal action_acc_re[3], ComputeReal action_acc_im[3]) {
+    const ComputeReal radius_squared =
+        dx * dx + dy * dy + dz * dz;
+    if (radius_squared <
+        static_cast<ComputeReal>(1.0e-24))
+        return;
+    const ComputeReal inv_r =
+        p2p_inverse_sqrt(radius_squared);
+    const ComputeReal radius = radius_squared * inv_r;
+    const ComputeReal inv_r2 = inv_r * inv_r;
+    const ComputeReal attenuation =
+        imaginary_k == static_cast<ComputeReal>(0)
+            ? static_cast<ComputeReal>(1)
+            : p2p_attenuation(-imaginary_k * radius);
+    const ComputeReal phase = real_k * radius;
+    ComputeReal sine = 0;
+    ComputeReal cosine = 0;
+    p2p_pair_sine_cosine<FastTrig>(phase, &sine, &cosine);
+    const ComputeReal green_re =
+        attenuation * cosine * inv4pi * inv_r;
+    const ComputeReal green_im =
+        attenuation * sine * inv4pi * inv_r;
+    const ComputeReal gradient_factor_re =
+        (-imaginary_k - inv_r) * inv_r;
+    const ComputeReal gradient_factor_im = real_k * inv_r;
+    const ComputeReal gradient_green_re =
+        green_re * gradient_factor_re -
+        green_im * gradient_factor_im;
+    const ComputeReal gradient_green_im =
+        green_re * gradient_factor_im +
+        green_im * gradient_factor_re;
+    const ComputeReal a_re =
+        static_cast<ComputeReal>(3.0) * inv_r2 +
+        static_cast<ComputeReal>(3.0) *
+            imaginary_k * inv_r - k2_re;
+    const ComputeReal a_im =
+        -static_cast<ComputeReal>(3.0) *
+            real_k * inv_r - k2_im;
+    const ComputeReal b_re =
+        inv_r2 + imaginary_k * inv_r;
+    const ComputeReal b_im = -real_k * inv_r;
+    const ComputeReal ga_re =
+        green_re * a_re - green_im * a_im;
+    const ComputeReal ga_im =
+        green_re * a_im + green_im * a_re;
+    const ComputeReal gb_re =
+        green_re * b_re - green_im * b_im;
+    const ComputeReal gb_im =
+        green_re * b_im + green_im * b_re;
+    const ComputeReal unit[3] = {
+        dx * inv_r, dy * inv_r, dz * inv_r
+    };
+    accumulate_vector_values(
+        dx, dy, dz, unit,
+        gradient_green_re, gradient_green_im,
+        ga_re, ga_im, gb_re, gb_im,
+        qr, qi,
+        curl_acc_re, curl_acc_im,
+        action_acc_re, action_acc_im);
+}
+
+template <typename Real, int Tile = 128, bool RealWaveNumber = false, bool FastTrig = false,
+          bool LocalCoordinates = false>
+__global__ void p2p_vector_actions_shared_sources(
+    const double* __restrict__ tgt_xyz, const double* __restrict__ src_xyz,
+    const double* __restrict__ qx_re, const double* __restrict__ qx_im,
+    const double* __restrict__ qy_re, const double* __restrict__ qy_im,
+    const double* __restrict__ qz_re, const double* __restrict__ qz_im,
+    const int* __restrict__ tgt_offsets, const int* __restrict__ tgt_ids,
+    const int* __restrict__ near_source_offsets, const int* __restrict__ near_source_ids,
+    int n_leaves, int leaf_split, double k_re, double k_im,
+    double* __restrict__ curl_re, double* __restrict__ curl_im,
+    double* __restrict__ action_re, double* __restrict__ action_im) {
+    const int leaf=blockIdx.x/leaf_split, part=blockIdx.x%leaf_split;
+    if(leaf>=n_leaves)return;
+    if(tgt_offsets[leaf]==tgt_offsets[leaf+1])return;
+    // Subtract a common nearby origin BEFORE rounding coordinates to FP32.
+    // Only point loads use FP64 subtraction; all pair arithmetic stays FP32.
+    // Global rounding loses relative accuracy for close points on fine meshes.
+    const int origin_id=LocalCoordinates?tgt_ids[tgt_offsets[leaf]]:0;
+    const double ox=LocalCoordinates?tgt_xyz[3*origin_id]:0.;
+    const double oy=LocalCoordinates?tgt_xyz[3*origin_id+1]:0.;
+    const double oz=LocalCoordinates?tgt_xyz[3*origin_id+2]:0.;
+    __shared__ Real source[9][Tile];
+    const Real kr=Real(k_re),ki=RealWaveNumber?Real(0):Real(k_im),inv4pi=Real(0.07957747154594767);
+    const Real k2r=kr*kr-ki*ki,k2i=Real(2)*kr*ki;
+    const int flat_begin=near_source_offsets[leaf];
+    const int flat_count=near_source_offsets[leaf+1]-flat_begin;
+    const int begin=flat_begin+int(static_cast<long long>(flat_count)*part/leaf_split);
+    const int end=flat_begin+int(static_cast<long long>(flat_count)*(part+1)/leaf_split);
+    // All threads enter each tile, including lanes beyond the target count.
+    // This keeps block barriers uniform for partial and multi-tile leaves.
+    for(int target_base=tgt_offsets[leaf];target_base<tgt_offsets[leaf+1];target_base+=blockDim.x) {
+        const bool active=target_base+threadIdx.x<tgt_offsets[leaf+1];
+        const int tid=active?tgt_ids[target_base+threadIdx.x]:0;
+        const Real tx=active?Real(LocalCoordinates?tgt_xyz[3*tid]-ox:tgt_xyz[3*tid]):Real(0);
+        const Real ty=active?Real(LocalCoordinates?tgt_xyz[3*tid+1]-oy:tgt_xyz[3*tid+1]):Real(0);
+        const Real tz=active?Real(LocalCoordinates?tgt_xyz[3*tid+2]-oz:tgt_xyz[3*tid+2]):Real(0);
+        Real cr[3]={0,0,0},ci[3]={0,0,0},ar[3]={0,0,0},ai[3]={0,0,0};
+        for(int base=begin;base<end;base+=Tile) {
+            const int count=min(Tile,end-base);
+            for(int j=threadIdx.x;j<count;j+=blockDim.x) {
+                const int sid=near_source_ids[base+j];
+                source[0][j]=Real(LocalCoordinates?src_xyz[3*sid]-ox:src_xyz[3*sid]);
+                source[1][j]=Real(LocalCoordinates?src_xyz[3*sid+1]-oy:src_xyz[3*sid+1]);
+                source[2][j]=Real(LocalCoordinates?src_xyz[3*sid+2]-oz:src_xyz[3*sid+2]);
+                source[3][j]=Real(qx_re[sid]); source[4][j]=Real(qx_im[sid]);
+                source[5][j]=Real(qy_re[sid]); source[6][j]=Real(qy_im[sid]);
+                source[7][j]=Real(qz_re[sid]); source[8][j]=Real(qz_im[sid]);
+            }
+            __syncthreads();
+            if(active) for(int j=0;j<count;++j) {
+                const Real qr[3]={source[3][j],source[5][j],source[7][j]};
+                const Real qi[3]={source[4][j],source[6][j],source[8][j]};
+                p2p_shared_source_action<Real,FastTrig>(tx-source[0][j],ty-source[1][j],tz-source[2][j],
+                                        kr,ki,inv4pi,k2r,k2i,qr,qi,cr,ci,ar,ai);
+            }
+            __syncthreads();
+        }
+        if(active) for(int d=0;d<3;++d) {
+            const int dst=3*tid+d;
+            if(leaf_split==1) {
+                curl_re[dst]+=cr[d]; curl_im[dst]+=ci[d];
+                action_re[dst]+=ar[d]; action_im[dst]+=ai[d];
+            } else {
+                atomicAdd(curl_re+dst,double(cr[d])); atomicAdd(curl_im+dst,double(ci[d]));
+                atomicAdd(action_re+dst,double(ar[d])); atomicAdd(action_im+dst,double(ai[d]));
+            }
+        }
+    }
+}
+
 template <
     typename ComputeReal,
     typename CoordinateReal,
@@ -1973,6 +2115,37 @@ void launch_p2p_vector_actions_batch3_leaf(
         leaf_split != 16 && leaf_split != 32 &&
         leaf_split != 64 && leaf_split != 128)
         leaf_split = 1;
+    // Shared tiles improve the bandwidth-limited mixed action. FP64 is
+    // arithmetic-limited on consumer GPUs; keep its established kernel.
+    if(fp32_compute && d_near_source_offsets && d_near_source_ids &&
+       bem_env_flag_enabled("BEM_FMM_P2P_SHARED_SOURCES")) {
+        // Real-k specialization removes identically zero absorption terms.
+        // The optional intrinsic affects mixed iterations only. Absorbing
+        // media and every strict FP64 action retain their original path.
+#define LAUNCH_SHARED(REAL_K, FAST_TRIG, LOCAL_COORDINATES) \
+        p2p_vector_actions_shared_sources<float,128,REAL_K,FAST_TRIG,LOCAL_COORDINATES> \
+            <<<n_leaves*leaf_split,threads>>>( \
+                d_tgt,d_src,d_qx_re,d_qx_im,d_qy_re,d_qy_im,d_qz_re,d_qz_im, \
+                d_tgt_offsets,d_tgt_ids,d_near_source_offsets,d_near_source_ids, \
+                n_leaves,leaf_split,k_re,k_im,d_curl_re,d_curl_im, \
+                d_hessian_action_re,d_hessian_action_im)
+#define LAUNCH_COORDINATES(REAL_K, FAST_TRIG) \
+        if(bem_env_flag_enabled("BEM_FMM_P2P_LOCAL_COORDINATES")) { \
+            LAUNCH_SHARED(REAL_K,FAST_TRIG,true); \
+        } else { LAUNCH_SHARED(REAL_K,FAST_TRIG,false); }
+        if(k_im==0. && bem_env_flag_enabled("BEM_FMM_P2P_SHARED_REAL")) {
+            if(bem_env_flag_enabled("BEM_FMM_P2P_SHARED_FAST_TRIG")) {
+                LAUNCH_COORDINATES(true,true);
+            } else {
+                LAUNCH_COORDINATES(true,false);
+            }
+        } else {
+            LAUNCH_COORDINATES(false,false);
+        }
+#undef LAUNCH_COORDINATES
+#undef LAUNCH_SHARED
+        return;
+    }
     if (fp32_compute) {
         p2p_vector_actions_batch3_leaf_kernel<float>
             <<<n_leaves * leaf_split, threads>>>(

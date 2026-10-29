@@ -221,6 +221,8 @@ struct HelmholtzFMM {
     // Lazily allocated angular transfer to the next coarser uniform tree.
     // Owned by this engine and released by cleanup().
     void* multilevel_link = nullptr;
+    // Lazy reverse near-list storage; no dense point matrix is retained.
+    void* transpose_workspace = nullptr;
     // Optional read-only FP32 copies for the already-FP32 M2L arithmetic.
     // FP64 multipoles/transfers remain the source of strict residual actions.
     void* batch3_m2l_cache = nullptr;
@@ -358,7 +360,8 @@ struct HelmholtzFMM {
         const double* charges_z_re,
         const double* charges_z_im,
         HelmholtzFMM* middle = nullptr,
-        HelmholtzFMM* coarse = nullptr);
+        HelmholtzFMM* coarse = nullptr,
+        bool include_near = true);
 
     // Evaluate two three-component source fields while sharing the far
     // traversal, L2P, and geometry-heavy near interaction. The first result
@@ -430,6 +433,13 @@ struct HelmholtzFMM {
     void evaluate_batch4_uploaded();
     void evaluate_batch3_far_uploaded(bool multipoles_ready = false);
     void evaluate_multilevel_far_uploaded(HelmholtzFMM* middle, HelmholtzFMM& coarse);
+    // Algebraic transpose of the vector-action traversal, including the
+    // derivative L2P, all band transfers and the original near interaction list.
+    // Seeds: Nt*3; results: three Ns arrays. No complex conjugation here.
+    void evaluate_vector_actions_transpose(
+        const cdouble* curl_seed, const cdouble* hessian_seed,
+        cdouble* result_x, cdouble* result_y, cdouble* result_z,
+        HelmholtzFMM* middle = nullptr, HelmholtzFMM* coarse = nullptr);
     void evaluate_batch4_far_uploaded(bool evaluate_potential = true);
     void evaluate_gradient_batch4_l2p_uploaded();
     void evaluate_pot_grad_batch4_uploaded();

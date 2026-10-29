@@ -69,6 +69,8 @@ struct MullerMbjPreconditioner {
     void apply(
         const std::complex<double>* rhs,
         std::complex<double>* solution) const;
+    void apply_transpose(const std::complex<double>* rhs, std::complex<double>* solution) const;
+    void apply_adjoint(const std::complex<double>* rhs, std::complex<double>* solution) const;
     void upload_device();
     void cleanup_device();
     bool device_apply_available() const;

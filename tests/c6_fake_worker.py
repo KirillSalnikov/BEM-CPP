@@ -59,13 +59,17 @@ def main():
                 data = json.dumps(value).encode()
                 connection.sendall(struct.pack('=Q',len(data))+data)
             message({'rhs_points':len(positions),'system_dofs':len(positions)*6,
-                     'solver_backend':'CPU_TEST_FIXTURE_NOT_BEM','prism_dihedral_mesh':mirror})
+                     'solver_backend':'CPU_TEST_FIXTURE_NOT_BEM','prism_dihedral_mesh':mirror,
+                     'symmetry_warm_start':os.environ.get('BEM_TEST_FAKE_WARM_SUPPORT')=='1',
+                     'krylov_recycle_capacity':int(os.environ.get('BEM_TMATRIX_RECYCLE_RANK','0')),
+                     'recycle_signature':os.environ.get('BEM_TMATRIX_RECYCLE_SIGNATURE'),
+                     'recycle_path':os.environ.get('BEM_TMATRIX_RECYCLE_PATH')})
             connection.sendall(positions.astype(float).tobytes())
             while True:
                 operation = np.empty(1, np.int32); receive(connection,operation)
                 if operation[0] == 0:
                     break
-                if operation[0] == 1:
+                if operation[0] in (1,3):
                     receive(connection, fields)
                     coefficients = inverse@fields.reshape(2,-1).T
                     outgoing_coefficients = kernel@(coefficients/scales[:,None]/(4*np.pi*phase[:,None]))
@@ -90,6 +94,7 @@ def main():
                 transverse = transverse.reshape(len(directions),2,2)
                 far = (et[:,:,None]*transverse[:,0,None,:]+ep[:,:,None]*transverse[:,1,None,:]).transpose(2,0,1)
                 message({'strict_residual_x':1e-12,'strict_residual_y':1e-12,'iterations':1,
+                         'received_operation':int(operation[0]),
                          'solve_s':0.,'total_worker_s':0.,'farfield_s':0.})
                 connection.sendall(np.ascontiguousarray(far).tobytes())
 

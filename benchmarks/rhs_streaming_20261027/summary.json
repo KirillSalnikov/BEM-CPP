@@ -1,0 +1,390 @@
+{
+  "created_utc": "2026-10-27T14:44:58.240499+00:00",
+  "optimization": "reuse mass quadrature geometry, factor BDM1 Piola tests, integrate bounded element chunks in parallel, scatter deterministically",
+  "enabled_by_default": true,
+  "production_ka112_started": false,
+  "gpu_used_in_benchmark": false,
+  "selected_chunk_elements": 2048,
+  "selected_thread_cap": 4,
+  "old_pair_assembly_s": 0.926889989,
+  "new_pair_assembly_s": 0.083163107,
+  "assembly_speedup": 11.145446850608888,
+  "seconds_saved_per_pair_in_assembly": 0.843726882,
+  "max_relative_rhs_error": 2.57385371392e-16,
+  "released_position_buffer_mib": 159.9609375,
+  "new_chunk_workspace_mib": 3.296875,
+  "net_live_buffer_reduction_mib": 157.0390625,
+  "validation": {
+    "curved_nodal_P2": true,
+    "flat_and_curved_BDM1": true,
+    "arbitrary_complex_fields": true,
+    "independent_plane_wave_rhs": true,
+    "thread_and_chunk_results_bit_identical": true,
+    "worker_built_with_OpenMP_assembly": true
+  },
+  "reproduction": "OMP_NUM_THREADS=4 bin/tmatrix_rhs_cpu_probe 7 3 2048",
+  "worker_sha256": "1b26588062e7e58402ad283f0c0ee767db034e4607df61da46e4df9352af16fb",
+  "limitations": [
+    "Only RHS assembly time is measured; incident-field generation, socket traffic, solves, far fields and SO3 averaging are excluded.",
+    "No FMM operator or production solver was started.",
+    "The new worker thread cap selects the measured four-thread variant locally; the rest of the solver retains its own thread settings."
+  ],
+  "benchmarks": {
+    "512": {
+      "mesh": {
+        "stage": "geometry_ready",
+        "ref": 7,
+        "triangles": 537600,
+        "dofs": 3225600,
+        "rhs_points": 6988800,
+        "cache_setup_s": 0.88289102
+      },
+      "summaries": [
+        {
+          "variant": "legacy",
+          "threads": 1,
+          "repeats": 3,
+          "median_assembly_pair_s": 0.919484327,
+          "range_assembly_pair_s": [
+            0.917491986,
+            0.932665815
+          ],
+          "max_relative_rhs_error": 0
+        },
+        {
+          "variant": "cached_elements",
+          "threads": 1,
+          "repeats": 3,
+          "median_assembly_pair_s": 0.199348879,
+          "range_assembly_pair_s": [
+            0.197155565,
+            0.200067198
+          ],
+          "max_relative_rhs_error": 2.57385371392e-16
+        },
+        {
+          "variant": "cached_elements",
+          "threads": 4,
+          "repeats": 3,
+          "median_assembly_pair_s": 0.091354574,
+          "range_assembly_pair_s": [
+            0.089436756,
+            0.093690441
+          ],
+          "max_relative_rhs_error": 2.57385371392e-16
+        },
+        {
+          "variant": "cached_elements",
+          "threads": 16,
+          "repeats": 3,
+          "median_assembly_pair_s": 0.097300456,
+          "range_assembly_pair_s": [
+            0.0970194,
+            0.09965019
+          ],
+          "max_relative_rhs_error": 2.57385371392e-16
+        }
+      ],
+      "measurements": [
+        {
+          "trial": 0,
+          "variant": "legacy",
+          "threads": 1,
+          "assembly_pair_s": 0.919484327,
+          "maximum_relative_rhs_error": 0,
+          "chunk_points": 4096,
+          "extra_integral_workspace_bytes": 0,
+          "peak_rss_mib": 2185.40234375
+        },
+        {
+          "trial": 0,
+          "variant": "cached_elements",
+          "threads": 1,
+          "assembly_pair_s": 0.197155565,
+          "maximum_relative_rhs_error": 2.57385371392e-16,
+          "chunk_points": 6656,
+          "extra_integral_workspace_bytes": 225280,
+          "peak_rss_mib": 2185.40234375
+        },
+        {
+          "trial": 0,
+          "variant": "cached_elements",
+          "threads": 4,
+          "assembly_pair_s": 0.089436756,
+          "maximum_relative_rhs_error": 2.57385371392e-16,
+          "chunk_points": 6656,
+          "extra_integral_workspace_bytes": 225280,
+          "peak_rss_mib": 2185.40234375
+        },
+        {
+          "trial": 0,
+          "variant": "cached_elements",
+          "threads": 16,
+          "assembly_pair_s": 0.09965019,
+          "maximum_relative_rhs_error": 2.57385371392e-16,
+          "chunk_points": 6656,
+          "extra_integral_workspace_bytes": 225280,
+          "peak_rss_mib": 2185.40234375
+        },
+        {
+          "trial": 1,
+          "variant": "cached_elements",
+          "threads": 16,
+          "assembly_pair_s": 0.097300456,
+          "maximum_relative_rhs_error": 2.57385371392e-16,
+          "chunk_points": 6656,
+          "extra_integral_workspace_bytes": 225280,
+          "peak_rss_mib": 2185.40234375
+        },
+        {
+          "trial": 1,
+          "variant": "cached_elements",
+          "threads": 4,
+          "assembly_pair_s": 0.091354574,
+          "maximum_relative_rhs_error": 2.57385371392e-16,
+          "chunk_points": 6656,
+          "extra_integral_workspace_bytes": 225280,
+          "peak_rss_mib": 2185.40234375
+        },
+        {
+          "trial": 1,
+          "variant": "cached_elements",
+          "threads": 1,
+          "assembly_pair_s": 0.200067198,
+          "maximum_relative_rhs_error": 2.57385371392e-16,
+          "chunk_points": 6656,
+          "extra_integral_workspace_bytes": 225280,
+          "peak_rss_mib": 2185.40234375
+        },
+        {
+          "trial": 1,
+          "variant": "legacy",
+          "threads": 1,
+          "assembly_pair_s": 0.932665815,
+          "maximum_relative_rhs_error": 0,
+          "chunk_points": 4096,
+          "extra_integral_workspace_bytes": 0,
+          "peak_rss_mib": 2185.40234375
+        },
+        {
+          "trial": 2,
+          "variant": "legacy",
+          "threads": 1,
+          "assembly_pair_s": 0.917491986,
+          "maximum_relative_rhs_error": 0,
+          "chunk_points": 4096,
+          "extra_integral_workspace_bytes": 0,
+          "peak_rss_mib": 2185.40234375
+        },
+        {
+          "trial": 2,
+          "variant": "cached_elements",
+          "threads": 1,
+          "assembly_pair_s": 0.199348879,
+          "maximum_relative_rhs_error": 2.57385371392e-16,
+          "chunk_points": 6656,
+          "extra_integral_workspace_bytes": 225280,
+          "peak_rss_mib": 2185.40234375
+        },
+        {
+          "trial": 2,
+          "variant": "cached_elements",
+          "threads": 4,
+          "assembly_pair_s": 0.093690441,
+          "maximum_relative_rhs_error": 2.57385371392e-16,
+          "chunk_points": 6656,
+          "extra_integral_workspace_bytes": 225280,
+          "peak_rss_mib": 2185.40234375
+        },
+        {
+          "trial": 2,
+          "variant": "cached_elements",
+          "threads": 16,
+          "assembly_pair_s": 0.0970194,
+          "maximum_relative_rhs_error": 2.57385371392e-16,
+          "chunk_points": 6656,
+          "extra_integral_workspace_bytes": 225280,
+          "peak_rss_mib": 2185.40234375
+        }
+      ]
+    },
+    "2048": {
+      "mesh": {
+        "stage": "geometry_ready",
+        "ref": 7,
+        "triangles": 537600,
+        "dofs": 3225600,
+        "rhs_points": 6988800,
+        "cache_setup_s": 0.927332932
+      },
+      "summaries": [
+        {
+          "variant": "legacy",
+          "threads": 1,
+          "repeats": 3,
+          "median_assembly_pair_s": 0.926889989,
+          "range_assembly_pair_s": [
+            0.915472331,
+            0.934429783
+          ],
+          "max_relative_rhs_error": 0
+        },
+        {
+          "variant": "cached_elements",
+          "threads": 1,
+          "repeats": 3,
+          "median_assembly_pair_s": 0.193237047,
+          "range_assembly_pair_s": [
+            0.191612478,
+            0.205413634
+          ],
+          "max_relative_rhs_error": 2.57385371392e-16
+        },
+        {
+          "variant": "cached_elements",
+          "threads": 4,
+          "repeats": 3,
+          "median_assembly_pair_s": 0.083163107,
+          "range_assembly_pair_s": [
+            0.081495331,
+            0.085613768
+          ],
+          "max_relative_rhs_error": 2.57385371392e-16
+        },
+        {
+          "variant": "cached_elements",
+          "threads": 16,
+          "repeats": 3,
+          "median_assembly_pair_s": 0.095509972,
+          "range_assembly_pair_s": [
+            0.093160134,
+            0.102854376
+          ],
+          "max_relative_rhs_error": 2.57385371392e-16
+        }
+      ],
+      "measurements": [
+        {
+          "trial": 0,
+          "variant": "legacy",
+          "threads": 1,
+          "assembly_pair_s": 0.915472331,
+          "maximum_relative_rhs_error": 0,
+          "chunk_points": 4096,
+          "extra_integral_workspace_bytes": 0,
+          "peak_rss_mib": 2185.43359375
+        },
+        {
+          "trial": 0,
+          "variant": "cached_elements",
+          "threads": 1,
+          "assembly_pair_s": 0.193237047,
+          "maximum_relative_rhs_error": 2.57385371392e-16,
+          "chunk_points": 26624,
+          "extra_integral_workspace_bytes": 901120,
+          "peak_rss_mib": 2185.43359375
+        },
+        {
+          "trial": 0,
+          "variant": "cached_elements",
+          "threads": 4,
+          "assembly_pair_s": 0.083163107,
+          "maximum_relative_rhs_error": 2.57385371392e-16,
+          "chunk_points": 26624,
+          "extra_integral_workspace_bytes": 901120,
+          "peak_rss_mib": 2185.43359375
+        },
+        {
+          "trial": 0,
+          "variant": "cached_elements",
+          "threads": 16,
+          "assembly_pair_s": 0.102854376,
+          "maximum_relative_rhs_error": 2.57385371392e-16,
+          "chunk_points": 26624,
+          "extra_integral_workspace_bytes": 901120,
+          "peak_rss_mib": 2185.43359375
+        },
+        {
+          "trial": 1,
+          "variant": "cached_elements",
+          "threads": 16,
+          "assembly_pair_s": 0.093160134,
+          "maximum_relative_rhs_error": 2.57385371392e-16,
+          "chunk_points": 26624,
+          "extra_integral_workspace_bytes": 901120,
+          "peak_rss_mib": 2185.43359375
+        },
+        {
+          "trial": 1,
+          "variant": "cached_elements",
+          "threads": 4,
+          "assembly_pair_s": 0.081495331,
+          "maximum_relative_rhs_error": 2.57385371392e-16,
+          "chunk_points": 26624,
+          "extra_integral_workspace_bytes": 901120,
+          "peak_rss_mib": 2185.43359375
+        },
+        {
+          "trial": 1,
+          "variant": "cached_elements",
+          "threads": 1,
+          "assembly_pair_s": 0.205413634,
+          "maximum_relative_rhs_error": 2.57385371392e-16,
+          "chunk_points": 26624,
+          "extra_integral_workspace_bytes": 901120,
+          "peak_rss_mib": 2185.43359375
+        },
+        {
+          "trial": 1,
+          "variant": "legacy",
+          "threads": 1,
+          "assembly_pair_s": 0.934429783,
+          "maximum_relative_rhs_error": 0,
+          "chunk_points": 4096,
+          "extra_integral_workspace_bytes": 0,
+          "peak_rss_mib": 2185.43359375
+        },
+        {
+          "trial": 2,
+          "variant": "legacy",
+          "threads": 1,
+          "assembly_pair_s": 0.926889989,
+          "maximum_relative_rhs_error": 0,
+          "chunk_points": 4096,
+          "extra_integral_workspace_bytes": 0,
+          "peak_rss_mib": 2185.43359375
+        },
+        {
+          "trial": 2,
+          "variant": "cached_elements",
+          "threads": 1,
+          "assembly_pair_s": 0.191612478,
+          "maximum_relative_rhs_error": 2.57385371392e-16,
+          "chunk_points": 26624,
+          "extra_integral_workspace_bytes": 901120,
+          "peak_rss_mib": 2185.43359375
+        },
+        {
+          "trial": 2,
+          "variant": "cached_elements",
+          "threads": 4,
+          "assembly_pair_s": 0.085613768,
+          "maximum_relative_rhs_error": 2.57385371392e-16,
+          "chunk_points": 26624,
+          "extra_integral_workspace_bytes": 901120,
+          "peak_rss_mib": 2185.43359375
+        },
+        {
+          "trial": 2,
+          "variant": "cached_elements",
+          "threads": 16,
+          "assembly_pair_s": 0.095509972,
+          "maximum_relative_rhs_error": 2.57385371392e-16,
+          "chunk_points": 26624,
+          "extra_integral_workspace_bytes": 901120,
+          "peak_rss_mib": 2185.43359375
+        }
+      ]
+    }
+  }
+}

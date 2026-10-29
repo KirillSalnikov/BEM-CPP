@@ -88,6 +88,33 @@ class AlgebraTest(unittest.TestCase):
 
 
 class StreamingCPU(unittest.TestCase):
+    def test_recycle_only_requested_for_production_and_bound_to_manifest(self):
+        self.env['BEM_TMATRIX_RECYCLE_RANK']='16'
+        self.run_builder('recycle',['--c2-reuse','--c6-pack','--mirror-pack'])
+        report=json.loads((self.directory/'recycle/summary.json').read_text())
+        operator=report['operator']
+        self.assertEqual(operator['recycle_signature'],report['signature'])
+        self.assertEqual(Path(operator['recycle_path']),self.directory/'recycle/krylov_recycle.bin')
+        self.assertNotIn('BEM_TMATRIX_RECYCLE_SIGNATURE',report['parameters']['BEM_environment'])
+        pairs=report['pairs_this_run']
+        self.assertTrue(any(pair['rhs_kind']=='audit' for pair in pairs))
+        self.assertTrue(any(pair['rhs_kind']=='packed' for pair in pairs))
+        for pair in pairs:
+            self.assertEqual(pair['received_operation'],3 if pair['rhs_kind'] in ('packed','packed_rotation') else 1)
+        # A resume must reproduce the manifest hash (no recursive signature).
+        self.run_builder('recycle',['--c2-reuse','--c6-pack','--mirror-pack'])
+
+    def test_warm_start_only_requested_for_production_packets(self):
+        self.env['BEM_TEST_FAKE_WARM_SUPPORT']='1'
+        self.run_builder('warm',['--c2-reuse','--c6-pack','--mirror-pack'])
+        report=json.loads((self.directory/'warm/summary.json').read_text())
+        packets=report['pairs_this_run']
+        self.assertTrue(any(pair['rhs_kind']=='audit' for pair in packets))
+        self.assertTrue(any(pair['rhs_kind']=='packed' for pair in packets))
+        for pair in packets:
+            expected=3 if pair['rhs_kind'] in ('packed','packed_rotation') else 1
+            self.assertEqual(pair['received_operation'],expected)
+
     def test_mirror_failure_retries_rotational_packets_across_resume(self):
         self.base[self.base.index('--order')+1]='7'
         self.base[self.base.index('--ka')+1]='3'
@@ -191,6 +218,11 @@ class StreamingCPU(unittest.TestCase):
         self.assertFalse(list((self.directory/'reject/c6_batches').glob('*.json')))
         for path in (self.directory/'reject/columns').glob('*.json'):
             self.assertNotEqual(json.loads(path.read_text()).get('derived_by'),'C6_packed_RHS')
+
+    def test_old_worker_cannot_silently_ignore_nonunit_prism_aspect(self):
+        result=self.run_builder('wrong_aspect',['--prism-aspect',str(1/.7)],success=False)
+        self.assertIn('worker prism aspect does not match',result.stdout)
+        self.assertFalse(list((self.directory/'wrong_aspect/columns').glob('*.npy')))
 
     def test_failed_packet_falls_back_and_remembers_rejection_on_restart(self):
         self.env['BEM_TEST_FAKE_CROSS_TALK']='production'

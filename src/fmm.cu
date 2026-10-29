@@ -13,6 +13,7 @@
 
 // P2P launchers (from p2p.cu)
 #include "p2p.h"
+#include "fmm_profile.cuh"
 
 __global__ void split_complex_kernel(const double2* __restrict__ in,
                                      double* __restrict__ out_re,
@@ -2855,6 +2856,21 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
     tgt_id_offsets_h[n_leaves] = (int)tgt_ids_flat.size();
     src_id_offsets_h[n_leaves] = (int)src_ids_flat.size();
 
+    // With disjoint source/target surfaces many occupied geometric nodes
+    // contain no source or no receiver. Such translations contribute zero.
+    // Identical source/target sets (the ordinary BEM path) are unchanged.
+    const bool prune_empty = bem_env_flag_enabled("BEM_FMM_PRUNE_EMPTY", true);
+    std::vector<int> source_population(n_nodes,0),target_population(n_nodes,0);
+    for(const auto& leaf:leaf_info) {
+        source_population[leaf.node_idx]=leaf.src_count;
+        target_population[leaf.node_idx]=leaf.tgt_count;
+    }
+    for(int node=n_nodes-1;node>0;--node) {
+        const int parent=tree.nodes[node].parent;
+        source_population[parent]+=source_population[node];
+        target_population[parent]+=target_population[node];
+    }
+
     // Near-field P2P is evaluated from compressed leaf-neighbor lists.
     // Do not materialize per-target source CSR: for ref6 this scales as
     // O(N_targets * sources_per_neighbor_leaf) and can exceed host memory.
@@ -2881,8 +2897,10 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
 
         for (int ni : tree.level_nodes[level]) {
             const OctreeNode& node = tree.nodes[ni];
+            if(prune_empty && target_population[ni]==0)continue;
             for (int fi = node.far_start; fi < node.far_start + node.far_count; fi++) {
                 int far_ni = tree.far_list[fi];
+                if(prune_empty && source_population[far_ni]==0)continue;
                 double d[3] = {
                     node.center[0] - tree.nodes[far_ni].center[0],
                     node.center[1] - tree.nodes[far_ni].center[1],
@@ -2961,6 +2979,7 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
             for (int o = 0; o < 8; o++) {
                 if (node.children[o] < 0) continue;
                 int ci = node.children[o];
+                if(prune_empty && source_population[ci]==0)continue;
                 data.pairs.push_back({ni, ci});
                 const OctreeNode& child = tree.nodes[ci];
                 double t[3] = {child.center[0]-node.center[0], child.center[1]-node.center[1], child.center[2]-node.center[2]};
@@ -2979,6 +2998,7 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
         for (int ni : tree.level_nodes[level]) {
             const OctreeNode& node = tree.nodes[ni];
             if (node.parent < 0) continue;
+            if(prune_empty && target_population[ni]==0)continue;
             data.pairs.push_back({node.parent, ni});
             double t[3] = {node.center[0]-tree.nodes[node.parent].center[0],
                            node.center[1]-tree.nodes[node.parent].center[1],
@@ -4550,6 +4570,7 @@ void HelmholtzFMM::evaluate_grad_hessian_batch3(
 }
 
 #include "fmm_multilevel.cuh"
+#include "fmm_transpose.cuh"
 
 void HelmholtzFMM::evaluate_vector_actions_batch3(
     const cdouble* charges_x,
@@ -4604,7 +4625,9 @@ void HelmholtzFMM::evaluate_vector_actions_batch3(
 
     const bool profile =
         bem_env_flag_enabled("BEM_FMM_PROFILE_BATCH3");
-    cudaEvent_t profile_events[5] = {};
+    FmmCudaTimeline detail(bem_env_flag_enabled("BEM_FMM_PROFILE_FAR_DETAIL"),
+                           k.real(), k.imag(), near_field_fp32);
+    cudaEvent_t profile_events[6] = {};
     if (profile) {
         for (cudaEvent_t& event : profile_events)
             CUDA_CHECK(cudaEventCreate(&event));
@@ -4628,6 +4651,7 @@ void HelmholtzFMM::evaluate_vector_actions_batch3(
     if (profile)
         CUDA_CHECK(cudaEventRecord(profile_events[1]));
 
+    FmmCudaTimeline::mark("upload");
     if (coarse) evaluate_multilevel_far_uploaded(middle, *coarse);
     else evaluate_batch3_far_uploaded();
     if (profile)
@@ -4644,6 +4668,10 @@ void HelmholtzFMM::evaluate_vector_actions_batch3(
     if (n_leaves > 0) {
         launch_point_vector_actions(*this, d_grad_re, d_grad_im, d_hess_re, d_hess_im);
         CUDA_CHECK(cudaGetLastError());
+    }
+    FmmCudaTimeline::mark("L2P", tree.max_level);
+    if (profile) CUDA_CHECK(cudaEventRecord(profile_events[3]));
+    if (n_leaves > 0) {
         if (p2p_enabled) {
             launch_p2p_vector_actions_batch3_leaf(
                 d_tgt_pts, d_src_pts,
@@ -4662,8 +4690,9 @@ void HelmholtzFMM::evaluate_vector_actions_batch3(
             CUDA_CHECK(cudaGetLastError());
         }
     }
+    FmmCudaTimeline::mark("P2P", tree.max_level);
     if (profile)
-        CUDA_CHECK(cudaEventRecord(profile_events[3]));
+        CUDA_CHECK(cudaEventRecord(profile_events[4]));
 
     const int output_grid =
         (output_count + block - 1) / block;
@@ -4681,21 +4710,22 @@ void HelmholtzFMM::evaluate_vector_actions_batch3(
         hessian_action, d_complex_tmp1,
         (size_t)output_count * sizeof(double2),
         cudaMemcpyDeviceToHost));
+    FmmCudaTimeline::mark("download");
     if (profile) {
-        CUDA_CHECK(cudaEventRecord(profile_events[4]));
-        CUDA_CHECK(cudaEventSynchronize(profile_events[4]));
-        float milliseconds[4] = {};
-        for (int phase = 0; phase < 4; phase++) {
+        CUDA_CHECK(cudaEventRecord(profile_events[5]));
+        CUDA_CHECK(cudaEventSynchronize(profile_events[5]));
+        float milliseconds[5] = {};
+        for (int phase = 0; phase < 5; phase++) {
             CUDA_CHECK(cudaEventElapsedTime(
                 &milliseconds[phase],
                 profile_events[phase],
                 profile_events[phase + 1]));
         }
         std::printf(
-            "  [FMM vector profile] upload=%.3fms far=%.3fms "
-            "contracted-L2P+P2P=%.3fms download=%.3fms\n",
-            milliseconds[0], milliseconds[1],
-            milliseconds[2], milliseconds[3]);
+            "  [FMM vector profile k=%.6g mixed=%d] upload=%.3fms far=%.3fms "
+            "L2P=%.3fms P2P=%.3fms download=%.3fms\n",
+            k.real(), int(near_field_fp32), milliseconds[0], milliseconds[1],
+            milliseconds[2], milliseconds[3], milliseconds[4]);
         for (cudaEvent_t& event : profile_events)
             CUDA_CHECK(cudaEventDestroy(event));
     } else {
@@ -4712,11 +4742,14 @@ void HelmholtzFMM::evaluate_vector_actions_batch3_device(
     const double* charges_z_re,
     const double* charges_z_im,
     HelmholtzFMM* middle,
-    HelmholtzFMM* coarse)
+    HelmholtzFMM* coarse,
+    bool include_near)
 {
     if (!batch3_device_allocated)
         throw std::runtime_error(
             "device vector actions require batch3 FMM buffers");
+
+    FmmCudaTimeline detail(bem_env_flag_enabled("BEM_FMM_PROFILE_FAR_DETAIL"),k.real(),k.imag(),near_field_fp32);
 
     const bool profile =
         bem_env_flag_enabled("BEM_FMM_PROFILE_BATCH3");
@@ -4767,7 +4800,7 @@ void HelmholtzFMM::evaluate_vector_actions_batch3_device(
         CUDA_CHECK(cudaGetLastError());
         if (profile)
             CUDA_CHECK(cudaEventRecord(profile_events[3]));
-        launch_p2p_vector_actions_batch3_leaf(
+        if(p2p_enabled && include_near) launch_p2p_vector_actions_batch3_leaf(
             d_tgt_pts, d_src_pts,
             d_charges_re, d_charges_im,
             d_charges2_re, d_charges2_im,
@@ -6596,6 +6629,7 @@ void HelmholtzFMM::evaluate_batch3_far_uploaded(bool multipoles_ready)
     CUDA_CHECK(cudaMemsetAsync(d_local3_re, 0, expansion_bytes));
     CUDA_CHECK(cudaMemsetAsync(d_local3_im, 0, expansion_bytes));
 
+    FmmCudaTimeline::mark("clear", tree.max_level);
     const int block_L = std::min(L, 256);
     if (!multipoles_ready && n_leaves > 0) {
         if(near_field_fp32 && bem_env_flag_enabled("BEM_FMM_MULTILEVEL_P2M_FP32")) {
@@ -6628,6 +6662,7 @@ void HelmholtzFMM::evaluate_batch3_far_uploaded(bool multipoles_ready)
         CUDA_CHECK(cudaGetLastError());
     }
 
+    FmmCudaTimeline::mark("P2M", tree.max_level);
     for (int level = tree.max_level - 1; level >= std::max(1, minimum_m2l_level); level--) {
         if (level < (int)m2m_level_info.size() &&
             m2m_level_info[level].count > 0) {
@@ -6644,6 +6679,7 @@ void HelmholtzFMM::evaluate_batch3_far_uploaded(bool multipoles_ready)
         }
     }
 
+    FmmCudaTimeline::mark("M2M", tree.max_level);
     const bool mixed_m2l = near_field_fp32 &&
         bem_env_flag_enabled("BEM_FMM_MULTILEVEL_M2L_FP32");
     Batch3M2lCache* read_cache=nullptr;
@@ -6657,6 +6693,7 @@ void HelmholtzFMM::evaluate_batch3_far_uploaded(bool multipoles_ready)
             CUDA_CHECK(cudaGetLastError());
         } else read_cache=nullptr;
     }
+    FmmCudaTimeline::mark("M2L-cache", tree.max_level);
     const bool row_m2l = mixed_m2l ||
         bem_env_flag_enabled("BEM_FMM_MULTILEVEL_M2L_ROWS");
     for (int level = 1; level <= tree.max_level; level++) {
@@ -6713,6 +6750,7 @@ void HelmholtzFMM::evaluate_batch3_far_uploaded(bool multipoles_ready)
         CUDA_CHECK(cudaGetLastError());
     }
 
+    FmmCudaTimeline::mark("M2L", tree.max_level);
     for (int level = std::max(2, minimum_m2l_level + 1); level <= tree.max_level; level++) {
         if (level < (int)l2l_level_info.size() &&
             l2l_level_info[level].count > 0) {
@@ -6731,6 +6769,7 @@ void HelmholtzFMM::evaluate_batch3_far_uploaded(bool multipoles_ready)
             CUDA_CHECK(cudaGetLastError());
         }
     }
+    FmmCudaTimeline::mark("L2L", tree.max_level);
 }
 
 void HelmholtzFMM::evaluate_batch4_far_uploaded(
@@ -7116,6 +7155,8 @@ void HelmholtzFMM::evaluate_pot_grad_batch4_uploaded()
 
 void HelmholtzFMM::cleanup()
 {
+    delete static_cast<FmmTransposeWorkspace*>(transpose_workspace);
+    transpose_workspace=nullptr;
     delete static_cast<Batch3M2lCache*>(batch3_m2l_cache);
     batch3_m2l_cache=nullptr;
     cleanup_multilevel_link(*this);

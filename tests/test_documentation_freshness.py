@@ -63,6 +63,14 @@ def main() -> int:
         "scripts/run_tmatrix_day.py",
         "scripts/max_ka_study.py",
         "scripts/plot_ka20_bem_average.py",
+        "scripts/study_tmatrix_cutoff.py",
+        "scripts/report_tmatrix_cutoff_study.py",
+        "scripts/run_large_tmatrix.py",
+        "scripts/run_size_series.py",
+        "scripts/run_tmatrix_multisize.py",
+        "scripts/benchmark_tmatrix_incident.py",
+        "benchmarks/global_solver_20261027/run_probe.py",
+        "tools/mesh_capacity_probe.cpp",
     )
     implementation = "\n".join(read(name) for name in implementation_sources)
     implemented = set(re.findall(r"--[a-z][a-z0-9-]*", implementation))

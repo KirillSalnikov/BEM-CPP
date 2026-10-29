@@ -18,11 +18,11 @@ import tempfile
 import time
 from collections import deque
 import numpy as np
-from tmatrix_incident import regular_fields, RegularFieldCache
 from tmatrix_projection import SphericalProjector
 from tmatrix_so3_mstm import analytic_mueller_tmatrix
 from tmatrix_symmetry import c2x_plan, c2x_partner_column
 import tmatrix_c6
+import tmatrix_pipeline
 from tmatrix_reference import (modes, tangent_frame, transverse_harmonics, transverse_harmonic_block,
                                analytic_mueller)
 
@@ -73,6 +73,8 @@ def main():
     parser.add_argument('--ka',type=float,default=1.)
     parser.add_argument('--ri',type=float,default=1.5)
     parser.add_argument('--ri-imag',type=float,default=0.)
+    parser.add_argument('--prism-aspect',type=float,default=1.,help='Height / width across opposite faces')
+    parser.add_argument('--wavelength',type=float,help='Physical vacuum wavelength in micrometres (scale metadata)')
     parser.add_argument('--order',type=int,default=5)
     parser.add_argument('--angular-band',type=int,default=0)
     parser.add_argument('--projection-method',choices=['fft','dense'],default='fft')
@@ -94,9 +96,12 @@ def main():
     parser.add_argument('--c6-audit-tol',type=float,default=1e-4)
     parser.add_argument('--mirror-pack',action='store_true',
                         help='Use horizontal-reflection parity with C6; select a D6h-invariant prism mesh')
+    parser.add_argument('--incident-prefetch',action='store_true',help='Prepare the next packet while the worker solves')
     parser.add_argument('--no-incident-cache',action='store_true',help='Disable shared geometry/radial incident-field cache')
     parser.add_argument('--seed-from',type=Path,
                         help='Copy compatible individual/C2 checkpoints into a new output directory')
+    parser.add_argument('--solver-restart-from',type=Path,help='Audit and import accepted checkpoints after a solver-only change')
+    parser.add_argument('--solver-restart-proof',type=Path,help='Physical equivalence and strict-residual validation receipt')
     parser.add_argument('--ntheta',type=int,default=37)
     parser.add_argument('--no-average',action='store_true')
     parser.add_argument('--average-backend',choices=['mstm','reference'],default='mstm')
@@ -107,6 +112,14 @@ def main():
     parser.add_argument('--worker-binary',type=Path,help='Pin a worker executable for long builds')
     parser.add_argument('--operator-cache-prefix',type=Path,help='Reuse validated near/MBJ caches from an existing operator')
     args=parser.parse_args()
+    if bool(args.solver_restart_from)!=bool(args.solver_restart_proof) or (args.seed_from and args.solver_restart_from):
+        parser.error('solver restart requires source and proof, and cannot be combined with seed-from')
+    if not np.isfinite(args.prism_aspect) or args.prism_aspect<=0:
+        parser.error('--prism-aspect must be finite and positive')
+    if args.wavelength is not None and (not np.isfinite(args.wavelength) or args.wavelength<=0):
+        parser.error('--wavelength must be finite and positive')
+    if args.shape=='prism' and args.obj is None:
+        os.environ['BEM_TMATRIX_PRISM_ASPECT']=str(args.prism_aspect)
     if args.mirror_pack:
         if not args.c6_pack:
             parser.error('--mirror-pack requires --c6-pack')
@@ -121,6 +134,8 @@ def main():
             'BEM_FMM_MULTILEVEL_P2M_FP32':'1',
             'BEM_FMM_MULTILEVEL_L2P_FP32':'1',
             'BEM_FMM_MULTILEVEL_INTERPOLATION_FP32':'1',
+            'BEM_FMM_MULTILEVEL_COMPACT_TEMP':'1',
+            'BEM_FMM_P2P_SHARED_SOURCES':'1',
             'BEM_FMM_MULTILEVEL_SHIFT_CACHE':'1',
             'BEM_FMM_MULTILEVEL_M2L_CACHE':'1',
             'BEM_FMM_MULTILEVEL_FLAT_NEAR':'1',
@@ -178,7 +193,7 @@ def main():
     _,_,et,ep=tangent_frame(directions)
     geometry=str(args.obj.resolve()) if args.obj else args.shape
     binary=args.worker_binary.resolve() if args.worker_binary else ROOT/'bin/muller_tmatrix_fmm_server'
-    fingerprint={k:v for k,v in vars(args).items() if k not in ('out','columns','column_indices','max_pairs_this_run','fast_mlfma','ntheta','no_average','obj','plane_only','operator_cache_prefix','average_backend','so3_threads','so3_precision','worker_binary','seed_from')}
+    fingerprint={k:v for k,v in vars(args).items() if k not in ('out','columns','column_indices','max_pairs_this_run','fast_mlfma','ntheta','no_average','obj','plane_only','operator_cache_prefix','average_backend','so3_threads','so3_precision','worker_binary','seed_from','solver_restart_from','solver_restart_proof')}
     if args.c6_pack:
         fingerprint['c6_implementation_digest']=hashlib.sha256((ROOT/'scripts/tmatrix_c6.py').read_bytes()).hexdigest()
         fingerprint['c6_driver_digest']=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
@@ -186,6 +201,8 @@ def main():
         fingerprint.pop('c6_pack'); fingerprint.pop('c6_audit_tol')
     if not args.mirror_pack:
         fingerprint.pop('mirror_pack')
+    fingerprint.pop('incident_prefetch')
+    fingerprint['incident_schedule_digest']=hashlib.sha256((ROOT/'scripts/tmatrix_pipeline.py').read_bytes()).hexdigest()
     fingerprint.pop('no_incident_cache')
     if not args.c2_reuse:
         # Preserve existing non-symmetry checkpoint identities.
@@ -204,6 +221,10 @@ def main():
     if manifest_path.exists() and json.loads(manifest_path.read_text())['signature']!=signature:
         raise RuntimeError('output columns belong to a different operator/order; use another output directory')
     atomic_json(manifest_path,{'signature':signature,'parameters':fingerprint,'modes':modal_list})
+    if args.solver_restart_from:
+        from tmatrix_checkpoint_migration import migrate
+        migrated=migrate(args.solver_restart_from,out,fingerprint,directions,modal_list,args.tol,signature,args.solver_restart_proof)
+        print(f'Migrated {migrated["copied_columns"]} verified columns and {migrated["copied_packets"]} packed receipts',flush=True)
     if args.seed_from:
         seeded=tmatrix_c6.seed_columns(args.seed_from,out,fingerprint,directions,modal_list,args.tol)
         atomic_json(out/'seed_report.json',seeded)
@@ -372,8 +393,13 @@ def main():
         command=[str(binary),socket_path,geometry,str(args.ref),str(args.ka),str(args.ri),str(args.ri_imag),
                  str(out/'directions.bin'),str(args.operator_cache_prefix.resolve() if args.operator_cache_prefix else out/'operator'),str(args.tol),str(args.restart),str(args.max_iters)]
         env=os.environ.copy(); env.setdefault('OMP_NUM_THREADS','8')
+        # Worker-only values: derive AFTER fingerprinting to avoid signing the
+        # signature itself. Never share a recycle space across operators/runs.
+        env['BEM_TMATRIX_RECYCLE_SIGNATURE']=signature
+        env['BEM_TMATRIX_RECYCLE_PATH']=str(out/'krylov_recycle.bin')
         process=subprocess.Popen(command,cwd=ROOT,stdout=log,stderr=subprocess.STDOUT,env=env)
         connection=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
+        preparation=None
         try:
             while True:
                 try:
@@ -385,6 +411,18 @@ def main():
                         raise RuntimeError('FMM worker startup timed out')
                     time.sleep(.05)
             hello=receive_message(connection)
+            if args.shape=='prism' and args.obj is None:
+                actual_aspect=hello.get('prism_height_to_width_across_flats',1.)
+                if not np.isfinite(actual_aspect) or not np.isclose(actual_aspect,args.prism_aspect,rtol=1e-13,atol=0):
+                    raise RuntimeError('worker prism aspect does not match requested height/width')
+            recycle_rank=int(hello.get('krylov_recycle_capacity',0))
+            if recycle_rank:
+                # U and C, plus the temporary file during atomic replacement.
+                recycle_disk_peak=2*(104+2*recycle_rank*hello['system_dofs']*16)
+                estimated_disk+=recycle_disk_peak
+                hello['recycle_checkpoint_peak_gib']=recycle_disk_peak/2**30
+                if estimated_disk>0.8*shutil.disk_usage(out).free:
+                    raise RuntimeError('insufficient free disk for T/projection and atomic recycle checkpoints')
             if args.mirror_pack and not hello.get('prism_dihedral_mesh'):
                 raise RuntimeError('mirror packing requires a worker with a D6h-invariant prism mesh')
             positions=np.empty((hello['rhs_points'],3),dtype=np.float64)
@@ -403,7 +441,8 @@ def main():
                 return status
 
             fields=np.empty((2,len(positions),6),dtype=np.complex128)
-            field_cache=None if args.no_incident_cache or args.plane_only else RegularFieldCache(positions,args.ka)
+            preparation=tmatrix_pipeline.IncidentPreparation(positions,modal_list,args.ka,fields,
+                cache=not args.no_incident_cache and not args.plane_only,prefetch=args.incident_prefetch)
             plane_control=None
             if args.plane_only:
                 plane=np.array([1.,0.,0.,0.,1.,0.,0.,0.,1.],dtype=np.float64)
@@ -422,26 +461,23 @@ def main():
                         kind='single'
                 pair=(group if len(group)==2 else group*2) if kind=='single' else group
                 packing_reflection=args.mirror_pack and kind!='packed_rotation'
-                scales=[]
-                field_start=time.perf_counter()
-                if kind=='single':
-                    for slot,index in enumerate(pair):
-                        if field_cache is not None:
-                            field_cache.fill(modal_list[index],fields[slot])
-                        else:
-                            for point in range(0,len(positions),65536):
-                                fields[slot,point:point+65536]=regular_fields(positions[point:point+65536],modal_list[index],args.ka)
-                        scale=float(np.max(np.abs(fields[slot])))
-                        if not np.isfinite(scale) or scale<1e-280:
-                            raise RuntimeError('regular-wave field underflow; reduce order or change normalization')
-                        fields[slot]/=scale; scales.append(scale)
-                else:
-                    scales,combined=tmatrix_c6.encode_fields(positions,modal_list,group,args.ka,fields,
-                        reflection=packing_reflection,field_cache=field_cache)
-                field_seconds=time.perf_counter()-field_start
-                connection.sendall(struct.pack('=i',1))
+                scales,combined,field_seconds,field_wait,prefetched=preparation.get(kind,group,packing_reflection)
+                # Keep all independent references and coded audits cold.
+                # Only production packets may reuse guesses or Krylov vectors;
+                # both solutions still have to pass the full strict residual.
+                operation=3 if (kind in ('packed','packed_rotation') and
+                                (hello.get('symmetry_warm_start',False) or
+                                 hello.get('krylov_recycle_capacity',0)>0)) else 1
+                connection.sendall(struct.pack('=i',operation))
                 connection.sendall(memoryview(fields).cast('B'))
+                # sendall has consumed this buffer; the producer can refill it
+                # while the worker owns the current assembled right-hand sides.
+                if tasks and (args.max_pairs_this_run is None or len(timings)+1<args.max_pairs_this_run):
+                    next_kind,next_group=tasks[0]
+                    preparation.prefetch(next_kind,next_group,args.mirror_pack and next_kind!='packed_rotation')
                 status=result(); status['incident_field_s']=field_seconds
+                status['incident_wait_s']=field_wait
+                status['incident_prefetched']=prefetched
                 status['rhs_kind']=kind
                 timings.append(status)
                 projected=[]
@@ -526,6 +562,7 @@ def main():
             if process.returncode:
                 raise RuntimeError('FMM worker failed during shutdown')
         finally:
+            if preparation is not None:preparation.close()
             connection.close()
             if process.poll() is None:
                 process.terminate()
@@ -557,6 +594,10 @@ def main():
             'maximum_strict_residual':max((max(d['status']['strict_residual_x'],d['status']['strict_residual_y']) for d in all_status),default=None),
             'dense_matrix_formed':False,'resident_solution_columns':2,
             'column_physics_checks':column_physics,'plane_control':plane_control}
+    physical_scale={'wavelength_um':args.wavelength,
+                    'volume_equivalent_radius_um':args.ka*args.wavelength/(2*np.pi) if args.wavelength else None,
+                    'prism_height_to_width_across_flats':args.prism_aspect}
+    report['physical_scale']=physical_scale
     if args.c2_reuse:
         report['symmetry_reuse']=symmetry_report
         report['independently_solved_columns']=sum('derived_by' not in item for item in all_status)
@@ -606,6 +647,7 @@ def main():
             report['analytic_so3_s']=time.perf_counter()-start
             report['analytic_so3']=post
             atomic_json(out/'average.json',{'solver':'muller_fmm_tmatrix_so3','ka':args.ka,'order':args.order,
+                                          'physical_scale':physical_scale,
                                           **post,'theta':theta.tolist(),'mueller':np.moveaxis(mean,0,-1).tolist()})
     report['end_to_end_s']=time.monotonic()-process_start
     atomic_json(out/'summary.json',report)

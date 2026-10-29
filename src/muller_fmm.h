@@ -4,6 +4,7 @@
 #include "fmm.h"
 #include "muller_fmm_gpu.h"
 #include "muller_nodal.h"
+#include "prism_face_fft.h"
 #ifndef BEM_FMM_ONLY
 #include "pfft.h"
 #endif
@@ -52,6 +53,12 @@ struct MullerFmmOperator {
     bool near_correction_cache_hit = false;
     std::string near_correction_cache_path;
     bool use_pfft = false;
+    std::unique_ptr<PrismFaceFFT> prism_fft_exterior;
+    std::unique_ptr<PrismFaceFFT> prism_fft_interior;
+    bool prism_fft_strict_only = false;
+    bool prism_fft_active() const {
+        return prism_fft_exterior && (!prism_fft_strict_only || !fmm_near_fp32);
+    }
     bool gpu_operator_assembly = false;
     bool gpu_operator_assembly_requested = false;
     bool fmm_near_fp32 = false;
@@ -121,6 +128,14 @@ struct MullerFmmOperator {
     void matvec_strict(
         const std::complex<double>* input,
         std::complex<double>* output);
+    // Host system_dofs vectors, same [J,M] ordering as matvec. Transpose does
+    // not conjugate material/Helmholtz coefficients; adjoint conjugates all
+    // coefficients by conj(A^T conj(x)). Strict variants restore mixed mode
+    // even if evaluation throws. FMM backend only; supports in-place use.
+    void matvec_transpose(const std::complex<double>* input, std::complex<double>* output);
+    void matvec_adjoint(const std::complex<double>* input, std::complex<double>* output);
+    void matvec_transpose_strict(const std::complex<double>* input, std::complex<double>* output);
+    void matvec_adjoint_strict(const std::complex<double>* input, std::complex<double>* output);
 
     // Device-resident action used by the paired orientation solver. The
     // pointers contain system_dofs CUDA double2 values.
@@ -159,6 +174,7 @@ struct MullerFmmOperator {
 
     void select_pfft_backend();
     void select_fmm_backend();
+    void enable_prism_face_fft(int refinement);
     void set_fmm_near_fp32(bool enabled);
 
     // O(Q^2) validation action with the same quadrature/correction split.
@@ -169,7 +185,7 @@ struct MullerFmmOperator {
     void cleanup();
 
     const char* backend_name() const {
-        return use_pfft ? "pfft" : "fmm";
+        return prism_fft_exterior ? (prism_fft_strict_only ? "fmm_mixed_prism_fft_strict" : "prism_face_fft_cross_fmm") : (use_pfft ? "pfft" : "fmm");
     }
 
 private:
@@ -198,6 +214,7 @@ private:
     MullerGpuAssembly gpu_assembly;
     int regular_points_per_element = 0;
     int mass_points_per_element = 0;
+    std::vector<int> transpose_correction_offsets, transpose_correction_rows, transpose_correction_indices;
 
     void apply_current_operators(
         const std::complex<double>* coefficients,

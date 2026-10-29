@@ -302,3 +302,40 @@ double MullerMbjPreconditioner::storage_megabytes() const
     bytes += coarse_gram_pivots.size() * sizeof(int);
     return (double)bytes / (1024.0 * 1024.0);
 }
+
+namespace {
+void mbj_transpose_solve(const std::vector<cdouble>& lu,const std::vector<int>& pivots,cdouble* b,int n) {
+    for(int i=0;i<n;++i){for(int j=0;j<i;++j)b[i]-=lu[size_t(j)*n+i]*b[j];b[i]/=lu[size_t(i)*n+i];}
+    for(int i=n-1;i>=0;--i)for(int j=i+1;j<n;++j)b[i]-=lu[size_t(j)*n+i]*b[j];
+    for(int i=n-1;i>=0;--i)if(pivots[i]!=i)std::swap(b[i],b[pivots[i]]);
+}
+}
+void MullerMbjPreconditioner::apply_transpose(const cdouble* rhs,cdouble* solution) const {
+    const std::vector<cdouble> seed(rhs,rhs+system_dofs);
+    std::fill(solution,solution+system_dofs,cdouble(0));
+    std::vector<std::vector<cdouble>> local(blocks.size());
+#pragma omp parallel for schedule(static)
+    for(int index=0;index<int(blocks.size());++index) {
+        const auto& b=blocks[index];const int n=int(b.dofs.size());auto& v=local[index];v.assign(n,cdouble(0));
+        // Restricted overlap masks the input of the transpose, not its output.
+        for(int i=b.core_dof_begin;i<b.core_dof_end;++i)v[i]=seed[b.dofs[i]];
+        if(stores_inverse) {
+            std::vector<cdouble> product(n,cdouble(0));
+            for(int i=0;i<n;++i)for(int j=0;j<n;++j)product[i]+=b.lu[size_t(j)*n+i]*v[j];v.swap(product);
+        }else mbj_transpose_solve(b.lu,b.pivots,v.data(),n);
+    }
+    // Overlapping destination supports require a sum, unlike forward restriction.
+    for(size_t index=0;index<blocks.size();++index)for(size_t j=0;j<blocks[index].dofs.size();++j)
+        solution[blocks[index].dofs[j]]+=local[index][j];
+    if(coarse_rank>0) {
+        std::vector<cdouble> c(coarse_rank,cdouble(0));
+        for(int j=0;j<coarse_rank;++j)for(int i=0;i<system_dofs;++i)c[j]+=coarse_update[size_t(j)*system_dofs+i]*seed[i];
+        mbj_transpose_solve(coarse_gram_lu,coarse_gram_pivots,c.data(),coarse_rank);
+#pragma omp parallel for schedule(static)
+        for(int i=0;i<system_dofs;++i)for(int j=0;j<coarse_rank;++j)solution[i]+=std::conj(coarse_action[size_t(j)*system_dofs+i])*c[j];
+    }
+}
+void MullerMbjPreconditioner::apply_adjoint(const cdouble* rhs,cdouble* solution) const {
+    std::vector<cdouble> seed(system_dofs);for(int i=0;i<system_dofs;++i)seed[i]=std::conj(rhs[i]);
+    apply_transpose(seed.data(),solution);for(int i=0;i<system_dofs;++i)solution[i]=std::conj(solution[i]);
+}

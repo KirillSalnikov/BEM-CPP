@@ -1,0 +1,46 @@
+{
+  "validated": true,
+  "source_binary_digest": "766f330cfc0035cbeb05edb130829bb7d0f60b0fb121ef06f3dc5352e3cf4999",
+  "target_binary_digest": "43c9b73f121d02134d5842d7f2c2c6f2b29478b8115a659b7be5c870111f3202",
+  "physical_parameters_sha256": "301ce9745bd48b9e430800029c570efa4b249bc589924d19834372c6191967a3",
+  "physical_source_hashes_before": {
+    "src/muller_fmm.cpp": "741e98131056744e5a82d8b38b74c94a63f4a097c400b3259ffd98426cf6d85b",
+    "src/muller_fmm.h": "eec571003167920fddce4a9f48c287efda83460d7c0ef0707b2847912ee39fc4",
+    "src/muller_nodal.cpp": "18efa64ddca4e81896481bcec5f94deb66daee2218c5a32a8a1e2cbc5d023fe1",
+    "src/muller_duffy.cpp": "2263d663c1426481740421368c614a2949edc6dec9354e1fbb482bcd2521e8bd",
+    "src/fmm.cu": "cb7d5ebc05052a63649994a2f4e661a11e6930b101540fd74c4873fcfbd41992",
+    "src/fmm.h": "e5944ba2c078288bc849fe76cedfa716308592c88f0d6fd98cb10ac9dcf14134",
+    "src/fmm_multilevel.cuh": "98a6c583d47eee7edefb87e064007840c77f1c7cad54c7be36900d6fb89eaf0a",
+    "src/p2p.cu": "001f058f2804b2e88cd58587591c72796a066605f324044aed87be62a242be17",
+    "src/mesh.cpp": "2ea550c2f98bfc186cdf2e6e2b3d97c02e0b9795f3dd87f45ddf085cf1583b3b",
+    "src/tmatrix_rhs_assembly.h": "589ecc1b0596f613b937c6fc574bb3e3174b27e00537df81a84fdd1e4319b7bd",
+    "scripts/tmatrix_incident.py": "73a281dd0b5c2c7c387c8e5ad389971cc6c4ce2891a7d0feb431e2071aac07b4",
+    "scripts/tmatrix_reference.py": "d125fe87cb876afc09c8abc45cfefd2b4913bd3eb963016c36965e293a8e929b",
+    "scripts/tmatrix_c6.py": "e61b2916cd0fd91778b975e29033b84c50a42d58d9761e64de00741ae8216db7"
+  },
+  "physical_source_hashes_after": {
+    "src/muller_fmm.cpp": "741e98131056744e5a82d8b38b74c94a63f4a097c400b3259ffd98426cf6d85b",
+    "src/muller_fmm.h": "eec571003167920fddce4a9f48c287efda83460d7c0ef0707b2847912ee39fc4",
+    "src/muller_nodal.cpp": "18efa64ddca4e81896481bcec5f94deb66daee2218c5a32a8a1e2cbc5d023fe1",
+    "src/muller_duffy.cpp": "2263d663c1426481740421368c614a2949edc6dec9354e1fbb482bcd2521e8bd",
+    "src/fmm.cu": "cb7d5ebc05052a63649994a2f4e661a11e6930b101540fd74c4873fcfbd41992",
+    "src/fmm.h": "e5944ba2c078288bc849fe76cedfa716308592c88f0d6fd98cb10ac9dcf14134",
+    "src/fmm_multilevel.cuh": "98a6c583d47eee7edefb87e064007840c77f1c7cad54c7be36900d6fb89eaf0a",
+    "src/p2p.cu": "001f058f2804b2e88cd58587591c72796a066605f324044aed87be62a242be17",
+    "src/mesh.cpp": "2ea550c2f98bfc186cdf2e6e2b3d97c02e0b9795f3dd87f45ddf085cf1583b3b",
+    "src/tmatrix_rhs_assembly.h": "589ecc1b0596f613b937c6fc574bb3e3174b27e00537df81a84fdd1e4319b7bd",
+    "scripts/tmatrix_incident.py": "73a281dd0b5c2c7c387c8e5ad389971cc6c4ce2891a7d0feb431e2071aac07b4",
+    "scripts/tmatrix_reference.py": "d125fe87cb876afc09c8abc45cfefd2b4913bd3eb963016c36965e293a8e929b",
+    "scripts/tmatrix_c6.py": "e61b2916cd0fd91778b975e29033b84c50a42d58d9761e64de00741ae8216db7"
+  },
+  "maximum_field_relative_difference": 8.34808369769387e-06,
+  "maximum_strict_residual": 1.6680069523966613e-06,
+  "validation_runs": [
+    "runs/symmetry_solver_20261029/worker_ref3_old",
+    "runs/symmetry_solver_20261029/worker_ref3_new",
+    "runs/symmetry_solver_20261029/worker_ref6_new",
+    "runs/symmetry_solver_20261029/ref6_packet_l36_fast_symcirc"
+  ],
+  "validation_scope": "Frozen original worker comparison at ref3; original-operator/control-solver packet comparison at ref6; full phase-code checks rerun by the migrated builder",
+  "reuse_identical_solver_audits": false
+}

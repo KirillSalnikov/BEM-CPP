@@ -1,0 +1,66 @@
+{
+  "geometry": "regular hexagonal prism H/D_flats=1, ri=1.3, equal-volume size parameter ka",
+  "interval_ka": [
+    5,
+    7
+  ],
+  "initial_five_anchor_max_error": 0.32990037106656095,
+  "final_training_count": 9,
+  "final_barycentric_support_count": 8,
+  "new_blind_validation_count": 4,
+  "max_validation_all16_over_M11_plus_cross_sections": 0.0026432038699439244,
+  "theta_step_degrees": 0.1,
+  "analytic_SO3_Euler_quadrature_nodes": 0,
+  "grid_generation": {
+    "sizes": 101,
+    "wall_s": 7.267216678000068,
+    "additional_BEM_solves": 0
+  },
+  "endpoint_discretization": {
+    "L14_vs_L18_ref3": {
+      "maximum_all16_error_over_reference_M11": 0.0002645680939405253,
+      "maximum_M11_relative_error": 0.00010325349651225505,
+      "forward_M11_relative_error": 2.472890466241045e-07,
+      "backward_M11_relative_error": 0.00010325349651225505,
+      "maximum_active_element_relative_error": 0.019666786509258988,
+      "active_element_floor_over_M11": 0.01,
+      "worst_theta_deg": 164.9,
+      "worst_entry": "M12",
+      "Csca_relative_error": 5.63515560779818e-09,
+      "Cext_relative_error": 2.6804244081220044e-09,
+      "acceptance_error": 0.0002645680939405253
+    },
+    "ref3_vs_ref4_L18": {
+      "maximum_all16_error_over_reference_M11": 0.006440590208079526,
+      "maximum_M11_relative_error": 0.006440590208079526,
+      "forward_M11_relative_error": 0.0009463982197872639,
+      "backward_M11_relative_error": 0.006440590208079526,
+      "maximum_active_element_relative_error": 0.19069222167554561,
+      "active_element_floor_over_M11": 0.01,
+      "worst_theta_deg": 180.0,
+      "worst_entry": "M11",
+      "Csca_relative_error": 0.001358702442473173,
+      "Cext_relative_error": 0.00038664385742916504,
+      "acceptance_error": 0.006440590208079526
+    },
+    "ref3_L14_vs_ref4_L18": {
+      "maximum_all16_error_over_reference_M11": 0.006338001725025858,
+      "maximum_M11_relative_error": 0.006338001725025858,
+      "forward_M11_relative_error": 0.0009461511647745533,
+      "backward_M11_relative_error": 0.006338001725025858,
+      "maximum_active_element_relative_error": 0.19477401022854127,
+      "active_element_floor_over_M11": 0.01,
+      "worst_theta_deg": 180.0,
+      "worst_entry": "M11",
+      "Csca_relative_error": 0.0013587080699722811,
+      "Cext_relative_error": 0.0003866465368172035,
+      "acceptance_error": 0.006338001725025858
+    }
+  },
+  "total_distinct_direct_T_builds_including_endpoint_controls": 15,
+  "prospective_101_size_cost_with_13_samples_and_2_controls_estimate_s": 1355.4360481259994,
+  "prospective_101_direct_size_cost_estimate_s": 7142.7248822390075,
+  "cost_estimate_limitation": "Uses median unresumed direct solve time; a complete 101-size brute-force grid was not timed. Interrupted first anchor cannot supply a total wall time.",
+  "accuracy_limitation": "Mesh refinement is checked at ka=7 only. Listed independent sizes pass interpolation test; no uniform continuous-size/angle certificate or ka112 extrapolation.",
+  "production_new_material_not_reusing_this_T_family": true
+}

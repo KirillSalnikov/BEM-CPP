@@ -1,0 +1,108 @@
+{
+  "full_operator_checks": [
+    {
+      "ref": 1,
+      "ka": 3,
+      "dofs": 864,
+      "backend": "prism_face_fft_cross_fmm",
+      "setup_s": 1.519425701,
+      "strict_relative_error": 6.943528639434535e-09,
+      "mixed_relative_error": 6.862621169834922e-06,
+      "FMM_mixed_s": [
+        0.003659994,
+        0.003486384,
+        0.003489851
+      ],
+      "FMM_strict_s": [
+        0.013241375,
+        0.013244441,
+        0.013278296
+      ],
+      "hybrid_mixed_s": [
+        0.104813283,
+        0.105136418,
+        0.106454927
+      ],
+      "hybrid_strict_s": [
+        0.216807047,
+        0.216050478,
+        0.222247579
+      ],
+      "mixed_slowdown": 30.126334333471544,
+      "strict_slowdown": 16.36966384613741
+    },
+    {
+      "ref": 3,
+      "ka": 10,
+      "dofs": 12672,
+      "backend": "prism_face_fft_cross_fmm",
+      "setup_s": 4.218110966,
+      "strict_relative_error": 8.288887960387639e-11,
+      "mixed_relative_error": 8.774973731793406e-08,
+      "FMM_mixed_s": [
+        0.029409954,
+        0.02606405,
+        0.028534349
+      ],
+      "FMM_strict_s": [
+        0.255630139,
+        0.256194642,
+        0.256635851
+      ],
+      "hybrid_mixed_s": [
+        0.265410226,
+        0.262780895,
+        0.261423933
+      ],
+      "hybrid_strict_s": [
+        0.771955398,
+        0.774167563,
+        0.768882962
+      ],
+      "mixed_slowdown": 9.209282994330797,
+      "strict_slowdown": 3.013159806831558
+    },
+    {
+      "ref": 4,
+      "ka": 10,
+      "dofs": 50688,
+      "backend": "prism_face_fft_cross_fmm",
+      "setup_s": 7.286363285,
+      "strict_relative_error": 2.7455539810304705e-08,
+      "mixed_relative_error": 4.359599644397719e-07,
+      "FMM_mixed_s": [
+        0.077087149,
+        0.076705202,
+        0.075064442
+      ],
+      "FMM_strict_s": [
+        0.998396329,
+        0.991841422,
+        1.012971754
+      ],
+      "hybrid_mixed_s": [
+        0.641674898,
+        0.642414563,
+        0.628843301
+      ],
+      "hybrid_strict_s": [
+        1.852577929,
+        1.855066084,
+        1.88102351
+      ],
+      "mixed_slowdown": 8.365467807515845,
+      "strict_slowdown": 1.8580457781310613
+    }
+  ],
+  "production_face_fft_enabled": false,
+  "decision": "Retain opt-in experimental backend; complete operator is slower on all tested grids.",
+  "timing_caveat": "Concurrent Dota 2 graphics workload during measurements; baseline FMM unbanded, hybrid cross FMM banded.",
+  "full_T_check": {
+    "state": "failed_before_hybrid",
+    "baseline_strict_residual": 0.0017126649065165658,
+    "case": "ka=1, ref=1, L=4, n=1.3116",
+    "hybrid_T_result_available": false
+  },
+  "multisize_run": "runs/multisize_n13116_0532_20261028",
+  "previous_independent_series_stopped": true
+}
