@@ -3,6 +3,11 @@
 #include "muller_nodal.h"
 #include <vector>
 
+// Align the two tangential lattice axes, rather than rotating the grid by pi.
+inline int prism_opposite_patch(int p) {
+    return p>=24?49-p:4*((p/4+3)%6)+2*(1-(p%4)/2)+p%2;
+}
+
 struct PrismCirculantPatch {
     int kind=0,nx=0,ny=0,parity=1;
     Vec3 origin,u,v,normal;

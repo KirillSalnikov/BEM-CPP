@@ -10,7 +10,7 @@ inline bem_streaming::HostResult solve_prism_sectors(
         const bem_streaming::Action& action,const bem_streaming::Action& strict,
         const bem_streaming::Action& inverse,const PrismSymmetrySectors& sectors,
         const Complex* b,Complex* x,int restart,double tolerance,int limit,
-        bool use_initial_guess=false,bool verbose=true) {
+        bool use_initial_guess=false,bool verbose=true,bem_streaming::SectorRecycleSpace* recycle=nullptr) {
     const int n=sectors.size();
     if(use_initial_guess)return bem_streaming::gmres(action,strict,inverse,b,x,n,restart,tolerance,limit,verbose,true);
     const auto start=std::chrono::steady_clock::now();
@@ -26,9 +26,19 @@ inline bem_streaming::HostResult solve_prism_sectors(
         if(end==value || *end || parsed<1 || parsed>16)throw std::invalid_argument("sector strict interval");
         interval=parsed;
     }
+    double factor=.5;
+    if(const char* value=std::getenv("BEM_SECTOR_PROJECTED_FACTOR")) {
+        char* end=nullptr;factor=std::strtod(value,&end);
+        if(end==value || *end)throw std::invalid_argument("sector projected factor");
+    }
+    double first_pass_factor=0;
+    if(const char* value=std::getenv("BEM_SECTOR_FIRST_PASS_FACTOR")) {
+        char* end=nullptr;first_pass_factor=std::strtod(value,&end);
+        if(end==value || *end)throw std::invalid_argument("sector first pass factor");
+    }
     auto result=bem_streaming::sector_gmres([&](const Complex* a,Complex* out){composite(a,out,false);},
         [&](const Complex* a,Complex* out){composite(a,out,true);},encoded.data(),coordinates.data(),sectors.offsets,
-        restart,tolerance,limit,verbose,interval);
+        restart,tolerance,limit,verbose,interval,recycle,factor,first_pass_factor);
     sectors.decode(coordinates.data(),physical_rhs.data(),true);inverse(physical_rhs.data(),x);
     result.seconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();return result;
 }

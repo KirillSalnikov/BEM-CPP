@@ -193,17 +193,33 @@ def main():
     parser.add_argument('--solver-restart-from', type=Path)
     parser.add_argument('--solver-restart-proof', type=Path)
     parser.add_argument('--circulant-blend', type=float, default=0.)
+    parser.add_argument('--opposite-face-weight',type=float,default=0.,help='Weight of opposite-face FFT coupling, 0 disables')
+    parser.add_argument('--opposite-face-mask',type=int,default=3,help='Coupled FFT banks: 1 sides, 2 caps, 3 both')
     parser.add_argument('--sector-gmres', action='store_true', help='Independent C6/reflection Krylov sectors with orbit-local blocks')
     parser.add_argument('--orbit-nodes', type=int, default=50)
+    parser.add_argument('--sector-recycle-rank',type=int,default=0,help='RAM-only recycled directions per symmetry sector')
+    parser.add_argument('--sector-recycle-mask',type=int,default=4095,help='Bit mask of sectors eligible for recycling')
+    parser.add_argument('--vertical-preconditioner',action='store_true',help='Complete the inverse symmetry to D6h')
+    parser.add_argument('--inner-local-coordinates',action='store_true',help='Use local coordinates in mixed near interactions')
+    parser.add_argument('--sector-projected-factor',type=float,default=.5)
+    parser.add_argument('--sector-first-pass-factor',type=float,default=0,help='Coarser first inner target; zero preserves the original target')
     parser.add_argument('--cutoff-orders', type=int, nargs='+', help='Analytic truncation controls after completion')
     parser.add_argument('--tol', type=float, default=1e-5)
     parser.add_argument('--prepare-only', action='store_true')
     args = parser.parse_args()
     if not 1<=args.strict_interval<=16:parser.error('strict interval must be 1..16')
+    if not 0<=args.opposite_face_weight<=1 or not 1<=args.opposite_face_mask<=3 or args.opposite_face_weight and not args.circulant_blend:
+        parser.error('opposite-face coupling needs weight in [0,1], mask 1..3 and a circulant inverse')
     if bool(args.solver_restart_from)!=bool(args.solver_restart_proof):
         parser.error('solver restart needs source and proof')
     if not 1<=args.orbit_nodes<=512 or args.sector_gmres and (args.wave_rank or args.fft_inner or args.mbj_overlap):
         parser.error('sector GMRES needs orbit blocks 1..512 and no wave/inner FFT/overlap')
+    if not 0<=args.sector_recycle_rank<=64 or not 0<=args.sector_recycle_mask<=4095 or args.sector_recycle_rank and not args.sector_gmres:
+        parser.error('sector recycling needs sector GMRES, rank 0..64 and mask 0..4095')
+    if not 0<args.sector_projected_factor<=.5 or (args.vertical_preconditioner or args.sector_projected_factor!=.5) and not args.sector_gmres:
+        parser.error('vertical inverse and projected factor (0,.5] require sector GMRES')
+    if not 0<=args.sector_first_pass_factor<=64 or args.sector_first_pass_factor and not args.sector_gmres:
+        parser.error('first pass factor requires sector GMRES and a value in [0,64]')
     if not 0<=args.wave_rank<=512 or args.wave_rank%4 or args.mbj_overlap<0:
         parser.error('invalid wave rank or MBJ overlap')
     if not 0<=args.fft_inner<=32 or args.fft_inner and (args.wave_rank or args.circulant_blend):
@@ -232,7 +248,13 @@ def main():
     if args.wave_rank:profile['BEM_TMATRIX_WAVE_RANK']=str(args.wave_rank)
     if args.fft_inner:profile.update(BEM_TMATRIX_FFT_INNER=str(args.fft_inner),BEM_TMATRIX_FFT_RADIUS=str(args.fft_radius),BEM_PFFT_CORR_MEMORY=args.fft_memory)
     if args.circulant_blend: profile['BEM_TMATRIX_CIRCULANT_BLEND']=str(args.circulant_blend)
+    if args.opposite_face_weight:profile.update(BEM_CIRCULANT_OPPOSITE_WEIGHT=str(args.opposite_face_weight),BEM_CIRCULANT_OPPOSITE_MASK=str(args.opposite_face_mask))
     if args.sector_gmres:profile.update(BEM_TMATRIX_SECTOR_GMRES='1',BEM_TMATRIX_ORBIT_NODES=str(args.orbit_nodes))
+    if args.sector_recycle_rank:profile.update(BEM_TMATRIX_SECTOR_RECYCLE_RANK=str(args.sector_recycle_rank),BEM_TMATRIX_SECTOR_RECYCLE_MASK=str(args.sector_recycle_mask))
+    if args.vertical_preconditioner:profile['BEM_TMATRIX_VERTICAL_PRECONDITIONER']='1'
+    if args.inner_local_coordinates:profile['BEM_FMM_P2P_LOCAL_COORDINATES']='1'
+    if args.sector_projected_factor!=.5:profile['BEM_SECTOR_PROJECTED_FACTOR']=str(args.sector_projected_factor)
+    if args.sector_first_pass_factor:profile['BEM_SECTOR_FIRST_PASS_FACTOR']=str(args.sector_first_pass_factor)
     env.update(profile, BEM_SO3_TMPDIR=str(out/'scratch'))
     counts = task_counts(args.order)
     t_gib = counts['mode_count']**2*16/2**30
@@ -243,6 +265,12 @@ def main():
                       solver_restart_from=str(args.solver_restart_from.resolve()) if args.solver_restart_from else None,
                       solver_restart_proof=str(args.solver_restart_proof.resolve()) if args.solver_restart_proof else None)
     if args.sector_gmres:parameters.update(sector_gmres=True,orbit_nodes=args.orbit_nodes)
+    if args.opposite_face_weight:parameters.update(opposite_face_weight=args.opposite_face_weight,opposite_face_mask=args.opposite_face_mask)
+    if args.sector_recycle_rank:parameters.update(sector_recycle_rank=args.sector_recycle_rank,sector_recycle_mask=args.sector_recycle_mask)
+    if args.vertical_preconditioner:parameters['vertical_preconditioner']=True
+    if args.inner_local_coordinates:parameters['inner_local_coordinates']=True
+    if args.sector_projected_factor!=.5:parameters['sector_projected_factor']=args.sector_projected_factor
+    if args.sector_first_pass_factor:parameters['sector_first_pass_factor']=args.sector_first_pass_factor
     command = [sys.executable, str(runtime/'scripts/build_fmm_tmatrix.py'),
         '--shape', 'prism', '--ref', str(args.ref), '--ka', str(args.ka), '--ri', str(args.ri),
         '--order', str(args.order), '--tol', str(args.tol), '--restart', str(args.restart), '--max-iters', str(args.max_iters),
@@ -275,8 +303,14 @@ def main():
             + (['--mbj-nodes',str(args.mbj_nodes)] if args.mbj_nodes else [])}
     plan['resume_command']+=['--wave-rank',str(args.wave_rank),'--mbj-overlap',str(args.mbj_overlap),'--fft-inner',str(args.fft_inner),'--fft-radius',str(args.fft_radius),'--fft-memory',args.fft_memory]
     plan['resume_command']+=['--strict-interval',str(args.strict_interval)]
+    if args.opposite_face_weight:plan['resume_command']+=['--opposite-face-weight',str(args.opposite_face_weight),'--opposite-face-mask',str(args.opposite_face_mask)]
     if args.incident_prefetch:plan['resume_command']+=['--incident-prefetch']
     if args.sector_gmres:plan['resume_command']+=['--sector-gmres','--orbit-nodes',str(args.orbit_nodes)]
+    if args.sector_recycle_rank:plan['resume_command']+=['--sector-recycle-rank',str(args.sector_recycle_rank),'--sector-recycle-mask',str(args.sector_recycle_mask)]
+    if args.vertical_preconditioner:plan['resume_command']+=['--vertical-preconditioner']
+    if args.inner_local_coordinates:plan['resume_command']+=['--inner-local-coordinates']
+    if args.sector_projected_factor!=.5:plan['resume_command']+=['--sector-projected-factor',str(args.sector_projected_factor)]
+    if args.sector_first_pass_factor:plan['resume_command']+=['--sector-first-pass-factor',str(args.sector_first_pass_factor)]
     if args.worker_binary:plan['resume_command']+=['--worker-binary',str(args.worker_binary.resolve())]
     if args.solver_restart_from:
         plan['resume_command']+=['--solver-restart-from',parameters['solver_restart_from'],'--solver-restart-proof',parameters['solver_restart_proof']]
@@ -301,7 +335,13 @@ def main():
             stop.wait(15)
     thread = threading.Thread(target=monitor, daemon=True); thread.start()
     try:
-        stages=[('pilot',command+['--max-pairs-this-run','1']),('full',command)]
+        # A one-pair pilot can end halfway through a coded audit, discarding
+        # its reference solution and the worker's recycle space. Continuations
+        # already have a checkpoint (or a solver-migration proof checked by
+        # the builder); let one persistent worker finish all required audits.
+        has_checkpoint=(base/'manifest.json').is_file() and any((base/'columns').glob('*.npy'))
+        stages=[] if args.solver_restart_from or has_checkpoint else [('pilot',command+['--max-pairs-this-run','1'])]
+        stages.append(('full',command))
         if args.cutoff_orders:
             stages.append(('cutoff_controls',[sys.executable,str(runtime/'scripts/study_tmatrix_cutoff.py'),
                 '--run',str(base),'--out',str(out/'cutoff_controls'),'--ntheta','7201','--threads','4',

@@ -62,6 +62,7 @@ def main():
                      'solver_backend':'CPU_TEST_FIXTURE_NOT_BEM','prism_dihedral_mesh':mirror,
                      'symmetry_warm_start':os.environ.get('BEM_TEST_FAKE_WARM_SUPPORT')=='1',
                      'krylov_recycle_capacity':int(os.environ.get('BEM_TMATRIX_RECYCLE_RANK','0')),
+                     'sector_recycle_capacity':int(os.environ.get('BEM_TMATRIX_SECTOR_RECYCLE_RANK','0')),
                      'recycle_signature':os.environ.get('BEM_TMATRIX_RECYCLE_SIGNATURE'),
                      'recycle_path':os.environ.get('BEM_TMATRIX_RECYCLE_PATH')})
             connection.sendall(positions.astype(float).tobytes())

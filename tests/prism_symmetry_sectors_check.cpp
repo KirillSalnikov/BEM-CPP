@@ -1,5 +1,6 @@
 #include "prism_orbit_inverse.h"
 #include "prism_sector_solver.h"
+#include "prism_vertical_inverse.h"
 #include <cstdio>
 using namespace bem_tmatrix;
 using bem_streaming::norm;
@@ -39,6 +40,22 @@ int main()try {
         group.transform(x,b,reflection,true);inverse.apply(b.data(),c.data());group.transform(a,d,reflection,false);
         const double defect=error(c,d);std::printf("ref=%d mirror=%d orbit_inverse_defect=%.3e\n",ref,reflection,defect);
         require(defect<2e-14,"orbit inverse intertwining");
+    }
+    PrismVerticalInverse full;
+    full.build(mesh,[&](const Complex* v,Complex* out){inverse.apply(v,out);});
+    full.transform(x.data(),a.data(),false);full.transform(a.data(),b.data(),false);
+    require(error(x,b)<1e-14,"vertical involution");
+    // V R V = R^-1, and V H = H V: averaging the extra coset must
+    // preserve the two already-established symmetries.
+    group.transform(a,c,false,false);full.transform(c.data(),b.data(),false);
+    c=x;for(int j=0;j<5;++j){group.transform(c,d,false,false);c.swap(d);}
+    require(error(b,c)<2e-14,"dihedral generator relation");
+    full.apply(x.data(),a.data());
+    full.transform(x.data(),b.data(),true);full.apply(b.data(),c.data());full.transform(a.data(),d.data(),false);
+    require(error(c,d)<2e-14,"vertical inverse intertwining");
+    for(bool reflection:{false,true}) {
+        group.transform(x,b,reflection,true);full.apply(b.data(),c.data());group.transform(a,d,reflection,false);
+        require(error(c,d)<2e-14,"full inverse lost commuting subgroup symmetry");
     }
     // Independently invert an equivariant, per-edge electric/magnetic
     // exchange operator. Every local factorization requires row pivoting.

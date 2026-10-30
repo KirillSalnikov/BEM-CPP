@@ -1,0 +1,993 @@
+[
+  {
+    "name": "ref5_control_r32",
+    "metadata": {
+      "diagnostic_only": true,
+      "ka": 40,
+      "ref": 5,
+      "ri": 1.3116,
+      "prism_aspect": 1.4285714285714286,
+      "circulant_setup_s": 7.543310915,
+      "rhs_kind": "C6_mirror_packet",
+      "circulant_storage_mib": 19.0360107421875,
+      "wave_setup_s": 0,
+      "wave_available_rank": 0,
+      "wave_storage_mib": 0,
+      "system_dofs": 258048,
+      "setup_s": 6.199502644,
+      "tolerance": 2e-06,
+      "restart": 32,
+      "limit": 1000,
+      "mbj_nodes": 50,
+      "mbj_overlap": 0,
+      "mbj_storage_mib": 789.357421875,
+      "pfft_order": 2,
+      "orbit_setup_s": 1.857856863,
+      "orbit_storage_mib": 67.23159790039062,
+      "orbit_nodes": 50,
+      "fast_fft_patch_orbits": true,
+      "pfft_radius": 1,
+      "pfft_safety": 0.96
+    },
+    "packets": [
+      {
+        "rhs": [
+          0,
+          1
+        ],
+        "seconds": 61.265327146,
+        "mixed_actions": 140,
+        "strict_actions": 3,
+        "maximum_strict_residual": 1.1774777251088924e-06,
+        "converged": true
+      }
+    ],
+    "recycle": [],
+    "resource_status": {
+      "state": "complete",
+      "signature": "bce0e4570547cc78033171bc6273a47d7d40022198373121e831e9f48a4b02ab",
+      "pid": 1227325,
+      "supervisor_pid": 1227324,
+      "elapsed_s": 84.01645277399803,
+      "rss_gib": 2.961841583251953,
+      "available_ram_gib": 52.35417556762695,
+      "disk_free_gib": 718.9939956665039,
+      "gpu_used_mib": 4387.0,
+      "gpu_free_mib": 19694.0,
+      "peak_rss_gib": 3.0696258544921875,
+      "peak_gpu_mib": 4387.0,
+      "returncode": 0,
+      "reason": null
+    }
+  },
+  {
+    "name": "ref5_control_r48",
+    "metadata": {
+      "diagnostic_only": true,
+      "ka": 40,
+      "ref": 5,
+      "ri": 1.3116,
+      "prism_aspect": 1.4285714285714286,
+      "circulant_setup_s": 7.659994886,
+      "rhs_kind": "C6_mirror_packet",
+      "circulant_storage_mib": 19.0360107421875,
+      "wave_setup_s": 0,
+      "wave_available_rank": 0,
+      "wave_storage_mib": 0,
+      "system_dofs": 258048,
+      "setup_s": 6.054558736,
+      "tolerance": 2e-06,
+      "restart": 48,
+      "limit": 1000,
+      "mbj_nodes": 50,
+      "mbj_overlap": 0,
+      "mbj_storage_mib": 789.357421875,
+      "pfft_order": 2,
+      "orbit_setup_s": 1.858475611,
+      "orbit_storage_mib": 67.23159790039062,
+      "orbit_nodes": 50,
+      "fast_fft_patch_orbits": true,
+      "pfft_radius": 1,
+      "pfft_safety": 0.96
+    },
+    "packets": [
+      {
+        "rhs": [
+          0,
+          1
+        ],
+        "seconds": 58.849890007,
+        "mixed_actions": 133,
+        "strict_actions": 3,
+        "maximum_strict_residual": 1.1591051347728488e-06,
+        "converged": true
+      }
+    ],
+    "recycle": [],
+    "resource_status": {
+      "state": "complete",
+      "signature": "f1002121cbd67e6dc75a8da40944c8dd0bdee1b278b4995100dcb2e0c3252ccb",
+      "pid": 1232899,
+      "supervisor_pid": 1232898,
+      "elapsed_s": 81.59848609899927,
+      "rss_gib": 2.9637069702148438,
+      "available_ram_gib": 52.46405029296875,
+      "disk_free_gib": 718.9787635803223,
+      "gpu_used_mib": 4343.0,
+      "gpu_free_mib": 19738.0,
+      "peak_rss_gib": 3.133014678955078,
+      "peak_gpu_mib": 4343.0,
+      "returncode": 0,
+      "reason": null
+    }
+  },
+  {
+    "name": "ref5_control_r64",
+    "metadata": {
+      "diagnostic_only": true,
+      "ka": 40,
+      "ref": 5,
+      "ri": 1.3116,
+      "prism_aspect": 1.4285714285714286,
+      "circulant_setup_s": 7.668983748,
+      "rhs_kind": "C6_mirror_packet",
+      "circulant_storage_mib": 19.0360107421875,
+      "wave_setup_s": 0,
+      "wave_available_rank": 0,
+      "wave_storage_mib": 0,
+      "system_dofs": 258048,
+      "setup_s": 6.043882286,
+      "tolerance": 2e-06,
+      "restart": 64,
+      "limit": 1000,
+      "mbj_nodes": 50,
+      "mbj_overlap": 0,
+      "mbj_storage_mib": 789.357421875,
+      "pfft_order": 2,
+      "orbit_setup_s": 1.864390653,
+      "orbit_storage_mib": 67.23159790039062,
+      "orbit_nodes": 50,
+      "fast_fft_patch_orbits": true,
+      "pfft_radius": 1,
+      "pfft_safety": 0.96
+    },
+    "packets": [
+      {
+        "rhs": [
+          0,
+          1
+        ],
+        "seconds": 56.807335292,
+        "mixed_actions": 126,
+        "strict_actions": 3,
+        "maximum_strict_residual": 1.1377501324299438e-06,
+        "converged": true
+      }
+    ],
+    "recycle": [],
+    "resource_status": {
+      "state": "complete",
+      "signature": "0855a96a33ef510c9f661838c76492316740c973e8e8c938af97c00e504dca5c",
+      "pid": 1237718,
+      "supervisor_pid": 1237717,
+      "elapsed_s": 79.64415299200482,
+      "rss_gib": 2.9622268676757812,
+      "available_ram_gib": 52.72147750854492,
+      "disk_free_gib": 718.9781227111816,
+      "gpu_used_mib": 4523.0,
+      "gpu_free_mib": 19559.0,
+      "peak_rss_gib": 3.1931190490722656,
+      "peak_gpu_mib": 4523.0,
+      "returncode": 0,
+      "reason": null
+    }
+  },
+  {
+    "name": "ref5_plain_r64_two_packets",
+    "metadata": {
+      "diagnostic_only": true,
+      "ka": 40,
+      "ref": 5,
+      "ri": 1.3116,
+      "prism_aspect": 1.4285714285714286,
+      "circulant_setup_s": 8.071652181,
+      "rhs_kind": "C6_mirror_packet",
+      "circulant_storage_mib": 19.0360107421875,
+      "wave_setup_s": 0,
+      "wave_available_rank": 0,
+      "wave_storage_mib": 0,
+      "system_dofs": 258048,
+      "setup_s": 6.185639027,
+      "tolerance": 2e-06,
+      "restart": 64,
+      "limit": 1000,
+      "mbj_nodes": 50,
+      "mbj_overlap": 0,
+      "mbj_storage_mib": 789.357421875,
+      "pfft_order": 2,
+      "orbit_setup_s": 1.879962306,
+      "orbit_storage_mib": 67.23159790039062,
+      "orbit_nodes": 50,
+      "fast_fft_patch_orbits": true,
+      "pfft_radius": 1,
+      "pfft_safety": 0.96
+    },
+    "packets": [
+      {
+        "rhs": [
+          0,
+          1
+        ],
+        "seconds": 59.600845994000004,
+        "mixed_actions": 126,
+        "strict_actions": 3,
+        "maximum_strict_residual": 1.137604790606069e-06,
+        "converged": true
+      },
+      {
+        "rhs": [
+          2,
+          3
+        ],
+        "seconds": 60.935726518,
+        "mixed_actions": 130,
+        "strict_actions": 3,
+        "maximum_strict_residual": 1.2280058285511873e-06,
+        "converged": true
+      }
+    ],
+    "recycle": [],
+    "resource_status": {
+      "state": "complete",
+      "signature": "46e0f97a8f4425e62cacad7cb6ca0cfd216f0b8cce442cd69b38006f3a3b1d26",
+      "pid": 1249794,
+      "supervisor_pid": 1249793,
+      "elapsed_s": 144.55693868700473,
+      "rss_gib": 2.969776153564453,
+      "available_ram_gib": 52.86539840698242,
+      "disk_free_gib": 718.9786033630371,
+      "gpu_used_mib": 4440.0,
+      "gpu_free_mib": 19642.0,
+      "peak_rss_gib": 3.2047576904296875,
+      "peak_gpu_mib": 4440.0,
+      "returncode": 0,
+      "reason": null
+    }
+  },
+  {
+    "name": "ref5_recycle16_local_coordinates",
+    "metadata": {
+      "diagnostic_only": true,
+      "ka": 40,
+      "ref": 5,
+      "ri": 1.3116,
+      "prism_aspect": 1.4285714285714286,
+      "circulant_setup_s": 7.545744204,
+      "rhs_kind": "C6_mirror_packet",
+      "circulant_storage_mib": 19.0360107421875,
+      "wave_setup_s": 0,
+      "wave_available_rank": 0,
+      "wave_storage_mib": 0,
+      "system_dofs": 258048,
+      "setup_s": 6.397820165,
+      "tolerance": 2e-06,
+      "restart": 64,
+      "limit": 1000,
+      "mbj_nodes": 50,
+      "mbj_overlap": 0,
+      "mbj_storage_mib": 789.357421875,
+      "pfft_order": 2,
+      "orbit_setup_s": 1.864937431,
+      "orbit_storage_mib": 67.23159790039062,
+      "orbit_nodes": 50,
+      "fast_fft_patch_orbits": true,
+      "pfft_radius": 1,
+      "pfft_safety": 0.96
+    },
+    "packets": [
+      {
+        "rhs": [
+          0,
+          1
+        ],
+        "seconds": 53.601569106999996,
+        "mixed_actions": 115,
+        "strict_actions": 3,
+        "maximum_strict_residual": 1.1132747724511458e-06,
+        "converged": true
+      },
+      {
+        "rhs": [
+          2,
+          3
+        ],
+        "seconds": 43.340979861,
+        "mixed_actions": 85,
+        "strict_actions": 3,
+        "maximum_strict_residual": 1.1948516917425734e-06,
+        "converged": true
+      }
+    ],
+    "recycle": [
+      {
+        "method": "sector_recycle",
+        "rhs": 0,
+        "rank": 192,
+        "storage_gib": 0.123046875,
+        "update_s": 0.25531041,
+        "fallbacks": 0
+      },
+      {
+        "method": "sector_recycle",
+        "rhs": 1,
+        "rank": 192,
+        "storage_gib": 0.123046875,
+        "update_s": 0,
+        "fallbacks": 0
+      },
+      {
+        "method": "sector_recycle",
+        "rhs": 2,
+        "rank": 192,
+        "storage_gib": 0.123046875,
+        "update_s": 0.146627275,
+        "fallbacks": 0
+      },
+      {
+        "method": "sector_recycle",
+        "rhs": 3,
+        "rank": 192,
+        "storage_gib": 0.123046875,
+        "update_s": 0,
+        "fallbacks": 0
+      }
+    ],
+    "resource_status": {
+      "state": "complete",
+      "signature": "e07bfe74e6139415e18ce334d7ec7192ab79be88dc69d8e9a21b701c88b2642e",
+      "pid": 1292593,
+      "supervisor_pid": 1292592,
+      "elapsed_s": 120.30296996700054,
+      "rss_gib": 3.179290771484375,
+      "available_ram_gib": 52.041351318359375,
+      "disk_free_gib": 718.4911193847656,
+      "gpu_used_mib": 4394.0,
+      "gpu_free_mib": 19687.0,
+      "peak_rss_gib": 3.424427032470703,
+      "peak_gpu_mib": 4394.0,
+      "returncode": 0,
+      "reason": null
+    }
+  },
+  {
+    "name": "ref5_recycle16_r64_two_packets",
+    "metadata": {
+      "diagnostic_only": true,
+      "ka": 40,
+      "ref": 5,
+      "ri": 1.3116,
+      "prism_aspect": 1.4285714285714286,
+      "circulant_setup_s": 7.739677908,
+      "rhs_kind": "C6_mirror_packet",
+      "circulant_storage_mib": 19.0360107421875,
+      "wave_setup_s": 0,
+      "wave_available_rank": 0,
+      "wave_storage_mib": 0,
+      "system_dofs": 258048,
+      "setup_s": 6.17864444,
+      "tolerance": 2e-06,
+      "restart": 64,
+      "limit": 1000,
+      "mbj_nodes": 50,
+      "mbj_overlap": 0,
+      "mbj_storage_mib": 789.357421875,
+      "pfft_order": 2,
+      "orbit_setup_s": 1.877353403,
+      "orbit_storage_mib": 67.23159790039062,
+      "orbit_nodes": 50,
+      "fast_fft_patch_orbits": true,
+      "pfft_radius": 1,
+      "pfft_safety": 0.96
+    },
+    "packets": [
+      {
+        "rhs": [
+          0,
+          1
+        ],
+        "seconds": 54.267059671999995,
+        "mixed_actions": 115,
+        "strict_actions": 3,
+        "maximum_strict_residual": 1.1330741546416267e-06,
+        "converged": true
+      },
+      {
+        "rhs": [
+          2,
+          3
+        ],
+        "seconds": 43.610062743,
+        "mixed_actions": 85,
+        "strict_actions": 3,
+        "maximum_strict_residual": 1.2557807072768867e-06,
+        "converged": true
+      }
+    ],
+    "recycle": [
+      {
+        "method": "sector_recycle",
+        "rhs": 0,
+        "rank": 192,
+        "storage_gib": 0.123046875,
+        "update_s": 0.257936892,
+        "fallbacks": 0
+      },
+      {
+        "method": "sector_recycle",
+        "rhs": 1,
+        "rank": 192,
+        "storage_gib": 0.123046875,
+        "update_s": 0,
+        "fallbacks": 0
+      },
+      {
+        "method": "sector_recycle",
+        "rhs": 2,
+        "rank": 192,
+        "storage_gib": 0.123046875,
+        "update_s": 0.153225242,
+        "fallbacks": 0
+      },
+      {
+        "method": "sector_recycle",
+        "rhs": 3,
+        "rank": 192,
+        "storage_gib": 0.123046875,
+        "update_s": 0,
+        "fallbacks": 0
+      }
+    ],
+    "resource_status": {
+      "state": "complete",
+      "signature": "cc8897cb9ec606e299a756eca80d2550d071a3ac34ef35080752917e8dec7812",
+      "pid": 1266109,
+      "supervisor_pid": 1266108,
+      "elapsed_s": 121.28705080699729,
+      "rss_gib": 3.1709976196289062,
+      "available_ram_gib": 52.34552001953125,
+      "disk_free_gib": 718.9766807556152,
+      "gpu_used_mib": 4449.0,
+      "gpu_free_mib": 19633.0,
+      "peak_rss_gib": 3.4161338806152344,
+      "peak_gpu_mib": 4449.0,
+      "returncode": 0,
+      "reason": null
+    }
+  },
+  {
+    "name": "ref5_recycle16_vertical",
+    "metadata": {
+      "diagnostic_only": true,
+      "ka": 40,
+      "ref": 5,
+      "ri": 1.3116,
+      "prism_aspect": 1.4285714285714286,
+      "circulant_setup_s": 7.788057454,
+      "rhs_kind": "C6_mirror_packet",
+      "circulant_storage_mib": 19.0360107421875,
+      "wave_setup_s": 0,
+      "wave_available_rank": 0,
+      "wave_storage_mib": 0,
+      "system_dofs": 258048,
+      "setup_s": 6.137989808,
+      "tolerance": 2e-06,
+      "restart": 64,
+      "limit": 1000,
+      "mbj_nodes": 50,
+      "mbj_overlap": 0,
+      "mbj_storage_mib": 789.357421875,
+      "pfft_order": 2,
+      "orbit_setup_s": 1.886285742,
+      "orbit_storage_mib": 67.23159790039062,
+      "orbit_nodes": 50,
+      "fast_fft_patch_orbits": true,
+      "pfft_radius": 1,
+      "pfft_safety": 0.96
+    },
+    "packets": [
+      {
+        "rhs": [
+          0,
+          1
+        ],
+        "seconds": 54.378559661000004,
+        "mixed_actions": 114,
+        "strict_actions": 3,
+        "maximum_strict_residual": 1.1425701407951452e-06,
+        "converged": true
+      },
+      {
+        "rhs": [
+          2,
+          3
+        ],
+        "seconds": 36.521919251,
+        "mixed_actions": 62,
+        "strict_actions": 3,
+        "maximum_strict_residual": 1.1772310441505244e-06,
+        "converged": true
+      }
+    ],
+    "recycle": [
+      {
+        "method": "sector_recycle",
+        "rhs": 0,
+        "rank": 192,
+        "storage_gib": 0.123046875,
+        "update_s": 0.233880797,
+        "fallbacks": 0
+      },
+      {
+        "method": "sector_recycle",
+        "rhs": 1,
+        "rank": 192,
+        "storage_gib": 0.123046875,
+        "update_s": 0,
+        "fallbacks": 0
+      },
+      {
+        "method": "sector_recycle",
+        "rhs": 2,
+        "rank": 192,
+        "storage_gib": 0.123046875,
+        "update_s": 0.12411460299999999,
+        "fallbacks": 0
+      },
+      {
+        "method": "sector_recycle",
+        "rhs": 3,
+        "rank": 192,
+        "storage_gib": 0.123046875,
+        "update_s": 0,
+        "fallbacks": 0
+      }
+    ],
+    "resource_status": {
+      "state": "complete",
+      "signature": "eb22a125858d38dd855fee4d95a17a08d16d7635403f676d124ab52c18e79e4b",
+      "pid": 1299375,
+      "supervisor_pid": 1299374,
+      "elapsed_s": 124.58510978899722,
+      "rss_gib": 3.1775054931640625,
+      "available_ram_gib": 52.049278259277344,
+      "disk_free_gib": 718.4906272888184,
+      "gpu_used_mib": 4462.0,
+      "gpu_free_mib": 19620.0,
+      "peak_rss_gib": 3.427448272705078,
+      "peak_gpu_mib": 4462.0,
+      "returncode": 0,
+      "reason": null
+    }
+  },
+  {
+    "name": "ref5_recycle8_r32_two_packets",
+    "metadata": {
+      "diagnostic_only": true,
+      "ka": 40,
+      "ref": 5,
+      "ri": 1.3116,
+      "prism_aspect": 1.4285714285714286,
+      "circulant_setup_s": 7.715944627,
+      "rhs_kind": "C6_mirror_packet",
+      "circulant_storage_mib": 19.0360107421875,
+      "wave_setup_s": 0,
+      "wave_available_rank": 0,
+      "wave_storage_mib": 0,
+      "system_dofs": 258048,
+      "setup_s": 6.008699786,
+      "tolerance": 2e-06,
+      "restart": 32,
+      "limit": 1000,
+      "mbj_nodes": 50,
+      "mbj_overlap": 0,
+      "mbj_storage_mib": 789.357421875,
+      "pfft_order": 2,
+      "orbit_setup_s": 1.866769184,
+      "orbit_storage_mib": 67.23159790039062,
+      "orbit_nodes": 50,
+      "fast_fft_patch_orbits": true,
+      "pfft_radius": 1,
+      "pfft_safety": 0.96
+    },
+    "packets": [
+      {
+        "rhs": [
+          0,
+          1
+        ],
+        "seconds": 57.493845494,
+        "mixed_actions": 121,
+        "strict_actions": 3,
+        "maximum_strict_residual": 1.1577356129698806e-06,
+        "converged": true
+      },
+      {
+        "rhs": [
+          2,
+          3
+        ],
+        "seconds": 49.262029833,
+        "mixed_actions": 98,
+        "strict_actions": 3,
+        "maximum_strict_residual": 1.1973871814239065e-06,
+        "converged": true
+      }
+    ],
+    "recycle": [
+      {
+        "method": "sector_recycle",
+        "rhs": 0,
+        "rank": 96,
+        "storage_gib": 0.0615234375,
+        "update_s": 0.18302225800000002,
+        "fallbacks": 0
+      },
+      {
+        "method": "sector_recycle",
+        "rhs": 1,
+        "rank": 96,
+        "storage_gib": 0.0615234375,
+        "update_s": 0,
+        "fallbacks": 0
+      },
+      {
+        "method": "sector_recycle",
+        "rhs": 2,
+        "rank": 96,
+        "storage_gib": 0.0615234375,
+        "update_s": 0.16082722100000002,
+        "fallbacks": 0
+      },
+      {
+        "method": "sector_recycle",
+        "rhs": 3,
+        "rank": 96,
+        "storage_gib": 0.0615234375,
+        "update_s": 0,
+        "fallbacks": 0
+      }
+    ],
+    "resource_status": {
+      "state": "complete",
+      "signature": "4dff3417aab5ab08fea697c95ea6953e276b22a5c78aef4777bacf5c725d35c3",
+      "pid": 1242331,
+      "supervisor_pid": 1242330,
+      "elapsed_s": 130.00615773900063,
+      "rss_gib": 3.158977508544922,
+      "available_ram_gib": 52.57577133178711,
+      "disk_free_gib": 718.9759140014648,
+      "gpu_used_mib": 4440.0,
+      "gpu_free_mib": 19642.0,
+      "peak_rss_gib": 3.2466888427734375,
+      "peak_gpu_mib": 4441.0,
+      "returncode": 0,
+      "reason": null
+    }
+  },
+  {
+    "name": "ref5_recycle8_r64_two_packets",
+    "metadata": {
+      "diagnostic_only": true,
+      "ka": 40,
+      "ref": 5,
+      "ri": 1.3116,
+      "prism_aspect": 1.4285714285714286,
+      "circulant_setup_s": 8.006523483,
+      "rhs_kind": "C6_mirror_packet",
+      "circulant_storage_mib": 19.0360107421875,
+      "wave_setup_s": 0,
+      "wave_available_rank": 0,
+      "wave_storage_mib": 0,
+      "system_dofs": 258048,
+      "setup_s": 6.257321991,
+      "tolerance": 2e-06,
+      "restart": 64,
+      "limit": 1000,
+      "mbj_nodes": 50,
+      "mbj_overlap": 0,
+      "mbj_storage_mib": 789.357421875,
+      "pfft_order": 2,
+      "orbit_setup_s": 1.875451667,
+      "orbit_storage_mib": 67.23159790039062,
+      "orbit_nodes": 50,
+      "fast_fft_patch_orbits": true,
+      "pfft_radius": 1,
+      "pfft_safety": 0.96
+    },
+    "packets": [
+      {
+        "rhs": [
+          0,
+          1
+        ],
+        "seconds": 55.992003255,
+        "mixed_actions": 116,
+        "strict_actions": 3,
+        "maximum_strict_residual": 1.141271272865067e-06,
+        "converged": true
+      },
+      {
+        "rhs": [
+          2,
+          3
+        ],
+        "seconds": 48.859513214,
+        "mixed_actions": 96,
+        "strict_actions": 3,
+        "maximum_strict_residual": 1.2172991552581456e-06,
+        "converged": true
+      }
+    ],
+    "recycle": [
+      {
+        "method": "sector_recycle",
+        "rhs": 0,
+        "rank": 96,
+        "storage_gib": 0.0615234375,
+        "update_s": 0.147642523,
+        "fallbacks": 0
+      },
+      {
+        "method": "sector_recycle",
+        "rhs": 1,
+        "rank": 96,
+        "storage_gib": 0.0615234375,
+        "update_s": 0,
+        "fallbacks": 0
+      },
+      {
+        "method": "sector_recycle",
+        "rhs": 2,
+        "rank": 96,
+        "storage_gib": 0.0615234375,
+        "update_s": 0.13411430300000002,
+        "fallbacks": 0
+      },
+      {
+        "method": "sector_recycle",
+        "rhs": 3,
+        "rank": 96,
+        "storage_gib": 0.0615234375,
+        "update_s": 0,
+        "fallbacks": 0
+      }
+    ],
+    "resource_status": {
+      "state": "complete",
+      "signature": "d628119e97a2ee0513f1a4d3cd80403d08b2c1dc57d4591c3120168fdbd5c60c",
+      "pid": 1258924,
+      "supervisor_pid": 1258923,
+      "elapsed_s": 128.7960233529957,
+      "rss_gib": 3.1061630249023438,
+      "available_ram_gib": 52.72339630126953,
+      "disk_free_gib": 718.9772529602051,
+      "gpu_used_mib": 4450.0,
+      "gpu_free_mib": 19631.0,
+      "peak_rss_gib": 3.3561058044433594,
+      "peak_gpu_mib": 4450.0,
+      "returncode": 0,
+      "reason": null
+    }
+  },
+  {
+    "name": "ref5_vertical_local_factor025",
+    "metadata": {
+      "diagnostic_only": true,
+      "ka": 40,
+      "ref": 5,
+      "ri": 1.3116,
+      "prism_aspect": 1.4285714285714286,
+      "circulant_setup_s": 7.972480531,
+      "rhs_kind": "C6_mirror_packet",
+      "circulant_storage_mib": 19.0360107421875,
+      "wave_setup_s": 0,
+      "wave_available_rank": 0,
+      "wave_storage_mib": 0,
+      "system_dofs": 258048,
+      "setup_s": 6.446032731,
+      "tolerance": 2e-06,
+      "restart": 64,
+      "limit": 1000,
+      "mbj_nodes": 50,
+      "mbj_overlap": 0,
+      "mbj_storage_mib": 789.357421875,
+      "pfft_order": 2,
+      "orbit_setup_s": 1.930306031,
+      "orbit_storage_mib": 67.23159790039062,
+      "orbit_nodes": 50,
+      "fast_fft_patch_orbits": true,
+      "pfft_radius": 1,
+      "pfft_safety": 0.96
+    },
+    "packets": [
+      {
+        "rhs": [
+          0,
+          1
+        ],
+        "seconds": 85.138495494,
+        "mixed_actions": 181,
+        "strict_actions": 4,
+        "maximum_strict_residual": 1.967533393298477e-06,
+        "converged": true
+      },
+      {
+        "rhs": [
+          2,
+          3
+        ],
+        "seconds": 42.612690011,
+        "mixed_actions": 76,
+        "strict_actions": 3,
+        "maximum_strict_residual": 9.224918986178326e-07,
+        "converged": true
+      }
+    ],
+    "recycle": [
+      {
+        "method": "sector_recycle",
+        "rhs": 0,
+        "rank": 192,
+        "storage_gib": 0.123046875,
+        "update_s": 0.22677605,
+        "fallbacks": 0
+      },
+      {
+        "method": "sector_recycle",
+        "rhs": 1,
+        "rank": 192,
+        "storage_gib": 0.123046875,
+        "update_s": 0.11939231800000001,
+        "fallbacks": 0
+      },
+      {
+        "method": "sector_recycle",
+        "rhs": 2,
+        "rank": 192,
+        "storage_gib": 0.123046875,
+        "update_s": 0.12970626000000002,
+        "fallbacks": 0
+      },
+      {
+        "method": "sector_recycle",
+        "rhs": 3,
+        "rank": 192,
+        "storage_gib": 0.123046875,
+        "update_s": 0,
+        "fallbacks": 0
+      }
+    ],
+    "excluded_from_tuning": "This initial probe discarded a rejected warm guess; use the workerlike rerun.",
+    "resource_status": {
+      "state": "complete",
+      "signature": "17ee0a30fb6dd5ea6e0a36d8d2e8c1e90c0c50eca2f604ce3478746b9b378f1d",
+      "pid": 1305918,
+      "supervisor_pid": 1305913,
+      "elapsed_s": 162.72387063899805,
+      "rss_gib": 3.187366485595703,
+      "available_ram_gib": 51.95946502685547,
+      "disk_free_gib": 718.4863128662109,
+      "gpu_used_mib": 4367.0,
+      "gpu_free_mib": 19715.0,
+      "peak_rss_gib": 3.4331436157226562,
+      "peak_gpu_mib": 4368.0,
+      "returncode": 0,
+      "reason": null
+    }
+  },
+  {
+    "name": "ref5_vertical_local_factor025_workerlike",
+    "metadata": {
+      "diagnostic_only": true,
+      "ka": 40,
+      "ref": 5,
+      "ri": 1.3116,
+      "prism_aspect": 1.4285714285714286,
+      "circulant_setup_s": 8.004075786,
+      "rhs_kind": "C6_mirror_packet",
+      "circulant_storage_mib": 19.0360107421875,
+      "wave_setup_s": 0,
+      "wave_available_rank": 0,
+      "wave_storage_mib": 0,
+      "system_dofs": 258048,
+      "setup_s": 6.208070494,
+      "tolerance": 2e-06,
+      "restart": 64,
+      "limit": 1000,
+      "mbj_nodes": 50,
+      "mbj_overlap": 0,
+      "mbj_storage_mib": 789.357421875,
+      "pfft_order": 2,
+      "orbit_setup_s": 1.884586449,
+      "orbit_storage_mib": 67.23159790039062,
+      "orbit_nodes": 50,
+      "fast_fft_patch_orbits": true,
+      "pfft_radius": 1,
+      "pfft_safety": 0.96
+    },
+    "packets": [
+      {
+        "rhs": [
+          0,
+          1
+        ],
+        "seconds": 57.41072147,
+        "mixed_actions": 116,
+        "strict_actions": 3,
+        "maximum_strict_residual": 1.9675043689643694e-06,
+        "converged": true
+      },
+      {
+        "rhs": [
+          2,
+          3
+        ],
+        "seconds": 38.737765974,
+        "mixed_actions": 65,
+        "strict_actions": 3,
+        "maximum_strict_residual": 9.118468803788642e-07,
+        "converged": true
+      }
+    ],
+    "recycle": [
+      {
+        "method": "sector_recycle",
+        "rhs": 0,
+        "rank": 192,
+        "storage_gib": 0.123046875,
+        "update_s": 0.23337064799999996,
+        "fallbacks": 0
+      },
+      {
+        "method": "sector_recycle",
+        "rhs": 1,
+        "rank": 192,
+        "storage_gib": 0.123046875,
+        "update_s": 0,
+        "fallbacks": 0
+      },
+      {
+        "method": "sector_recycle",
+        "rhs": 2,
+        "rank": 192,
+        "storage_gib": 0.123046875,
+        "update_s": 0.111525245,
+        "fallbacks": 0
+      },
+      {
+        "method": "sector_recycle",
+        "rhs": 3,
+        "rank": 192,
+        "storage_gib": 0.123046875,
+        "update_s": 0,
+        "fallbacks": 0
+      }
+    ],
+    "resource_status": {
+      "state": "complete",
+      "signature": "6feb8a1ee9bc71b2c4b9563d5d472202d5245444b3504e3e872cb9cc6b933ee4",
+      "pid": 1321942,
+      "supervisor_pid": 1321941,
+      "elapsed_s": 130.73686992599687,
+      "rss_gib": 3.1756668090820312,
+      "available_ram_gib": 51.941680908203125,
+      "disk_free_gib": 718.4870834350586,
+      "gpu_used_mib": 4274.0,
+      "gpu_free_mib": 19807.0,
+      "peak_rss_gib": 3.425609588623047,
+      "peak_gpu_mib": 4314.0,
+      "returncode": 0,
+      "reason": null
+    }
+  }
+]

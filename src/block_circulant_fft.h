@@ -13,6 +13,9 @@ public:
     BlockCirculantFFT(const BlockCirculantFFT&)=delete;
     BlockCirculantFFT& operator=(const BlockCirculantFFT&)=delete;
     void init(int nx,int ny,int channels,int batches,const std::vector<Complex>& kernel,double shift=0);
+    // Export/replace the inverse convolution, without reinverting it.
+    std::vector<Complex> inverse_kernel()const;
+    void init_inverse_kernel(int nx,int ny,int channels,int batches,const std::vector<Complex>& kernel);
     void apply(const Complex* input,Complex* output);
     void apply_adjoint(const Complex* input,Complex* output);
     void apply_transpose(const Complex* input,Complex* output);

@@ -26,5 +26,25 @@ int main()try {
     inverse.set_rank(0);inverse.apply(x.data(),actual.data());b(x.data(),expected.data());const double local=error(actual,expected);
     std::printf("coarse exactness=%.3e linearity=%.3e alias=%.3e rank_zero=%.3e\n",maximum,linear,alias,local);
     if(std::max(std::max(maximum,linear),std::max(alias,local))>1e-12)throw std::runtime_error("coarse inverse identity failed");
+    // Implicit disjoint columns must match the independent dense-V path,
+    // including uncovered rows, signed aggregates, damping and aliasing.
+    {
+        std::vector<int> columns(n,-1);std::vector<double> weights(n,0.);
+        for(int j=0;j<r;++j)for(int k=0;k<4;++k){const int i=4*j+k;columns[i]=j;weights[i]=(k%2?-1.:1.)*.5;}
+        const auto aggregate=[&](int j,C* v){for(int i=0;i<n;++i)v[i]=columns[i]==j?weights[i]:0.;};
+        GlobalCoarseInverse dense;dense.build(n,r,aggregate,a,b);
+        DisjointCoarseInverse implicit;
+        implicit.build(r,columns,weights,[&](int,const C* v,C* out){a(v,out);},b);
+        double difference=0,exact=0;
+        for(double weight:{0.,.4,1.}) {
+            dense.apply(x.data(),expected.data(),weight);implicit.apply(x.data(),actual.data(),weight);
+            difference=std::max(difference,error(actual,expected));
+            actual=x;implicit.apply(actual.data(),actual.data(),weight);difference=std::max(difference,error(actual,expected));
+        }
+        for(int j=0;j<r;++j){aggregate(j,u.data());a(u.data(),au.data());implicit.apply(au.data(),actual.data());exact=std::max(exact,error(actual,u));}
+        if(implicit.rank()!=r || implicit.storage_bytes()>=dense.storage_bytes() || std::max(difference,exact)>1e-12)
+            throw std::runtime_error("implicit coarse correction mismatch");
+        std::printf("implicit coarse dense_difference=%.3e exactness=%.3e memory=%zu/%zu\n",difference,exact,implicit.storage_bytes(),dense.storage_bytes());
+    }
     return 0;
 }catch(const std::exception& e){std::fprintf(stderr,"%s\n",e.what());return 1;}

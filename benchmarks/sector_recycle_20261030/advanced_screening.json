@@ -1,0 +1,88 @@
+{
+  "trials": [
+    {
+      "name": "ref5_recycle16_vertical",
+      "local_coordinates": false,
+      "projected_factor": 0.5,
+      "total_solve_s": 90.900478912,
+      "strict_actions": 6,
+      "mixed_actions": 176,
+      "farfield_relative_l2": [
+        4.336154594548456e-06,
+        1.6564173186793518e-06,
+        1.5419342590578603e-06,
+        2.098112927559542e-06
+      ],
+      "symmetry_checks": [
+        {
+          "method": "vertical_symmetry_check",
+          "strict_operator_defect": 2.0540375919148604e-07,
+          "mixed_operator_defect": 5.448946152299291e-07,
+          "current_inverse_defect": 0.19336614124192864,
+          "averaged_inverse_defect": 0
+        }
+      ]
+    },
+    {
+      "name": "ref5_vertical_local_factor025_workerlike",
+      "local_coordinates": true,
+      "projected_factor": 0.25,
+      "total_solve_s": 96.148487444,
+      "strict_actions": 6,
+      "mixed_actions": 181,
+      "farfield_relative_l2": [
+        4.21258992436968e-06,
+        1.6675718483057288e-06,
+        1.5902915987437075e-06,
+        1.8731152093028398e-06
+      ],
+      "symmetry_checks": [
+        {
+          "method": "vertical_symmetry_check",
+          "strict_operator_defect": 2.0540375919105832e-07,
+          "mixed_operator_defect": 5.582986136188647e-07,
+          "current_inverse_defect": 0.1933661429445495,
+          "averaged_inverse_defect": 0
+        }
+      ]
+    },
+    {
+      "name": "ref5_recycle16_local_coordinates",
+      "local_coordinates": true,
+      "projected_factor": 0.5,
+      "total_solve_s": 96.942548968,
+      "strict_actions": 6,
+      "mixed_actions": 200,
+      "farfield_relative_l2": [
+        4.122598228912732e-06,
+        1.4296474300390172e-06,
+        1.7906419209698966e-06,
+        2.522807366383489e-06
+      ],
+      "symmetry_checks": []
+    }
+  ],
+  "selected": {
+    "name": "ref5_recycle16_vertical",
+    "local_coordinates": false,
+    "projected_factor": 0.5,
+    "total_solve_s": 90.900478912,
+    "strict_actions": 6,
+    "mixed_actions": 176,
+    "farfield_relative_l2": [
+      4.336154594548456e-06,
+      1.6564173186793518e-06,
+      1.5419342590578603e-06,
+      2.098112927559542e-06
+    ],
+    "symmetry_checks": [
+      {
+        "method": "vertical_symmetry_check",
+        "strict_operator_defect": 2.0540375919148604e-07,
+        "mixed_operator_defect": 5.448946152299291e-07,
+        "current_inverse_defect": 0.19336614124192864,
+        "averaged_inverse_defect": 0
+      }
+    ]
+  }
+}

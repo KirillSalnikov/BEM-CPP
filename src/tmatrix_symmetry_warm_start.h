@@ -23,7 +23,7 @@ class D6hOrbit {
     static Key key(const Vec3& p) {
         return {{std::llround(p.x*1e10),std::llround(p.y*1e10),std::llround(p.z*1e10)}};
     }
-    static Map make_map(const MullerP2Mesh& mesh,bool reflection) {
+    static Map make_map(const MullerP2Mesh& mesh,bool reflection,bool vertical=false) {
         using Edge=std::pair<int,int>;
         const int local[3][2]={{0,1},{1,2},{2,0}};
         std::map<Edge,int> by_edge;
@@ -43,7 +43,7 @@ class D6hOrbit {
         for(auto& vertex:vertices) {
             const Vec3 p=mesh.nodes[vertex.first];
             const double sine=std::sqrt(3.)*.5;
-            const Vec3 q=reflection?Vec3(p.x,p.y,-p.z):Vec3(.5*p.x-sine*p.y,sine*p.x+.5*p.y,p.z);
+            const Vec3 q=vertical?Vec3(p.x,-p.y,p.z):reflection?Vec3(p.x,p.y,-p.z):Vec3(.5*p.x-sine*p.y,sine*p.x+.5*p.y,p.z);
             const Key center=key(q);
             int target=-1;
             const auto exact=by_position.find(center);
@@ -81,6 +81,13 @@ public:
         rotation_=make_map(mesh,false);reflection_=make_map(mesh,true);
     }
     int size() const { return 4*edges_; }
+    // Extra generator of D6h outside the commuting C6 x horizontal-mirror
+    // subgroup. Its equation signs are the negatives of these current signs.
+    static void vertical_image_map(const MullerP2Mesh& mesh,std::vector<int>& target,std::vector<int>& sign) {
+        if(mesh.basis_kind!=MullerBasisKind::HDivBdm1)throw std::invalid_argument("vertical map requires BDM1");
+        D6hOrbit helper;helper.edges_=mesh.topology_edge_count;
+        helper.reflection_=make_map(mesh,true,true);helper.image_map(true,false,target,sign);
+    }
     // Source-to-target signed permutation, also used by orbit-local inverses.
     void image_map(bool reflection,bool rhs,std::vector<int>& target,std::vector<int>& sign) const {
         target.resize(size());sign.resize(size());

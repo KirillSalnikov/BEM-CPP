@@ -1,0 +1,86 @@
+[
+  {
+    "name": "control",
+    "weight": 0.0,
+    "mask": 3,
+    "seconds": 88.602273443,
+    "iterations": [
+      114,
+      0,
+      62,
+      0
+    ],
+    "strict_checks": 6,
+    "maximum_field_relative_l2": 5.792829556077303e-07,
+    "symmetry_check": {
+      "method": "native_full_fft_symmetry_check",
+      "error": 1.2070096150658033e-16,
+      "generator_defect": 1.0194583151384668e-16,
+      "old_inverse_s": 0.0187418839,
+      "native_inverse_s": 0.008100665599999998
+    }
+  },
+  {
+    "name": "both",
+    "weight": 1.0,
+    "mask": 3,
+    "seconds": 88.853770464,
+    "iterations": [
+      114,
+      0,
+      63,
+      0
+    ],
+    "strict_checks": 6,
+    "maximum_field_relative_l2": 1.212493604483769e-06,
+    "symmetry_check": {
+      "method": "native_full_fft_symmetry_check",
+      "error": 1.4986088447349828e-16,
+      "generator_defect": 1.0263840440400461e-16,
+      "old_inverse_s": 0.022198569500000005,
+      "native_inverse_s": 0.008566395000000001
+    }
+  },
+  {
+    "name": "sides",
+    "weight": 1.0,
+    "mask": 1,
+    "seconds": 88.509950678,
+    "iterations": [
+      114,
+      0,
+      63,
+      0
+    ],
+    "strict_checks": 6,
+    "maximum_field_relative_l2": 1.008537120584663e-06,
+    "symmetry_check": {
+      "method": "native_full_fft_symmetry_check",
+      "error": 1.4985661698579327e-16,
+      "generator_defect": 1.0143940345459013e-16,
+      "old_inverse_s": 0.019605014299999998,
+      "native_inverse_s": 0.0084266001
+    }
+  },
+  {
+    "name": "caps",
+    "weight": 1.0,
+    "mask": 2,
+    "seconds": 88.397578142,
+    "iterations": [
+      114,
+      0,
+      63,
+      0
+    ],
+    "strict_checks": 6,
+    "maximum_field_relative_l2": 1.3052695292399788e-06,
+    "symmetry_check": {
+      "method": "native_full_fft_symmetry_check",
+      "error": 1.2704434698339042e-16,
+      "generator_defect": 1.0306125964119008e-16,
+      "old_inverse_s": 0.0220282236,
+      "native_inverse_s": 0.0084631426
+    }
+  }
+]

@@ -50,8 +50,13 @@ class MigrationTest(unittest.TestCase):
             np.testing.assert_array_equal(np.load(p/'same_worker/tmatrix.npy'),np.load(old/'tmatrix.npy'))
             bad=run(p/'different_solver_setting',same_extra,dict(env,BEM_HOST_GMRES_STRICT_INTERVAL='8'),False)
             self.assertIn('audit reuse requires identical',bad.stdout)
+            bad=run(p/'different_restart_reuse',same_extra+['--restart','48'],env,False)
+            self.assertIn('audit reuse requires identical',bad.stdout)
             extra=['--worker-binary',str(worker),'--solver-restart-from',str(old),'--solver-restart-proof',str(proof_path)]
-            candidate=dict(env,BEM_TMATRIX_SECTOR_GMRES='1',BEM_TMATRIX_ORBIT_NODES='50')
+            candidate=dict(env,BEM_TMATRIX_SECTOR_GMRES='1',BEM_TMATRIX_ORBIT_NODES='50',BEM_TMATRIX_SECTOR_RECYCLE_RANK='8',
+                BEM_TMATRIX_VERTICAL_PRECONDITIONER='1',BEM_SECTOR_PROJECTED_FACTOR='.25',BEM_FMM_P2P_LOCAL_COORDINATES='1',
+                BEM_CIRCULANT_OPPOSITE_WEIGHT='.5',BEM_CIRCULANT_OPPOSITE_MASK='3',BEM_SECTOR_FIRST_PASS_FACTOR='8')
+            extra+=['--restart','48']
             run(new,extra,candidate)
             report=json.loads((new/'solver_migration.json').read_text())
             self.assertGreater(report['copied_packets'],0)

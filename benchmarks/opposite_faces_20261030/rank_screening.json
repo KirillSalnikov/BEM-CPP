@@ -1,0 +1,74 @@
+[
+  {
+    "name": "rank32",
+    "rank": 32,
+    "restart": 64,
+    "strict_interval": 2,
+    "weight": 0.0,
+    "mask": 3,
+    "seconds": 86.590058591,
+    "iterations": [
+      112,
+      0,
+      60,
+      0
+    ],
+    "strict_checks": 6,
+    "maximum_field_relative_l2": 1.6260115210447476e-06,
+    "symmetry_check": {
+      "method": "native_full_fft_symmetry_check",
+      "error": 1.2065853940222858e-16,
+      "generator_defect": 1.0180987941877573e-16,
+      "old_inverse_s": 0.018743062299999995,
+      "native_inverse_s": 0.0079527812
+    }
+  },
+  {
+    "name": "rank64",
+    "rank": 64,
+    "restart": 64,
+    "strict_interval": 2,
+    "weight": 0.0,
+    "mask": 3,
+    "seconds": 89.123924509,
+    "iterations": [
+      110,
+      0,
+      65,
+      0
+    ],
+    "strict_checks": 6,
+    "maximum_field_relative_l2": 1.6276055345784111e-06,
+    "symmetry_check": {
+      "method": "native_full_fft_symmetry_check",
+      "error": 1.2074623842132054e-16,
+      "generator_defect": 1.0189924686129738e-16,
+      "old_inverse_s": 0.0192575702,
+      "native_inverse_s": 0.008265540399999998
+    }
+  },
+  {
+    "name": "rank32_restart128",
+    "rank": 32,
+    "restart": 128,
+    "strict_interval": 1,
+    "weight": 0.0,
+    "mask": 3,
+    "seconds": 89.725703121,
+    "iterations": [
+      110,
+      0,
+      68,
+      0
+    ],
+    "strict_checks": 6,
+    "maximum_field_relative_l2": 1.6864384123845952e-06,
+    "symmetry_check": {
+      "method": "native_full_fft_symmetry_check",
+      "error": 1.206932616949557e-16,
+      "generator_defect": 1.0190786528924409e-16,
+      "old_inverse_s": 0.018595659400000002,
+      "native_inverse_s": 0.0081187871
+    }
+  }
+]

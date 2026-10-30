@@ -91,7 +91,15 @@ public:
     int learn(const std::vector<Complex>& basis,const std::vector<Complex>& h,
         int stride,int used,const Action& inverse,const std::vector<Complex>& couplings,
         int projected_rank) {
+        return learn_strided(basis.data(),size_,h,stride,used,inverse,couplings,projected_rank);
+    }
+    // A sector occupies a contiguous segment of every full Arnoldi vector.
+    // Read it in place instead of copying another restart-sized basis.
+    int learn_strided(const Complex* basis,size_t leading_dimension,const std::vector<Complex>& h,
+        int stride,int used,const Action& inverse,const std::vector<Complex>& couplings,
+        int projected_rank) {
         if(capacity_==0 || used<2)return 0;
+        if(leading_dimension<size_t(size_))throw std::invalid_argument("recycle basis stride");
         const int wanted=rank()==0?capacity_:std::min(8,capacity_);
         std::vector<Complex> coefficients;
         const int candidates=bem_krylov::harmonic_ritz_coefficients(h,stride,used,wanted,coefficients);
@@ -106,8 +114,8 @@ public:
 #pragma omp parallel for schedule(static)
             for(int i=0;i<size_;++i) {
                 Complex v=0.,c=0.;
-                for(int col=0;col<used;++col)v+=coefficient[col]*basis[size_t(col)*size_+i];
-                for(int row=0;row<=used;++row)c+=image_coefficient[row]*basis[size_t(row)*size_+i];
+                for(int col=0;col<used;++col)v+=coefficient[col]*basis[size_t(col)*leading_dimension+i];
+                for(int row=0;row<=used;++row)c+=image_coefficient[row]*basis[size_t(row)*leading_dimension+i];
                 vector[i]=v;image[i]=c;
             }
             inverse(vector.data(),solution.data());

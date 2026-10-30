@@ -13,6 +13,8 @@
 #include "prism_orbit_inverse.h"
 #include "streaming_sector_gmres.h"
 #include "prism_symmetric_circulant.h"
+#include "prism_vertical_inverse.h"
+#include "prism_face_coarse.h"
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -47,13 +49,16 @@ int main(int argc,char** argv) try {
     const int overlap=integer("BEM_PROBE_MBJ_OVERLAP",0,0,nodes-1);
     const int restart=integer("BEM_SOLVER_RESTART",32,2,256);
     const int limit=integer("BEM_SOLVER_LIMIT",400,1,4000);
-    const int rhs_count=integer("BEM_SOLVER_RHS_COUNT",2,1,2);
+    const int rhs_count=integer("BEM_SOLVER_RHS_COUNT",2,1,16);
+    const double symmetric_blend=real("BEM_PROBE_SYMMETRIC_CIRCULANT_BLEND",.25);
+    if(symmetric_blend>1)throw std::invalid_argument("BEM_PROBE_SYMMETRIC_CIRCULANT_BLEND");
     const int order=integer("BEM_PROBE_PFFT_ORDER",2,2,5);
     const double radius=std::getenv("BEM_PROBE_PFFT_RADIUS")?std::stod(std::getenv("BEM_PROBE_PFFT_RADIUS")):1;
     const double safety=real("BEM_PROBE_PFFT_SAFETY",.96);
     if(!std::isfinite(radius) || radius<0)throw std::invalid_argument("BEM_PROBE_PFFT_RADIUS");
     std::string methods=std::getenv("BEM_SOLVER_METHODS")?std::getenv("BEM_SOLVER_METHODS"):
         "baseline,nested4,nested8,nested12,poly4,poly8,poly12";
+    const bool face_requested=methods.find("face_coarse")!=std::string::npos;
     const bool use_fft=methods.find("nested")!=std::string::npos || methods.find("poly")!=std::string::npos || methods=="fft_timing";
     const auto start=std::chrono::steady_clock::now();
     MullerP2BuildOptions options;options.edge_mode=MullerEdgeMode::HDivBdm1;
@@ -76,7 +81,7 @@ int main(int argc,char** argv) try {
     bem_tmatrix::D6hOrbit symmetry;
     bem_tmatrix::PrismSymmetrySectors sectors;
     PrismOrbitInverse orbit_inverse;
-    const bool symmetry_methods=methods.find("symmetry")!=std::string::npos || methods.find("orbit")!=std::string::npos;
+    const bool symmetry_methods=face_requested || methods.find("symmetry")!=std::string::npos || methods.find("orbit")!=std::string::npos;
     if(symmetry_methods) {
         symmetry.build(op.mesh);bem_tmatrix::PrismGroupMaps maps;maps.build(symmetry);
         sectors.build(maps);orbit_inverse.build(op,maps,orbit_nodes);
@@ -85,13 +90,31 @@ int main(int argc,char** argv) try {
     }
     double circulant_setup=0;
     const bool wave_methods=methods.find("wave")!=std::string::npos;
-    if(methods.find("circ")!=std::string::npos || wave_methods) {
+    if(methods.find("circ")!=std::string::npos || wave_methods || face_requested) {
         const auto begin=std::chrono::steady_clock::now();
         const double shift=std::getenv("BEM_CIRCULANT_SHIFT")?std::stod(std::getenv("BEM_CIRCULANT_SHIFT")):0;
-        circulant.build(op.mesh,ref,mixed,local,shift);circulant_setup=seconds(begin);
+        const double opposite=std::getenv("BEM_CIRCULANT_OPPOSITE_WEIGHT")?std::stod(std::getenv("BEM_CIRCULANT_OPPOSITE_WEIGHT")):0;
+        const int opposite_mask=integer("BEM_CIRCULANT_OPPOSITE_MASK",3,0,3);
+        circulant.build(op.mesh,ref,mixed,local,shift,opposite,opposite_mask);circulant_setup=seconds(begin);
     }
     PrismSymmetricCirculant symmetric_circulant;
     if(symmetry_methods && circulant_setup>0)symmetric_circulant.build(symmetry,circulant,orbit_inverse);
+    PrismVerticalInverse vertical;
+    if(face_requested || methods.find("vertical")!=std::string::npos)vertical.build(op.mesh,[&](const Complex* a,Complex* b){symmetric_circulant.apply(a,b,symmetric_blend);});
+    if((face_requested || methods.find("native")!=std::string::npos) && !symmetric_circulant.prepare_full_fft_symmetry(op.mesh))
+        throw std::runtime_error("native FFT symmetry structural proof failed");
+    DisjointCoarseInverse face_coarse;
+    double face_setup=0;int face_samples=0;
+    Vector face_test_x,face_test_y;
+    if(face_requested) {
+        const auto begin=std::chrono::steady_clock::now();
+        PrismFaceCoarseBasis basis(circulant.layout,symmetry,op.mesh);
+        face_coarse.build(basis.rank(),basis.columns(),basis.weights(),[&](int j,const Complex* a,Complex* b){
+            basis.sample(j,a,b,mixed);
+            if(j==0){face_test_x.assign(a,a+n);face_test_y.assign(b,b+n);}
+        },[&](const Complex* a,Complex* b){symmetric_circulant.apply_full_fft_symmetry(a,b,symmetric_blend);});
+        face_samples=basis.samples();face_setup=seconds(begin);
+    }
     GlobalCoarseInverse wave;
     double wave_setup=0;
     const double wave_blend=real("BEM_PROBE_WAVE_LOCAL_BLEND",.25);
@@ -112,7 +135,7 @@ int main(int argc,char** argv) try {
     }
     const char* packet_file=std::getenv("BEM_PROBE_RHS_FILE");
     if(packet_file) {
-        if(rhs_count!=2)throw std::invalid_argument("packet needs two phase codes");
+        if(rhs_count%2)throw std::invalid_argument("packets need pairs of phase codes");
         std::ifstream file(packet_file,std::ios::binary);
         for(auto& b:rhs){file.read(reinterpret_cast<char*>(b.data()),n*sizeof(Complex));if(!file)throw std::runtime_error("packet RHS size");}
         if(file.peek()!=std::char_traits<char>::eof())throw std::runtime_error("trailing packet RHS data");
@@ -128,6 +151,10 @@ int main(int argc,char** argv) try {
         <<",\"prism_aspect\":"<<aspect<<",\"circulant_setup_s\":"<<circulant_setup
         <<",\"rhs_kind\":\""<<(packet_file?"C6_mirror_packet":"plane_wave")<<"\""
         <<",\"circulant_storage_mib\":"<<circulant.storage_bytes()/1048576.
+        <<",\"opposite_face_weight\":"<<circulant.opposite_weight()<<",\"opposite_face_mask\":"<<circulant.opposite_mask()
+        <<",\"symmetric_circulant_blend\":"<<symmetric_blend
+        <<",\"face_coarse_rank\":"<<face_coarse.rank()<<",\"face_coarse_setup_s\":"<<face_setup
+        <<",\"face_coarse_samples\":"<<face_samples<<",\"face_coarse_storage_mib\":"<<face_coarse.storage_bytes()/1048576.
         <<",\"wave_setup_s\":"<<wave_setup<<",\"wave_available_rank\":"<<wave.available_rank()
         <<",\"wave_storage_mib\":"<<wave.storage_bytes()/1048576.
         <<",\"system_dofs\":"<<n<<",\"setup_s\":"<<setup<<",\"tolerance\":"<<tol<<",\"restart\":"<<restart
@@ -141,6 +168,75 @@ int main(int argc,char** argv) try {
     const std::string original_fast=std::getenv("BEM_FMM_P2P_SHARED_FAST_TRIG")?
         std::getenv("BEM_FMM_P2P_SHARED_FAST_TRIG"):"0";
     while(std::getline(input,method,',')) {
+        if(method=="face_coarse_check") {
+            Vector a(n),b(n),c(n),d(n);
+            face_coarse.apply(face_test_y.data(),a.data());
+            for(int i=0;i<n;++i)a[i]-=face_test_x[i];
+            const double exact=norm(a.data(),n)/norm(face_test_x.data(),n);
+            double defect=0;
+            for(int g=0;g<3;++g) {
+                const auto transform=[&](const Vector& in,Vector& out,bool rhs_sign){
+                    if(g==2)vertical.transform(in.data(),out.data(),rhs_sign);else symmetry.transform(in,out,g==1,rhs_sign);
+                };
+                face_coarse.apply(training.data(),a.data());transform(a,b,false);
+                transform(training,c,true);face_coarse.apply(c.data(),d.data());
+                for(int i=0;i<n;++i)d[i]-=b[i];
+                defect=std::max(defect,norm(d.data(),n)/norm(a.data(),n));
+            }
+            report<<"{\"method\":\"face_coarse_check\",\"coarse_exactness\":"<<exact<<",\"generator_defect\":"<<defect<<"}\n";report.flush();
+            if(exact>2e-10 || defect>2e-10)throw std::runtime_error("face coarse exactness/symmetry failed");
+            Vector().swap(face_test_x);Vector().swap(face_test_y);continue;
+        }
+        if(method=="native_vertical_symmetry_circ") {
+            Vector a(n),b(n),c(n),d(n);
+            double worst=0,old_seconds=0,new_seconds=0;
+            // Check random full vectors, actual RHS, and a localized impulse.
+            for(int trial=0;trial<3;++trial) {
+                Vector seed=trial==0?training:rhs[0];
+                if(trial==2){std::fill(seed.begin(),seed.end(),Complex(0));seed[n/3]=Complex(.7,-.4);}
+                auto t=std::chrono::steady_clock::now();vertical.apply(seed.data(),a.data());old_seconds+=seconds(t);
+                t=std::chrono::steady_clock::now();symmetric_circulant.apply_full_fft_symmetry(seed.data(),b.data(),symmetric_blend);new_seconds+=seconds(t);
+                for(int i=0;i<n;++i)c[i]=a[i]-b[i];
+                worst=std::max(worst,norm(c.data(),n)/norm(a.data(),n));
+            }
+            double defect=0;
+            for(int g=0;g<3;++g) {
+                const auto transform=[&](const Vector& in,Vector& out,bool rhs_sign) {
+                    if(g==2)vertical.transform(in.data(),out.data(),rhs_sign);
+                    else symmetry.transform(in,out,g==1,rhs_sign);
+                };
+                symmetric_circulant.apply_full_fft_symmetry(training.data(),a.data(),symmetric_blend);
+                transform(a,b,false);transform(training,c,true);
+                symmetric_circulant.apply_full_fft_symmetry(c.data(),d.data(),symmetric_blend);
+                for(int i=0;i<n;++i)d[i]-=b[i];
+                defect=std::max(defect,norm(d.data(),n)/norm(a.data(),n));
+            }
+            // Warm plans and alternate order to reduce timing bias.
+            old_seconds=new_seconds=0;
+            for(int k=0;k<10;++k)for(int pass=0;pass<2;++pass) {
+                const bool native=(k+pass)%2;const auto t=std::chrono::steady_clock::now();
+                if(native)symmetric_circulant.apply_full_fft_symmetry(training.data(),b.data(),symmetric_blend);else vertical.apply(training.data(),a.data());
+                (native?new_seconds:old_seconds)+=seconds(t);
+            }
+            report<<"{\"method\":\"native_full_fft_symmetry_check\",\"error\":"<<worst<<",\"generator_defect\":"<<defect
+                <<",\"old_inverse_s\":"<<old_seconds/10<<",\"native_inverse_s\":"<<new_seconds/10<<"}\n";report.flush();
+            if(worst>2e-12 || defect>2e-12)throw std::runtime_error("native full FFT symmetry action check failed");
+            continue;
+        }
+        if(method=="vertical_symmetry_circ") {
+            Vector a(n),b(n),c(n),d(n);
+            const auto defect=[&](const Action& f,bool inverse) {
+                f(training.data(),a.data());vertical.transform(a.data(),b.data(),!inverse);
+                vertical.transform(training.data(),c.data(),inverse);f(c.data(),d.data());
+                for(int i=0;i<n;++i)d[i]-=b[i];
+                return norm(d.data(),n)/norm(a.data(),n);
+            };
+            report<<"{\"method\":\"vertical_symmetry_check\",\"strict_operator_defect\":"<<defect(strict,false)
+                <<",\"mixed_operator_defect\":"<<defect(mixed,false)
+                <<",\"current_inverse_defect\":"<<defect([&](const Complex* a,Complex* b){symmetric_circulant.apply(a,b,symmetric_blend);},true)
+                <<",\"averaged_inverse_defect\":"<<defect([&](const Complex* a,Complex* b){vertical.apply(a,b);},true)<<"}\n";
+            report.flush();continue;
+        }
         if(method=="symmetry" || method=="symmetry_circ" || method=="inverse_symmetry_circ") {
             Vector a(n),b(n),c(n),d(n);
             if(method!="symmetry") {
@@ -151,7 +247,7 @@ int main(int argc,char** argv) try {
                 const double error=norm(b.data(),n)/norm(a.data(),n);
                 report<<"{\"method\":\"fft_part_decomposition_check\",\"error\":"<<error<<"}\n";report.flush();
                 if(error>1e-12)throw std::runtime_error("FFT part decomposition failed");
-                symmetric_circulant.apply(training.data(),a.data());symmetric_circulant.apply(training.data(),b.data(),.25,true);
+                symmetric_circulant.apply(training.data(),a.data(),symmetric_blend);symmetric_circulant.apply(training.data(),b.data(),symmetric_blend,true);
                 for(int i=0;i<n;++i)b[i]-=a[i];
                 const double full_error=norm(b.data(),n)/norm(a.data(),n);
                 report<<"{\"method\":\"symmetric_fft_full_group_check\",\"error\":"<<full_error<<"}\n";report.flush();
@@ -173,7 +269,7 @@ int main(int argc,char** argv) try {
                 double symmetric_circ_error=-1;
                 double side_error=-1,cap_error=-1;
                 if(method!="symmetry")circ_error=defect([&](const Complex* x,Complex* y){circulant.apply(x,y,.25);},true,reflection);
-                if(method!="symmetry")symmetric_circ_error=defect([&](const Complex* x,Complex* y){symmetric_circulant.apply(x,y);},true,reflection);
+                if(method!="symmetry")symmetric_circ_error=defect([&](const Complex* x,Complex* y){symmetric_circulant.apply(x,y,symmetric_blend);},true,reflection);
                 if(method!="symmetry") {
                     side_error=defect([&](const Complex* x,Complex* y){circulant.apply_fft_part(x,y,0);},true,reflection);
                     cap_error=defect([&](const Complex* x,Complex* y){circulant.apply_fft_part(x,y,1);},true,reflection);
@@ -285,8 +381,11 @@ int main(int argc,char** argv) try {
         const bool global=method.find("wave")==0;
         const bool tf=method=="tfqmr" || method=="tfqmr_circ";
         const bool qm=method=="qmr" || method=="qmr_circ" || method=="qmr_strict_circ";
-        const bool orbit=method=="orbit" || method=="sector_orbit" || method=="orbit_circ" || method=="sector_orbit_circ";
-        const bool orbit_fft=method=="orbit_circ" || method=="sector_orbit_circ";
+        const bool face_method=method=="sector_orbit_circ_vertical_native_face_coarse";
+        const bool native_method=method=="sector_orbit_circ_vertical_native" || face_method;
+        const bool vertical_method=method=="sector_orbit_circ_vertical" || native_method;
+        const bool orbit=method=="orbit" || method=="sector_orbit" || method=="orbit_circ" || method=="sector_orbit_circ" || vertical_method;
+        const bool orbit_fft=method=="orbit_circ" || method=="sector_orbit_circ" || vertical_method;
         if(global)wave.set_rank(std::stoi(method.substr(4)));
         if(!nested && !poly && !idrs && !circ && !global && !tf && !qm && !orbit && method!="baseline" && method!="baseline_fast")
             throw std::invalid_argument("unknown method "+method);
@@ -300,7 +399,10 @@ int main(int argc,char** argv) try {
         const int training_actions=fft_actions;
         const Action precondition=[&](const Complex* a,Complex* b) {
             if(nested)inverse.solve(a,b,real("BEM_SOLVER_INNER_TOL",.1));
-            else if(orbit_fft)symmetric_circulant.apply(a,b);
+            else if(face_method)face_coarse.apply(a,b,real("BEM_PROBE_FACE_COARSE_WEIGHT",1.));
+            else if(native_method)symmetric_circulant.apply_full_fft_symmetry(a,b,symmetric_blend);
+            else if(vertical_method)vertical.apply(a,b);
+            else if(orbit_fft)symmetric_circulant.apply(a,b,symmetric_blend);
             else if(orbit)orbit_inverse.apply(a,b);
             else if(poly)inverse.apply(a,b);
             else if(circ)circulant.apply(a,b,method=="circ"?1.:std::stod(method.substr(4)));
@@ -309,19 +411,30 @@ int main(int argc,char** argv) try {
             else local(a,b);
         };
         Vector first_solution;
+        const int sector_rank=integer("BEM_PROBE_SECTOR_RECYCLE_RANK",0,0,64);
+        const unsigned sector_mask=integer("BEM_PROBE_SECTOR_RECYCLE_MASK",4095,0,4095);
+        SectorRecycleSpace sector_recycle(sectors.offsets,sector_rank,sector_mask);
         for(int j=0;j<rhs_count;++j) {
             actions=0;strict_actions=0;fft_actions=0;local_actions=0;
             std::printf("[solver probe] method=%s rhs=%d\n",method.c_str(),j);
             QmrResult qmr_result;HostResult result;
             bool warm_accepted=false;
             double warm_attempt_seconds=0,warm_strict_seconds=0;int warm_strict_checks=0;
-            if(packet_file && j==1 && !first_solution.empty()) {
+            if(packet_file && j%2==1 && !first_solution.empty()) {
                 const auto before=std::chrono::steady_clock::now();
-                Vector guess;const auto fit=bem_tmatrix::symmetry_guess(symmetry,rhs[0],first_solution,rhs[1],guess);
-                if(fit.fitted) {
+                Vector guess;const auto fit=bem_tmatrix::symmetry_guess(symmetry,rhs[j-1],first_solution,rhs[j],guess);
+                if(fit.fitted && (method=="sector_orbit" || method=="sector_orbit_circ" || vertical_method)) {
+                    // Match the persistent worker: a near-tolerance first
+                    // code may need a short correction of the second code.
+                    // Discarding that guess would benchmark a cold solve.
+                    x=guess;
+                    result=gmres(mixed,strict,precondition,rhs[j].data(),x.data(),n,restart,tol,limit,true,true);
+                    warm_strict_seconds=result.strict_seconds;warm_strict_checks=result.strict_checks;
+                    result.seconds=seconds(before);warm_accepted=result.residual<=tol;
+                } else if(fit.fitted) {
                     const auto check=std::chrono::steady_clock::now();strict(guess.data(),work.data());
-                    for(int i=0;i<n;++i)work[i]-=rhs[1][i];
-                    result.residual=norm(work.data(),n)/norm(rhs[1].data(),n);result.strict_checks=1;result.strict_seconds=seconds(check);
+                    for(int i=0;i<n;++i)work[i]-=rhs[j][i];
+                    result.residual=norm(work.data(),n)/norm(rhs[j].data(),n);result.strict_checks=1;result.strict_seconds=seconds(check);
                     warm_strict_seconds=result.strict_seconds;warm_strict_checks=1;
                     if(result.residual<=tol){x=guess;warm_accepted=true;result.seconds=seconds(before);}
                 }
@@ -329,7 +442,7 @@ int main(int argc,char** argv) try {
             }
             if(warm_accepted) {
                 std::printf("[solver probe] accepted symmetry warm start for second packet code\n");
-            } else if(method=="sector_orbit" || method=="sector_orbit_circ") {
+            } else if(method=="sector_orbit" || method=="sector_orbit_circ" || vertical_method) {
                 Vector encoded(n),coordinates(n),physical_rhs(n),physical_x(n),physical_y(n);
                 sectors.encode(rhs[j].data(),encoded.data(),true);
                 const auto composite=[&](const Complex* a,Complex* b,bool full) {
@@ -338,7 +451,8 @@ int main(int argc,char** argv) try {
                 };
                 const auto sr=sector_gmres([&](const Complex* a,Complex* b){composite(a,b,false);},
                     [&](const Complex* a,Complex* b){composite(a,b,true);},encoded.data(),coordinates.data(),sectors.offsets,
-                    restart,tol,limit,true,integer("BEM_HOST_GMRES_STRICT_INTERVAL",4,1,16));
+                    restart,tol,limit,true,integer("BEM_HOST_GMRES_STRICT_INTERVAL",4,1,16),sector_rank?&sector_recycle:nullptr,
+                    real("BEM_SECTOR_PROJECTED_FACTOR",.5),std::getenv("BEM_SECTOR_FIRST_PASS_FACTOR")?real("BEM_SECTOR_FIRST_PASS_FACTOR",.5):0);
                 result=sr;sectors.decode(coordinates.data(),physical_rhs.data(),true);precondition(physical_rhs.data(),x.data());
                 report<<"{\"method\":\"sector_action_counts\",\"rhs\":"<<j<<",\"actions\":[";
                 for(int s=0;s<12;++s)report<<(s?",":"")<<sr.sector_iterations[s];
@@ -357,7 +471,7 @@ int main(int argc,char** argv) try {
                 gmres(mixed,strict,precondition,rhs[j].data(),x.data(),n,restart,tol,limit,true,
                       false,nullptr,true,nested);
             if(!warm_accepted){result.seconds+=warm_attempt_seconds;result.strict_seconds+=warm_strict_seconds;result.strict_checks+=warm_strict_checks;}
-            if(packet_file && j==0 && result.residual<=tol)first_solution=x;
+            if(packet_file && j%2==0){first_solution.clear();if(result.residual<=tol)first_solution=x;}
             if((method=="baseline" || (method=="circ0.25" && reference[j].empty())) && result.residual<=tol)reference[j]=x;
             double difference=-1;
             if(!reference[j].empty()) {
@@ -368,10 +482,14 @@ int main(int argc,char** argv) try {
                 <<",\"seconds\":"<<result.seconds<<",\"strict_residual\":"<<result.residual
                 <<",\"converged\":"<<(result.residual<=tol?"true":"false")<<",\"solution_relative_difference\":"<<difference
                 <<",\"symmetry_warm_start_accepted\":"<<(warm_accepted?"true":"false")
+                <<",\"symmetry_warm_start_corrected\":"<<(warm_accepted && result.iterations>0?"true":"false")
                 <<",\"action_s\":"<<result.action_seconds<<",\"inverse_s\":"<<result.inverse_seconds
                 <<",\"orthogonalization_s\":"<<result.orthogonalization_seconds<<",\"strict_s\":"<<result.strict_seconds
                 <<",\"fmm_actions\":"<<actions<<",\"strict_actions\":"<<strict_actions<<",\"fft_actions\":"<<fft_actions
                 <<",\"local_actions\":"<<local_actions<<",\"training_s\":"<<training_s<<",\"training_fft_actions\":"<<training_actions<<"}\n";
+            if(sector_rank)report<<"{\"method\":\"sector_recycle\",\"rhs\":"<<j<<",\"rank\":"<<sector_recycle.rank()
+                <<",\"storage_gib\":"<<sector_recycle.storage_gib()<<",\"update_s\":"<<result.recycle_seconds
+                <<",\"fallbacks\":"<<result.recycle_fallbacks<<"}\n";
             if(qm)report<<"{\"method\":\"qmr_action_counts\",\"solver\":\""<<method<<"\",\"rhs\":"<<j
                 <<",\"forward_actions\":"<<qmr_result.forward_actions<<",\"adjoint_actions\":"<<qmr_result.adjoint_actions
                 <<",\"adjoint_s\":"<<qmr_result.adjoint_seconds<<"}\n";

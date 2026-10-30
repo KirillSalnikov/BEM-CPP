@@ -41,7 +41,7 @@ bool invert(std::vector<std::complex<double>> a,int c,std::vector<std::complex<d
 }
 }
 struct BlockCirculantFFT::Impl {
-    int grid=0,c=0,b=0,fallbacks=0;
+    int nx=0,ny=0,grid=0,c=0,b=0,fallbacks=0;
     size_t bytes=0,work=0;
     cufftHandle plan=0;
     double2 *inverse=nullptr,*in=nullptr,*out=nullptr;
@@ -52,7 +52,7 @@ BlockCirculantFFT::~BlockCirculantFFT()=default;
 void BlockCirculantFFT::init(int nx,int ny,int c,int batches,const std::vector<Complex>& kernel,double shift) {
     if(nx<1 || ny<1 || c<1 || c>32 || batches<1 || kernel.size()!=size_t(c)*c*nx*ny || shift<0 || !std::isfinite(shift))
         throw std::invalid_argument("circulant dimensions/shift");
-    std::unique_ptr<Impl> p(new Impl);p->grid=nx*ny;p->c=c;p->b=batches;
+    std::unique_ptr<Impl> p(new Impl);p->nx=nx;p->ny=ny;p->grid=nx*ny;p->c=c;p->b=batches;
     const size_t count=kernel.size();
     check(cudaMalloc(&p->inverse,count*sizeof(double2)));
     check(cudaMemcpy(p->inverse,kernel.data(),count*sizeof(double2),cudaMemcpyHostToDevice));
@@ -79,6 +79,36 @@ void BlockCirculantFFT::init(int nx,int ny,int c,int batches,const std::vector<C
     fftcheck(cufftPlanMany(&p->plan,2,dims,nullptr,1,p->grid,nullptr,1,p->grid,CUFFT_Z2Z,c*batches));
     fftcheck(cufftGetSize(p->plan,&p->work));
     p->bytes=(count+2*vectors)*sizeof(double2)+p->work;
+    impl.swap(p);
+}
+std::vector<BlockCirculantFFT::Complex> BlockCirculantFFT::inverse_kernel()const {
+    const auto& p=*impl;if(!p.plan)throw std::runtime_error("uninitialized circulant");
+    // Temporary RAII owner also handles failures while constructing the plan.
+    Impl temporary;const size_t count=size_t(p.c)*p.c*p.grid;
+    check(cudaMalloc(&temporary.inverse,count*sizeof(double2)));
+    check(cudaMemcpy(temporary.inverse,p.inverse,count*sizeof(double2),cudaMemcpyDeviceToDevice));
+    int dims[2]={p.nx,p.ny};
+    fftcheck(cufftPlanMany(&temporary.plan,2,dims,nullptr,1,p.grid,nullptr,1,p.grid,CUFFT_Z2Z,p.c*p.c));
+    fftcheck(cufftExecZ2Z(temporary.plan,temporary.inverse,temporary.inverse,CUFFT_INVERSE));
+    std::vector<Complex> kernel(count);
+    check(cudaMemcpy(kernel.data(),temporary.inverse,count*sizeof(double2),cudaMemcpyDeviceToHost));
+    for(auto& z:kernel)z/=p.grid;
+    return kernel;
+}
+void BlockCirculantFFT::init_inverse_kernel(int nx,int ny,int c,int batches,const std::vector<Complex>& kernel) {
+    if(nx<1 || ny<1 || c<1 || c>32 || batches<1 || kernel.size()!=size_t(c)*c*nx*ny)
+        throw std::invalid_argument("inverse circulant dimensions");
+    std::unique_ptr<Impl> p(new Impl);p->nx=nx;p->ny=ny;p->grid=nx*ny;p->c=c;p->b=batches;
+    const size_t count=kernel.size();check(cudaMalloc(&p->inverse,count*sizeof(double2)));
+    check(cudaMemcpy(p->inverse,kernel.data(),count*sizeof(double2),cudaMemcpyHostToDevice));
+    int dims[2]={nx,ny};
+    fftcheck(cufftPlanMany(&p->plan,2,dims,nullptr,1,p->grid,nullptr,1,p->grid,CUFFT_Z2Z,c*c));
+    fftcheck(cufftExecZ2Z(p->plan,p->inverse,p->inverse,CUFFT_FORWARD));
+    cufftDestroy(p->plan);p->plan=0;
+    const size_t vectors=size_t(c)*batches*p->grid;
+    check(cudaMalloc(&p->in,vectors*sizeof(double2)));check(cudaMalloc(&p->out,vectors*sizeof(double2)));
+    fftcheck(cufftPlanMany(&p->plan,2,dims,nullptr,1,p->grid,nullptr,1,p->grid,CUFFT_Z2Z,c*batches));
+    fftcheck(cufftGetSize(p->plan,&p->work));p->bytes=(count+2*vectors)*sizeof(double2)+p->work;
     impl.swap(p);
 }
 void BlockCirculantFFT::apply(const Complex* input,Complex* output) {

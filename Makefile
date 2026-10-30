@@ -331,8 +331,8 @@ clean:
 		$(BINDIR)/muller_tmatrix_fmm_server \
 		$(BINDIR)/muller_recycle_fmm_probe \
 		$(BINDIR)/muller_solver_fft_probe \
-		$(HOST_TEST_DIR)/block_circulant_fft_check $(HOST_TEST_DIR)/prism_circulant_layout_check $(HOST_TEST_DIR)/prism_circulant_blocks_check \
-		$(HOST_TEST_DIR)/global_coarse_inverse_check $(HOST_TEST_DIR)/prism_wave_basis_check \
+		$(HOST_TEST_DIR)/block_circulant_fft_check $(HOST_TEST_DIR)/block_circulant_symmetry_check $(HOST_TEST_DIR)/prism_circulant_layout_check $(HOST_TEST_DIR)/prism_circulant_blocks_check \
+		$(HOST_TEST_DIR)/global_coarse_inverse_check $(HOST_TEST_DIR)/prism_wave_basis_check $(HOST_TEST_DIR)/prism_face_coarse_check \
 		$(BINDIR)/fmm_vector_action_probe $(HOST_TEST_DIR)/p2p_shared_check \
 		$(BINDIR)/regular_face_fft_probe $(BINDIR)/regular_face_fft_fmm_probe \
 		$(BINDIR)/tmatrix_so3_mstm $(BINDIR)/tmatrix_so3_mstm_fp32 \
@@ -486,16 +486,34 @@ $(HOST_TEST_DIR)/prism_symmetry_sectors_check: tests/prism_symmetry_sectors_chec
 
 $(BINDIR)/muller_solver_fft_probe: $(SRCDIR)/streaming_sector_gmres.h
 $(HOST_TEST_DIR)/streaming_sector_gmres_check: tests/streaming_sector_gmres_check.cpp $(SRCDIR)/streaming_sector_gmres.h $(STREAMING_HOST_HEADERS)
-	$(CXX) -O3 -std=c++11 -I$(SRCDIR) $< -o $@
+	$(CXX) -O3 -fopenmp -std=c++11 -I$(SRCDIR) $< -o $@
 
 $(BINDIR)/prism_packet_rhs: tools/prism_packet_rhs.cpp $(SRCDIR)/tmatrix_rhs_assembly.h $(SRCDIR)/muller_nodal.cpp $(SRCDIR)/mesh.cpp
 	$(CXX) -O3 -march=native -fopenmp -std=c++11 -I$(SRCDIR) $(filter-out %.h,$^) -o $@
 
 $(BINDIR)/muller_solver_fft_probe: $(SRCDIR)/prism_symmetric_circulant.h
+$(BINDIR)/muller_solver_fft_probe: $(SRCDIR)/prism_vertical_inverse.h
 .PHONY: host-symmetry-check
 host-symmetry-check: $(HOST_TEST_DIR)/prism_symmetry_sectors_check $(HOST_TEST_DIR)/streaming_sector_gmres_check
 	OMP_NUM_THREADS=4 $(HOST_TEST_DIR)/prism_symmetry_sectors_check
-	$(HOST_TEST_DIR)/streaming_sector_gmres_check
+	OMP_NUM_THREADS=4 $(HOST_TEST_DIR)/streaming_sector_gmres_check
+	OMP_NUM_THREADS=4 $(HOST_TEST_DIR)/block_circulant_symmetry_check
+	OMP_NUM_THREADS=4 $(HOST_TEST_DIR)/prism_circulant_layout_check
+	OMP_NUM_THREADS=4 $(HOST_TEST_DIR)/prism_face_coarse_check
 
 $(BINDIR)/muller_tmatrix_fmm_server: $(SRCDIR)/prism_orbit_inverse.cpp $(SRCDIR)/prism_orbit_inverse.h $(SRCDIR)/prism_symmetry_sectors.h $(SRCDIR)/prism_symmetric_circulant.h $(SRCDIR)/prism_sector_solver.h $(SRCDIR)/streaming_sector_gmres.h
 $(HOST_TEST_DIR)/prism_symmetry_sectors_check: $(SRCDIR)/prism_sector_solver.h $(SRCDIR)/streaming_sector_gmres.h $(STREAMING_HOST_HEADERS)
+$(HOST_TEST_DIR)/prism_symmetry_sectors_check: $(SRCDIR)/prism_vertical_inverse.h
+$(BINDIR)/muller_tmatrix_fmm_server: $(SRCDIR)/prism_vertical_inverse.h
+
+$(BINDIR)/muller_tmatrix_fmm_server $(BINDIR)/muller_solver_fft_probe $(HOST_TEST_DIR)/prism_circulant_layout_check: $(SRCDIR)/prism_circulant_symmetry.h $(SRCDIR)/block_circulant_symmetry.h
+$(HOST_TEST_DIR)/prism_circulant_layout_check: $(SRCDIR)/prism_symmetry_sectors.h $(SRCDIR)/tmatrix_symmetry_warm_start.h
+$(HOST_TEST_DIR)/block_circulant_symmetry_check: tests/block_circulant_symmetry_check.cpp $(SRCDIR)/block_circulant_symmetry.h
+	$(CXX) -O3 -fopenmp -std=c++11 -I$(SRCDIR) $< -o $@
+host-symmetry-check: $(HOST_TEST_DIR)/block_circulant_symmetry_check $(HOST_TEST_DIR)/prism_circulant_layout_check
+
+$(HOST_TEST_DIR)/prism_face_coarse_check: tests/prism_face_coarse_check.cpp $(SRCDIR)/prism_face_coarse.h $(SRCDIR)/prism_circulant_layout.cpp $(SRCDIR)/prism_symmetry_sectors.h $(SRCDIR)/muller_nodal.cpp $(SRCDIR)/mesh.cpp
+	$(CXX) -O3 -march=native -fopenmp -std=c++11 -I$(SRCDIR) $(filter-out %.h,$^) -o $@
+
+$(BINDIR)/muller_solver_fft_probe: $(SRCDIR)/prism_face_coarse.h
+host-symmetry-check: $(HOST_TEST_DIR)/prism_face_coarse_check

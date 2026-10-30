@@ -12,6 +12,7 @@
 #include "prism_wave_basis.h"
 #include "streaming_polynomial_inverse.h"
 #include "prism_sector_solver.h"
+#include "prism_vertical_inverse.h"
 #include "prism_symmetric_circulant.h"
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -169,6 +170,24 @@ int main(int argc,char** argv) try {
     const bool device_solver=op.device_matvec_available();
     const char* sector_setting=std::getenv("BEM_TMATRIX_SECTOR_GMRES");
     const bool sector_solver=sector_setting && std::strcmp(sector_setting,"0")!=0;
+    const auto sector_integer=[](const char* name,int fallback,int maximum) {
+        const char* setting=std::getenv(name);if(!setting)return fallback;
+        char* end=nullptr;const long value=std::strtol(setting,&end,10);
+        if(end==setting || *end || value<0 || value>maximum)throw std::runtime_error(std::string("invalid ")+name);
+        return int(value);
+    };
+    const int sector_recycle_capacity=sector_integer("BEM_TMATRIX_SECTOR_RECYCLE_RANK",0,64);
+    const unsigned sector_recycle_mask=sector_integer("BEM_TMATRIX_SECTOR_RECYCLE_MASK",4095,4095);
+    const bool vertical_preconditioner=sector_integer("BEM_TMATRIX_VERTICAL_PRECONDITIONER",0,1)!=0;
+    double sector_first_pass_factor=0;
+    if(const char* value=std::getenv("BEM_SECTOR_FIRST_PASS_FACTOR")) {
+        char* end=nullptr;sector_first_pass_factor=std::strtod(value,&end);
+        if(end==value || *end || !std::isfinite(sector_first_pass_factor) || sector_first_pass_factor<0 ||
+           sector_first_pass_factor>64 || (sector_first_pass_factor && !sector_solver))
+            throw std::invalid_argument("sector first pass factor");
+    }
+    if(sector_recycle_capacity && !sector_solver)throw std::runtime_error("sector recycling requires sector GMRES");
+    if(vertical_preconditioner && !sector_solver)throw std::runtime_error("vertical inverse requires sector GMRES");
     const int orbit_nodes=std::getenv("BEM_TMATRIX_ORBIT_NODES")?std::stoi(std::getenv("BEM_TMATRIX_ORBIT_NODES")):50;
     if(sector_solver && (device_solver || shape!="prism" || !d6h_mesh || fft_inner || recycle_capacity || mbj_overlap || orbit_nodes<1 || orbit_nodes>512))
         throw std::runtime_error("sector GMRES requires the host D6h prism, orbit blocks 1..512, and no overlap/inner FFT/recycling");
@@ -181,6 +200,9 @@ int main(int argc,char** argv) try {
         std::printf("[sector solver] orbit_nodes=%d local_MiB=%.3f transform_MiB=%.3f\n",orbit_nodes,
             orbit_inverse.storage_bytes()/1048576.,symmetry_sectors.storage_bytes()/1048576.);
     }else mbj.build_cached(op,mbj_nodes,mbj_overlap,cache+".mbj");
+    // This optional accelerator stays in RAM between production packets.
+    // Column checkpoints are independent; a restarted worker relearns it.
+    bem_streaming::SectorRecycleSpace sector_recycle(symmetry_sectors.offsets,sector_recycle_capacity,sector_recycle_mask);
     const char* circ_setting=std::getenv("BEM_TMATRIX_CIRCULANT_BLEND");
     const double circ_blend=circ_setting?std::stod(circ_setting):0.;
     if(!std::isfinite(circ_blend) || circ_blend<0 || circ_blend>1)
@@ -192,12 +214,24 @@ int main(int argc,char** argv) try {
             throw std::runtime_error("circulant requires host GMRES and a regular D6h prism");
         const auto before=Clock::now();
         const double shift=std::getenv("BEM_CIRCULANT_SHIFT")?std::stod(std::getenv("BEM_CIRCULANT_SHIFT")):0;
+        const double opposite=std::getenv("BEM_CIRCULANT_OPPOSITE_WEIGHT")?std::stod(std::getenv("BEM_CIRCULANT_OPPOSITE_WEIGHT")):0;
+        const int opposite_mask=sector_integer("BEM_CIRCULANT_OPPOSITE_MASK",3,3);
         circulant.build(op.mesh,ref,[&](const Complex* a,Complex* b){op.matvec(a,b);},
-            [&](const Complex* a,Complex* b){if(sector_solver)orbit_inverse.apply(a,b);else mbj.apply(a,b);},shift);
+            [&](const Complex* a,Complex* b){if(sector_solver)orbit_inverse.apply(a,b);else mbj.apply(a,b);},shift,opposite,opposite_mask);
         circulant_seconds=seconds(before);
     }
     PrismSymmetricCirculant symmetric_circulant;
     if(sector_solver && circ_blend>0)symmetric_circulant.build(symmetry_orbit,circulant,orbit_inverse);
+    if(vertical_preconditioner && circ_blend>0) {
+        const auto before=Clock::now();
+        const bool prepared=symmetric_circulant.prepare_full_fft_symmetry(op.mesh);
+        circulant_seconds+=seconds(before);
+        std::printf("[circulant] native_full_D6h=%d setup_s=%.3f GPU_MiB=%.3f\n",int(prepared),seconds(before),circulant.storage_bytes()/1048576.);
+    }
+    PrismVerticalInverse vertical_inverse;
+    if(vertical_preconditioner)vertical_inverse.build(op.mesh,[&](const Complex* x,Complex* y){
+        if(circ_blend>0)symmetric_circulant.apply(x,y,circ_blend);else orbit_inverse.apply(x,y);
+    });
     const int wave_rank=std::getenv("BEM_TMATRIX_WAVE_RANK")?std::stoi(std::getenv("BEM_TMATRIX_WAVE_RANK")):0;
     if(wave_rank<0 || wave_rank>512 || wave_rank%4)throw std::runtime_error("wave rank must be 0..512, a multiple of four");
     if(sector_solver && wave_rank)throw std::runtime_error("sector GMRES does not support the wave coarse inverse");
@@ -265,10 +299,16 @@ int main(int argc,char** argv) try {
          <<",\"operator_setup_s\":"<<setup_seconds<<",\"mbj_setup_s\":"<<mbj_seconds
          <<",\"mbj_storage_mb\":"<<mbj.storage_megabytes()
          <<",\"sector_gmres\":"<<(sector_solver?"true":"false")<<",\"orbit_nodes\":"<<(sector_solver?orbit_nodes:0)
+         <<",\"sector_recycle_capacity\":"<<sector_recycle_capacity<<",\"sector_recycle_mask\":"<<sector_recycle_mask
+         <<",\"sector_recycle_disk_checkpoint\":false"
+         <<",\"sector_first_pass_factor\":"<<sector_first_pass_factor
+         <<",\"vertical_preconditioner\":"<<(vertical_preconditioner?"true":"false")
          <<",\"orbit_storage_mib\":"<<orbit_inverse.storage_bytes()/1048576.
          <<",\"fast_fft_patch_orbits\":"<<(symmetric_circulant.fast_patch_orbits()?"true":"false")
+         <<",\"native_full_fft_symmetry\":"<<(symmetric_circulant.full_fft_symmetry()?"true":"false")
          <<",\"circulant_blend\":"<<circ_blend<<",\"circulant_setup_s\":"<<circulant_seconds
          <<",\"circulant_storage_mib\":"<<circulant.storage_bytes()/1048576.
+         <<",\"opposite_face_weight\":"<<circulant.opposite_weight()<<",\"opposite_face_mask\":"<<circulant.opposite_mask()
          <<",\"wave_coarse_rank\":"<<wave.rank()<<",\"wave_coarse_setup_s\":"<<wave_seconds
          <<",\"wave_coarse_storage_mib\":"<<wave.storage_bytes()/1048576.
          <<",\"mbj_overlap\":"<<mbj_overlap
@@ -329,10 +369,11 @@ int main(int argc,char** argv) try {
             const bem_streaming::Action action=[&](const Complex* x,Complex* y){op.matvec(x,y);};
             const bem_streaming::Action strict=[&](const Complex* x,Complex* y){op.matvec_strict(x,y);};
             const bem_streaming::Action inverse=[&](const Complex* x,Complex* y){
-                if(sector_solver){if(circ_blend>0)symmetric_circulant.apply(x,y,circ_blend);else orbit_inverse.apply(x,y);}
+                if(sector_solver){if(symmetric_circulant.full_fft_symmetry())symmetric_circulant.apply_full_fft_symmetry(x,y,circ_blend);else if(vertical_preconditioner)vertical_inverse.apply(x,y);else if(circ_blend>0)symmetric_circulant.apply(x,y,circ_blend);else orbit_inverse.apply(x,y);}
                 else if(fft_inner)fft_inverse->solve(x,y,.1);else if(wave_rank)wave.apply(x,y);else if(circ_blend>0)circulant.apply(x,y,circ_blend);else mbj.apply(x,y);};
             const auto x=sector_solver?bem_tmatrix::solve_prism_sectors(action,strict,inverse,symmetry_sectors,
-                rhs[0].data(),solution[0].data(),restart,tol,maxiter):
+                rhs[0].data(),solution[0].data(),restart,tol,maxiter,false,true,
+                operation==3 && sector_recycle_capacity?&sector_recycle:nullptr):
                 bem_streaming::gmres(action,strict,inverse,rhs[0].data(),solution[0].data(),n,restart,tol,maxiter,
                 true,false,fft_inner?nullptr:&recycle,operation==3,fft_inner>0);
             // Operation 3 is reserved for production packets. Independent
@@ -344,7 +385,8 @@ int main(int argc,char** argv) try {
                 std::fflush(stdout);
             }
             const auto y=sector_solver?bem_tmatrix::solve_prism_sectors(action,strict,inverse,symmetry_sectors,
-                rhs[1].data(),solution[1].data(),restart,tol,maxiter,warm.fitted):
+                rhs[1].data(),solution[1].data(),restart,tol,maxiter,warm.fitted,true,
+                operation==3 && sector_recycle_capacity?&sector_recycle:nullptr):
                 bem_streaming::gmres(action,strict,inverse,rhs[1].data(),solution[1].data(),n,restart,tol,maxiter,
                 true,warm.fitted,fft_inner?nullptr:&recycle,operation==3,fft_inner>0);
             recycle_update_seconds=x.recycle_seconds+y.recycle_seconds;
@@ -380,9 +422,9 @@ int main(int argc,char** argv) try {
               <<",\"host_iterations_x\":"<<iterations_x<<",\"host_iterations_y\":"<<iterations_y
               <<",\"host_strict_checks_x\":"<<strict_checks_x<<",\"host_strict_checks_y\":"<<strict_checks_y
               <<",\"host_deferred_strict_checks_x\":"<<deferred_checks_x<<",\"host_deferred_strict_checks_y\":"<<deferred_checks_y
-              <<",\"krylov_recycle_used\":"<<(operation==3 && recycle_capacity>0?"true":"false")
-              <<",\"krylov_recycle_rank\":"<<recycle.rank()
-              <<",\"krylov_recycle_gib\":"<<recycle.storage_gib()
+              <<",\"krylov_recycle_used\":"<<(operation==3 && (recycle_capacity>0 || sector_recycle_capacity>0)?"true":"false")
+              <<",\"krylov_recycle_rank\":"<<(sector_solver?sector_recycle.rank():recycle.rank())
+              <<",\"krylov_recycle_gib\":"<<(sector_solver?sector_recycle.storage_gib():recycle.storage_gib())
               <<",\"krylov_recycle_update_s\":"<<recycle_update_seconds
               <<",\"krylov_recycle_checkpoint_s\":"<<recycle_checkpoint_seconds
               <<",\"symmetry_warm_start_fitted\":"<<(warm.fitted?"true":"false")

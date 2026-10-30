@@ -1,0 +1,54 @@
+[
+  {
+    "name": "blend05_uncoupled",
+    "rank": 16,
+    "restart": 64,
+    "strict_interval": 2,
+    "weight": 0.0,
+    "mask": 3,
+    "blend": 0.5,
+    "seconds": 84.207121859,
+    "iterations": [
+      106,
+      0,
+      60,
+      0
+    ],
+    "strict_checks": 6,
+    "maximum_field_relative_l2": 2.9524372574984664e-06,
+    "binary_sha256": "bd20157d41a6d83b9fb69cfd07f2b81c891750000541141b80c9dd23803f4d51",
+    "symmetry_check": {
+      "method": "native_full_fft_symmetry_check",
+      "error": 1.7349264509420146e-16,
+      "generator_defect": 1.4963230382588182e-16,
+      "old_inverse_s": 0.0189549312,
+      "native_inverse_s": 0.008392456199999999
+    }
+  },
+  {
+    "name": "blend05_coupled",
+    "rank": 16,
+    "restart": 64,
+    "strict_interval": 2,
+    "weight": 1.0,
+    "mask": 3,
+    "blend": 0.5,
+    "seconds": 84.06391341199999,
+    "iterations": [
+      106,
+      0,
+      59,
+      0
+    ],
+    "strict_checks": 6,
+    "maximum_field_relative_l2": 2.8624739978491816e-06,
+    "binary_sha256": "bd20157d41a6d83b9fb69cfd07f2b81c891750000541141b80c9dd23803f4d51",
+    "symmetry_check": {
+      "method": "native_full_fft_symmetry_check",
+      "error": 1.8859163676286941e-16,
+      "generator_defect": 1.545326605718493e-16,
+      "old_inverse_s": 0.0233442584,
+      "native_inverse_s": 0.0084763258
+    }
+  }
+]

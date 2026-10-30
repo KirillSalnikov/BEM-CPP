@@ -37,6 +37,8 @@ class LargeRunTest(unittest.TestCase):
                  patch.object(runner,'run',return_value={'state':'complete'}) as stage:
                 self.assertEqual(runner.main(),0)
             plan=json.loads((Path(temp)/'plan.json').read_text())
+            self.assertEqual(stage.call_count,1)
+            self.assertNotIn('--max-pairs-this-run',stage.call_args.args[0])
             for command in (plan['command'],plan['resume_command']):
                 self.assertEqual(command[command.index('--solver-restart-from')+1],str(source.resolve()))
                 self.assertEqual(command[command.index('--solver-restart-proof')+1],str(proof.resolve()))
@@ -99,7 +101,10 @@ class LargeRunTest(unittest.TestCase):
 
     def test_sector_solver_survives_frozen_launch_and_resume(self):
         with tempfile.TemporaryDirectory() as temp:
-            args=['runner','--out',temp,'--order','4','--sector-gmres','--orbit-nodes','100','--circulant-blend','.25']
+            args=['runner','--out',temp,'--order','4','--sector-gmres','--orbit-nodes','100','--circulant-blend','.25',
+                  '--sector-recycle-rank','8','--sector-recycle-mask','130','--vertical-preconditioner',
+                  '--opposite-face-weight','.5','--opposite-face-mask','2',
+                  '--inner-local-coordinates','--sector-projected-factor','.25','--sector-first-pass-factor','8']
             with patch.object(sys,'argv',args), patch.object(runner,'frozen_runtime'), \
                  patch.object(runner.shutil,'disk_usage',return_value=SimpleNamespace(free=1024*2**30)), \
                  patch.object(runner.psutil,'virtual_memory',return_value=SimpleNamespace(available=60*2**30)), \
@@ -111,6 +116,25 @@ class LargeRunTest(unittest.TestCase):
             self.assertEqual(plan['resume_command'][plan['resume_command'].index('--orbit-nodes')+1],'100')
             self.assertEqual(stage.call_args.kwargs['env']['BEM_TMATRIX_SECTOR_GMRES'],'1')
             self.assertEqual(stage.call_args.kwargs['env']['BEM_TMATRIX_ORBIT_NODES'],'100')
+            self.assertEqual(stage.call_args.kwargs['env']['BEM_TMATRIX_SECTOR_RECYCLE_RANK'],'8')
+            self.assertEqual(stage.call_args.kwargs['env']['BEM_TMATRIX_SECTOR_RECYCLE_MASK'],'130')
+            self.assertEqual(plan['parameters']['sector_recycle_rank'],8)
+            self.assertEqual(plan['resume_command'][plan['resume_command'].index('--sector-recycle-rank')+1],'8')
+            self.assertEqual(plan['resume_command'][plan['resume_command'].index('--sector-recycle-mask')+1],'130')
+            self.assertIn('--vertical-preconditioner',plan['resume_command'])
+            self.assertIn('--inner-local-coordinates',plan['resume_command'])
+            self.assertEqual(plan['resume_command'][plan['resume_command'].index('--sector-projected-factor')+1],'0.25')
+            self.assertEqual(stage.call_args.kwargs['env']['BEM_TMATRIX_VERTICAL_PRECONDITIONER'],'1')
+            self.assertEqual(stage.call_args.kwargs['env']['BEM_FMM_P2P_LOCAL_COORDINATES'],'1')
+            self.assertEqual(stage.call_args.kwargs['env']['BEM_SECTOR_PROJECTED_FACTOR'],'0.25')
+            self.assertEqual(stage.call_args.kwargs['env']['BEM_SECTOR_FIRST_PASS_FACTOR'],'8.0')
+            self.assertEqual(plan['parameters']['sector_first_pass_factor'],8.)
+            self.assertEqual(plan['resume_command'][plan['resume_command'].index('--sector-first-pass-factor')+1],'8.0')
+            self.assertEqual(stage.call_args.kwargs['env']['BEM_CIRCULANT_OPPOSITE_WEIGHT'],'0.5')
+            self.assertEqual(stage.call_args.kwargs['env']['BEM_CIRCULANT_OPPOSITE_MASK'],'2')
+            self.assertEqual(plan['parameters']['opposite_face_weight'],.5)
+            self.assertEqual(plan['resume_command'][plan['resume_command'].index('--opposite-face-weight')+1],'0.5')
+            self.assertEqual(plan['resume_command'][plan['resume_command'].index('--opposite-face-mask')+1],'2')
             log=Path(temp)/'worker.log'
             log.write_text('[T host GMRES 12] projected 1e-5 elapsed_s=12.000\n'
                            '[T sector GMRES 1] projected 0.1 elapsed_s=1.000\n'
@@ -144,6 +168,20 @@ class LargeRunTest(unittest.TestCase):
                 self.assertEqual(stage.call_args_list[0].kwargs['env']['BEM_HOST_GMRES_STRICT_INTERVAL'], '4')
                 self.assertNotIn('BEM_TMATRIX_RECYCLE_RANK', stage.call_args_list[0].kwargs['env'])
                 if state=='complete': self.assertNotIn('--max-pairs-this-run', stage.call_args_list[1].args[0])
+
+    def test_checkpoint_resume_keeps_one_worker_and_its_audits(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base=Path(temp)/'main_ref6_L4';(base/'columns').mkdir(parents=True)
+            (base/'manifest.json').write_text('{}');(base/'columns/0.npy').write_bytes(b'validated by builder')
+            args=['runner','--out',temp,'--order','4','--ref','6']
+            with patch.object(sys,'argv',args),patch.object(runner,'frozen_runtime'), \
+                 patch.object(runner.shutil,'disk_usage',return_value=SimpleNamespace(free=1024*2**30)), \
+                 patch.object(runner.psutil,'virtual_memory',return_value=SimpleNamespace(available=60*2**30)), \
+                 patch.object(runner,'run',return_value={'state':'complete'}) as stage:
+                self.assertEqual(runner.main(),0)
+            self.assertEqual(stage.call_count,1)
+            self.assertNotIn('--max-pairs-this-run',stage.call_args.args[0])
+            self.assertIsNone(stage.call_args.kwargs['wall_limit_s'])
 
 
 if __name__ == '__main__': unittest.main()

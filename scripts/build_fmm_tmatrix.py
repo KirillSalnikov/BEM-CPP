@@ -467,7 +467,8 @@ def main():
                 # both solutions still have to pass the full strict residual.
                 operation=3 if (kind in ('packed','packed_rotation') and
                                 (hello.get('symmetry_warm_start',False) or
-                                 hello.get('krylov_recycle_capacity',0)>0)) else 1
+                                 hello.get('krylov_recycle_capacity',0)>0 or
+                                 hello.get('sector_recycle_capacity',0)>0)) else 1
                 connection.sendall(struct.pack('=i',operation))
                 connection.sendall(memoryview(fields).cast('B'))
                 # sendall has consumed this buffer; the producer can refill it

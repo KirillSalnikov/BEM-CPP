@@ -9,7 +9,13 @@ from tmatrix_symmetry import c2x_plan, c2x_partner_column
 
 SOLVER_ENV = {'BEM_TMATRIX_WAVE_RANK','BEM_TMATRIX_MBJ_OVERLAP','BEM_TMATRIX_MBJ_NODES','BEM_TMATRIX_FFT_INNER',
               'BEM_TMATRIX_CIRCULANT_BLEND','BEM_CIRCULANT_SHIFT','BEM_TMATRIX_FFT_RADIUS','BEM_PFFT_CORR_MEMORY',
-              'BEM_HOST_GMRES_STRICT_INTERVAL','BEM_TMATRIX_SECTOR_GMRES','BEM_TMATRIX_ORBIT_NODES'}
+              'BEM_HOST_GMRES_STRICT_INTERVAL','BEM_TMATRIX_SECTOR_GMRES','BEM_TMATRIX_ORBIT_NODES',
+              'BEM_TMATRIX_SECTOR_RECYCLE_RANK','BEM_TMATRIX_SECTOR_RECYCLE_MASK',
+              'BEM_TMATRIX_VERTICAL_PRECONDITIONER','BEM_SECTOR_PROJECTED_FACTOR',
+              'BEM_SECTOR_FIRST_PASS_FACTOR',
+              'BEM_CIRCULANT_OPPOSITE_WEIGHT','BEM_CIRCULANT_OPPOSITE_MASK',
+              # Only the FP32 near kernel reads this; the strict action is unchanged.
+              'BEM_FMM_P2P_LOCAL_COORDINATES'}
 LOCATION_ENV = {'BEM_SO3_TMPDIR','BEM_SO3_BINARY_FP32','BEM_SO3_BINARY_FP64'}
 
 def digest(path):
@@ -20,7 +26,9 @@ def atomic_json(path,data):
     tmp.write_text(json.dumps(data,indent=2)+'\n');tmp.replace(path)
 
 def physical_parameters(parameters):
-    result={k:v for k,v in parameters.items() if k not in ('binary_digest','c6_driver_digest','incident_schedule_digest')}
+    # Restart changes the Krylov basis length, not the equation or its
+    # acceptance tolerance. A validated solver migration still repeats audits.
+    result={k:v for k,v in parameters.items() if k not in ('binary_digest','c6_driver_digest','incident_schedule_digest','restart')}
     result['BEM_environment']={k:v for k,v in result.get('BEM_environment',{}).items()
                                if k not in SOLVER_ENV | LOCATION_ENV}
     return result

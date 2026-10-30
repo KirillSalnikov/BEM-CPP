@@ -332,6 +332,281 @@ requires fresh coded audits. The ka=40 handover retained 2388 columns and
 114 packed receipts, with no wall-time limit; its validation proof is in
 `benchmarks/symmetry_solver_20261029/migration_proof.json`.
 
+## Sector recycling and restart controls (2026-10-30)
+
+`--sector-recycle-rank K` retains a separate GCRO space in each enabled
+symmetry sector of the fixed right-preconditioned operator. Harmonic Ritz
+directions are extracted from the unrotated Arnoldi relation without extra
+FMM calls. `RecycleSpace::learn_strided` reads each sector directly from the
+shared basis, avoiding a second restart-sized allocation. The optional
+`--sector-recycle-mask` selects sectors; its default 4095 enables all twelve.
+
+Recycled images approximate the mixed operator. A small coarse residual
+therefore triggers the original strict action; if that check fails, the
+solver disables coarse projection for the remainder of that RHS and corrects
+the full residual. Every accepted solution still passes the same FP64
+tolerance. Independent columns and phase-code audits remain cold. The space
+is retained in worker RAM across production packets and relearned after a
+worker restart; the existing T-column checkpoints are unaffected.
+
+On ref5 ka=40, n=1.3116, aspect 10/7, two successive 12-mode packets at degrees
+36 and 38, including both phase codes and all training costs:
+
+| restart | recycled directions per sector | packet 36 seconds | packet 38 seconds |
+|---|---|---|---|
+| 64 | 0 | 59.60 | 60.93 |
+| 32 | 8 | 57.49 | 49.26 |
+| 64 | 8 | 56.00 | 48.86 |
+| 64 | 16 | 54.26 | 43.61 |
+
+The rank-16 screening candidate used 115/85 mixed actions, compared with
+126/130 for plain sector GMRES(64). Its maximum far-field relative L2
+difference from that control was 4.07e-6 and its maximum strict residual
+1.256e-6, below the unchanged 2e-6 gate. These are linear-solver controls,
+not a mesh/truncation convergence certificate. Reproduction scripts and
+machine-readable screening results are in
+`benchmarks/sector_recycle_20261030/`.
+
+The actual persistent worker comparison on the full ref6 mesh (1,032,192
+unknowns) retained the same fields, projection directions, operator and
+2e-6 strict tolerance:
+
+| configuration | packet 36 seconds | packet 38 seconds | total seconds |
+|---|---|---|---|
+| sector GMRES(32), no recycling | 205.984 | 209.666 | 415.650 |
+| sector GMRES(64), rank 16 per sector | 175.471 | 143.671 | 319.142 |
+
+This is 23.2% less solve time for the two-packet sequence, including cold
+training and both phase-code checks. The mixed action counts were 156/160
+before and 124/93 after. The maximum far-field relative L2 difference was
+4.87e-6. Each packet still used three strict actions: two on the first code
+and one to accept the symmetry-derived second code. The recycled vectors
+occupy 504 MiB; increasing restart 32 to 64 adds another 504 MiB. Measured
+peak RSS of the same validation harness rose from 6.97 to 8.29 GiB, including
+temporary extraction buffers. Full T-builder memory includes additional
+incident-field/projection storage. These measurements do not extrapolate
+the same speedup to every remaining packet or another size.
+
+The diagnostic `sector_orbit_circ_vertical` completes the commuting-group
+inverse to D6h by averaging its two cosets under a vertical reflection.
+It applies the original inverse twice and is not enabled by default.
+`vertical_symmetry_circ` measures the operator and preconditioner defects
+for that extra generator. CPU tests verify the involution, the dihedral
+generator relation, and preservation of rotation and horizontal reflection.
+The production option is `--vertical-preconditioner`. On the ref5 diagnostic
+the inverse's vertical equivariance defect fell from 0.19337 to zero at
+floating-point precision; the strict physical operator defect was 2.05e-7.
+This is a preconditioner symmetry diagnostic, separate from solution error.
+
+The full-ref6 persistent worker with rank 16, restart 64 and this D6h inverse
+took 186.142/126.205 seconds on the same two packets: 312.348 seconds total,
+24.85% less than the original sector-GMRES(32) control. Mixed action counts
+were 123/67, maximum far-field relative L2 difference 4.94e-6 and maximum
+strict residual 1.067e-6. The first cold packet costs more than recycling
+alone, while the second packet benefits from the fully symmetric inverse.
+Peak RSS in the same validation harness was 8.32 GiB versus 6.97 GiB for the
+control. `target_validation.json` records the selected executable and results.
+
+FP64-count experiments kept the original acceptance tolerance. Local near
+coordinates alone retained six strict actions for two packets. Combining
+local coordinates with a tighter projected factor .25 accepted the first
+code earlier in the strict correction sequence, but its near-tolerance
+residual then required correction of the symmetry-derived second code.
+With the same warm-guess correction as the worker, the total remained six
+strict actions and took 96.15 seconds on ref5, versus 90.90 seconds with the
+standard .5 factor and the D6h inverse. These precision options were left
+disabled in the resumed production run. The initial cold-fallback diagnostic
+is excluded from comparisons; the `workerlike` rerun matches worker behavior.
+
+The ka=40 handover retained all 2388 verified columns and 114 packet receipts.
+It uses restart 64, rank 16 in all twelve sectors, the full D6h inverse,
+the original 2e-6 acceptance gate, fresh coded audits and analytic full-SO3
+averaging. No wall-clock limit was introduced. Evidence and the reproducible
+launcher are in `benchmarks/sector_recycle_20261030/`.
+
+## Native full-D6h FFT inverse (2026-10-30)
+
+The full inverse previously averaged two vertical-reflection cosets at
+application time. Together with the cap rotation average, each application
+needed two side-bank and twelve cap-bank FFT actions. The new path prepares
+the group average of the **inverse convolution kernel** once, then applies
+each bank once. It retains the two local-block actions and the correctly
+transformed coverage mask. Averaging the forward symbol and then inverting
+would be a different preconditioner and is deliberately not used here.
+
+`PrismCirculantSymmetry` verifies every covered DOF, channel sign, affine
+grid permutation and zero-extension mask. Side rotation/reflection maps
+preserve the shared symbol. Cap rotations and vertical mirrors induce signed
+affine channel permutations; both caps must share the same conjugation.
+If the structural proof fails, the worker keeps the explicit group average.
+Equation and current reflection signs are different and are audited separately.
+
+CPU tests compare kernel averaging with explicit signed group actions and
+check the D6 group identities on ref2/3/5 meshes with two aspect ratios.
+CUDA tests export/reload inverse kernels, including rectangular grids and
+adjoint actions. On actual ref5/ref6 BEM systems, native versus explicit
+full-inverse action differs by at most 1.26e-16; the defects under rotation,
+horizontal reflection and vertical reflection are at most 1.03e-16.
+Alternating ten applications of each path measured:
+
+| Mesh | Unknowns | Explicit D6h inverse | Native D6h inverse |
+|---|---:|---:|---:|
+| ref5 | 258,048 | 19.42 ms | 8.73 ms |
+| ref6 | 1,032,192 | 68.58 ms | 32.66 ms |
+
+These are preconditioner timings, not full-solver speedups. The extra
+prepared inverse bank uses 48 MiB of GPU memory on ref6 (12 MiB on ref5).
+The persistent full-ref6 worker took 306.00 s for degree36/38 coded packets,
+versus 312.35 s for the explicit D6h average (2.03% less solve time). This
+is a two-packet comparison, not a long-run throughput guarantee. All six
+strict FP64 checks were retained; no residual acceptance gate was relaxed.
+Measurements and the full-worker validation are in
+`benchmarks/fft_symmetry_20261030/` and `runs/fft_symmetry_20261030/`.
+
+Checkpoint continuations now enter the full persistent worker directly.
+The former one-pair pilot could stop halfway through a coded audit and
+discard both its reference solution and its recycle basis before launching
+the full worker. Fresh runs retain the pilot. Migration proof validation,
+coded audits after an executable change, strict FP64 residual gates and
+resource monitoring remain in the builder/full stage.
+
+## Opposite-face spectral blocks (2026-10-30)
+
+The optional `--opposite-face-weight W` couples each side patch to the
+aligned patch on the opposite face and couples the top/bottom caps.
+`--opposite-face-mask 1/2/3` selects sides/caps/both. The default weight is
+zero. These are solver-only controls and survive frozen launches/resumes;
+checkpoint migration still requires a validated worker and fresh coded audits.
+
+The original kernel sampling already computes each source's field on the
+entire boundary. Sampling the opposite patch from the same output adds
+the cross-face kernel X without additional FMM actions. Corresponding
+tangential axes and zero-extension masks must match. The side pairing
+reverses the lateral half index on the opposite face; simply taking a
+180-degree rotated patch would not align the translation lattice.
+
+An orthonormal sum/difference transform reduces the periodic block system
+`[[D, W X], [W X, D]]` to two 12-channel symbols, `D + W X` and `D - W X`.
+Both are inverted once. Forward and adjoint applications use the same real
+orthonormal pair transform. The cap inverse kernels are averaged over D6h
+after inversion, separately in the two parity sectors. Structural tests
+require the symmetry generators to preserve pairing and parity, in addition
+to the existing channel/grid/mask checks. The original full physical FMM
+operator, incident fields and strict residual tolerance are unchanged.
+
+Tests compare the two parity inverses with an independent full 24-channel
+inverse using complex, noncommuting self/cross kernels and multiple pairs.
+The largest forward/adjoint difference was below 5e-16. Mesh tests check
+actual opposite-reflection DOF maps on ref2/3/5 for two aspect ratios.
+Real packet timing and field comparisons are recorded in
+`benchmarks/opposite_faces_20261030/` and `runs/opposite_faces_20261030/`.
+
+On ref5, side-only, cap-only and combined coupling did not reduce iterations:
+the two packets used 114/63 mixed actions, versus 114/62 without coupling.
+The persistent full-ref6 comparison confirmed no useful acceleration:
+290.910 s without coupling versus 291.375 s with both banks coupled, with
+identical 123/67 action counts and six strict checks. The maximum far-field
+relative L2 difference was 2.063e-6. Coupling therefore remains disabled for
+production. The side blocks connect aligned opposite patches, not all
+cross-quarter interactions of the two entire faces. The interrupted
+half-weight run is archived and excluded from complete timing comparisons.
+
+Increasing the recycled space is not automatically beneficial. With restart
+64, ref5 rank 32 took 86.590 s (112/60 actions), versus 88.602 s for rank 16
+(114/62). Rank 64 took 89.124 s, and rank 32 with restart 128 took 89.726 s.
+On the actual full-ref6 worker, rank 32 regressed to 315.448 s (120/92 actions)
+versus 290.910 s for rank 16 (123/67). The recycled cache also doubled from
+0.492 to 0.984 GiB. Production selection therefore uses the full-mesh result.
+
+The probe now accepts `BEM_PROBE_SYMMETRIC_CIRCULANT_BLEND`, including in its
+native-versus-explicit D6h checks. Ref5 weight 0.5 with rank 16 took 84.207 s
+(106/60 actions) without opposite coupling and 84.064 s (106/59) with it.
+That one-action difference does not justify coupling; full-mesh validation
+uses the uncoupled inverse. Every case retained all six strict checks.
+
+## Earlier first strict correction (2026-10-30)
+
+`--sector-first-pass-factor F` optionally stops the first mixed inner pass
+at `F * tolerance` and then evaluates the original FP64 residual. After that
+first evaluation, the original tight projected target is restored for every
+correction. Zero, the default, preserves the previous algorithm. The upper
+bound is 64. This control does not change the acceptance tolerance, the
+physical operator, or the final check of the symmetry-derived second code.
+It adds no vector storage or extra operator sampling.
+
+The intent is to avoid spending many mixed iterations below the useful
+accuracy of that operator before the inevitable strict correction. It is
+an empirical tuning control: an earlier correction can also cost extra
+strict actions, so the complete persistent-worker time must improve.
+Unit tests include a two-dimensional diagonal problem whose first coarse
+pass must be rejected by the strict gate, mixed nonnormal systems, recycled
+spaces and cross-sector perturbations. Frozen-launch/resume and migration
+tests retain the new solver-only control. Full-mesh timing and far-field
+comparisons are in `benchmarks/opposite_faces_20261030/first_pass_validation.json`.
+
+The full-ref6 comparison isolated the two controls:
+
+| FFT blend | First-pass factor | Mixed actions, packets 36/38 | Solve seconds |
+|---|---|---|---:|
+| 0.25 | default | 123 / 67 | 290.910 |
+| 0.50 | 8 | 112 / 71 | 282.627 |
+| 0.50 | default | 115 / 64 | 279.644 |
+
+The selected configuration uses FFT blend 0.5 and the original first-pass
+target: 3.87% less time on these two full worker packets. All six strict
+checks remain. These measurements include training and symmetry warm starts,
+but are not a guarantee for every subsequent packet. The new first-pass
+control remains available and disabled by default. The main ka=40 run was
+resumed in `runs/ka40_n1p3116_l0p532_aspect10over7_fft_blend_20261030/`, with
+all 2,412 column hashes / 115 packet receipts verified and full analytic
+SO(3) averaging retained. No wall-time limit was set.
+
+## Two-level face block Jacobi experiment (2026-10-30)
+
+`PrismFaceCoarseBasis` adds 312 constant lattice-channel aggregates on the
+26 FFT patches. The aggregates have disjoint support and unit norm. Their
+span is closed under all D6h generators, with separate equation/current
+reflection parity. Sampling one column per group orbit requires 16 full
+mixed FMM actions. Stabilizer projection followed by signed transport
+defines an equivariant coarse approximation, including its response on
+interface rows outside the aggregate supports. This approximation belongs
+only to the preconditioner; the physical action and strict checks are unchanged.
+
+`DisjointCoarseInverse` applies
+`P = B + (V - B A_c V) (V* A_c V)^-1 V*`, where B is the existing native
+D6h FFT/local inverse and A_c denotes the sampled coarse approximation.
+The basis V is implicit, so projection costs O(N) and only the update
+`V - B A_c V` is stored densely on the GPU. There are no additional FMM
+actions per application. Storage is 1,232.44 MiB on ref5, approximately
+4.81 GiB on ref6, instead of storing both dense V and the updates.
+
+CPU tests cover ref2/3/5 and two aspect ratios, including a deliberately
+non-equivariant source action and stabilizer reconstruction. CUDA tests
+compare the implicit implementation against the independent dense-V path
+on a complex nonnormal system, including damping and aliasing. On the real
+ref5 problem, the coarse exactness error was 7.82e-18 and the maximum D6h
+generator defect was 1.61e-16.
+
+The diagnostic method is `sector_orbit_circ_vertical_native_face_coarse`;
+`face_coarse_check` checks its identities and
+`BEM_PROBE_FACE_COARSE_WEIGHT` controls the correction weight. For the same
+ka=40, n=1.3116, aspect 10/7, degree36/38 packets, rank16 recycling and FFT
+blend 0.5:
+
+| Coarse correction | Mixed actions | Solve seconds | Extra setup seconds |
+|---|---|---:|---:|
+| disabled | 106 / 60 | 84.207 | 0 |
+| weight 1 | 106 / 60 | 84.706 | 7.920 |
+| weight 0.5 | 105 / 60 | 84.428 | 7.915 |
+
+Both corrected solves passed the unchanged strict gate and matched the
+control far fields to at most 1.20e-6 relative L2. Neither configuration
+provided a useful speedup, so the coarse correction remains diagnostic;
+it was not enabled in the production worker. The full ka=40 run resumed
+unchanged from 2,526 columns / 120 committed packets. Source, tests and
+measurements are in `benchmarks/face_coarse_20261030/` and
+`runs/face_coarse_20261030/`.
+
 ## Research basis and remaining candidates
 
 [Embree et al. (2025)](https://arxiv.org/abs/2502.18317) motivate reusable

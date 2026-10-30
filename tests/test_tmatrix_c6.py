@@ -88,6 +88,18 @@ class AlgebraTest(unittest.TestCase):
 
 
 class StreamingCPU(unittest.TestCase):
+    def test_sector_recycling_does_not_warm_independent_audits(self):
+        self.env['BEM_TMATRIX_SECTOR_RECYCLE_RANK']='8'
+        self.run_builder('sector_recycle',['--c2-reuse','--c6-pack','--mirror-pack'])
+        report=json.loads((self.directory/'sector_recycle/summary.json').read_text())
+        self.assertEqual(report['operator']['sector_recycle_capacity'],8)
+        self.assertEqual(report['operator']['krylov_recycle_capacity'],0)
+        pairs=report['pairs_this_run']
+        self.assertTrue(any(p['rhs_kind']=='audit' for p in pairs))
+        self.assertTrue(any(p['rhs_kind']=='packed' for p in pairs))
+        for pair in pairs:
+            self.assertEqual(pair['received_operation'],3 if pair['rhs_kind'] in ('packed','packed_rotation') else 1)
+
     def test_recycle_only_requested_for_production_and_bound_to_manifest(self):
         self.env['BEM_TMATRIX_RECYCLE_RANK']='16'
         self.run_builder('recycle',['--c2-reuse','--c6-pack','--mirror-pack'])
