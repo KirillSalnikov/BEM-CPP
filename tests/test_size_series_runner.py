@@ -5,6 +5,7 @@ import sys
 import tempfile
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
 import run_size_series as runner
@@ -38,10 +39,22 @@ class SizeSeriesTest(unittest.TestCase):
                 (dest/'summary.json').write_text(json.dumps({'complete':False,'pairs_this_run':[{'total_worker_s':100}]*4}))
                 return {'state':'complete'}
             try:
-                with patch.object(runner,'run',side_effect=fake_run) as run:
+                with patch.object(runner,'run',side_effect=fake_run) as run, \
+                     patch.object(runner.shutil,'disk_usage',return_value=SimpleNamespace(free=1024*2**30)):
                     with self.assertRaises(runner.Deferred):series.build(10,3,21)
                     self.assertEqual(run.call_count,1)
                 self.assertFalse(runner.read(out/'ka10_ref3_L21'/'summary.json')['complete'])
+            finally:series.done.set();series.thread.join()
+
+    def test_disk_reserve_prevents_new_solver(self):
+        with tempfile.TemporaryDirectory() as directory:
+            series=runner.Series(Path(directory),{'deadline_unix':time.time()+1000,'ri':1.3116})
+            try:
+                with patch.object(runner.shutil,'disk_usage',return_value=SimpleNamespace(free=20*2**30)), \
+                     patch.object(runner,'run') as run:
+                    with self.assertRaisesRegex(runner.EndSeries,'disk reserve reached'):
+                        series.build(10,3,21)
+                    run.assert_not_called()
             finally:series.done.set();series.thread.join()
 
     def test_deadline_prevents_new_solver(self):
