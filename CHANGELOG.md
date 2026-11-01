@@ -5,6 +5,9 @@ Semantic Versioning while its public interfaces are stabilizing.
 
 ## Unreleased
 
+- Fix CPU-only build recipes that omitted the existing CUDA-header fallback;
+  host tests now compile with the repository stubs when CUDA is absent.
+
 ## [1.0.0] - 2026-11-01
 
 ### T matrices and multisize workflow
