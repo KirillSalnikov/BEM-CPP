@@ -35,6 +35,7 @@ int main()try {
         if(d>1)for(int j=0;j<d;++j)std::swap(matrix[j],matrix[d+j]);
         return matrix;
     });
+    require(inverse.storage_bytes()==PrismOrbitInverse::estimated_storage_bytes(maps,n,7),"orbit inverse storage estimate");
     inverse.apply(x.data(),a.data());b=x;inverse.apply(b.data(),b.data());require(error(a,b)<1e-14,"orbit inverse alias");
     for(bool reflection:{false,true}) {
         group.transform(x,b,reflection,true);inverse.apply(b.data(),c.data());group.transform(a,d,reflection,false);
@@ -80,13 +81,47 @@ int main()try {
     };
     const bem_streaming::Action precondition=[&](const Complex* input,Complex* output){exchange.apply(input,output);};
     action(x.data(),b.data());
-    auto solved=solve_prism_sectors(action,action,precondition,sectors,b.data(),a.data(),8,1e-11,20,false,false);
+    std::array<int,12> measured{};
+    auto solved=solve_prism_sectors(action,action,precondition,sectors,b.data(),a.data(),8,1e-11,20,false,false,nullptr,&measured);
+    require(*std::max_element(measured.begin(),measured.end())==solved.iterations,"sector iteration telemetry missing");
     require(solved.iterations==1 && error(a,x)<2e-14,"physical sector wrapper inverse/coordinate ordering");
-    solved=solve_prism_sectors(action,action,precondition,sectors,b.data(),a.data(),8,1e-11,20,true,false);
+    measured.fill(-1);
+    solved=solve_prism_sectors(action,action,precondition,sectors,b.data(),a.data(),8,1e-11,20,true,false,nullptr,&measured);
+    require(*std::max_element(measured.begin(),measured.end())==0 && *std::min_element(measured.begin(),measured.end())==0,"exact warm start retained old telemetry");
     require(solved.iterations==0 && solved.strict_checks==1,"physical sector wrapper warm start gate");
     a[0]+=Complex(.2,.1);
-    solved=solve_prism_sectors(action,action,precondition,sectors,b.data(),a.data(),8,1e-11,20,true,false);
+    solved=solve_prism_sectors(action,action,precondition,sectors,b.data(),a.data(),8,1e-11,20,true,false,nullptr,&measured);
+    require(*std::max_element(measured.begin(),measured.end())==solved.iterations,"warm correction lost sector telemetry");
     require(solved.iterations>0 && error(a,x)<2e-14,"physical sector wrapper warm start correction");
+    require(solved.strict_checks==2,"warm correction repeated its identical full-current FP64 gate");
+    int inverse_calls=0;
+    const bem_streaming::Action changing_inverse=[&](const Complex* input,Complex* output) {
+        exchange.apply(input,output);const double scale=1.+1e-13*(++inverse_calls);
+        for(int j=0;j<n;++j)output[j]*=scale;
+    };
+    a=x;a[0]+=Complex(.2,.1);
+    solved=solve_prism_sectors(action,action,changing_inverse,sectors,b.data(),a.data(),8,1e-10,20,true,false);
+    action(a.data(),c.data());
+    require(solved.strict_checks>=3 && error(c,b)<=1e-10,"changed inverse bypassed original-current FP64 gate");
+    // A nontrivial sector spectrum must learn/reuse the same GCRO spaces
+    // when a physical current guess is corrected. Identity/exact inverses
+    // converge in one step and cannot catch a lost recycle-space argument.
+    const bem_streaming::Action varied=[&](const Complex* input,Complex* output) {
+        Vector physical(n),encoded(n);action(input,physical.data());
+        sectors.encode(physical.data(),encoded.data(),true);
+        for(int s=0;s<12;++s)for(int j=sectors.offsets[s];j<sectors.offsets[s+1];++j)
+            encoded[j]*=1.+.1*((j-sectors.offsets[s])%7);
+        sectors.decode(encoded.data(),output,true);
+    };
+    varied(x.data(),b.data());
+    bem_streaming::SectorRecycleSpace recycle(sectors.offsets,4);
+    for(int j=0;j<n;++j)a[j]=x[j]+Complex(.12*std::cos(.17*j),.08*std::sin(.21*j));
+    solved=solve_prism_sectors(varied,varied,precondition,sectors,b.data(),a.data(),12,1e-10,40,true,false,&recycle);
+    require(solved.residual<=1e-10 && error(a,x)<1e-9 && recycle.rank()>0,"warm correction lost sector recycling");
+    for(int j=0;j<n;++j)a[j]+=Complex(.15*std::sin(.11*j),.07*std::cos(.19*j));
+    solved=solve_prism_sectors(varied,varied,precondition,sectors,b.data(),a.data(),12,1e-10,40,true,false,&recycle);
+    varied(a.data(),c.data());
+    require(error(c,b)<=1e-10 && error(a,x)<1e-9,"recycled warm correction original RHS tolerance");
  }
  std::puts("Sector unitarity, rotation/mirror characters, pivoting, fixed-edge orbits and inverse intertwining passed");return 0;
 }catch(const std::exception& e){std::fprintf(stderr,"%s\n",e.what());return 1;}

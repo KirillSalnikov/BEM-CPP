@@ -1798,10 +1798,13 @@ void MullerFmmOperator::prepare_gpu_assembly()
         }
     }
 
+    const char* host_correction = std::getenv("BEM_MULLER_GPU_HOST_CORRECTION");
+    gpu_host_correction = host_correction && std::strcmp(host_correction,"0")!=0;
+    std::vector<int> empty_correction_offsets(gpu_host_correction?size_t(current_dofs)+1:0,0);
     std::vector<MullerGpuCorrectionValue> gpu_correction(
-        correction.entries.size());
+        gpu_host_correction?0:correction.entries.size());
     for (size_t index = 0;
-         index < correction.entries.size(); index++) {
+         index < gpu_correction.size(); index++) {
         gpu_correction[index].column =
             correction.entries[index].column;
         gpu_correction[index].k1 =
@@ -1823,13 +1826,30 @@ void MullerFmmOperator::prepare_gpu_assembly()
         mass_values,
         mass_positions,
         mass_weights,
-        correction.row_offsets,
+        gpu_host_correction?empty_correction_offsets:correction.row_offsets,
         gpu_correction);
     gpu_operator_assembly = true;
     std::printf(
         "  [Muller] GPU-resident operator assembly enabled "
-        "(%zu regular, %zu mass points)\n",
-        quadrature.size(), mass_quadrature.size());
+        "(%zu regular, %zu mass points, correction on %s)\n",
+        quadrature.size(), mass_quadrature.size(),gpu_host_correction?"CPU":"GPU");
+}
+
+void MullerFmmOperator::add_host_correction(const cdouble* input,cdouble* output) const
+{
+    const cdouble ik=cdouble(0,1)/k_exterior;
+    #pragma omp parallel for schedule(static)
+    for(int row=0;row<current_dofs;++row) {
+        cdouble k1_j=0,k1_m=0,k2e_m=0,k2m_j=0;
+        for(int index=correction.row_offsets[row];index<correction.row_offsets[row+1];++index) {
+            const auto& entry=correction.entries[index];
+            const cdouble j=input[entry.column],m=input[current_dofs+entry.column];
+            k1_j+=entry.k1*j;k1_m+=entry.k1*m;
+            k2e_m+=entry.k2_epsilon*m;k2m_j+=entry.k2_mu*j;
+        }
+        output[row]+=ik*k1_j+k2e_m;
+        output[current_dofs+row]+=k2m_j-ik*k1_m;
+    }
 }
 
 void MullerFmmOperator::farfield(
@@ -2504,7 +2524,54 @@ void MullerFmmOperator::apply_current_operators(
 
 bool MullerFmmOperator::device_matvec_available() const
 {
-    return system_dofs > 0 && gpu_operator_assembly && !use_pfft;
+    // A host correction needs the host vectors; do not expose an incomplete
+    // device-only action to a solver or transpose caller.
+    return system_dofs > 0 && gpu_operator_assembly && !use_pfft && !gpu_host_correction;
+}
+
+bool MullerFmmOperator::host_batch2_available() const
+{
+    return system_dofs>0 && gpu_operator_assembly && gpu_assembly.system_slot_count()>=4 &&
+        !use_pfft && banded_fmm && multilevel_pair_enabled() && !prism_fft_active();
+}
+
+void MullerFmmOperator::matvec_batch2(const cdouble* first,const cdouble* second,
+                                    cdouble* first_result,cdouble* second_result)
+{
+    if(!host_batch2_available())throw std::runtime_error("host batch2 requires multilevel FMM and four GPU assembly slots");
+    if(!first || !second || !first_result || !second_result || first_result==second_result ||
+       first_result==first || first_result==second || second_result==first || second_result==second)
+        throw std::invalid_argument("host batch2 alias/null");
+    gpu_assembly.upload_system_input_pair(first,second);
+    // Pair the same current from independent RHS. The existing six-channel
+    // L2P/P2P kernels reuse geometry without allocating twelve multipole trees.
+    for(int current=0;current<2;++current) {
+        gpu_assembly.project_charges_and_mass(current*current_dofs,current);
+        gpu_assembly.project_charges_and_mass((current+2)*current_dofs,current+2);
+        const double* real[6];const double* imag[6];
+        for(int rhs=0;rhs<2;++rhs)for(int d=0;d<3;++d){
+            real[3*rhs+d]=gpu_assembly.charge_re(d,current+2*rhs);
+            imag[3*rhs+d]=gpu_assembly.charge_im(d,current+2*rhs);
+        }
+        std::exception_ptr errors[2];
+#pragma omp parallel for num_threads(2)
+        for(int medium=0;medium<2;++medium)try {
+            auto& fine=medium?fmm_interior:fmm_exterior;
+            auto* middle=banded_fmm_middle?(medium?&fmm_interior_middle:&fmm_exterior_middle):nullptr;
+            auto& coarse=medium?fmm_interior_coarse:fmm_exterior_coarse;
+            fine.evaluate_multilevel_pair_device(real,imag,middle,coarse);
+        }catch(...){errors[medium]=std::current_exception();}
+        for(const auto& error:errors)if(error)std::rethrow_exception(error);
+        for(int rhs=0;rhs<2;++rhs) {
+            const int slot=current+2*rhs;
+            gpu_assembly.assemble_media_and_correction(fmm_exterior,fmm_interior,
+                epsilon_exterior,epsilon_interior,mu_exterior,mu_interior,
+                slot*current_dofs,slot,rhs);
+        }
+    }
+    gpu_assembly.combine_and_download(k_exterior,epsilon_exterior,epsilon_interior,mu_exterior,mu_interior,first_result,0);
+    gpu_assembly.combine_and_download(k_exterior,epsilon_exterior,epsilon_interior,mu_exterior,mu_interior,second_result,1);
+    if(gpu_host_correction){add_host_correction(first,first_result);add_host_correction(second,second_result);}
 }
 
 void MullerFmmOperator::matvec_device(
@@ -2623,7 +2690,7 @@ void MullerFmmOperator::matvec_batch2_device_strict(
 void MullerFmmOperator::matvec_strict(
     const cdouble* input, cdouble* output)
 {
-    if (!device_matvec_available()) {
+    if (!gpu_operator_assembly || use_pfft) {
         if (use_pfft || (!prism_fft_exterior && (!fmm_exterior.initialized ||
             !fmm_interior.initialized))) {
             throw std::runtime_error(
@@ -2643,6 +2710,10 @@ void MullerFmmOperator::matvec_strict(
     const bool previous_near_fp32 = fmm_near_fp32;
     set_fmm_near_fp32(false);
     try {
+        std::vector<cdouble> input_copy;
+        if(gpu_host_correction && input==output) {
+            input_copy.assign(input,input+system_dofs);input=input_copy.data();
+        }
         gpu_assembly.upload_system_input(input);
         if (!prism_fft_active() && ((banded_fmm && multilevel_pair_enabled()) ||
             (fmm_exterior.strict_vector_pair_available() &&
@@ -2659,6 +2730,7 @@ void MullerFmmOperator::matvec_strict(
             mu_exterior,
             mu_interior,
             output);
+        if(gpu_host_correction)add_host_correction(input,output);
     } catch (...) {
         set_fmm_near_fp32(previous_near_fp32);
         throw;
@@ -2672,7 +2744,15 @@ void MullerFmmOperator::matvec(
     if (system_dofs <= 0)
         throw std::runtime_error(
             "Muller FMM operator is not initialized");
-    if (gpu_operator_assembly && !use_pfft) {
+    // Host sector GMRES can retain the faster host mixed assembly while
+    // using device assembly for strict FP64 residuals (including face FFT).
+    const char* strict_assembly = std::getenv("BEM_MULLER_GPU_STRICT_ONLY");
+    const bool host_mixed = fmm_near_fp32 && strict_assembly && std::strcmp(strict_assembly,"0")!=0;
+    if (gpu_operator_assembly && !use_pfft && !host_mixed) {
+        std::vector<cdouble> input_copy;
+        if(gpu_host_correction && input==output) {
+            input_copy.assign(input,input+system_dofs);input=input_copy.data();
+        }
         gpu_assembly.upload_system_input(input);
         bool pair_currents =
             fmm_exterior.vector_actions_pair_available() &&
@@ -2697,6 +2777,7 @@ void MullerFmmOperator::matvec(
             mu_exterior,
             mu_interior,
             output);
+        if(gpu_host_correction)add_host_correction(input,output);
         return;
     }
     std::vector<cdouble> mass_j, k1_j, k2e_j, k2m_j;
@@ -3159,9 +3240,9 @@ void MullerFmmOperator::apply_mass(
     }
 }
 
-void MullerFmmOperator::enable_prism_face_fft(int refinement)
+void MullerFmmOperator::enable_prism_face_fft(int refinement,double aspect)
 {
-    if(use_pfft || quadrature_order!=7 || system_dofs<=0)
+    if(use_pfft || quadrature_order!=7 || system_dofs<=0 || !std::isfinite(aspect) || aspect<=0)
         throw std::runtime_error("prism face FFT requires a quadrature-7 Muller operator");
     std::vector<double> points;points.reserve(quadrature.size()*3);
     for(const auto& q:quadrature){points.push_back(q.sample.position.x);points.push_back(q.sample.position.y);points.push_back(q.sample.position.z);}
@@ -3173,8 +3254,8 @@ void MullerFmmOperator::enable_prism_face_fft(int refinement)
         banded_fmm=false;banded_fmm_middle=false;
     }
     prism_fft_exterior.reset(new PrismFaceFFT);prism_fft_interior.reset(new PrismFaceFFT);
-    prism_fft_exterior->init(points,refinement,k_exterior,fmm_digits_effective);
-    prism_fft_interior->init(points,refinement,k_interior,fmm_digits_effective,prism_fft_exterior.get());
+    prism_fft_exterior->init(points,refinement,k_exterior,fmm_digits_effective,nullptr,aspect);
+    prism_fft_interior->init(points,refinement,k_interior,fmm_digits_effective,prism_fft_exterior.get(),aspect);
     prepare_gpu_assembly();
 }
 
@@ -3230,6 +3311,7 @@ void MullerFmmOperator::cleanup()
     use_pfft = false;
     gpu_operator_assembly = false;
     gpu_operator_assembly_requested = false;
+    gpu_host_correction = false;
     banded_fmm = false;
     banded_fmm_middle = false;
     banded_fmm_split_depth = 0;

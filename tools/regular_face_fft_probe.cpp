@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <iomanip>
 #include <random>
@@ -78,21 +79,25 @@ double validate(const Case& a,const std::vector<Complex>& fft,int maximum_target
     return std::sqrt(difference/std::max(norm,1e-300));
 }
 
-Case prism_face(int ref,Complex k) {
+Case prism_face(int ref,Complex k,double aspect=1.,bool cap=false) {
     if(ref<1||ref>7)throw std::runtime_error("ref must be 1..7");
-    Case a;a.nx=1<<ref;a.ny=int(std::ceil(std::sqrt(3.)*a.nx));if(a.ny%2)++a.ny;
-    a.c=28;a.k=k;
-    // regular_prism(6,1,ref,1,...,d6h=true): volume-equivalent radius 1.
-    const double scale=std::cbrt((4*std::acos(-1.)/3)/(std::sqrt(3.)/2));
-    const double side=scale/std::sqrt(3.),height=scale;
+    if(!std::isfinite(aspect)||aspect<=0)throw std::runtime_error("invalid prism aspect");
+    Case a;a.nx=1<<ref;a.ny=std::max(a.nx,int(std::ceil(std::sqrt(3.)*aspect*a.nx)));if(a.ny%2)++a.ny;
+    a.c=cap?14:28;a.k=k;
+    // regular_prism(6,aspect,ref,1,...,d6h=true): volume-equivalent radius 1.
+    const double scale=std::cbrt((4*std::acos(-1.)/3)/(aspect*std::sqrt(3.)/2));
+    const double side=scale/std::sqrt(3.),height=aspect*scale;
     a.u={{side/a.nx,0,0}};a.v={{0,height/a.ny,0}};
+    if(cap){a.nx=a.ny=2*(1<<ref);a.v={{.5*a.u[0],std::sqrt(3.)*.5*a.u[0],0}};}
     const TriQuad rule=tri_quadrature(7);
     const double vertices[4][3][2]={{{0,0},{1,0},{1,1}},{{0,0},{1,1},{0,1}},
                                    {{0,0},{1,0},{0,1}},{{1,0},{1,1},{0,1}}};
-    for(int tri=0;tri<4;++tri)for(int j=0;j<7;++j) {
+    std::vector<std::array<double,2>> fractional;
+    for(int tri=cap?2:0;tri<4;++tri)for(int j=0;j<7;++j) {
         const double x=rule.pts[j][0],y=rule.pts[j][1];
         const double u=(1-x-y)*vertices[tri][0][0]+x*vertices[tri][1][0]+y*vertices[tri][2][0];
         const double v=(1-x-y)*vertices[tri][0][1]+x*vertices[tri][1][1]+y*vertices[tri][2][1];
+        fractional.push_back({{u,v}});
         for(int d=0;d<3;++d)a.source.push_back(u*a.u[d]+v*a.v[d]);
     }
     a.target=a.source;
@@ -100,7 +105,10 @@ Case prism_face(int ref,Complex k) {
     std::mt19937 random(20261028);std::uniform_real_distribution<double> uniform(-1,1);
     for(int ch=0;ch<a.c;++ch)for(int x=0;x<a.nx;++x)for(int y=0;y<a.ny;++y) {
         const bool forward=(2*x<a.nx)==(2*y<a.ny);
-        if((ch<14)!=forward)continue;
+        if(cap) {
+            const double diagonal=x+y+fractional[ch][0]+fractional[ch][1];
+            if(diagonal<(1<<ref) || diagonal>3*(1<<ref))continue;
+        }else if((ch<14)!=forward)continue;
         const int cell=x*a.ny+y;a.active.push_back(ch*cells+cell);
         for(int d=0;d<3;++d)a.q[size_t(ch*3+d)*cells+cell]=Complex(uniform(random),uniform(random))*.5*a.u[0]*a.v[1]*rule.wts[ch%7];
     }
@@ -108,15 +116,26 @@ Case prism_face(int ref,Complex k) {
 }
 
 void unit_checks() {
-    for(int test=0;test<4;++test) {
-        Case a=prism_face(1,Complex(2.3,.08));
+    for(int test=0;test<6;++test) {
+        Case a=prism_face(1,Complex(2.3,.08),1.,test==5);
         if(test==1) {for(size_t i=2;i<a.target.size();i+=3)a.target[i]+=.63;}
         if(test==2) {a.k=Complex(0);a.u[2]=.13;a.v[0]=.07;}
         if(test==3) {a.k=Complex(0,.4);std::fill(a.q.begin(),a.q.end(),Complex(0));a.q[0]=1.;a.active.clear();for(int i=0;i<a.nx*a.ny*a.c;++i)a.active.push_back(i);}
+        if(test==4) {
+            // Almost equal shifts next to lattice coincidences must not be
+            // merged: their O(r^-3) interactions are sensitive to roundoff.
+            a.nx=3;a.ny=5;a.c=3;a.u={{1,0,0}};a.v={{0,1,0}};
+            a.source={0,0,0,1+1e-10,0,0,2+2e-10+1e-15,0,0};a.target=a.source;
+            a.active.clear();a.q.resize(size_t(a.nx)*a.ny*a.c*3);
+            for(size_t i=0;i<a.q.size();++i)a.q[i]=Complex(std::sin(.13*i),std::cos(.17*i));
+            for(int i=0;i<a.nx*a.ny*a.c;++i)a.active.push_back(i);
+        }
         RegularFaceFFT fft;fft.init(a.nx,a.ny,a.u.data(),a.v.data(),a.source,a.target,a.k);
         std::vector<Complex> result(size_t(a.nx)*a.ny*a.c*6);fft.evaluate(a.q.data(),result.data());
         const double error=validate(a,result,int(a.active.size()));
-        std::printf("case=%d relative=%.8e\n",test,error);
+        const auto dimensions=fft.padded_dimensions();
+        std::printf("case=%d relative=%.8e kernels=%d grid=%dx%d bytes=%zu\n",test,error,
+                    fft.stored_kernel_count(),dimensions[0],dimensions[1],fft.storage_bytes());
         if(!std::isfinite(error)||error>2e-11)throw std::runtime_error("regular face FFT disagrees with direct FP64");
     }
     bool rejected=false;try {RegularFaceFFT::estimated_array_bytes(0,1,1);}catch(const std::exception&){rejected=true;}
@@ -178,8 +197,13 @@ int main(int argc,char** argv)try {
     if(argc==2 && std::string(argv[1])=="--check") {unit_checks();return 0;}
     if(argc!=4)throw std::runtime_error("Usage: regular_face_fft_probe REF KA REPORT.json, or --check");
     const int ref=std::stoi(argv[1]);const double ka=std::stod(argv[2]);
-    Case a=prism_face(ref,Complex(ka));
-    std::printf("nx=%d ny=%d channels=%d active_points=%zu arrays_GiB=%.4f\n",a.nx,a.ny,a.c,a.active.size(),
+    const char* aspect_setting=std::getenv("BEM_PROBE_PRISM_ASPECT");
+    const double aspect=aspect_setting?std::stod(aspect_setting):1.;
+    const char* face_setting=std::getenv("BEM_PROBE_PRISM_FACE");
+    const std::string face=face_setting?face_setting:"side";
+    if(face!="side" && face!="cap")throw std::runtime_error("face must be side or cap");
+    Case a=prism_face(ref,Complex(ka),aspect,face=="cap");
+    std::printf("nx=%d ny=%d channels=%d active_points=%zu dense_array_upper_bound_GiB=%.4f\n",a.nx,a.ny,a.c,a.active.size(),
                 RegularFaceFFT::estimated_array_bytes(a.nx,a.ny,a.c)/std::pow(2.,30));
     const auto start=Clock::now();RegularFaceFFT fft;fft.init(a.nx,a.ny,a.u.data(),a.v.data(),a.source,a.target,a.k);
     const double setup=std::chrono::duration<double>(Clock::now()-start).count();
@@ -190,10 +214,12 @@ int main(int argc,char** argv)try {
     const double error=validate(a,result,checked);
     const double check_s=std::chrono::duration<double>(Clock::now()-begin).count();
     const size_t storage=fft.storage_bytes();
+    const int stored_kernels=fft.stored_kernel_count();const auto dimensions=fft.padded_dimensions();
     fft.cleanup(); // FMM benchmark must not coexist with the large FFT kernel bank.
     std::ofstream report(argv[3]);if(!report)throw std::runtime_error("cannot open report");
-    report<<std::setprecision(17)<<"{\"scope\":\"one prism side face, point-quadrature vector action, no Galerkin correction or BEM solve\",\"ref\":"<<ref
+    report<<std::setprecision(17)<<"{\"scope\":\"one prism face, point-quadrature vector action, no Galerkin correction or BEM solve\",\"face\":\""<<face<<"\",\"ref\":"<<ref
           <<",\"ka\":"<<ka<<",\"nx\":"<<a.nx<<",\"ny\":"<<a.ny<<",\"channels\":"<<a.c<<",\"active_points\":"<<a.active.size()
+          <<",\"prism_aspect\":"<<aspect<<",\"stored_kernels\":"<<stored_kernels<<",\"FFT_dimensions\":["<<dimensions[0]<<","<<dimensions[1]<<"]"
           <<",\"mirror_diagonal_mask\":true,\"precision\":\"fp64\",\"storage_bytes\":"<<storage<<",\"setup_s\":"<<setup<<",\"action_s\":[";
     for(size_t i=0;i<seconds.size();++i)report<<(i?",":"")<<seconds[i];
     report<<"],\"checked_targets\":"<<checked<<",\"relative_error_vs_direct\":"<<error<<",\"direct_check_s\":"<<check_s;

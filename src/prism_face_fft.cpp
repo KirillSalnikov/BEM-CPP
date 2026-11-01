@@ -9,6 +9,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <cub/device/device_radix_sort.cuh>
 #include <cub/device/device_scan.cuh>
 
@@ -79,12 +80,51 @@ struct NearCache {
 };
 struct Face {
     V origin,e1,e2,e3;
-    std::vector<int> global,slot,other;
+    std::vector<int> global,slot,other,cross_global;
+    int engine_face=0;
+    std::array<double,9> rotation{{1,0,0,0,1,0,0,0,1}};
     std::unique_ptr<HelmholtzFMM> fine,middle,coarse;
     std::vector<cdouble> packed,curl,hessian;
-    int *d_global=nullptr,*d_slot=nullptr,*d_other=nullptr;
+    int *d_global=nullptr,*d_slot=nullptr,*d_other=nullptr,*d_cross_global=nullptr;
     std::shared_ptr<NearCache> near{new NearCache};
-    ~Face(){cudaFree(d_global);cudaFree(d_slot);cudaFree(d_other);}
+    ~Face(){cudaFree(d_global);cudaFree(d_slot);cudaFree(d_other);cudaFree(d_cross_global);}
+};
+// Map quadrature points under proper D6 rotations. Keeping the original
+// canonical ordering permits one cross-face hierarchy per face orbit.
+struct PointKeyHash {
+    size_t operator()(const std::array<long long,3>& a)const {
+        size_t h=0;for(auto v:a)h^=std::hash<long long>{}(v)+0x9e3779b9+(h<<6)+(h>>2);return h;
+    }
+};
+class RotatedPointMap {
+    const std::vector<double>& xyz;
+    double scale_factor,tolerance2;
+    std::unordered_map<std::array<long long,3>,int,PointKeyHash> index;
+    std::array<long long,3> key(const V& x)const {
+        return {{std::llround(x[0]*scale_factor),std::llround(x[1]*scale_factor),std::llround(x[2]*scale_factor)}};
+    }
+public:
+    explicit RotatedPointMap(const std::vector<double>& points):xyz(points) {
+        double extent=1.;for(double x:xyz)extent=std::max(extent,std::abs(x));
+        scale_factor=1e8/extent;tolerance2=std::pow(1e-10*extent,2);index.reserve(xyz.size()/3);
+        for(size_t i=0;i<xyz.size()/3;++i)
+            if(!index.emplace(key({{xyz[3*i],xyz[3*i+1],xyz[3*i+2]}}),int(i)).second)
+                throw std::runtime_error("ambiguous prism FFT rotation point map");
+    }
+    int image(int i,const std::array<double,9>& r)const {
+        V y{{0,0,0}};for(int d=0;d<3;++d)for(int k=0;k<3;++k)y[d]+=r[3*d+k]*xyz[3*i+k];
+        const auto bucket=key(y);
+        auto match=[&](const std::array<long long,3>& b) {
+            const auto found=index.find(b);if(found==index.end())return -1;
+            double error=0;for(int d=0;d<3;++d)error+=std::pow(xyz[3*found->second+d]-y[d],2);
+            return error<tolerance2?found->second:-1;
+        };
+        int target=match(bucket);if(target>=0)return target;
+        for(int x=-1;x<=1;++x)for(int y=-1;y<=1;++y)for(int z=-1;z<=1;++z) {
+            target=match({{bucket[0]+x,bucket[1]+y,bucket[2]+z}});if(target>=0)return target;
+        }
+        throw std::runtime_error("prism FFT quadrature is not invariant under D6 rotations");
+    }
 };
 struct Inputs {const double* re[3];const double* im[3];};
 struct Outputs {double *cr,*ci,*hr,*hi;};
@@ -313,22 +353,33 @@ __global__ void gather_face(int n,const int* ids,const int* slots,int cells,
     out.cr[3*i+1]+=curl[1].x;out.ci[3*i+1]+=curl[1].y;
     out.cr[3*i+2]-=curl[0].x;out.ci[3*i+2]-=curl[0].y;
 }
-__global__ void gather_cross_charges(int n,const int* ids,Inputs q,double* out) {
+__global__ void gather_cross_charges(int n,const int* ids,Frame rotation,Inputs q,double* out) {
     const int j=blockIdx.x*blockDim.x+threadIdx.x;if(j>=n)return;
     const int i=ids[j];
-    for(int d=0;d<3;++d){out[size_t(2*d)*n+j]=q.re[d][i];out[size_t(2*d+1)*n+j]=q.im[d][i];}
+    for(int d=0;d<3;++d) {
+        double re=0,im=0;for(int k=0;k<3;++k){re+=rotation.axes[3*k+d]*q.re[k][i];im+=rotation.axes[3*k+d]*q.im[k][i];}
+        out[size_t(2*d)*n+j]=re;out[size_t(2*d+1)*n+j]=im;
+    }
 }
-__global__ void add_cross(int n,const int* ids,Outputs from,Outputs out) {
+__global__ void add_cross(int n,const int* ids,Frame rotation,Outputs from,Outputs out) {
     const int j=blockIdx.x*blockDim.x+threadIdx.x;if(j>=n)return;
     const int i=ids[j];
-    for(int d=0;d<3;++d){out.cr[3*i+d]+=from.cr[3*j+d];out.ci[3*i+d]+=from.ci[3*j+d];
-        out.hr[3*i+d]+=from.hr[3*j+d];out.hi[3*i+d]+=from.hi[3*j+d];}
+    // FMM stores antisymmetric derivatives as (xy,xz,yz), not Cartesian
+    // curl components: curl=(-yz,xz,-xy). Rotate through that signed
+    // permutation. All geometric maps have determinant +1.
+    for(int d=0;d<3;++d)for(int k=0;k<3;++k) {
+        const double a=rotation.axes[3*d+k];
+        const double curl_a=(d==1?1.:-1.)*(k==1?1.:-1.)*rotation.axes[3*(2-d)+(2-k)];
+        out.cr[3*i+d]+=curl_a*from.cr[3*j+k];out.ci[3*i+d]+=curl_a*from.ci[3*j+k];
+        out.hr[3*i+d]+=a*from.hr[3*j+k];out.hi[3*i+d]+=a*from.hi[3*j+k];
+    }
 }
 }
 
 struct PrismFaceFFT::Impl {
     int count=0;
     int refinement=0;
+    double aspect=1.;
     std::vector<double> geometry;
     Layout side,cap;
     RegularFaceFFT side_fft,cap_fft;
@@ -337,6 +388,7 @@ struct PrismFaceFFT::Impl {
     std::vector<cdouble> charges[3],curl,hessian;
     std::vector<double> real,imag;
     bool target_faces=true;
+    bool reuse_cross=false;
     double *d_packed=nullptr,*d_host_charges=nullptr;
     HelmholtzFMM view; // Only a non-owning view of the four buffers below.
     ~Impl(){cudaFree(view.d_grad_re);cudaFree(view.d_grad_im);cudaFree(view.d_hess_re);cudaFree(view.d_hess_im);
@@ -346,20 +398,37 @@ PrismFaceFFT::PrismFaceFFT():p(new Impl){}
 PrismFaceFFT::~PrismFaceFFT()=default;
 size_t PrismFaceFFT::fft_storage_bytes()const{return p->side_fft.storage_bytes()+p->cap_fft.storage_bytes();}
 const HelmholtzFMM& PrismFaceFFT::result_view()const{return p->view;}
+PrismFaceFFT::HostView PrismFaceFFT::host_view()const {
+    if(!p->faces[0].fine)throw std::runtime_error("prism FFT host view needs prepared geometry");
+    HostView view;view.k=p->faces[0].fine->k;view.target_faces=p->target_faces;
+    view.side={p->side.nx,p->side.ny,p->side.u,p->side.v,&p->side.offsets};
+    view.cap={p->cap.nx,p->cap.ny,p->cap.u,p->cap.v,&p->cap.offsets};
+    for(int f=0;f<8;++f){
+        const auto& face=p->faces[f];const auto& engine=p->faces[face.engine_face];auto& out=view.faces[f];
+        for(int d=0;d<3;++d){out.frame[d]=face.e1[d];out.frame[3+d]=face.e2[d];out.frame[6+d]=face.e3[d];}
+        out.rotation=face.rotation;out.global=&face.global;out.slot=&face.slot;out.other=&face.other;out.cross_global=&face.cross_global;
+        out.engine=face.engine_face;out.fine=engine.fine.get();out.middle=engine.middle.get();out.coarse=engine.coarse.get();
+    }
+    return view;
+}
 
-void PrismFaceFFT::init(const std::vector<double>& xyz,int ref,cdouble k,int digits,const PrismFaceFFT* shared_geometry) {
-    if(ref<1||ref>7||xyz.empty()||xyz.size()%3)throw std::runtime_error("invalid regular prism FFT input");
+void PrismFaceFFT::init(const std::vector<double>& xyz,int ref,cdouble k,int digits,const PrismFaceFFT* shared_geometry,double aspect) {
+    if(ref<1||ref>7||xyz.empty()||xyz.size()%3||!std::isfinite(aspect)||aspect<=0)
+        throw std::runtime_error("invalid regular prism FFT input");
     if(shared_geometry==this)throw std::runtime_error("FFT geometry cannot refer to itself during init");
     p.reset(new Impl);p->count=int(xyz.size()/3);
-    p->geometry=xyz;p->refinement=ref;
+    p->geometry=xyz;p->refinement=ref;p->aspect=aspect;
     if(const char* flag=std::getenv("BEM_FACE_FFT_TARGET_FACES"))p->target_faces=std::string(flag)!="0";
+    if(const char* flag=std::getenv("BEM_FACE_FFT_REUSE_CROSS"))p->reuse_cross=std::string(flag)!="0";
     if(shared_geometry && (shared_geometry->p->geometry!=xyz || shared_geometry->p->refinement!=ref ||
-                          shared_geometry->p->target_faces!=p->target_faces))
+                          shared_geometry->p->aspect!=aspect || shared_geometry->p->target_faces!=p->target_faces ||
+                          shared_geometry->p->reuse_cross!=p->reuse_cross))
         throw std::runtime_error("FFT near cache sharing requires identical ordered geometry");
-    const int seg=1<<ref;int nz=int(std::ceil(std::sqrt(3.)*seg));if(nz%2)++nz;
+    const int seg=1<<ref;int nz=std::max(seg,int(std::ceil(std::sqrt(3.)*aspect*seg)));if(nz%2)++nz;
     const int expected=7*12*seg*(seg+nz);
     if(p->count!=expected)throw std::runtime_error("prism FFT needs the unrefined-edge D6h mesh and quadrature-7");
-    const double pi=std::acos(-1.),height=std::cbrt(8*pi/(3*std::sqrt(3.))),radius=height/std::sqrt(3.);
+    const double pi=std::acos(-1.),width=std::cbrt(8*pi/(3*std::sqrt(3.)*aspect));
+    const double height=aspect*width,radius=width/std::sqrt(3.);
     const double h=radius/seg,zstep=height/nz;
     p->side.nx=seg;p->side.ny=nz;p->side.u={{h,0,0}};p->side.v={{0,zstep,0}};
     p->side.offsets_from_triangles({{{0,0,1,0,1,1}},{{0,0,1,1,0,1}},{{0,0,1,0,0,1}},{{1,0,1,1,0,1}}});
@@ -407,8 +476,25 @@ void PrismFaceFFT::init(const std::vector<double>& xyz,int ref,cdouble k,int dig
     p->cap_fft.init(p->cap.nx,p->cap.ny,p->cap.u.data(),p->cap.v.data(),p->cap.offsets,p->cap.offsets,k);
     const int depth=std::min(6,std::max(3,ref));
     auto leaf=[&](int d){const long long boxes=1LL<<(3*d);return std::max(1,int((p->count+boxes-1)/boxes));};
+    std::unique_ptr<RotatedPointMap> rotation_map;
+    if(p->reuse_cross)rotation_map.reset(new RotatedPointMap(xyz));
     for(int f=0;f<8;++f) {
         Face& face=p->faces[f];
+        face.engine_face=p->reuse_cross?(f<6?0:6):f;
+        if(face.engine_face!=f) {
+            const Face& canonical=p->faces[face.engine_face];
+            if(f<6) {
+                const double c=std::cos(f*pi/3),s=std::sin(f*pi/3);
+                face.rotation={{c,-s,0,s,c,0,0,0,1}};
+            }else face.rotation={{1,0,0,0,-1,0,0,0,-1}};
+            for(int i:canonical.global)face.cross_global.push_back(rotation_map->image(i,face.rotation));
+            for(int i:canonical.other)face.other.push_back(rotation_map->image(i,face.rotation));
+            auto actual=face.cross_global,expected=face.global;
+            std::sort(actual.begin(),actual.end());std::sort(expected.begin(),expected.end());
+            if(actual!=expected)throw std::runtime_error("prism FFT rotation does not map the target face bijectively");
+            continue;
+        }
+        face.cross_global=face.global;
         std::vector<double> source,target;
         for(int i=0;i<p->count;++i)if(point_face[i]!=f)face.other.push_back(i);
         const auto& source_ids=p->target_faces?face.other:face.global;
@@ -424,9 +510,12 @@ void PrismFaceFFT::init(const std::vector<double>& xyz,int ref,cdouble k,int dig
         face.coarse->init(target.data(),int(target_ids.size()),source.data(),int(source_ids.size()),k,digits,leaf(depth-2),3,false,false,true);
         if(face.fine->tree.max_level!=depth||face.middle->tree.max_level!=depth-1||face.coarse->tree.max_level!=depth-2)
             throw std::runtime_error("unexpected prism cross-face hierarchy depth");
+    }
+    rotation_map.reset();
+    for(auto& face:p->faces) {
         auto upload=[](int*& to,const std::vector<int>& from){cuda_ok(cudaMalloc(&to,from.size()*sizeof(int)));
             cuda_ok(cudaMemcpy(to,from.data(),from.size()*sizeof(int),cudaMemcpyHostToDevice));};
-        upload(face.d_global,face.global);upload(face.d_slot,face.slot);upload(face.d_other,face.other);
+        upload(face.d_global,face.global);upload(face.d_slot,face.slot);upload(face.d_other,face.other);upload(face.d_cross_global,face.cross_global);
     }
     for(auto& q:p->charges)q.resize(p->count);
     p->curl.resize(size_t(p->count)*3);p->hessian.resize(size_t(p->count)*3);p->real.resize(size_t(p->count)*3);p->imag.resize(size_t(p->count)*3);
@@ -441,6 +530,7 @@ void PrismFaceFFT::init(const std::vector<double>& xyz,int ref,cdouble k,int dig
         size_t budget=size_t(gib*std::pow(2.,30));
         for(int f=0;f<8;++f) {
             auto& face=p->faces[f];std::shared_ptr<const NearCache> geometry;
+            if(face.engine_face!=f)continue;
             if(shared_geometry) {
                 const auto& other=shared_geometry->p->faces[f];
                 if(face.fine->h_src_ids_flat!=other.fine->h_src_ids_flat ||
@@ -454,8 +544,8 @@ void PrismFaceFFT::init(const std::vector<double>& xyz,int ref,cdouble k,int dig
             if(face.near->init(*face.fine,budget,geometry))budget-=face.near->bytes;
         }
     }
-    std::printf("  [Prism FFT] device-resident self FFT + cross-face FMM: %d points, target-faces=%d, FFT %.3f GiB\n",
-        p->count,int(p->target_faces),fft_storage_bytes()/std::pow(2.,30));
+    std::printf("  [Prism FFT] device-resident self FFT + cross-face FMM: %d points, target-faces=%d, cross-hierarchies=%d, FFT %.3f GiB\n",
+            p->count,int(p->target_faces),p->reuse_cross?2:8,fft_storage_bytes()/std::pow(2.,30));
 }
 
 void PrismFaceFFT::evaluate(const cdouble* qx,const cdouble* qy,const cdouble* qz,cdouble* curl,cdouble* hessian,bool mixed) {
@@ -484,6 +574,7 @@ void PrismFaceFFT::evaluate_device(const double* const real[3],const double* con
     for(double* buffer:{out.cr,out.ci,out.hr,out.hi})cuda_ok(cudaMemsetAsync(buffer,0,p->count*3ULL*sizeof(double)));
     for(int f=0;f<8;++f) {
         Face& face=p->faces[f];const Layout& l=f<6?p->side:p->cap;
+        Face& engine=p->faces[face.engine_face];Frame rotation;std::copy(face.rotation.begin(),face.rotation.end(),rotation.axes);
         RegularFaceFFT& fft=f<6?p->side_fft:p->cap_fft;const int cells=l.nx*l.ny,n=int(face.global.size());
         Frame frame;const V axes[3]={face.e1,face.e2,face.e3};
         for(int d=0;d<3;++d)for(int k=0;k<3;++k)frame.axes[3*d+k]=axes[d][k];
@@ -494,29 +585,29 @@ void PrismFaceFFT::evaluate_device(const double* const real[3],const double* con
         gather_face<<<(n+255)/256,256>>>(n,face.d_global,face.d_slot,cells,frame,
             reinterpret_cast<const double2*>(fft.device_output()),out);cuda_ok(cudaGetLastError());
         timeline.mark(0);
-        face.fine->near_field_fp32=face.middle->near_field_fp32=face.coarse->near_field_fp32=mixed;
+        engine.fine->near_field_fp32=engine.middle->near_field_fp32=engine.coarse->near_field_fp32=mixed;
         const int ns=p->target_faces?int(face.other.size()):n;
         const int nt=p->target_faces?n:int(face.other.size());
-        const int* source_ids=p->target_faces?face.d_other:face.d_global;
-        const int* target_ids=p->target_faces?face.d_global:face.d_other;
-        gather_cross_charges<<<(ns+255)/256,256>>>(ns,source_ids,q,p->d_packed);cuda_ok(cudaGetLastError());
+        const int* source_ids=p->target_faces?face.d_other:face.d_cross_global;
+        const int* target_ids=p->target_faces?face.d_cross_global:face.d_other;
+        gather_cross_charges<<<(ns+255)/256,256>>>(ns,source_ids,rotation,q,p->d_packed);cuda_ok(cudaGetLastError());
         double* packed=p->d_packed;
-        face.fine->evaluate_vector_actions_batch3_device(packed,packed+ns,packed+2ULL*ns,
-            packed+3ULL*ns,packed+4ULL*ns,packed+5ULL*ns,face.middle.get(),face.coarse.get(),face.near->count==0);
+        engine.fine->evaluate_vector_actions_batch3_device(packed,packed+ns,packed+2ULL*ns,
+            packed+3ULL*ns,packed+4ULL*ns,packed+5ULL*ns,engine.middle.get(),engine.coarse.get(),engine.near->count==0);
         timeline.mark(1);
-        Outputs from={face.fine->d_grad_re,face.fine->d_grad_im,face.fine->d_hess_re,face.fine->d_hess_im};
-        if(face.near->count) {
+        Outputs from={engine.fine->d_grad_re,engine.fine->d_grad_im,engine.fine->d_hess_re,engine.fine->d_hess_im};
+        if(engine.near->count) {
             Inputs charges;for(int d=0;d<3;++d){charges.re[d]=packed+size_t(2*d)*ns;charges.im[d]=packed+size_t(2*d+1)*ns;}
-            if(mixed)apply_near_cache<float><<<dim3(face.near->count,4),128>>>(
-                face.near->blocks,face.fine->d_tgt_ids_cached,face.near->source_ids,face.fine->d_tgt_pts,
-                face.fine->d_src_pts,face.near->coefficients,face.near->radial_ids,charges,from);
-            else apply_near_cache<double><<<dim3(face.near->count,4),128>>>(
-                face.near->blocks,face.fine->d_tgt_ids_cached,face.near->source_ids,face.fine->d_tgt_pts,
-                face.fine->d_src_pts,face.near->coefficients,face.near->radial_ids,charges,from);
+            if(mixed)apply_near_cache<float><<<dim3(engine.near->count,4),128>>>(
+                engine.near->blocks,engine.fine->d_tgt_ids_cached,engine.near->source_ids,engine.fine->d_tgt_pts,
+                engine.fine->d_src_pts,engine.near->coefficients,engine.near->radial_ids,charges,from);
+            else apply_near_cache<double><<<dim3(engine.near->count,4),128>>>(
+                engine.near->blocks,engine.fine->d_tgt_ids_cached,engine.near->source_ids,engine.fine->d_tgt_pts,
+                engine.fine->d_src_pts,engine.near->coefficients,engine.near->radial_ids,charges,from);
             cuda_ok(cudaGetLastError());
         }
         timeline.mark(2);
-        add_cross<<<(nt+255)/256,256>>>(nt,target_ids,from,out);cuda_ok(cudaGetLastError());
+        add_cross<<<(nt+255)/256,256>>>(nt,target_ids,rotation,from,out);cuda_ok(cudaGetLastError());
         timeline.mark(3);
     }
     cuda_ok(cudaStreamSynchronize(0));

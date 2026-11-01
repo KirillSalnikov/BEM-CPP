@@ -22,6 +22,11 @@ public:
     }
     bool matches(const std::array<int,13>& offsets)const{return offsets==offsets_;}
     RecycleSpace& sector(int s){return spaces_.at(s);}
+    int merge_from(const SectorRecycleSpace& other){
+        if(offsets_!=other.offsets_)throw std::invalid_argument("sector recycle merge offsets");
+        int added=0;for(int s=0;s<12;++s)added+=spaces_[s].merge_from(other.spaces_[s]);
+        return added;
+    }
     int rank()const{int r=0;for(const auto& s:spaces_)r+=s.rank();return r;}
     double storage_gib()const{double b=0;for(const auto& s:spaces_)b+=s.storage_gib();return b;}
 };

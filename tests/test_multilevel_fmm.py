@@ -12,6 +12,61 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @unittest.skipUnless(os.environ.get('BEM_TEST_GPU') == '1', 'set BEM_TEST_GPU=1')
 class MultilevelTest(unittest.TestCase):
+    def test_m2l_direction_blocks_real_absorbing_and_strict_switch(self):
+        with tempfile.TemporaryDirectory(prefix='bem-m2l-directions-') as temporary:
+            out = Path(temporary)
+            for absorption, cache in ((0., '0'), (.03, '1')):
+                env = {k: v for k, v in os.environ.items() if not k.startswith('BEM_')}
+                env.update(OMP_NUM_THREADS='4', OPENBLAS_NUM_THREADS='1',
+                    BEM_FMM_MULTILEVEL='1', BEM_FMM_BANDED_SPLIT_DEPTH='2',
+                    BEM_FMM_BANDED_COARSE_MAX_LEAF='3696', BEM_FMM_BANDED_MIDDLE_MAX_LEAF='462',
+                    BEM_FMM_ORDER_REFERENCE_DEPTH='3', BEM_PROBE_MAX_LEAF='64',
+                    BEM_FMM_PAIR_CURRENTS='0', BEM_MULLER_GPU_ASSEMBLY='0',
+                    BEM_FMM_PHASE_CACHE='0', BEM_FMM_STRICT_PAIR_WORKSPACE='0',
+                    BEM_FMM_BANDED_MINIMAL_WORKSPACE='1',
+                    BEM_FMM_MULTILEVEL_M2L_FP32='1', BEM_FMM_MULTILEVEL_M2L_CACHE=cache,
+                    BEM_FMM_M2L_DIRECTION_BLOCKS='0', BEM_PROBE_RI_IMAG=str(absorption),
+                    BEM_PROBE_SEED='219', BEM_PROBE_ACTIONS='2',
+                    BEM_PROBE_COMPARE_FLAG='BEM_FMM_M2L_DIRECTION_BLOCKS',
+                    BEM_PROBE_PRISM_ASPECT='1.4285714285714286', BEM_TMATRIX_D6H_MESH='1')
+                for strict in ('0', '1'):
+                    env.update(BEM_PROBE_STRICT=strict, BEM_PROBE_WARM_MIXED='1')
+                    prefix = out / f'k40_abs{absorption}_strict{strict}'
+                    result = subprocess.run([str(ROOT/'bin/muller_fmm_action_probe'), '3', '40',
+                        str(out/'operator'), str(prefix)], cwd=ROOT, env=env, text=True,
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
+                    self.assertEqual(result.returncode, 0, result.stdout)
+                    report = json.loads(Path(str(prefix)+'.json').read_text())
+                    self.assertEqual(len(report['comparison']), 4)
+                    for trial in report['comparison']:
+                        self.assertLess(trial['relative_to_initial'], 2e-12, report)
+
+    def test_shared_p2m_real_absorbing_and_strict_switch(self):
+        with tempfile.TemporaryDirectory(prefix='bem-shared-p2m-') as temporary:
+            out = Path(temporary)
+            for absorption in (0., .03):
+                env = {k: v for k, v in os.environ.items() if not k.startswith('BEM_')}
+                env.update(OMP_NUM_THREADS='4', OPENBLAS_NUM_THREADS='1',
+                    BEM_FMM_MULTILEVEL='1', BEM_FMM_BANDED_SPLIT_DEPTH='3',
+                    BEM_FMM_BANDED_COARSE_MAX_LEAF='512', BEM_FMM_BANDED_MIDDLE_MAX_LEAF='64',
+                    BEM_PROBE_MAX_LEAF='8', BEM_FMM_PAIR_CURRENTS='0',
+                    BEM_MULLER_GPU_ASSEMBLY='0', BEM_FMM_PHASE_CACHE='0',
+                    BEM_FMM_STRICT_PAIR_WORKSPACE='0', BEM_FMM_BANDED_MINIMAL_WORKSPACE='1',
+                    BEM_FMM_MULTILEVEL_P2M_FP32='1', BEM_FMM_MULTILEVEL_P2M_SHARED='0',
+                    BEM_PROBE_RI_IMAG=str(absorption), BEM_PROBE_SEED='219',
+                    BEM_PROBE_ACTIONS='2', BEM_PROBE_COMPARE_FLAG='BEM_FMM_MULTILEVEL_P2M_SHARED',
+                    BEM_PROBE_PRISM_ASPECT='1.4285714285714286', BEM_TMATRIX_D6H_MESH='1')
+                for strict in ('0', '1'):
+                    env.update(BEM_PROBE_STRICT=strict, BEM_PROBE_WARM_MIXED=strict)
+                    prefix = out / f'k12_abs{absorption}_strict{strict}'
+                    result = subprocess.run([str(ROOT/'bin/muller_fmm_action_probe'), '3', '12',
+                        str(out/'operator'), str(prefix)], cwd=ROOT, env=env, text=True,
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
+                    self.assertEqual(result.returncode, 0, result.stdout)
+                    report = json.loads(Path(str(prefix)+'.json').read_text())
+                    for row in report['comparison']:
+                        self.assertLess(row['relative_to_initial'], 1e-12 if strict == '1' else 2e-6)
+
     def test_azimuth_parity_real_absorbing_and_strict_switch(self):
         with tempfile.TemporaryDirectory(prefix='bem-azimuth-parity-') as temporary:
             out=Path(temporary)

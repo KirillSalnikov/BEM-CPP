@@ -1,0 +1,45 @@
+{
+  "case": "Fresh CPU dense Muller sphere versus Mie; not a GPU FMM/FFT gate",
+  "software_version": "1.0.0",
+  "measurement_date": "2026-11-01",
+  "backend": "muller_nodal_p2_dense",
+  "parameters": {
+    "shape": "sphere",
+    "refinement": 2,
+    "ka": 1.0,
+    "relative_refractive_index": 1.3,
+    "scattering_angles": 73,
+    "regular_quadrature": 7,
+    "duffy_order": 4,
+    "solver": "dense direct"
+  },
+  "acceptance": {
+    "maximum_true_residual": 2e-05,
+    "maximum_m11_solid_angle_relative_l2": 0.04,
+    "maximum_main_normalized_mueller_error": 0.05
+  },
+  "observed_on_release_machine": {
+    "maximum_true_residual": 3.0662054728813916e-15,
+    "m11_solid_angle_relative_l2": 0.032275525516619157,
+    "main_normalized_mueller_error": 0.04305028883267746,
+    "m11_forward_bem_over_mie": 0.9809540767534142
+  },
+  "machine": {
+    "cpu": "x86_64",
+    "compiler": "12.4.0",
+    "operating_system": "Ubuntu 24.04",
+    "gpu_used": false
+  },
+  "timing": {
+    "assembly_s": 314.398781875,
+    "solve_s": 7.854998485,
+    "total_s": 322.324494843
+  },
+  "result_sha256": "dd41312f25726a7acb2781c874548dc99bda8d2611046551d5ee0101856ff5c9",
+  "binary_sha256": "55cfa47f5c34bbc90848ef2d5021a98760e65ae7354b8d4913c1b59884132197",
+  "command": "make bin/muller_nodal_demo CXX=g++-12; examples/run_small_sphere_cpu_check.sh",
+  "limits": [
+    "CPU dense physical reference; does not replace the pending full GPU release audit.",
+    "Measured concurrently with an existing GPU production calculation; time is not a clean performance benchmark."
+  ]
+}

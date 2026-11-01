@@ -479,6 +479,69 @@ __global__ void p2m_kernel_batch3(
     }
 }
 
+// A source tile is shared by an angular tile. In particular, the FP64
+// subtraction of each leaf center happens once per loaded point rather than
+// once per point/direction pair. Keep the original source summation order,
+// FP32 phase arithmetic and FP64 expansion storage. Partial angular tiles
+// still participate in every barrier.
+template <int Tile = 128>
+__global__ void p2m_kernel_batch3_shared_fp32(
+    const double* __restrict__ src_pts,
+    const double* __restrict__ q1_re, const double* __restrict__ q1_im,
+    const double* __restrict__ q2_re, const double* __restrict__ q2_im,
+    const double* __restrict__ q3_re, const double* __restrict__ q3_im,
+    const double* __restrict__ dirs, float k_re, float k_im,
+    double* __restrict__ m1_re, double* __restrict__ m1_im,
+    double* __restrict__ m2_re, double* __restrict__ m2_im,
+    double* __restrict__ m3_re, double* __restrict__ m3_im,
+    const int* __restrict__ leaf_indices,
+    const int* __restrict__ src_id_offsets, const int* __restrict__ src_ids,
+    const double* __restrict__ node_centers, int L, int n_leaves)
+{
+    const int leaf = blockIdx.x;
+    if (leaf >= n_leaves) return;
+    const int start = src_id_offsets[leaf], end = src_id_offsets[leaf+1];
+    if (start == end) return;
+    const int node = leaf_indices[leaf];
+    const double cx = node_centers[3*node], cy = node_centers[3*node+1], cz = node_centers[3*node+2];
+    const int l = blockIdx.y*blockDim.x+threadIdx.x;
+    const bool active = l < L, real_k = k_im == 0.f;
+    const float dx = active ? float(dirs[3*l]) : 0.f;
+    const float dy = active ? float(dirs[3*l+1]) : 0.f;
+    const float dz = active ? float(dirs[3*l+2]) : 0.f;
+    __shared__ float source[9][Tile];
+    float a1r=0, a1i=0, a2r=0, a2i=0, a3r=0, a3i=0;
+    for (int base=start; base<end; base+=Tile) {
+        const int count = min(Tile,end-base);
+        for (int j=threadIdx.x; j<count; j+=blockDim.x) {
+            const int sid = src_ids[base+j];
+            source[0][j]=float(src_pts[3*sid]-cx);
+            source[1][j]=float(src_pts[3*sid+1]-cy);
+            source[2][j]=float(src_pts[3*sid+2]-cz);
+            source[3][j]=float(q1_re[sid]); source[4][j]=float(q1_im[sid]);
+            source[5][j]=float(q2_re[sid]); source[6][j]=float(q2_im[sid]);
+            source[7][j]=float(q3_re[sid]); source[8][j]=float(q3_im[sid]);
+        }
+        __syncthreads();
+        if (active) for (int j=0; j<count; ++j) {
+            const float dot = dx*source[0][j]+dy*source[1][j]+dz*source[2][j];
+            const float exponential = real_k ? 1.f : fmm_point_exp(k_im*dot);
+            float sine, cosine; fmm_point_sincos(-k_re*dot,&sine,&cosine);
+            const float er=exponential*cosine, ei=exponential*sine;
+            a1r+=er*source[3][j]-ei*source[4][j]; a1i+=er*source[4][j]+ei*source[3][j];
+            a2r+=er*source[5][j]-ei*source[6][j]; a2i+=er*source[6][j]+ei*source[5][j];
+            a3r+=er*source[7][j]-ei*source[8][j]; a3i+=er*source[8][j]+ei*source[7][j];
+        }
+        __syncthreads();
+    }
+    if (active) {
+        const size_t dst=size_t(node)*L+l;
+        m1_re[dst]=a1r; m1_im[dst]=a1i;
+        m2_re[dst]=a2r; m2_im[dst]=a2i;
+        m3_re[dst]=a3r; m3_im[dst]=a3i;
+    }
+}
+
 // M2M kernel: propagate multipole from child to parent
 __global__ void m2m_kernel(
     const int*    __restrict__ parent_idx,
@@ -794,7 +857,8 @@ __global__ void m2l_kernel_batch3_target_rows(
     if (row >= row_offset + row_count)
         return;
     const int local_base = row_target[row] * L;
-    for (int l = threadIdx.x; l < L; l += blockDim.x) {
+    for (int l = blockIdx.y * blockDim.x + threadIdx.x;
+         l < L; l += blockDim.x * gridDim.y) {
         ComputeReal a1r = 0.0, a1i = 0.0;
         ComputeReal a2r = 0.0, a2i = 0.0;
         ComputeReal a3r = 0.0, a3i = 0.0;
@@ -6633,6 +6697,20 @@ void HelmholtzFMM::evaluate_batch3_far_uploaded(bool multipoles_ready)
     const int block_L = std::min(L, 256);
     if (!multipoles_ready && n_leaves > 0) {
         if(near_field_fp32 && bem_env_flag_enabled("BEM_FMM_MULTILEVEL_P2M_FP32")) {
+        if(bem_env_flag_enabled("BEM_FMM_MULTILEVEL_P2M_SHARED")) {
+        p2m_kernel_batch3_shared_fp32<<<dim3(n_leaves,(L+255)/256),256>>>(
+            d_src_pts,
+            d_charges_re, d_charges_im,
+            d_charges2_re, d_charges2_im,
+            d_charges3_re, d_charges3_im,
+            d_dirs_cached, k.real(), k.imag(),
+            d_multi_re, d_multi_im,
+            d_multi2_re, d_multi2_im,
+            d_multi3_re, d_multi3_im,
+            d_leaf_idx_cached,
+            d_src_id_offsets_cached, d_src_ids_cached,
+            d_node_centers_cached, L, n_leaves);
+        } else {
         p2m_kernel_batch3<float><<<n_leaves, block_L>>>(
             d_src_pts,
             d_charges_re, d_charges_im,
@@ -6645,6 +6723,7 @@ void HelmholtzFMM::evaluate_batch3_far_uploaded(bool multipoles_ready)
             d_leaf_idx_cached,
             d_src_id_offsets_cached, d_src_ids_cached,
             d_node_centers_cached, L, n_leaves);
+        }
         } else {
         p2m_kernel_batch3<double><<<n_leaves, block_L>>>(
             d_src_pts,
@@ -6696,6 +6775,11 @@ void HelmholtzFMM::evaluate_batch3_far_uploaded(bool multipoles_ready)
     FmmCudaTimeline::mark("M2L-cache", tree.max_level);
     const bool row_m2l = mixed_m2l ||
         bem_env_flag_enabled("BEM_FMM_MULTILEVEL_M2L_ROWS");
+    // Directions are independent; splitting them preserves each source sum.
+    // Keep the strict FP64 launch and its arithmetic unchanged.
+    const int direction_blocks = mixed_m2l && L >= 512 &&
+        bem_env_flag_enabled("BEM_FMM_M2L_DIRECTION_BLOCKS")
+        ? (L + block_L - 1) / block_L : 1;
     for (int level = 1; level <= tree.max_level; level++) {
         if (!p2p_enabled && !row_m2l) {
             if (level >= (int)m2l_level_info.size() ||
@@ -6720,7 +6804,7 @@ void HelmholtzFMM::evaluate_batch3_far_uploaded(bool multipoles_ready)
             const int offset = m2l_row_level_info[level].offset;
             const int count = m2l_row_level_info[level].count;
             if (read_cache) {
-                m2l_kernel_batch3_target_rows<float,float><<<count, block_L>>>(
+                m2l_kernel_batch3_target_rows<float,float><<<dim3(count,direction_blocks), block_L>>>(
                     d_m2l_row_target,d_m2l_row_start,d_m2l_row_end,d_m2l_src,d_m2l_tidx,
                     read_cache->data,read_cache->data+read_cache->transfers,
                     read_cache->field(0),read_cache->field(1),read_cache->field(2),
@@ -6728,7 +6812,7 @@ void HelmholtzFMM::evaluate_batch3_far_uploaded(bool multipoles_ready)
                     d_local_re,d_local_im,d_local2_re,d_local2_im,d_local3_re,d_local3_im,
                     L,count,offset);
             } else if (mixed_m2l) {
-                m2l_kernel_batch3_target_rows<float><<<count, block_L>>>(
+                m2l_kernel_batch3_target_rows<float><<<dim3(count,direction_blocks), block_L>>>(
                     d_m2l_row_target, d_m2l_row_start, d_m2l_row_end,
                     d_m2l_src, d_m2l_tidx, d_transfer_re, d_transfer_im,
                     d_multi_re, d_multi_im, d_multi2_re, d_multi2_im,
@@ -7040,7 +7124,7 @@ void HelmholtzFMM::evaluate_pot_grad_batch2_uploaded()
         CUDA_CHECK(cudaGetLastError());
     }
 
-    launch_p2p_pot_grad_batch2_leaf(
+    if (p2p_enabled) launch_p2p_pot_grad_batch2_leaf(
         d_tgt_pts, d_src_pts,
         d_charges_re, d_charges_im, d_charges2_re, d_charges2_im,
         d_tgt_id_offsets_cached, d_tgt_ids_cached,

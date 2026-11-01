@@ -61,8 +61,11 @@ class PipelineTest(unittest.TestCase):
             outputs=[]
             env={k:v for k,v in os.environ.items() if not k.startswith('BEM_')}
             env.update(OMP_NUM_THREADS='1',OPENBLAS_NUM_THREADS='1')
-            for prefetch,fallback in ((False,False),(True,False),(True,True)):
-                out=Path(temp)/f'{prefetch}_{fallback}'
+            for prefetch,fallback,hybrid in ((False,False,False),(True,False,False),(True,True,False),
+                                             (True,False,True),(True,True,True)):
+                out=Path(temp)/f'{prefetch}_{fallback}_{hybrid}'
+                env.pop('BEM_TEST_FAKE_CROSS_TALK',None)
+                env['BEM_TEST_FAKE_HYBRID']='1' if hybrid else '0'
                 if fallback:env['BEM_TEST_FAKE_CROSS_TALK']='production'
                 cmd=[sys.executable,str(ROOT/'scripts/build_fmm_tmatrix.py'),'--shape','prism','--ka','1',
                      '--ri','1.3','--ref','1','--order','7','--tol','1e-6','--no-average',
@@ -72,6 +75,7 @@ class PipelineTest(unittest.TestCase):
                 self.assertEqual(result.returncode,0,result.stdout)
                 outputs.append(np.load(out/'tmatrix.npy'))
                 summary=json.loads((out/'summary.json').read_text())
+                if hybrid:self.assertTrue(any(p['hybrid_packet'] for p in summary['pairs_this_run']))
                 self.assertTrue(summary['c6_packing']['independent_reference_audits_complete'])
                 if fallback:self.assertTrue(list((out/'c6_rejections').glob('*.json')))
                 if prefetch:
@@ -80,6 +84,20 @@ class PipelineTest(unittest.TestCase):
                     self.assertEqual(result.returncode,0,result.stdout)
                     self.assertEqual(json.loads((out/'summary.json').read_text())['pairs_this_run'],[])
             np.testing.assert_array_equal(outputs[0],outputs[1])
-            np.testing.assert_allclose(outputs[0],outputs[2],rtol=1e-8,atol=1e-10)
+            for other in outputs[2:]:np.testing.assert_allclose(outputs[0],other,rtol=1e-8,atol=1e-10)
+
+    def test_hybrid_bad_residual_never_commits_either_packet(self):
+        with tempfile.TemporaryDirectory() as temp:
+            out=Path(temp)/'reject'
+            env={k:v for k,v in os.environ.items() if not k.startswith('BEM_')}
+            env.update(OMP_NUM_THREADS='1',OPENBLAS_NUM_THREADS='1',BEM_TEST_FAKE_HYBRID='1',
+                       BEM_TEST_FAKE_BAD_RESIDUAL='1')
+            cmd=[sys.executable,str(ROOT/'scripts/build_fmm_tmatrix.py'),'--shape','prism','--ka','1',
+                 '--ri','1.3','--ref','1','--order','3','--tol','1e-6','--no-average','--columns','0','4',
+                 '--worker-binary',str(ROOT/'tests/c6_fake_worker.py'),'--out',str(out)]
+            process=subprocess.run(cmd,cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=60)
+            self.assertNotEqual(process.returncode,0,process.stdout)
+            self.assertTrue((out/'rejected_solve.json').exists())
+            self.assertEqual(list((out/'columns').glob('*.npy')),[])
 
 if __name__=='__main__':unittest.main()

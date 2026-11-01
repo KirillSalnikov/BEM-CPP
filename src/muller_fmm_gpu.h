@@ -37,6 +37,8 @@ public:
         const std::vector<MullerGpuCorrectionValue>& correction_entries);
 
     void upload_system_input(const std::complex<double>* input);
+    void upload_system_input_pair(const std::complex<double>* first,const std::complex<double>* second);
+    int system_slot_count()const{return system_slots;}
     void upload_system_input_device(const void* device_input);
     void upload_system_input_pair_device(
         const void* device_input_x, const void* device_input_y);
@@ -62,7 +64,7 @@ public:
         std::complex<double> epsilon_interior,
         std::complex<double> mu_exterior,
         std::complex<double> mu_interior,
-        std::complex<double>* output);
+        std::complex<double>* output,int system_slot=0);
 
     void combine_to_device(
         std::complex<double> k_exterior,

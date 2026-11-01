@@ -11,6 +11,79 @@ import run_large_tmatrix as runner
 
 
 class LargeRunTest(unittest.TestCase):
+    def test_hybrid_mode_and_thread_profile_survive_resume(self):
+        with tempfile.TemporaryDirectory() as temp:
+            args=['runner','--out',temp,'--order','4','--sector-gmres','--hybrid-cpu','--prepare-only',
+                  '--tol','3e-5','--adaptive-tight-tol','2e-6']
+            with patch.object(sys,'argv',args),patch.object(runner,'frozen_runtime'), \
+                 patch.object(runner.shutil,'disk_usage',return_value=SimpleNamespace(free=1024*2**30)), \
+                 patch.object(runner.psutil,'virtual_memory',return_value=SimpleNamespace(available=60*2**30)), \
+                 patch.dict(runner.os.environ,{'BEM_CPU_THREADS':'16','BEM_CIRCULANT_CPU_FFT':'auto'}):
+                self.assertEqual(runner.main(),0)
+            plan=json.loads((Path(temp)/'plan.json').read_text())
+            self.assertTrue(plan['parameters']['hybrid_cpu'])
+            for command in (plan['command'],plan['resume_command']):
+                self.assertIn('--hybrid-cpu',command)
+                self.assertEqual(float(command[command.index('--adaptive-tight-tol')+1]),2e-6)
+            self.assertEqual(plan['parameters']['adaptive_tight_tol'],2e-6)
+            self.assertEqual(plan['profile']['BEM_TMATRIX_HYBRID'],'1')
+            self.assertEqual(plan['profile']['BEM_TMATRIX_CPU_STRICT'],'1')
+            self.assertEqual(plan['profile']['BEM_CPU_THREADS'],'16')
+            self.assertEqual(plan['profile']['BEM_CIRCULANT_CPU_FFT'],'auto')
+            self.assertEqual(plan['profile']['OMP_WAIT_POLICY'],runner.os.environ.get('OMP_WAIT_POLICY','PASSIVE'))
+            self.assertEqual(plan['profile']['GOMP_SPINCOUNT'],runner.os.environ.get('GOMP_SPINCOUNT','0'))
+
+    def test_hybrid_eta_counts_shared_batch_time_once(self):
+        with tempfile.TemporaryDirectory() as temp:
+            out=Path(temp);base=out/'main';base.mkdir()
+            pair={'total_worker_s':100.,'hybrid_accounted_worker_s':50.,'incident_wait_s':2.}
+            (base/'operator_metadata.json').write_text(json.dumps({'hybrid_batch_capacity':2}))
+            (base/'progress.json').write_text(json.dumps({'remaining_worker_pairs':10,'last_pair':pair}))
+            (base/'summary.json').write_text(json.dumps({'pairs_this_run':[pair,pair]}))
+            (base/'worker.log').write_text('[T sector GMRES 2] projected 0.01 elapsed_s=100.000\n')
+            runner.estimate(out,base,{'initial_worker_pairs_including_audits':12},'main')
+            data=json.loads((out/'eta.json').read_text())
+            self.assertEqual(data['iteration_sample'],{})
+            self.assertEqual(data['pilot_mean_pair_s'],52.)
+            self.assertEqual(data['last_completed_pair_s'],52.)
+            self.assertAlmostEqual(data['pilot_extrapolated_remaining_days'],520/86400)
+
+    def test_projection_and_operator_options_survive_frozen_resume(self):
+        with tempfile.TemporaryDirectory() as temp:
+            args=['runner','--out',temp,'--order','14','--angular-band','18',
+                  '--prism-aspect',str(10/7),'--sector-gmres','--strict-face-fft',
+                  '--gpu-assembly','--gpu-host-correction','--prepare-only']
+            with patch.object(sys,'argv',args),patch.object(runner,'frozen_runtime'), \
+                 patch.object(runner.shutil,'disk_usage',return_value=SimpleNamespace(free=1024*2**30)), \
+                 patch.object(runner.psutil,'virtual_memory',return_value=SimpleNamespace(available=60*2**30)):
+                self.assertEqual(runner.main(),0)
+            plan=json.loads((Path(temp)/'plan.json').read_text())
+            self.assertEqual(plan['parameters']['angular_band'],18)
+            for command in [plan['command'],plan['resume_command']]:
+                self.assertEqual(command[command.index('--angular-band')+1],'18')
+            self.assertIn('--strict-face-fft',plan['resume_command'])
+            self.assertIn('--gpu-assembly',plan['resume_command'])
+            self.assertIn('--gpu-host-correction',plan['resume_command'])
+            self.assertEqual(plan['profile']['BEM_TMATRIX_SECTOR_GMRES'],'1')
+            self.assertEqual(plan['profile']['BEM_MULLER_GPU_ASSEMBLY'],'1')
+            self.assertEqual(plan['profile']['BEM_FACE_FFT_STRICT_ONLY'],'1')
+            self.assertEqual(plan['profile']['BEM_FACE_FFT_REUSE_CROSS'],'1')
+            self.assertEqual(plan['profile']['BEM_MULLER_GPU_STRICT_ONLY'],'1')
+            self.assertEqual(plan['profile']['BEM_FACE_FFT_SMOOTH_PADDING'],'1')
+            self.assertEqual(plan['profile']['BEM_FACE_FFT_DEDUP_KERNELS'],'1')
+            self.assertEqual(plan['profile']['BEM_MULLER_GPU_HOST_CORRECTION'],'1')
+
+    def test_prepare_preserves_real_memory_guard(self):
+        with tempfile.TemporaryDirectory() as temp:
+            args=['runner','--out',temp,'--order','4','--prepare-only']
+            with patch.object(sys,'argv',args),patch.object(runner,'frozen_runtime'), \
+                 patch.object(runner.shutil,'disk_usage',return_value=SimpleNamespace(free=1024*2**30)), \
+                 patch.object(runner.psutil,'virtual_memory',return_value=SimpleNamespace(available=8*2**30)), \
+                 patch.object(runner,'run') as stage:
+                with self.assertRaisesRegex(RuntimeError,'32 GiB available'):
+                    runner.main()
+                stage.assert_not_called()
+
     def test_freeze_keeps_explicit_validated_worker_and_detects_changes(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);source=root/'source';target=root/'runtime';worker=root/'old_worker'

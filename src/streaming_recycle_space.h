@@ -57,6 +57,45 @@ public:
     double storage_gib() const {return 2.*rank()*size_*sizeof(Complex)/(1024.*1024.*1024.);}
     void clear() {solutions_.clear();images_.clear();dirty_=true;++generation_;}
 
+    // Both spaces must describe the SAME fixed right-preconditioned operator
+    // in the same coordinates. Call only after the producer lanes have joined.
+    // Orthogonalize U and C together so the approximate A_inner U = C relation
+    // survives the union. Its use still requires the original FP64 gate.
+    int merge_from(const RecycleSpace& other) {
+        if(size_!=other.size_)throw std::invalid_argument("recycle merge dimensions");
+        if(this==&other || capacity_==0 || other.rank()==0)return 0;
+        int added=0;
+        for(int k=0;k<other.rank();++k) {
+            Vector solution=other.solutions_[k],image=other.images_[k];
+            const double before=norm(image.data(),size_);
+            for(int pass=0;pass<2;++pass)for(int j=0;j<rank();++j) {
+                const Complex a=dot(images_[j].data(),image.data(),size_);
+#pragma omp parallel for schedule(static)
+                for(int i=0;i<size_;++i){image[i]-=a*images_[j][i];solution[i]-=a*solutions_[j][i];}
+            }
+            const double length=norm(image.data(),size_),unorm=norm(solution.data(),size_);
+            if(!std::isfinite(before)||!std::isfinite(length)||!std::isfinite(unorm))
+                throw std::runtime_error("nonfinite recycle merge");
+            if(length<=1e-8*std::max(before,1e-300))continue;
+#pragma omp parallel for schedule(static)
+            for(int i=0;i<size_;++i){image[i]/=length;solution[i]/=length;}
+            solutions_.push_back(std::move(solution));images_.push_back(std::move(image));++added;
+        }
+        if(rank()>capacity_) {
+            // As in learn(), prefer large inverse images (slow directions).
+            // Taking a subset preserves orthogonality and the image relation.
+            std::vector<int> order(rank());std::iota(order.begin(),order.end(),0);
+            std::vector<double> score(rank());
+            for(int j=0;j<rank();++j)score[j]=norm(solutions_[j].data(),size_);
+            std::stable_sort(order.begin(),order.end(),[&](int a,int b){return score[a]>score[b];});
+            std::vector<Vector> kept_u,kept_c;
+            for(int j=0;j<capacity_;++j){kept_u.push_back(std::move(solutions_[order[j]]));kept_c.push_back(std::move(images_[order[j]]));}
+            solutions_.swap(kept_u);images_.swap(kept_c);
+        }
+        if(added){dirty_=true;++generation_;}
+        return added; // independent candidates before capacity pruning
+    }
+
     void correct(Complex* solution,Complex* residual) const {
         for(int pass=0;pass<2;++pass)for(int j=0;j<rank();++j) {
             const Complex a=dot(images_[j].data(),residual,size_);

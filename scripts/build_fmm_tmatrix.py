@@ -79,6 +79,8 @@ def main():
     parser.add_argument('--angular-band',type=int,default=0)
     parser.add_argument('--projection-method',choices=['fft','dense'],default='fft')
     parser.add_argument('--tol',type=float,default=1e-5)
+    parser.add_argument('--adaptive-tight-tol',type=float,
+                        help='Opt-in C6 policy: strict controls, retry failed loose packets and tighten higher degrees')
     parser.add_argument('--restart',type=int,default=80)
     parser.add_argument('--max-iters',type=int,default=500)
     parser.add_argument('--fast-mlfma',action='store_true',
@@ -96,6 +98,7 @@ def main():
     parser.add_argument('--c6-audit-tol',type=float,default=1e-4)
     parser.add_argument('--mirror-pack',action='store_true',
                         help='Use horizontal-reflection parity with C6; select a D6h-invariant prism mesh')
+    parser.add_argument('--hybrid-cpu',action='store_true',help='Overlap independent T packets with CPU FP64 gates; requires sector GMRES')
     parser.add_argument('--incident-prefetch',action='store_true',help='Prepare the next packet while the worker solves')
     parser.add_argument('--no-incident-cache',action='store_true',help='Disable shared geometry/radial incident-field cache')
     parser.add_argument('--seed-from',type=Path,
@@ -112,6 +115,19 @@ def main():
     parser.add_argument('--worker-binary',type=Path,help='Pin a worker executable for long builds')
     parser.add_argument('--operator-cache-prefix',type=Path,help='Reuse validated near/MBJ caches from an existing operator')
     args=parser.parse_args()
+    if args.adaptive_tight_tol is not None and (
+            not np.isfinite(args.adaptive_tight_tol) or not 0<args.adaptive_tight_tol<=args.tol
+            or not args.c6_pack or args.plane_only):
+        parser.error('--adaptive-tight-tol requires C6 packing, 0 < tight <= tol, and modal solves')
+    if args.hybrid_cpu:
+        os.environ['BEM_TMATRIX_HYBRID']='1'
+    if os.environ.get('BEM_TMATRIX_HYBRID','0')!='0':
+        os.environ.setdefault('BEM_TMATRIX_CPU_STRICT','1')
+        # Idle OpenMP teams must yield cores to the other packet/checker.
+        os.environ.setdefault('OMP_WAIT_POLICY','PASSIVE')
+        os.environ.setdefault('GOMP_SPINCOUNT','0')
+        local_fftw=Path.home()/'.local/lib/libfftw3.so.3'
+        if local_fftw.exists():os.environ.setdefault('BEM_CPU_FFTW_LIBRARY',str(local_fftw))
     if bool(args.solver_restart_from)!=bool(args.solver_restart_proof) or (args.seed_from and args.solver_restart_from):
         parser.error('solver restart requires source and proof, and cannot be combined with seed-from')
     if not np.isfinite(args.prism_aspect) or args.prism_aspect<=0:
@@ -131,7 +147,9 @@ def main():
         for key,value in {
             'BEM_FMM_MULTILEVEL_PAIR':'1',
             'BEM_FMM_MULTILEVEL_M2L_FP32':'1',
+            'BEM_FMM_M2L_DIRECTION_BLOCKS':'1',
             'BEM_FMM_MULTILEVEL_P2M_FP32':'1',
+            'BEM_FMM_MULTILEVEL_P2M_SHARED':'1',
             'BEM_FMM_MULTILEVEL_L2P_FP32':'1',
             'BEM_FMM_MULTILEVEL_INTERPOLATION_FP32':'1',
             'BEM_FMM_MULTILEVEL_COMPACT_TEMP':'1',
@@ -194,6 +212,8 @@ def main():
     geometry=str(args.obj.resolve()) if args.obj else args.shape
     binary=args.worker_binary.resolve() if args.worker_binary else ROOT/'bin/muller_tmatrix_fmm_server'
     fingerprint={k:v for k,v in vars(args).items() if k not in ('out','columns','column_indices','max_pairs_this_run','fast_mlfma','ntheta','no_average','obj','plane_only','operator_cache_prefix','average_backend','so3_threads','so3_precision','worker_binary','seed_from','solver_restart_from','solver_restart_proof')}
+    if args.adaptive_tight_tol is None:
+        fingerprint.pop('adaptive_tight_tol')
     if args.c6_pack:
         fingerprint['c6_implementation_digest']=hashlib.sha256((ROOT/'scripts/tmatrix_c6.py').read_bytes()).hexdigest()
         fingerprint['c6_driver_digest']=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
@@ -201,6 +221,7 @@ def main():
         fingerprint.pop('c6_pack'); fingerprint.pop('c6_audit_tol')
     if not args.mirror_pack:
         fingerprint.pop('mirror_pack')
+    fingerprint.pop('hybrid_cpu')  # Captured by BEM_environment and worker digest.
     fingerprint.pop('incident_prefetch')
     fingerprint['incident_schedule_digest']=hashlib.sha256((ROOT/'scripts/tmatrix_pipeline.py').read_bytes()).hexdigest()
     fingerprint.pop('no_incident_cache')
@@ -261,6 +282,12 @@ def main():
             information=json.loads(metadata.read_text())
             stored=information['status']
             residual=max(stored['strict_residual_x'],stored['strict_residual_y'])
+            if args.adaptive_tight_tol is not None:
+                limit=stored.get('requested_tolerance')
+                if limit not in (args.tol,args.adaptive_tight_tol) or residual>limit:
+                    return False
+                if 'c6_batch' not in information and limit!=args.adaptive_tight_tol:
+                    return False
             values=np.load(data,mmap_mode='r')
             valid=(np.isfinite([stored['strict_residual_x'],stored['strict_residual_y']]).all() and residual<=args.tol and
                    information['mode']==list(modal_list[index]) and
@@ -354,6 +381,22 @@ def main():
     if args.plane_only:
         pending=[]
     tasks=deque()
+    tight_from_degree=None
+    adaptive_dir=out/'adaptive_tolerance'
+    if args.adaptive_tight_tol is not None:
+        adaptive_dir.mkdir(exist_ok=True)
+        for path in adaptive_dir.glob('*.json'):
+            prior=json.loads(path.read_text())
+            if prior.get('signature')==signature:
+                degree=int(prior['tight_from_degree'])
+                tight_from_degree=degree if tight_from_degree is None else min(degree,tight_from_degree)
+    def task_tolerance(kind,group):
+        if args.adaptive_tight_tol is None:
+            return args.tol
+        if kind=='single' or (tight_from_degree is not None and
+                             max(modal_list[i][1] for i in group)>=tight_from_degree):
+            return args.adaptive_tight_tol
+        return args.tol
     def single_tasks(indices):
         return [('single',indices[i:i+2]) for i in range(0,len(indices),2)]
     c6_reference_groups=[]
@@ -411,6 +454,8 @@ def main():
                         raise RuntimeError('FMM worker startup timed out')
                     time.sleep(.05)
             hello=receive_message(connection)
+            if args.adaptive_tight_tol is not None and not hello.get('per_packet_tolerance'):
+                raise RuntimeError('adaptive tolerance requires a worker with per-packet tolerance support')
             if args.shape=='prism' and args.obj is None:
                 actual_aspect=hello.get('prism_height_to_width_across_flats',1.)
                 if not np.isfinite(actual_aspect) or not np.isclose(actual_aspect,args.prism_aspect,rtol=1e-13,atol=0):
@@ -431,11 +476,18 @@ def main():
             print(json.dumps(hello),flush=True)
             far=np.empty((2,len(directions),3),dtype=np.complex128)
 
-            def result():
+            def send_operation(operation,limit):
+                connection.sendall(struct.pack('=iid',5,operation,limit) if args.adaptive_tight_tol is not None
+                                   else struct.pack('=i',operation))
+
+            def result(limit=None):
+                limit=args.tol if limit is None else limit
                 status=receive_message(connection)
                 receive_into(connection,far)
+                if args.adaptive_tight_tol is not None and status.get('requested_tolerance')!=limit:
+                    raise RuntimeError('worker did not honor the requested packet tolerance')
                 residual=max(status['strict_residual_x'],status['strict_residual_y'])
-                if not np.isfinite([status['strict_residual_x'],status['strict_residual_y']]).all() or residual>args.tol:
+                if not np.isfinite([status['strict_residual_x'],status['strict_residual_y']]).all() or residual>limit:
                     atomic_json(out/'rejected_solve.json',status)
                     raise RuntimeError(f'modal solve rejected: strict residual {residual}; no column checkpoint written')
                 return status
@@ -449,34 +501,56 @@ def main():
                 connection.sendall(struct.pack('=i',2)); connection.sendall(memoryview(plane).cast('B'))
                 plane_control=result()
                 atomic_json(out/'plane_control.json',plane_control)
-            while tasks:
-                if args.max_pairs_this_run is not None and len(timings)>=args.max_pairs_this_run:
-                    break
-                kind,group=tasks.popleft()
-                if kind!='audit':
-                    group=[i for i in group if not valid_column(i)]
-                    if not group:
+            inflight=deque()
+            capacity=int(hello.get('hybrid_batch_capacity',1))
+            if capacity not in (1,2):
+                raise RuntimeError('unsupported worker batch capacity')
+            while tasks or inflight:
+                if not inflight:
+                    if args.max_pairs_this_run is not None and len(timings)>=args.max_pairs_this_run:
+                        break
+                    batch=[]
+                    while tasks and len(batch)<capacity:
+                        if args.max_pairs_this_run is not None and len(timings)+len(batch)>=args.max_pairs_this_run:
+                            break
+                        # An audit depends on previously saved reference columns.
+                        # Never send it before all earlier results are committed.
+                        if batch and (tasks[0][0]=='audit' or batch[0][0]=='audit'):
+                            break
+                        kind,group=tasks.popleft()
+                        if kind!='audit':
+                            group=[i for i in group if not valid_column(i)]
+                            if not group:
+                                continue
+                            if len(group)==1:
+                                kind='single'
+                        batch.append((kind,group))
+                    if not batch:
                         continue
-                    if len(group)==1:
-                        kind='single'
+                    if len(batch)==2:
+                        connection.sendall(struct.pack('=ii',4,2))
+                    for kind,group in batch:
+                        packing_reflection=args.mirror_pack and kind!='packed_rotation'
+                        scales,combined,field_seconds,field_wait,prefetched=preparation.get(kind,group,packing_reflection)
+                        operation=3 if (kind in ('packed','packed_rotation') and
+                                        (hello.get('symmetry_warm_start',False) or
+                                         hello.get('krylov_recycle_capacity',0)>0 or
+                                         hello.get('sector_recycle_capacity',0)>0)) else 1
+                        limit=task_tolerance(kind,group)
+                        send_operation(operation,limit)
+                        connection.sendall(memoryview(fields).cast('B'))
+                        inflight.append((kind,group,packing_reflection,scales,combined,
+                                         field_seconds,field_wait,prefetched,limit))
+                    # Both payloads have been consumed; one shared field buffer
+                    # can now prepare the next packet while this batch solves.
+                    if tasks and (args.max_pairs_this_run is None or len(timings)+len(inflight)<args.max_pairs_this_run):
+                        next_kind,next_group=tasks[0]
+                        preparation.prefetch(next_kind,next_group,args.mirror_pack and next_kind!='packed_rotation')
+                kind,group,packing_reflection,scales,combined,field_seconds,field_wait,prefetched,limit=inflight.popleft()
                 pair=(group if len(group)==2 else group*2) if kind=='single' else group
-                packing_reflection=args.mirror_pack and kind!='packed_rotation'
-                scales,combined,field_seconds,field_wait,prefetched=preparation.get(kind,group,packing_reflection)
-                # Keep all independent references and coded audits cold.
-                # Only production packets may reuse guesses or Krylov vectors;
-                # both solutions still have to pass the full strict residual.
-                operation=3 if (kind in ('packed','packed_rotation') and
-                                (hello.get('symmetry_warm_start',False) or
-                                 hello.get('krylov_recycle_capacity',0)>0 or
-                                 hello.get('sector_recycle_capacity',0)>0)) else 1
-                connection.sendall(struct.pack('=i',operation))
-                connection.sendall(memoryview(fields).cast('B'))
-                # sendall has consumed this buffer; the producer can refill it
-                # while the worker owns the current assembled right-hand sides.
-                if tasks and (args.max_pairs_this_run is None or len(timings)+1<args.max_pairs_this_run):
-                    next_kind,next_group=tasks[0]
-                    preparation.prefetch(next_kind,next_group,args.mirror_pack and next_kind!='packed_rotation')
-                status=result(); status['incident_field_s']=field_seconds
+                # result() verifies the original FP64 residual BEFORE any
+                # column, symmetry receipt, or checkpoint is written.
+                status=result(limit);status['incident_field_s']=field_seconds
                 status['incident_wait_s']=field_wait
                 status['incident_prefetched']=prefetched
                 status['rhs_kind']=kind
@@ -505,6 +579,17 @@ def main():
                         references={i:np.load(column_dir/f'{i:06d}.npy') for i in group}
                         check['independent_reference_check']=tmatrix_c6.compare_references(columns,references,args.c6_audit_tol)
                         check['passed']=check['passed'] and check['independent_reference_check']['passed']
+                    retry_tighter=(not check['passed'] and args.adaptive_tight_tol is not None
+                                   and limit>args.adaptive_tight_tol)
+                    if retry_tighter:
+                        degree=max(modal_list[i][1] for i in group)
+                        tight_from_degree=degree if tight_from_degree is None else min(degree,tight_from_degree)
+                        check['tight_from_degree']=tight_from_degree
+                        atomic_json(adaptive_dir/f'{kind}_{batch}.json',check)
+                        tasks.appendleft((kind,group))
+                        print(f'C6 packet failed at {limit:g}; retry at {args.adaptive_tight_tol:g}, '
+                              f'tighten degrees >= {tight_from_degree}',flush=True)
+                    elif kind=='audit':
                         atomic_json(out/'c6_audits'/f'{batch}.json',check)
                         if not check['passed']:
                             raise RuntimeError('C6 packed RHS audit failed; no packed checkpoints accepted')
@@ -534,7 +619,7 @@ def main():
                 update_c2_columns(saved)
                 atomic_json(out/'progress.json',{'state':'solving','pid':os.getpid(),'mode_count':count,
                             'last_columns':saved,'last_attempted_columns':group,'rhs_kind':kind,
-                            'pairs_this_run':len(timings),'remaining_worker_pairs':len(tasks),'last_pair':status,
+                            'pairs_this_run':len(timings),'remaining_worker_pairs':len(tasks)+len(inflight),'last_pair':status,
                             'elapsed_s':time.monotonic()-process_start})
                 print(f'{kind} columns {group}: iterations={status["iterations"]}, solve={status["solve_s"]:.3f}s, '
                       f'strict residual={max(status["strict_residual_x"],status["strict_residual_y"]):.2e}',flush=True)
@@ -550,8 +635,9 @@ def main():
                 for i in range(3):
                     direction_index=projection_points+i
                     plane=np.r_[et[direction_index],ep[direction_index],directions[direction_index]].astype(np.float64)
-                    connection.sendall(struct.pack('=i',2)); connection.sendall(memoryview(plane).cast('B'))
-                    result()
+                    plane_tolerance=args.adaptive_tight_tol or args.tol
+                    send_operation(2,plane_tolerance); connection.sendall(memoryview(plane).cast('B'))
+                    result(plane_tolerance)
                     observed=np.stack((np.einsum('ni,pni->np',et[projection_points:],far[:,projection_points:]),
                                        np.einsum('ni,pni->np',ep[projection_points:],far[:,projection_points:])),axis=1).reshape(-1,2)
                     predicted=check_basis@kernel@check_basis[2*i:2*i+2].conj().T
@@ -593,7 +679,7 @@ def main():
             'completed_columns':len(all_status),'complete':complete,'elapsed_this_run_s':total_seconds,
             'new_direction_field_error':validation,'pairs_this_run':timings,
             'maximum_strict_residual':max((max(d['status']['strict_residual_x'],d['status']['strict_residual_y']) for d in all_status),default=None),
-            'dense_matrix_formed':False,'resident_solution_columns':2,
+            'dense_matrix_formed':False,'resident_solution_columns':hello.get('resident_solution_columns',2),
             'column_physics_checks':column_physics,'plane_control':plane_control}
     physical_scale={'wavelength_um':args.wavelength,
                     'volume_equivalent_radius_um':args.ka*args.wavelength/(2*np.pi) if args.wavelength else None,
@@ -625,6 +711,13 @@ def main():
             'individual_pairs_this_run':sum(t.get('rhs_kind')=='single' for t in timings),
             'individual_surface_residuals_measured_for_packed_columns':False}
         report['maximum_strict_residual_applies_to']='individual_and_combined_RHS; not_each_demultiplexed_column'
+    if args.adaptive_tight_tol is not None:
+        report['adaptive_tolerance']={
+            'loose':args.tol,'tight':args.adaptive_tight_tol,'tight_from_degree':tight_from_degree,
+            'independent_controls_always_tight':True,'audit_threshold_changed':False,
+            'loose_attempts_this_run':sum(t['requested_tolerance']==args.tol for t in timings),
+            'tight_attempts_this_run':sum(t['requested_tolerance']==args.adaptive_tight_tol for t in timings),
+            'retries_recorded':len(list(adaptive_dir.glob('*.json')))}
     if complete:
         kernel=np.load(out/'kernel.npy',mmap_mode='r')
         t=np.lib.format.open_memmap(out/'tmatrix.npy',mode='w+',dtype=np.complex128,shape=(count,count),fortran_order=True)

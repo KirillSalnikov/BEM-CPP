@@ -1,0 +1,1 @@
+Muller nodal demo: shape=sphere ref=2 nodes=642 dofs=2568 feature_edges=0 assembly=314.399s solve=7.855s residual=3.066e-15 out=reference/v1.0.0/small_sphere_cpu_result.json

@@ -17,6 +17,9 @@ def main() -> int:
     version = read("VERSION").strip()
     documents = {name: read(name) for name in PRIMARY_DOCUMENTS}
     documents["docs/quality_profiles.md"] = read("docs/quality_profiles.md")
+    # Pandoc wraps prose and headings across TeX source lines. Check their
+    # content independently of generated source line wrapping.
+    tex_prose = re.sub(r"\s+", " ", documents["MANUAL.tex"])
 
     assert f"Current release: `{version}`" in documents["README.md"]
     assert f"release `{version}`" in documents["MANUAL.md"]
@@ -29,7 +32,7 @@ def main() -> int:
     assert "BEM-CUDA" not in documents["README.md"]
     assert "BEM-CUDA" not in documents["MANUAL.md"]
     assert "BEM-CUDA" not in documents["MANUAL.tex"]
-    assert "Архивные растровые графики" in documents["MANUAL.tex"]
+    assert "Архивные растровые графики" in tex_prose
 
     manual_assets = "\n".join(
         path.read_text(encoding="utf-8", errors="ignore")
@@ -47,8 +50,8 @@ def main() -> int:
         for misleading_claim in ("`4.13x`", "`11.63x`", "`11.67x`", "`34.01x`", "`6.00x`"):
             assert misleading_claim not in documents[name], (name, misleading_claim)
 
-    assert "ускорение BEM относительно ADDA" in documents["MANUAL.tex"]
-    assert "не заявляется" in documents["MANUAL.tex"]
+    assert "ускорение BEM относительно ADDA" in tex_prose
+    assert "не заявляется" in tex_prose
 
     documented = set(re.findall(r"--[a-z][a-z0-9-]*", joined))
     implementation_sources = (
@@ -68,6 +71,10 @@ def main() -> int:
         "scripts/run_large_tmatrix.py",
         "scripts/run_size_series.py",
         "scripts/run_tmatrix_multisize.py",
+        "scripts/tmatrix_so3_mstm.py",
+        "scripts/select_tmatrix_order.py",
+        "scripts/build_manual.py",
+        "scripts/build_v1_research_assets.py",
         "scripts/benchmark_tmatrix_incident.py",
         "benchmarks/global_solver_20261027/run_probe.py",
         "tools/mesh_capacity_probe.cpp",

@@ -1,4 +1,5 @@
 #include "muller_fmm.h"
+#include "prism_face_fft.h"
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -13,12 +14,14 @@ int main(int argc,char** argv)try {
     if(argc!=4)throw std::runtime_error("Usage: muller_face_fft_check REF KA REPORT.json");
     setvbuf(stdout,nullptr,_IOLBF,0);
     const int ref=std::atoi(argv[1]);const double ka=std::atof(argv[2]);
+    const char* aspect_setting=std::getenv("BEM_PROBE_PRISM_ASPECT");
+    const double aspect=aspect_setting?std::stod(aspect_setting):1.;
     const char* compare_flag=std::getenv("BEM_FACE_FFT_CHECK_COMPARE_FLAG");
     if(compare_flag && std::string(compare_flag)!="BEM_FMM_MULTILEVEL_PARITY")throw std::runtime_error("unsupported comparison flag");
-    if(ref<1||ref>6||ka<=0)throw std::runtime_error("invalid ref/ka");
+    if(ref<1||ref>7||ka<=0||!std::isfinite(aspect)||aspect<=0)throw std::runtime_error("invalid ref/ka/aspect");
     setenv("BEM_MULLER_GPU_ASSEMBLY","1",1);setenv("BEM_FMM_MULTILEVEL_GPU_ASSEMBLY","1",1);
     setenv("BEM_FMM_MULTILEVEL","1",1);setenv("BEM_FMM_PAIR_CURRENTS","0",1);
-    const int segments=1<<ref;int nz=int(std::ceil(std::sqrt(3.)*segments));nz+=nz%2;
+    const int segments=1<<ref;int nz=std::max(segments,int(std::ceil(std::sqrt(3.)*aspect*segments)));nz+=nz%2;
     const int points=7*12*segments*(segments+nz);
     int depth=std::min(6,std::max(3,int(std::ceil(std::log(2.*points/64)/std::log(8.)))));
     if(const char* flag=std::getenv("BEM_FACE_FFT_CHECK_DEPTH"))depth=std::max(3,std::min(6,std::atoi(flag)));
@@ -27,8 +30,23 @@ int main(int argc,char** argv)try {
     setenv("BEM_FMM_BANDED_COARSE_MAX_LEAF",std::to_string(leaf(depth-2)).c_str(),1);
     setenv("BEM_FMM_BANDED_MIDDLE_MAX_LEAF",std::to_string(leaf(depth-1)).c_str(),1);
     MullerFmmOperator op;MullerP2BuildOptions options;options.edge_mode=MullerEdgeMode::HDivBdm1;
-    op.init(regular_prism(6,1.,ref,1.,0,false,true),Complex(ka),Complex(1.3116),options,7,6,5,leaf(depth));
-    std::vector<Complex> q(op.system_dofs),reference(q.size()),result(q.size());
+    op.init(regular_prism(6,aspect,ref,1.,0,false,true),Complex(ka),Complex(1.3116),options,7,6,5,leaf(depth));
+    if(const char* capacity=std::getenv("BEM_FACE_FFT_CHECK_INIT_ONLY"))if(std::string(capacity)!="0") {
+        auto report=[&](bool ready,double seconds) {
+            std::ofstream file(argv[3]);
+            file<<std::setprecision(17)<<"{\"scope\":\"operator allocation only, no solve or accuracy check\",\"ref\":"<<ref
+                <<",\"ka\":"<<ka<<",\"dofs\":"<<op.system_dofs<<",\"prism_aspect\":"<<aspect
+                <<",\"FMM_initialized\":true,\"FFT_initialized\":"<<(ready?"true":"false")
+                <<",\"FFT_setup_s\":"<<seconds;
+            if(ready)file<<",\"FFT_storage_bytes\":"<<op.prism_fft_exterior->fft_storage_bytes()+op.prism_fft_interior->fft_storage_bytes();
+            file<<"}\n";
+        };
+        report(false,0);
+        const auto start=Clock::now();op.enable_prism_face_fft(ref,aspect);
+        report(true,std::chrono::duration<double>(Clock::now()-start).count());
+        op.cleanup();return 0;
+    }
+    std::vector<Complex> q(op.system_dofs),reference(q.size()),result(q.size()),mixed_reference(q.size());
     for(size_t i=0;i<q.size();++i)q[i]=Complex(std::sin(.173*(i+1)),std::cos(.127*(i+1)));
     auto timed=[&](bool strict,std::vector<Complex>& out) {
         const auto start=Clock::now();if(strict)op.matvec_strict(q.data(),out.data());else op.matvec(q.data(),out.data());
@@ -36,12 +54,27 @@ int main(int argc,char** argv)try {
     };
     auto error=[&] {double a=0,b=0;for(size_t i=0;i<result.size();++i){a+=std::norm(result[i]-reference[i]);b+=std::norm(reference[i]);}return std::sqrt(a/b);};
     op.set_fmm_near_fp32(true);timed(true,reference);
+    double host_correction_error=0,inplace_error=0;
+    if(op.gpu_host_correction) {
+        if(op.device_matvec_available())throw std::runtime_error("host correction exposed as a device-only action");
+        op.gpu_operator_assembly=false;
+        try {timed(true,result);}catch(...){op.gpu_operator_assembly=true;throw;}
+        host_correction_error=error();op.gpu_operator_assembly=true;
+        result=q;op.matvec_strict(result.data(),result.data());inplace_error=error();
+        if(!std::isfinite(host_correction_error)||host_correction_error>2e-12||
+           !std::isfinite(inplace_error)||inplace_error>2e-12)
+            throw std::runtime_error("host correction disagrees with CPU assembly or in-place action");
+    }
     std::vector<double> baseline_mixed,baseline_strict;
     for(int i=0;i<3;++i){baseline_mixed.push_back(timed(false,result));baseline_strict.push_back(timed(true,reference));}
-    const auto start=Clock::now();op.enable_prism_face_fft(ref);
+    timed(false,result);mixed_reference=result;const double baseline_mixed_error=error();
+    const auto start=Clock::now();op.enable_prism_face_fft(ref,aspect);
     const double setup=std::chrono::duration<double>(Clock::now()-start).count();
     timed(true,result);const double strict_error=error();
     timed(false,result);const double mixed_error=error();
+    double mixed_difference=0,mixed_norm=0;
+    for(size_t i=0;i<result.size();++i){mixed_difference+=std::norm(result[i]-mixed_reference[i]);mixed_norm+=std::norm(mixed_reference[i]);}
+    const double mixed_baseline_error=std::sqrt(mixed_difference/mixed_norm);
     std::vector<double> fft_mixed,fft_strict;
     for(int i=0;i<3;++i){fft_mixed.push_back(timed(false,result));fft_strict.push_back(timed(true,result));}
     // Keep the same prepared operator, input, and live GPU load for ABBA pairs.
@@ -80,6 +113,10 @@ int main(int argc,char** argv)try {
         if(existed)setenv(compare_flag,saved.c_str(),1);else unsetenv(compare_flag);
     }
     std::ofstream file(argv[3]);file<<std::setprecision(17)<<"{\"ref\":"<<ref<<",\"ka\":"<<ka<<",\"dofs\":"<<op.system_dofs
+      <<",\"prism_aspect\":"<<aspect
+      <<",\"gpu_host_correction\":"<<(op.gpu_host_correction?"true":"false")
+      <<",\"host_correction_error_vs_CPU_assembly\":"<<host_correction_error<<",\"inplace_relative_error\":"<<inplace_error
+      <<",\"baseline_mixed_relative_error\":"<<baseline_mixed_error<<",\"mixed_difference_vs_baseline\":"<<mixed_baseline_error
       <<",\"baseline_depth\":"<<depth<<",\"baseline\":\"three_band_MLFMA\""
       <<",\"backend\":\""<<op.backend_name()<<"\",\"setup_s\":"<<setup<<",\"strict_relative_error\":"<<strict_error<<",\"mixed_relative_error\":"<<mixed_error;
     auto array=[&](const char* key,const std::vector<double>& v){file<<",\""<<key<<"\":[";for(size_t i=0;i<v.size();++i)file<<(i?",":"")<<v[i];file<<"]";};
@@ -93,5 +130,8 @@ int main(int argc,char** argv)try {
     }
     file<<"}\n";
     std::printf("FULL MULLER ref=%d ka=%g strict error %.8e mixed error %.8e\n",ref,ka,strict_error,mixed_error);
-    op.cleanup();return std::isfinite(strict_error)&&std::isfinite(mixed_error)&&strict_error<2e-5&&mixed_error<5e-4&&variant_strict_error<2e-12&&variant_mixed_error<2e-5?0:2;
+    // Strict-only FFT must leave the existing mixed operator unchanged.
+    // Report its error versus FP64 separately; that error belongs to MLFMA.
+    const bool mixed_ok=op.prism_fft_strict_only?mixed_baseline_error<5e-7:mixed_error<5e-4;
+    op.cleanup();return std::isfinite(strict_error)&&std::isfinite(mixed_error)&&strict_error<2e-5&&mixed_ok&&variant_strict_error<2e-12&&variant_mixed_error<2e-5?0:2;
 }catch(const std::exception& e){std::fprintf(stderr,"%s\n",e.what());return 1;}

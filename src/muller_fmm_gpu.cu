@@ -858,9 +858,9 @@ void MullerGpuAssembly::init(
     mass_points = static_cast<int>(mass_counts.size());
     correction_count = static_cast<int>(correction_entries.size());
     const char* four_field_value = std::getenv("BEM_FMM_FOUR_FIELD");
-    system_slots = four_field_value != nullptr &&
-        std::strcmp(four_field_value, "0") != 0
-        ? 4 : 2;
+    const char* host_pair_value = std::getenv("BEM_MULLER_BATCH2_HOST");
+    system_slots = ((four_field_value && std::strcmp(four_field_value,"0")!=0) ||
+                    (host_pair_value && std::strcmp(host_pair_value,"0")!=0))?4:2;
 
     allocate_and_upload(
         &d_regular_counts, regular_counts, "upload regular counts");
@@ -1022,6 +1022,18 @@ void MullerGpuAssembly::upload_system_input_pair_device(
         cuda_check(
             cudaMemsetAsync(array, 0, bytes),
             "clear paired Muller device work array");
+}
+
+void MullerGpuAssembly::upload_system_input_pair(
+    const std::complex<double>* first,const std::complex<double>* second)
+{
+    if(!initialized || system_slots<4 || !first || !second)
+        throw std::runtime_error("Muller host pair requires four assembly slots");
+    const size_t bytes=size_t(2*current_dofs)*sizeof(double2);
+    cuda_check(cudaMemcpy(d_input,first,bytes,cudaMemcpyHostToDevice),"upload first host system");
+    cuda_check(cudaMemcpy(static_cast<double2*>(d_input)+2*current_dofs,second,bytes,cudaMemcpyHostToDevice),"upload second host system");
+    double* arrays[]={d_mass_re,d_mass_im,d_k1_re,d_k1_im,d_k2_epsilon_re,d_k2_epsilon_im,d_k2_mu_re,d_k2_mu_im};
+    for(auto* array:arrays)cuda_check(cudaMemsetAsync(array,0,size_t(system_slots)*current_dofs*sizeof(double)),"clear host pair work");
 }
 
 void MullerGpuAssembly::upload_system_input_device(
@@ -1222,7 +1234,7 @@ void MullerGpuAssembly::combine_and_download(
     std::complex<double> epsilon_interior,
     std::complex<double> mu_exterior,
     std::complex<double> mu_interior,
-    std::complex<double>* output)
+    std::complex<double>* output,int system_slot)
 {
     combine_to_device(
         k_exterior,
@@ -1230,7 +1242,7 @@ void MullerGpuAssembly::combine_and_download(
         epsilon_interior,
         mu_exterior,
         mu_interior,
-        d_output);
+        d_output,system_slot);
     cuda_check(
         cudaMemcpy(
             output, d_output,

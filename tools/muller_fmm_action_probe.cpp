@@ -22,7 +22,9 @@ int main(int argc,char**argv) try {
     const std::string cache=argv[3],out=argv[4];
     const bool d6h=std::getenv("BEM_TMATRIX_D6H_MESH") &&
         std::string(std::getenv("BEM_TMATRIX_D6H_MESH"))!="0";
-    const Mesh mesh=regular_prism(6,1.,ref,1.,0,false,d6h);
+    const double aspect=std::getenv("BEM_PROBE_PRISM_ASPECT")?std::stod(std::getenv("BEM_PROBE_PRISM_ASPECT")):1.;
+    if(!std::isfinite(aspect) || aspect<=0)throw std::runtime_error("invalid prism aspect");
+    const Mesh mesh=regular_prism(6,aspect,ref,1.,0,false,d6h);
     MullerP2BuildOptions options;options.project_edge_nodes_to_sphere=false;
     options.edge_mode=MullerEdgeMode::HDivBdm1;
     const auto begin=std::chrono::steady_clock::now();
@@ -68,6 +70,7 @@ int main(int argc,char**argv) try {
     std::ofstream report(out+".json");
     report<<std::setprecision(17)<<"{\"diagnostic_only\":true,\"actions\":"<<actions<<",\"system_dofs\":"<<op.system_dofs
           <<",\"ka\":"<<ka<<",\"ref\":"<<ref<<",\"max_leaf\":"<<leaf
+          <<",\"prism_aspect\":"<<aspect
           <<",\"ri\":"<<refractive_index<<",\"ri_imag\":"<<absorption<<",\"seed\":"<<seed
           <<",\"d6h_mesh\":"<<(d6h?"true":"false")<<",\"duffy_order\":"<<duffy
           <<",\"near_radius\":"<<radius<<",\"digits\":"<<digits
@@ -80,7 +83,9 @@ int main(int argc,char**argv) try {
     // ABBA order limits drift from GPU temperature/background applications.
     if(const char* flag=std::getenv("BEM_PROBE_COMPARE_FLAG")) {
         const std::string name(flag);
-        if(name!="BEM_FMM_MULTILEVEL_COMPACT_TEMP" &&
+        if(name!="BEM_FMM_M2L_DIRECTION_BLOCKS" &&
+           name!="BEM_FMM_MULTILEVEL_COMPACT_TEMP" &&
+           name!="BEM_FMM_MULTILEVEL_P2M_SHARED" &&
            name!="BEM_FMM_MULTILEVEL_PARITY" &&
            name!="BEM_FMM_MULTILEVEL_M2L_ROWS" &&
            name!="BEM_FMM_P2P_THREADS" &&

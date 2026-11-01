@@ -10,6 +10,7 @@ class PrismSymmetricCirculant {
     bem_tmatrix::PrismGroupMaps group_;
     std::vector<double> coverage_;
     std::vector<std::complex<double>> input_,output_;
+    std::vector<std::complex<double>> pair_fft_[2];
     std::vector<int> cap_dofs_;
     bool fast_=false;
     bool full_fast_=false;
@@ -78,6 +79,28 @@ public:
               proof.unchanged(group_.image[6],group_.sign[6],-1,0,24,fft.coupled(0)) &&
               proof.unchanged(group_.image[6],group_.sign[6],-1,24,26,fft.coupled(1));
         cap_dofs_.clear();for(int p=24;p<26;++p)for(int d:fft.layout.patches[p].dof)if(d>=0)cap_dofs_.push_back(d);
+    }
+    void prepare_batch2(){
+        if(!full_fast_)throw std::logic_error("batched inverse requires native full D6h FFT");
+        fft_->prepare_batch2(true);for(auto& v:pair_fft_)v.resize(input_.size());
+    }
+    void apply_full_fft_symmetry_batch2(const Complex* first,const Complex* second,
+            Complex* first_result,Complex* second_result,double blend=.25){
+        if(!full_fast_ || !std::isfinite(blend) || blend<0 || blend>1 || first_result==second_result ||
+           first==first_result || first==second_result || second==first_result || second==second_result)
+            throw std::invalid_argument("full FFT pair arguments");
+        prepare_batch2();const int n=input_.size();const Complex* rhs[2]={first,second};Complex* result[2]={first_result,second_result};
+        for(int r=0;r<2;++r){
+            local_->apply(rhs[r],result[r]);
+#pragma omp parallel for schedule(static)
+            for(int i=0;i<n;++i){result[r][i]*=.5*(1-blend*coverage_[i]);input_[vertical_image_[i]]=-double(vertical_sign_[i])*rhs[r][i];}
+            local_->apply(input_.data(),output_.data());
+#pragma omp parallel for schedule(static)
+            for(int i=0;i<n;++i)result[r][vertical_image_[i]]+=.5*double(vertical_sign_[i])*(1-blend*coverage_[i])*output_[i];
+        }
+        fft_->apply_fft_part_batch2(first,second,pair_fft_[0].data(),pair_fft_[1].data(),true);
+#pragma omp parallel for collapse(2) schedule(static)
+        for(int r=0;r<2;++r)for(int i=0;i<n;++i)result[r][i]+=blend*pair_fft_[r][i];
     }
     void apply(const Complex* rhs,Complex* result,double blend=.25,bool force_full_group=false) {
         if(!fft_ || !local_ || rhs==result || !std::isfinite(blend) || blend<0 || blend>1)throw std::invalid_argument("symmetric circulant arguments");

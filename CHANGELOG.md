@@ -5,6 +5,47 @@ Semantic Versioning while its public interfaces are stabilizing.
 
 ## Unreleased
 
+## [1.0.0] - 2026-11-01
+
+### T matrices and multisize workflow
+
+- Make complete vector T matrices, analytic SO(3) orientation averaging and
+  independently validated local size models the main documented workflow.
+- Add guarded T-order selection, continuation policies, Taylor/Padé/Loewner
+  experiments and reciprocity-based order-extension utilities.
+- Extend C6/mirror-aware sector GMRES, recycling, face FFT and circulant
+  preconditioners, optional CPU/GPU FP64 overlap, AVX512 host actions and
+  checkpoint migration controls. New experimental paths remain opt-in.
+- Include experimental host FFT/FMM batching, mapped spectral operations,
+  coarse/Ritz initial currents, planar symbols and D6h model actions with
+  their correctness tests. Their availability is not a production speed claim.
+
+### Research manual and evidence
+
+- Replace the main manual with a Russian T-matrix/multisize guide and retain
+  the previous fixed-orientation guide as an archive.
+- Publish portable summaries, provenance hashes, Mueller CSV data and figures
+  for size/order convergence, six particle shapes, mesh sensitivity,
+  interpolation holdouts, tolerance studies, reciprocal extension and
+  coherent/incoherent MBS-fast comparisons at ka=40.
+- Report the complete 8448-column ka=40 result. The recorded 10.43 hours is
+  the final resumed segment after importing 2412 columns, not cold total time.
+- Distinguish the validated ka=10..12 multisize family (aspect 1) from the
+  ka=40 column (aspect 10/7), and truncation errors from surface errors.
+- Provide reproducible summary-figure and Markdown-to-PDF generators.
+
+### Validation scope
+
+- Execute every registered native host check and add host FFT/Taylor/OSRC/D6h
+  checks to CI. Make preparation tests independent of machine load while
+  retaining an explicit insufficient-memory refusal test.
+
+- Release artifacts include the checks actually performed and their provenance.
+  Pending full GPU experiments are not described as completed validation.
+- No universal 1% certificate, ka=100 completion, or equal-accuracy speedup
+  over ADDA is claimed. Several tested acceleration variants were slower;
+  these negative results remain documented.
+
 ## [0.1.0-alpha.6] - 2026-08-07
 
 ### Added

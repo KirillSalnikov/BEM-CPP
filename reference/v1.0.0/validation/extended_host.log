@@ -1,0 +1,185 @@
+make: Entering directory '/tmp/bem-v1-audit'
+tests/host_regular_face_fft_check
+tests/host_regular_face_fft_check
+PASS 9 planar lattice cases, two currents, complex k, exclusion and zero buffers; worst 8.756e-16
+tests/muller_cpu_cross_map_check
+PASS 9 planar lattice cases, two currents, complex k, exclusion and zero buffers; worst 8.756e-16
+tests/host_face_taylor_check
+PASS rectangular maps, permuted leaf IDs, near/far, phase cache, AVX512/scalar; worst 1.026e-15
+tests/host_fmm_batch_check
+PASS FFT Taylor degree 0..6: independent Cauchy 3.824e-12, spectral convolution 1.747e-14, shifted operator 7.620e-16; complex material, two currents, zero and alias
+tests/host_prism_face_taylor_check
+PASS prism FFT+cross Taylor 0..4, two currents/materials, canonical rotations, cap reversal, sparse lattice masks, mapped P2P, additive/zero: central 7.310e-16 contour 7.310e-16 workspace 112608 bytes
+tests/muller_taylor_kernel_check
+PASS Muller kernel moments 0..6: central 3.443e-13, independent contour scaled defect 2.340e-13; both media, small-distance branch, i/k normalization, equal media
+tests/helmholtz_taylor_check
+  [SphereQuad] p=3, L=32 (4 theta x 8 phi)
+  [SphereQuad] p=3, L=32 (4 theta x 8 phi)
+  [SphereQuad] p=3, L=32 (4 theta x 8 phi)
+  [SphereQuad] p=3, L=32 (4 theta x 8 phi)
+  [SphereQuad] p=3, L=32 (4 theta x 8 phi)
+  [SphereQuad] p=3, L=32 (4 theta x 8 phi)
+  [SphereQuad] p=3, L=32 (4 theta x 8 phi)
+  [SphereQuad] p=3, L=32 (4 theta x 8 phi)
+{"passed":true,"cases":256,"independent_kernel_error":7.8639751437821586e-16}
+tests/planar_muller_symbol_check
+PASS planar two-media symbol: inverse 3.553e-15, independent radial integral 9.752e-10; MtE duality, passive root, both polarizations, glancing rejection, equal media
+tests/planar_bdm_symbol_check
+ref=2 kind=0 exact mass 4.606e-16, Fourier quadrature 6.521e-16, inverse 9.930e-16
+ref=2 kind=1 exact mass 4.606e-16, Fourier quadrature 6.521e-16, inverse 9.930e-16
+ref=3 kind=0 exact mass 7.388e-16, Fourier quadrature 6.521e-16, inverse 1.026e-15
+ref=3 kind=1 exact mass 7.388e-16, Fourier quadrature 6.521e-16, inverse 1.026e-15
+PASS exact BDM1 mass, reciprocal normalization, passive two-medium symbol, Nyquist periodicity and invertibility
+tests/planar_inverse_kernel_check
+PASS fixed-order FMM moments 0..6: central 8.052e-16, independent transfer contour 5.618e-16, phase and k^3 product 4.916e-16
+tests/host_fmm_taylor_check
+kind=0 grid=4x5 inverse FFT/direct DFT defect 3.111e-15 condition_F 9.542e+01
+kind=1 grid=4x5 inverse FFT/direct DFT defect 3.111e-15 condition_F 7.511e+01
+OMP_NUM_THREADS=4 tests/prism_symmetry_sectors_check
+ref=0 mirror=0 orbit_inverse_defect=0.000e+00
+ref=0 mirror=1 orbit_inverse_defect=0.000e+00
+ref=1 mirror=0 orbit_inverse_defect=0.000e+00
+ref=1 mirror=1 orbit_inverse_defect=0.000e+00
+ref=2 mirror=0 orbit_inverse_defect=0.000e+00
+ref=2 mirror=1 orbit_inverse_defect=0.000e+00
+Sector unitarity, rotation/mirror characters, pivoting, fixed-edge orbits and inverse intertwining passed
+OMP_NUM_THREADS=4 tests/streaming_sector_gmres_check
+sector mixed=0 restart=3 actions=14 residual=2.303e-11
+sector mixed=0 restart=3 actions=14 residual=2.351e-11
+sector mixed=0 restart=3 actions=14 residual=3.210e-11
+sector mixed=0 restart=3 actions=14 residual=3.245e-11
+sector mixed=0 restart=8 actions=6 residual=3.070e-16
+sector mixed=0 restart=8 actions=6 residual=3.070e-16
+sector mixed=0 restart=8 actions=6 residual=3.063e-16
+sector mixed=0 restart=8 actions=6 residual=2.834e-16
+sector mixed=1 restart=3 actions=14 residual=2.405e-11
+sector mixed=1 restart=3 actions=14 residual=2.405e-11
+sector mixed=1 restart=3 actions=14 residual=3.029e-11
+sector mixed=1 restart=3 actions=14 residual=3.029e-11
+sector mixed=1 restart=8 actions=11 residual=1.529e-11
+sector mixed=1 restart=8 actions=11 residual=1.529e-11
+sector mixed=1 restart=8 actions=11 residual=1.817e-11
+sector mixed=1 restart=8 actions=11 residual=1.817e-11
+sector recycle RHS=0 plain=96 recycle=35 strict=3.785e-10 rank=96
+sector recycle RHS=1 plain=96 recycle=17 strict=3.340e-10 rank=96
+sector recycle RHS=2 plain=96 recycle=17 strict=3.855e-10 rank=96
+Independent sector Krylov, strict replacement with cross-sector perturbations, zero sectors/RHS and limits passed
+OMP_NUM_THREADS=4 tests/block_circulant_symmetry_check
+n=3 explicit_group_vs_kernel_error=2.926e-16
+n=4 explicit_group_vs_kernel_error=3.507e-16
+n=5 explicit_group_vs_kernel_error=4.876e-16
+OMP_NUM_THREADS=4 tests/prism_circulant_layout_check
+  [SphereQuad] p=12, L=338 (13 theta x 26 phi)
+PASS matrix-free FMM moments 0..4: central 1.367e-15, independent contour 2.597e-15; P2M/M2M/M2L/L2L/L2P/P2P, two currents and zero buffers; workspace 1676480 bytes
+tests/muller_taylor_fields_check
+PASS physical incident/radiation moments: central 8.607750e-16, contour scaled 1.654149e-15, transverse 1.383693e-16, nearby 2.567502e-11; both polarizations, order 6
+aspect=1 ref=2 covered=2784/3456 basis_audit=1.944e-15
+aspect=1 ref=3 covered=11424/12672 basis_audit=4.218e-15
+aspect=1 ref=5 covered=197760/202752 basis_audit=1.923e-14
+aspect=1.42857143 ref=2 covered=3264/4032 basis_audit=2.472e-15
+aspect=1.42857143 ref=3 covered=14592/16128 basis_audit=5.942e-15
+aspect=1.42857143 ref=5 covered=251904/258048 basis_audit=2.082e-14
+OMP_NUM_THREADS=4 tests/prism_face_coarse_check
+[face coarse] full sample 1/16, rank=312
+[face coarse] full sample 2/16, rank=312
+[face coarse] full sample 3/16, rank=312
+[face coarse] full sample 4/16, rank=312
+[face coarse] full sample 5/16, rank=312
+[face coarse] full sample 6/16, rank=312
+[face coarse] full sample 7/16, rank=312
+[face coarse] full sample 8/16, rank=312
+[face coarse] full sample 9/16, rank=312
+[face coarse] full sample 10/16, rank=312
+[face coarse] full sample 11/16, rank=312
+[face coarse] full sample 12/16, rank=312
+[face coarse] full sample 13/16, rank=312
+[face coarse] full sample 14/16, rank=312
+[face coarse] full sample 15/16, rank=312
+[face coarse] full sample 16/16, rank=312
+[face coarse] full sample 17/16, rank=312
+[face coarse] full sample 18/16, rank=312
+[face coarse] full sample 19/16, rank=312
+[face coarse] full sample 20/16, rank=312
+[face coarse] full sample 21/16, rank=312
+[face coarse] full sample 22/16, rank=312
+[face coarse] full sample 23/16, rank=312
+[face coarse] full sample 24/16, rank=312
+[face coarse] full sample 25/16, rank=312
+[face coarse] full sample 26/16, rank=312
+[face coarse] full sample 27/16, rank=312
+[face coarse] full sample 28/16, rank=312
+[face coarse] full sample 29/16, rank=312
+[face coarse] full sample 30/16, rank=312
+[face coarse] full sample 31/16, rank=312
+[face coarse] full sample 32/16, rank=312
+face coarse aspect=1 ref=2 rank=312 samples=16 error=0.000e+00
+[face coarse] full sample 1/16, rank=312
+[face coarse] full sample 2/16, rank=312
+[face coarse] full sample 3/16, rank=312
+[face coarse] full sample 4/16, rank=312
+[face coarse] full sample 5/16, rank=312
+[face coarse] full sample 6/16, rank=312
+[face coarse] full sample 7/16, rank=312
+[face coarse] full sample 8/16, rank=312
+[face coarse] full sample 9/16, rank=312
+[face coarse] full sample 10/16, rank=312
+[face coarse] full sample 11/16, rank=312
+[face coarse] full sample 12/16, rank=312
+[face coarse] full sample 13/16, rank=312
+[face coarse] full sample 14/16, rank=312
+[face coarse] full sample 15/16, rank=312
+[face coarse] full sample 16/16, rank=312
+face coarse aspect=1 ref=3 rank=312 samples=16 error=0.000e+00
+face coarse aspect=1 ref=5 rank=312 samples=16 error=0.000e+00
+[face coarse] full sample 1/16, rank=312
+[face coarse] full sample 2/16, rank=312
+[face coarse] full sample 3/16, rank=312
+[face coarse] full sample 4/16, rank=312
+[face coarse] full sample 5/16, rank=312
+[face coarse] full sample 6/16, rank=312
+[face coarse] full sample 7/16, rank=312
+[face coarse] full sample 8/16, rank=312
+[face coarse] full sample 9/16, rank=312
+[face coarse] full sample 10/16, rank=312
+[face coarse] full sample 11/16, rank=312
+[face coarse] full sample 12/16, rank=312
+[face coarse] full sample 13/16, rank=312
+[face coarse] full sample 14/16, rank=312
+[face coarse] full sample 15/16, rank=312
+[face coarse] full sample 16/16, rank=312
+[face coarse] full sample 17/16, rank=312
+[face coarse] full sample 18/16, rank=312
+[face coarse] full sample 19/16, rank=312
+[face coarse] full sample 20/16, rank=312
+[face coarse] full sample 21/16, rank=312
+[face coarse] full sample 22/16, rank=312
+[face coarse] full sample 23/16, rank=312
+[face coarse] full sample 24/16, rank=312
+[face coarse] full sample 25/16, rank=312
+[face coarse] full sample 26/16, rank=312
+[face coarse] full sample 27/16, rank=312
+[face coarse] full sample 28/16, rank=312
+[face coarse] full sample 29/16, rank=312
+[face coarse] full sample 30/16, rank=312
+[face coarse] full sample 31/16, rank=312
+[face coarse] full sample 32/16, rank=312
+face coarse aspect=1.4285714 ref=2 rank=312 samples=16 error=0.000e+00
+[face coarse] full sample 1/16, rank=312
+[face coarse] full sample 2/16, rank=312
+[face coarse] full sample 3/16, rank=312
+[face coarse] full sample 4/16, rank=312
+[face coarse] full sample 5/16, rank=312
+[face coarse] full sample 6/16, rank=312
+[face coarse] full sample 7/16, rank=312
+[face coarse] full sample 8/16, rank=312
+[face coarse] full sample 9/16, rank=312
+[face coarse] full sample 10/16, rank=312
+[face coarse] full sample 11/16, rank=312
+[face coarse] full sample 12/16, rank=312
+[face coarse] full sample 13/16, rank=312
+[face coarse] full sample 14/16, rank=312
+[face coarse] full sample 15/16, rank=312
+[face coarse] full sample 16/16, rank=312
+face coarse aspect=1.4285714 ref=3 rank=312 samples=16 error=0.000e+00
+face coarse aspect=1.4285714 ref=5 rank=312 samples=16 error=0.000e+00
+make: Leaving directory '/tmp/bem-v1-audit'

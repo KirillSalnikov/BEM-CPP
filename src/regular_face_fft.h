@@ -2,6 +2,7 @@
 #define BEM_REGULAR_FACE_FFT_H
 
 #include <complex>
+#include <array>
 #include <cstddef>
 #include <memory>
 #include <vector>
@@ -40,6 +41,9 @@ public:
     void evaluate_device();
     void cleanup();
     std::size_t storage_bytes() const;
+    int stored_kernel_count() const;
+    std::array<int,2> padded_dimensions() const;
+    // Dense upper bound, before planar, parity and duplicate-shift reductions.
     static std::size_t estimated_array_bytes(int nx, int ny, int channels);
 private:
     struct Impl;

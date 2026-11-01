@@ -1,1405 +1,1054 @@
-\documentclass[12pt,a4paper,oneside]{book}
-\usepackage{fontspec}
-\setmainfont{DejaVu Serif}
-\setsansfont{DejaVu Sans}
-\setmonofont{DejaVu Sans Mono}
-\usepackage[english,russian]{babel}
-\usepackage{geometry}
-\geometry{left=24mm,right=19mm,top=21mm,bottom=23mm}
-\usepackage{amsmath,amssymb,mathtools,bm}
-\usepackage{booktabs,longtable,tabularx,array,multirow}
-\usepackage{graphicx,float,caption,subcaption,pdfpages}
-\usepackage{pdflscape}
-\usepackage{xcolor,listings,fancyvrb}
-\usepackage{enumitem,microtype,setspace}
-\microtypesetup{expansion=false}
-\usepackage{hyperref}
-\usepackage[nameinlink,capitalise,noabbrev]{cleveref}
-\usepackage{fancyhdr}
-\usepackage{url}
-\graphicspath{{manual_assets/}}
-\setstretch{1.13}
-\setlength{\parindent}{1.25cm}
-\setlength{\parskip}{0.15em}
-\setlist{nosep,leftmargin=1.6em}
-\hypersetup{colorlinks=true,linkcolor=blue!45!black,citecolor=blue!45!black,urlcolor=blue!55!black}
-\lstset{basicstyle=\ttfamily\small,breaklines=true,frame=single,
-  backgroundcolor=\color{gray!6},rulecolor=\color{gray!35},
-  columns=fullflexible,keepspaces=true,showstringspaces=false}
-\pagestyle{fancy}\fancyhf{}\fancyhead[L]{BEM-CPP}\fancyhead[R]{Руководство пользователя}
-\fancyfoot[C]{\thepage}\setlength{\headheight}{15pt}
-\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
-\newcommand{\vect}[1]{\bm{#1}}
-\newcommand{\dd}{\mathop{}\!\mathrm d}
-\newcommand{\iu}{\mathrm i}
-\newcommand{\E}{\vect E}
-\newcommand{\Hf}{\vect H}
-\newcommand{\J}{\vect J}
-\newcommand{\M}{\vect M}
-\newcommand{\normal}{\widehat{\vect n}}
-\newcommand{\trans}{\mathsf T}
-\newcommand{\herm}{\mathsf H}
-\newcommand{\important}[1]{\begin{quote}\colorbox{yellow!18}{\parbox{0.91\textwidth}{#1}}\end{quote}}
-\newcommand{\csvsection}[2]{\begin{landscape}\section{#1}\VerbatimInput[fontsize=\tiny,frame=single]{#2}\end{landscape}}
+% Options for packages loaded elsewhere
+\PassOptionsToPackage{unicode}{hyperref}
+\PassOptionsToPackage{hyphens}{url}
+%
+\documentclass[
+  11pt,
+  a4paper,
+]{report}
+\usepackage{amsmath,amssymb}
+\usepackage{iftex}
+\ifPDFTeX
+  \usepackage[T1]{fontenc}
+  \usepackage[utf8]{inputenc}
+  \usepackage{textcomp} % provide euro and other symbols
+\else % if luatex or xetex
+  \usepackage{unicode-math} % this also loads fontspec
+  \defaultfontfeatures{Scale=MatchLowercase}
+  \defaultfontfeatures[\rmfamily]{Ligatures=TeX,Scale=1}
+\fi
+\usepackage{lmodern}
+\ifPDFTeX\else
+  % xetex/luatex font selection
+  \setmainfont[]{DejaVu Serif}
+  \setsansfont[]{DejaVu Sans}
+  \setmonofont[]{DejaVu Sans Mono}
+\fi
+% Use upquote if available, for straight quotes in verbatim environments
+\IfFileExists{upquote.sty}{\usepackage{upquote}}{}
+\IfFileExists{microtype.sty}{% use microtype if available
+  \usepackage[]{microtype}
+  \UseMicrotypeSet[protrusion]{basicmath} % disable protrusion for tt fonts
+}{}
+\makeatletter
+\@ifundefined{KOMAClassName}{% if non-KOMA class
+  \IfFileExists{parskip.sty}{%
+    \usepackage{parskip}
+  }{% else
+    \setlength{\parindent}{0pt}
+    \setlength{\parskip}{6pt plus 2pt minus 1pt}}
+}{% if KOMA class
+  \KOMAoptions{parskip=half}}
+\makeatother
+\usepackage{xcolor}
+\usepackage[margin=22mm]{geometry}
+\usepackage{longtable,booktabs,array}
+\usepackage{calc} % for calculating minipage widths
+% Correct order of tables after \paragraph or \subparagraph
+\usepackage{etoolbox}
+\makeatletter
+\patchcmd\longtable{\par}{\if@noskipsec\mbox{}\fi\par}{}{}
+\makeatother
+% Allow footnotes in longtable head/foot
+\IfFileExists{footnotehyper.sty}{\usepackage{footnotehyper}}{\usepackage{footnote}}
+\makesavenoteenv{longtable}
+\usepackage{graphicx}
+\makeatletter
+\def\maxwidth{\ifdim\Gin@nat@width>\linewidth\linewidth\else\Gin@nat@width\fi}
+\def\maxheight{\ifdim\Gin@nat@height>\textheight\textheight\else\Gin@nat@height\fi}
+\makeatother
+% Scale images if necessary, so that they will not overflow the page
+% margins by default, and it is still possible to overwrite the defaults
+% using explicit options in \includegraphics[width, height, ...]{}
+\setkeys{Gin}{width=\maxwidth,height=\maxheight,keepaspectratio}
+% Set default figure placement to htbp
+\makeatletter
+\def\fps@figure{htbp}
+\makeatother
+\setlength{\emergencystretch}{3em} % prevent overfull lines
+\providecommand{\tightlist}{%
+  \setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
+\setcounter{secnumdepth}{-\maxdimen} % remove section numbering
+\ifLuaTeX
+\usepackage[bidi=basic]{babel}
+\else
+\usepackage[bidi=default]{babel}
+\fi
+\babelprovide[main,import]{russian}
+\ifPDFTeX
+\else
+\babelfont{rm}[]{DejaVu Serif}
+\fi
+% get rid of language-specific shorthands (see #6817):
+\let\LanguageShortHands\languageshorthands
+\def\languageshorthands#1{}
 
-\title{\textbf{BEM-CPP}\\[0.4em]
-Полное руководство пользователя и разработчика\\[0.7em]
-\large Метод граничных элементов для рассеяния электромагнитных волн
-на диэлектрических частицах}
-\author{К.~С.~Сальников\\ Институт оптики атмосферы им. В.~Е.~Зуева СО РАН}
-\date{Версия программы: 0.1.0-alpha.6\\7 августа 2026 г.}
+\usepackage{fvextra}
+\RecustomVerbatimEnvironment{verbatim}{Verbatim}{breaklines=true,fontsize=\small}
+\usepackage{xurl}
+\usepackage{etoolbox}
+\usepackage[section]{placeins}
+\AtBeginEnvironment{longtable}{\small}
+\makeatletter
+\def\maxheight{\ifdim\Gin@nat@height>.72\textheight .72\textheight\else\Gin@nat@height\fi}
+\makeatother
+\setlength{\emergencystretch}{3em}
+\sloppy
+\raggedbottom
+\AtBeginDocument{\hypersetup{colorlinks=true,linkcolor=blue!45!black,urlcolor=blue!55!black}}
+\ifLuaTeX
+  \usepackage{selnolig}  % disable illegal ligatures
+\fi
+\IfFileExists{bookmark.sty}{\usepackage{bookmark}}{\usepackage{hyperref}}
+\IfFileExists{xurl.sty}{\usepackage{xurl}}{} % add URL line breaks if available
+\urlstyle{same}
+\hypersetup{
+  pdftitle={BEM-CPP: T-матрица и мультиразмерные расчёты},
+  pdfauthor={К. С. Сальников},
+  pdflang={ru-RU},
+  hidelinks,
+  pdfcreator={LaTeX via pandoc}}
+
+\title{BEM-CPP: T-матрица и мультиразмерные расчёты}
+\author{К. С. Сальников}
+\date{Версия программы: 1.0.0 --- 1 ноября 2026 г.}
 
 \begin{document}
-\frontmatter
 \maketitle
-\thispagestyle{empty}
-\vfill
-\noindent\textbf{Назначение документа.} Руководство описывает два независимых
-вычислительных тракта BEM-CPP: формулировку PMCHWT с базисом RWG и отдельное
-интегральное уравнение Мюллера второго рода с гладким P2- либо
-$H(\mathrm{div})$-согласованным BDM1-базисом. Рассматриваются сингулярные интегралы,
-FMM- и pFFT-ускорение, предобусловливание, смешанная точность, итерационные решатели,
-ориентационное усреднение, форматы данных и практический выбор параметров. Документ
-ориентирован как на пользователя, которому нужен воспроизводимый расчёт матрицы
-Мюллера, так и на разработчика, изменяющего вычислительное ядро.
 
-\medskip
-\noindent\textbf{Статус рекомендаций.} Численные рекомендации основаны на текущей версии
-кода и сохранённых экспериментальных таблицах. Экспериментальные режимы явно отмечены.
-Наличие команды в программе не означает, что её следует применять в публикационном
-расчёте. Основной критерий пригодности результата --- истинная невязка и независимая
-сходимость наблюдаемых величин, а не только завершение процесса без ошибки.
-
-\medskip
-\noindent\textbf{Статус выпуска 0.1.0-alpha.6.} Добавлены операторно-информированная
-дефляция по гармоническим векторам Ритца, перенос базиса между поляризациями и
-ориентациями, а также воспроизводимое исследование сходимости и ресурсов. Количественные
-утверждения о скорости и физической погрешности по-прежнему ограничены явно
-описанными проверочными задачами; для новой формы, показателя преломления или диапазона
-размеров требуется проверка сходимости как минимум на двух поверхностных сетках.
-
-\clearpage
-\chapter*{Краткая памятка}
-\addcontentsline{toc}{chapter}{Краткая памятка}
-Для основной смешанной реализации уравнения Мюллера на RTX~3090~Ti:
-\begin{lstlisting}[language=bash]
-make muller-fp32 CXX=g++-12 CUDA_HOME=/usr -j16
-
-OMP_NUM_THREADS=16 ./bin/muller_nodal_fmm_demo_fp32 \
-  --shape prism --sides 6 --aspect 1 \
-  --ref 5 --ka 25 --ri 1.3 --edge-mode hdiv \
-  --quad 7 --duffy-order 4 --digits 5 \
-  --max-leaf 32 --fmm-near-radius 3 \
-  --tol 1e-5 --max-iters 500 --gmres-restart 100 \
-  --mbj-only --mbj-nodes 50 --mbj-overlap 0 \
-  --pfft-fgmres --pfft-inner-tol 4e-2 \
-  --pfft-inner-iters auto --pfft-outer-restart 32 \
-  --physical-check --ntheta 181 --no-dense-validation \
-  --iteration-log runs/prism_ka25/iterations.csv \
-  --out runs/prism_ka25/result.json
-\end{lstlisting}
-Для контрольного расчёта прежней формулировкой PMCHWT:
-\begin{lstlisting}[language=bash]
-./bin/bem_cuda_fmm --obj particle.obj --ka 20 --ri 1.6 0.002 \
-  --accurate --solver fmm --system balanced --single \
-  --ntheta 181 --out particle_ka20.json
-\end{lstlisting}
-Перед длительным расчётом необходимо выполнить проверку сетки:
-\begin{lstlisting}[language=bash]
-./bin/bem_cuda_fmm --obj particle.obj --ka 20 --ri 1.6 0.002 \
-  --mesh-quality-only --mesh-quality-report mesh_quality.json
-\end{lstlisting}
-Минимальный публикационный протокол включает: (1) сходимость по сетке; (2) сходимость
-по квадратуре и точности FMM; (3) независимо пересчитанную истинную невязку;
-(4) сравнение смешанной и двойной точности; (5) сходимость ориентационного
-усреднения; (6) проверку энергетических и симметрийных ограничений; (7) независимый
-эталон на сфере или ADDA для несферической частицы.
-
+{
+\setcounter{tocdepth}{1}
 \tableofcontents
-\listoffigures
-\listoftables
+}
+\hypertarget{ux43dux430ux437ux43dux430ux447ux435ux43dux438ux435-ux438-ux433ux440ux430ux43dux438ux446ux44b-ux432ux435ux440ux441ux438ux438}{%
+\chapter{Назначение и границы
+версии}\label{ux43dux430ux437ux43dux430ux447ux435ux43dux438ux435-ux438-ux433ux440ux430ux43dux438ux446ux44b-ux432ux435ux440ux441ux438ux438}}
 
-\mainmatter
-\part{Начало работы}
+Руководство для release \nolinkurl{1.0.0}. Основной маршрут:
+поверхностные токи BEM → T-матрица → аналитическое усреднение по всем
+ориентациям → локальная модель по размеру. Здесь собраны выполненные
+исследования сходимости, формы, интерполяции, невязки и сравнения с
+MBS-fast. Числа относятся к конкретным сохранённым экспериментам; номер
+версии не означает универсальную точность 1\%.
 
-\chapter{Введение}
-\section{Назначение BEM-CPP}
-BEM-CPP решает частотную задачу рассеяния электромагнитной волны конечной
-однородной диэлектрической частицей в однородной внешней среде. Геометрия задаётся
-замкнутой ориентированной треугольной поверхностью. В отличие от объёмных методов,
-неизвестные размещаются только на границе частицы. При характерном числе поверхностных
-неизвестных $N$ решается комплексная система размера $2N$: первый набор коэффициентов
-задаёт эквивалентный электрический ток, второй --- эквивалентный магнитный ток.
+Для нового материала, формы и диапазона размеров отдельно проверяют
+сетку, порядок T, точность оператора, решение системы и интерполяцию.
+Полная T для ka=40 получена. Полная T для ka=100 и недельное время её
+построения этой версией не подтверждены. Ряд новых ускорений остаётся
+экспериментальным.
 
-Главный выход программы --- угловая матрица Мюллера $M_{ij}(\theta)$ для одной
-ориентации или после усреднения по ориентациям. Дополнительно сохраняются сведения о
-сетке, выбранной интегральной системе, параметрах FMM/GMRES, истинной невязке,
-занятой памяти и времени этапов. Эти метаданные являются частью результата: без них
-невозможно доказать воспроизводимость и точность расчёта.
+Основной код --- уравнение Мюллера второго рода, BDM1 на острых
+частицах, FMM/FFT и смешанная точность с FP64-проверкой. Гладкая сфера
+использует P2. Старый PMCHWT/RWG --- отдельный тракт; его эксперимент
+\nolinkurl{muller2} не заменяет BDM1-решатель. Историческое руководство
+сохранено в \href{docs/legacy_fixed_orientation_manual.md}{архиве
+фиксированной ориентации}.
 
-\section{Область применимости}
-Текущая реализация предназначена для:
-\begin{itemize}
-\item однородных изотропных частиц с комплексным показателем преломления
-  $m=n+\iu\kappa$;
-\item сфер, кубов, правильных призм с задаваемым числом граней и произвольных
-  OBJ-поверхностей;
-\item плоской падающей волны;
-\item дальнего поля и матрицы Мюллера;
-\item одной ориентации, явной сетки углов Эйлера и ускоренного усреднения по $\alpha$;
-\item плотного контрольного решения и FMM-ускоренного итерационного решения.
-\end{itemize}
-Код не следует без дополнительной верификации применять к незамкнутым поверхностям,
-контактирующим телам, анизотропным и пространственно неоднородным материалам,
-многослойным частицам, подложкам и ближнему полю. Сильно резонансные частицы и большие
-$|m|$ требуют отдельного исследования сеточной и итерационной сходимости.
+\hypertarget{ux444ux438ux437ux438ux447ux435ux441ux43aux438ux435-ux43fux430ux440ux430ux43cux435ux442ux440ux44b-ux438-ux43eux434ux438ux43dux430ux43aux43eux432ux430ux44f-ux433ux435ux43eux43cux435ux442ux440ux438ux44f}{%
+\chapter{Физические параметры и одинаковая
+геометрия}\label{ux444ux438ux437ux438ux447ux435ux441ux43aux438ux435-ux43fux430ux440ux430ux43cux435ux442ux440ux44b-ux438-ux43eux434ux438ux43dux430ux43aux43eux432ux430ux44f-ux433ux435ux43eux43cux435ux442ux440ux438ux44f}}
 
-\section{Соглашения и единицы}
-Используется временная зависимость $\exp(-\iu\omega t)$. Внешнее волновое число
-$k=2\pi/\lambda$, размерный параметр
-\begin{equation}
- ka_{\rm eq}=k a_{\rm eq},\qquad
- a_{\rm eq}=\left(\frac{3V}{4\pi}\right)^{1/3},
- \label{eq:size}
-\end{equation}
-где $V$ --- объём частицы. В CLI параметр называется \code{--ka}; в графиках
-допустимо обозначение $ka_{\rm eq}$. OBJ автоматически нормируется к
-$a_{\rm eq}=1$, поэтому абсолютные единицы длины не требуются. Все углы CLI задаются
-в градусах, внутренние тригонометрические вычисления выполняются в радианах.
+Размер задаётся через радиус равновеликой сферы \(a\):
 
-\chapter{Получение и сборка}
-\section{Требования}
-Рабочая конфигурация использует Linux, компилятор C++ с OpenMP, CUDA toolkit и GPU
-с вычислительной способностью 7.0 или выше. Выпуск 0.1.0-alpha.6 полностью проверен
-на RTX~3090~Ti 24~ГиБ, Ubuntu~24.04, GCC~12.4 и CUDA~12.0. Другую платформу следует
-считать непроверенной до прохождения \code{scripts/release\_audit.sh --gpu}.
-Для анализа JSON и построения графиков требуются Python, NumPy и Matplotlib. LaTeX
-нужен только для сборки документации.
+\[ka=k_0a,\qquad k_0=2\pi/\lambda,\qquad a=ka\lambda/(2\pi).\]
 
-\section{Сборка FMM-версии}
-Рекомендуемая смешанная сборка для RTX~3090~Ti:
-\begin{lstlisting}[language=bash]
-git clone https://github.com/KirillSalnikov/BEM-CPP.git
-cd BEM-CPP
-make muller-fp32 CXX=g++-12 CUDA_HOME=/usr -j16
-./bem --version
-\end{lstlisting}
-Путь к toolkit задаётся переменной \code{CUDA_HOME}. Цель \code{muller-fp32}
-собирает основной решатель Мюллера для \code{sm\_86}; другая архитектура задаётся
-параметром \code{ARCH}. Цель \code{fmm-only} относится к сохранённому решателю
-PMCHWT/RWG и не является рекомендуемым трактом для нового расчёта.
+Внутри задачи геометрия нормирована на \(a=1\). Длина волны в
+микрометрах задаёт перевод в физические единицы. При дисперсии изменение
+длины волны требует также изменения показателя преломления; это уже
+другая семья T. Используется временная зависимость \(\exp(-i\omega t)\)
+и пассивное поглощение \(m=n+i\kappa\), \(\kappa\geq0\).
 
-\section{Проверка установки}
-Полная проверка установки, включая CUDA-операторы и малую GPU-задачу:
-\begin{lstlisting}[language=bash]
-scripts/release_audit.sh --gpu
-examples/run_small_sphere_mie_check.sh
-\end{lstlisting}
-Далее следует малый расчёт сферы и сравнение с теорией Ми. Нельзя начинать многосуточный
-прогон произвольной частицы, пока этот контроль не проходит на той же машине и версии
-бинарного файла.
+Для правильной шестиугольной призмы \nolinkurl{prism-aspect} ---
+отношение высоты \(H\) к ширине между противоположными \textbf{гранями}
+\(D_f\), не к диаметру по вершинам. Пусть \(\eta=H/D_f\). Тогда
 
-\chapter{Запуск программы}
-\section{Общая форма команды}
-\begin{lstlisting}[language=bash]
+\[V=\frac{\sqrt3}{2}D_f^2H,\quad
+\frac{D_f}{a}=\left(\frac{8\pi}{3\sqrt3\eta}\right)^{1/3},\quad
+\frac{R}{a}=\frac{D_f}{a}\sqrt{\frac13+\frac{\eta^2}{4}},\]
+
+где \(R\) --- радиус описанной сферы. Он существенно влияет на
+необходимый \(L\). Диаметр по вершинам \(D_v=2D_f/\sqrt3\); поэтому
+\(H/D_v=\eta\sqrt3/2\).
+
+Текущий столбик: \(m=1.3116\), \(\lambda=0.532\) мкм,
+\(H/D_f=1/0.7=10/7\). Для него \(R/a\approx1.379127\), а параметр MBS по
+диаметру вершин равен \(H/D_v\approx1.2371791483\). При ka=40 радиус
+равновеликой сферы около 3.387 мкм. Старые мультиразмерные данные
+ka=10\ldots12 имеют \textbf{\(H/D_f=1\)}; их нельзя смешивать с этим
+столбиком.
+
+\hypertarget{ux447ux442ux43e-ux43fux440ux435ux434ux441ux442ux430ux432ux43bux44fux435ux442-ux441ux43eux431ux43eux439-t-ux43cux430ux442ux440ux438ux446ux430}{%
+\chapter{Что представляет собой
+T-матрица}\label{ux447ux442ux43e-ux43fux440ux435ux434ux441ux442ux430ux432ux43bux44fux435ux442-ux441ux43eux431ux43eux439-t-ux43cux430ux442ux440ux438ux446ux430}}
+
+Регулярные векторные сферические волны задают падающее поле; исходящие
+--- рассеянное. Для коэффициентов \(a\) и \(b\) выполняется \(b=Ta\).
+При максимальном порядке \(L\) в каждой поляризации \(L(L+2)\) мод,
+всего
+
+\[q=2L(L+2),\qquad T\in\mathbb C^{q\times q}.\]
+
+Столбец отвечает одной падающей моде, строка --- одной исходящей. Обе
+поляризации нужны: симметрия связывает определённые моды и сектора, но
+не позволяет произвольно удалить половину электрических/магнитных
+решений.
+
+\begin{longtable}[]{@{}rrr@{}}
+\toprule\noalign{}
+L & Строк и столбцов q & Хранение complex128, без заголовка \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+20 & 880 & 11.82 MiB \\
+24 & 1248 & 23.77 MiB \\
+58 & 6960 & 739.16 MiB \\
+64 & 8448 & 1089 MiB \\
+68 & 9520 & 1382.91 MiB \\
+\end{longtable}
+
+Память T растёт как \(L^4\). Время построения зависит также от сетки,
+числа итераций, симметрий, повторного использования подпространств и
+стоимости дальнего поля. Сокращение числа мод на 18\% не доказывает
+такое же сокращение полного времени.
+
+Усечение должно выбирать индексы \(l\leq L_{new}\) \textbf{в обеих
+поляризациях и по обеим осям}. Обычный срез
+\nolinkurl{T[:q_new, :q_new]} при раздельном хранении поляризаций
+неверен. Используйте индексирование из
+\nolinkurl{study_tmatrix_cutoff.py}.
+
+\hypertarget{ux430ux43dux430ux43bux438ux442ux438ux447ux435ux441ux43aux43eux435-ux443ux441ux440ux435ux434ux43dux435ux43dux438ux435}{%
+\section{Аналитическое
+усреднение}\label{ux430ux43dux430ux43bux438ux442ux438ux447ux435ux441ux43aux43eux435-ux443ux441ux440ux435ux434ux43dux435ux43dux438ux435}}
+
+\nolinkurl{tmatrix_so3_mstm.py} свёртывает произведения элементов T с
+угловыми коэффициентами и вычисляет усреднённую матрицу Мюллера.
+Интегрирование по SO(3) аналитическое:
+\nolinkurl{Euler_quadrature_nodes = 0}. Сетка \nolinkurl{ntheta} задаёт
+\textbf{угол рассеяния выходного графика}, а не ориентации частицы.
+
+Угловая сетка проекции дальнего поля при построении T --- другая
+численная операция. Её сходимость проверяется отдельно. Аналитическое
+усреднение устраняет ошибку ориентационной квадратуры, но сохраняет
+ошибки самой T.
+
+В принятой нормировке безразмерных токов и сферических волн:
+
+\[C_{sca}=\frac{2\pi}{(ka)^2}\|T\|_F^2,\qquad
+C_{ext}=-\frac{2\pi}{(ka)^2}\operatorname{Re}\operatorname{tr}T.\]
+
+Для физических сечений в мкм² результат умножается на \(a^2\). Сравнивая
+матрицы Мюллера, проверяйте Stokes-конвенцию и единицы; дополнительная
+подгонка масштаба по переднему пику недопустима.
+
+\hypertarget{ux432ux440ux430ux449ux435ux43dux438ux44f-ux438-ux437ux435ux440ux43aux430ux43bux430}{%
+\section{Вращения и
+зеркала}\label{ux432ux440ux430ux449ux435ux43dux438ux44f-ux438-ux437ux435ux440ux43aux430ux43bux430}}
+
+Для правильной центрированной призмы используется C6 и зеркальная
+симметрия: горизонтальное отражение, вертикальные отражения и связанные
+сектора D6h. \nolinkurl{c6-pack} кодирует допустимые моды в фазовые
+правые части, \nolinkurl{mirror-pack} использует горизонтальную
+чётность. \nolinkurl{vertical-preconditioner} согласует обратный
+предобуславливатель с вертикальными отражениями. Полярные и аксиальные
+компоненты токов при отражении имеют разные знаки.
+
+Проверяется действие оператора, упаковка/распаковка, дальнее поле и
+полная невязка. Невязка закодированной правой части не является
+отдельным измерением невязки каждого восстановленного столбца. В отчётах
+ka=40 это различие сохранено. Для OBJ без точной симметрии упаковка
+неприменима.
+
+\hypertarget{ux443ux441ux442ux430ux43dux43eux432ux43aux430-ux438-ux43fux435ux440ux432ux44bux439-ux440ux430ux441ux447ux451ux442}{%
+\chapter{Установка и первый
+расчёт}\label{ux443ux441ux442ux430ux43dux43eux432ux43aux430-ux438-ux43fux435ux440ux432ux44bux439-ux440ux430ux441ux447ux451ux442}}
+
+Нужны Linux, GCC, CUDA для GPU-ветки, BLAS/LAPACK, FFTW, Python 3 с
+NumPy, SciPy и Matplotlib. Точные библиотеки и цели сборки перечислены в
+Makefile. Для аналитического усреднения нужен gfortran и соответствующий
+нативный инструмент. CPU FFT требует FP64-библиотеку FFTW
+(\nolinkurl{libfftw3-double3} в Ubuntu); путь к нестандартной установке
+задаёт \nolinkurl{BEM_CPU_FFTW_LIBRARY}. Версия компилятора CUDA должна
+быть совместима с host GCC.
+
+\begin{verbatim}
+python3 -m pip install numpy scipy matplotlib psutil
+make muller-fp32 CXX=g++-12 CUDA_HOME=/usr -j2
+make bin/muller_tmatrix_fmm_server CXX=g++-12 CUDA_HOME=/usr -j2
+make bin/tmatrix_so3_mstm bin/tmatrix_so3_mstm_fp32
+\end{verbatim}
+
+Небольшой проверочный пример, не эталон точности 1\%:
+
+\begin{verbatim}
+OMP_NUM_THREADS=2 OPENBLAS_NUM_THREADS=1 \
+python3 scripts/build_fmm_tmatrix.py \
+  --shape prism --ref 2 --ka 3 --ri 1.3116 \
+  --prism-aspect 1.4285714285714286 --wavelength 0.532 \
+  --order 10 --tol 2e-6 --max-iters 1000 \
+  --c6-pack --mirror-pack --so3-precision fp64 --ntheta 181 \
+  --out runs/example_ka3
+\end{verbatim}
+
+Для повторного усреднения готовой T без BEM:
+
+\begin{verbatim}
+python3 scripts/tmatrix_so3_mstm.py \
+  --tmatrix runs/example_ka3/tmatrix.npy --order 10 \
+  --ntheta 1801 --cyclic-order 6 --precision fp64 --threads 2 \
+  --out runs/example_ka3/so3_fine.json
+\end{verbatim}
+
+\nolinkurl{summary.json} должен сообщать о завершённости, размерности T,
+физических параметрах и проверках. Наличие файла \nolinkurl{tmatrix.npy}
+само по себе не означает, что все его столбцы рассчитаны. Нельзя
+усреднять частичную T как готовую.
+
+Для прежнего фиксированного падения сохраняется команда:
+
+\begin{verbatim}
 ./bem run --shape prism --ka 25 --ri 1.3
-./bem average --shape prism --ka 25 --ri 1.3 --alpha 256
-\end{lstlisting}
-Пользовательский интерфейс \code{./bem} выбирает проверенный профиль, поверхностную
-сетку, решатель, квадратуру, кэши и контрольные точки. Обязательны форма,
-размерный параметр \code{--ka} и относительный показатель преломления \code{--ri}.
-Фактически выбранные значения записываются в план и итоговый JSON. Прямой запуск
-\code{bin/muller\_nodal\_fmm\_demo\_fp32} оставлен для экспертного контроля, а
-\code{bin/bem\_cuda\_fmm} --- для сохранённого тракта PMCHWT/RWG.
+\end{verbatim}
+
+Её профили описаны в \href{docs/quality_profiles.md}{quality\_profiles}.
+Это отдельный маршрут; один расчёт плоской волны не строит T.
+
+\hypertarget{ux431ux43eux43bux44cux448ux430ux44f-t-ux437ux430ux43fux443ux441ux43a-ux43fux430ux43cux44fux442ux44c-ux438-ux43fux440ux43eux434ux43eux43bux436ux435ux43dux438ux435}{%
+\chapter{Большая T: запуск, память и
+продолжение}\label{ux431ux43eux43bux44cux448ux430ux44f-t-ux437ux430ux43fux443ux441ux43a-ux43fux430ux43cux44fux442ux44c-ux438-ux43fux440ux43eux434ux43eux43bux436ux435ux43dux438ux435}}
+
+\nolinkurl{run_large_tmatrix.py} фиксирует копию worker, параметры,
+среду и входные скрипты. Пример подготовки ka=40, а не автоматически
+доказанный оптимум:
+
+\begin{verbatim}
+python3 scripts/run_large_tmatrix.py \
+  --out runs/ka40_v1 --ka 40 --ref 6 --order 64 \
+  --ri 1.3116 --wavelength 0.532 --prism-aspect 1.4285714285714286 \
+  --tol 2e-6 --restart 64 --max-iters 1000 \
+  --sector-gmres --sector-recycle-rank 16 \
+  --vertical-preconditioner --inner-local-coordinates \
+  --gpu-assembly --gpu-host-correction --incident-prefetch \
+  --cutoff-orders 54 56 58 60 62 64 --prepare-only
+\end{verbatim}
+
+После изучения плана повторяют ту же команду без
+\nolinkurl{prepare-only}. Точные рабочие FFT-параметры из исследования
+находятся в переносимом \nolinkurl{reference/v1.0.0/research/data.json},
+разделе \nolinkurl{ka40_completed.parameters}. Не следует включать все
+экспериментальные опции одновременно.
+
+\nolinkurl{hybrid-cpu} перекрывает независимые пакеты и CPU
+FP64-проверки. Он требует sector GMRES, дополнительной RAM и измерения
+полной стоимости. Вынос локальных поправок в RAM
+(\nolinkurl{gpu-host-correction}) помогает вместить сетку, но меняет
+баланс PCIe/CPU/GPU. AVX512 не гарантирует ускорение всей задачи.
+
+В каталоге сохраняются готовые столбцы, квитанции пакетов, описание
+оператора, контрольные суммы, прогресс и итоговая сводка. При обычном
+возобновлении сохраняют каталог и физические параметры. Смена решателя
+проводится через проверяемый \nolinkurl{solver-restart-from} и
+\nolinkurl{solver-restart-proof}; изменение геометрии или материала не
+является совместимым возобновлением. Живое пространство recycling в RAM
+может потребовать повторного обучения после перезапуска.
+
+Диск включает T, чекпоинты, операторные кэши, поля, входы и временные
+копии. Размер одного \nolinkurl{tmatrix.npy} --- лишь часть потребности.
+Перед большим запуском проверяют свободный диск, RAM и VRAM, затем
+измеряют несколько настоящих пакетов. Для разных размеров хранение всех
+поверхностных токов гораздо дороже архива одних усреднённых матриц
+Мюллера.
+
+\hypertarget{ux43aux430ux43a-ux43fux440ux43eux432ux435ux440ux44fux435ux442ux441ux44f-ux442ux43eux447ux43dux43eux441ux442ux44c-1}{%
+\chapter{Как проверяется точность
+1\%}\label{ux43aux430ux43a-ux43fux440ux43eux432ux435ux440ux44fux435ux442ux441ux44f-ux442ux43eux447ux43dux43eux441ux442ux44c-1}}
+
+Основная опубликованная угловая метрика:
+
+\[\epsilon_M=\max_{\theta,i,j}
+\frac{|M_{ij}^{test}(\theta)-M_{ij}^{ref}(\theta)|}{M_{11}^{ref}(\theta)}.\]
+
+Она охватывает все 16 элементов на указанной сетке углов и использует
+одну физически понятную нормировку. Это \textbf{не} относительная ошибка
+каждого малого \(M_{ij}\). Вблизи его нуля такая относительная ошибка
+неустойчива; на слабых элементах она может превышать 1\% при выполнении
+критерия выше. Сечения \(C_{sca}\) и \(C_{ext}\) сравниваются отдельно
+относительно эталона.
+
+Пять независимых проверок:
 
-\section{Коды завершения и незавершённое решение}
-Если истинная невязка не достигла допуска, программа записывает диагностический JSON,
-но завершает работу с ошибкой. Такой файл нельзя автоматически включать в итоговое
-усреднение. Переменная \code{BEM\_ALLOW\_NONCONVERGED=1} разрешает использовать его
-только для диагностики. В научном расчёте эта переменная должна отсутствовать.
-
-\section{GPU и параллельные задания}
-Один процесс BEM обычно закрепляется за одной GPU параметром \code{--gpu N} команды
-\code{./bem run} или \code{./bem average}; низкоуровневый эквивалент --- переменная
-\code{CUDA\_VISIBLE\_DEVICES}.
-Для ансамбля независимых размеров или ориентаций выгоднее запускать разные процессы на
-разных картах, чем распределять один размер между четырьмя картами. Исключение ---
-специальные пакетные сценарии ориентационного усреднения. Одновременный запуск двух
-тяжёлых процессов на одной карте приводит к конкуренции за память и не считается
-ускорением.
-
-\chapter{Два вычислительных тракта и основной решатель Мюллера}
-\section{Почему в репозитории два решателя}
-В BEM-CPP сохранены две независимые поверхностные формулировки. Программа
-\code{bin/bem_cuda_fmm} использует базис RWG и систему PMCHWT. Она нужна для
-исторических расчётов, работы с GraphSAI и независимого численного контроля.
-Программы \code{bin/muller_nodal_demo} и
-\code{bin/muller_nodal_fmm_demo} решают отдельное интегральное уравнение Мюллера
-второго рода. Параметр \code{--system muller2} старой программы не является
-эквивалентом этого решателя.
-
-В обоих случаях неизвестный вектор состоит из коэффициентов эквивалентных
-электрического и магнитного поверхностных токов:
-\begin{equation}
-  A\vect x=\vect b,\qquad
-  \vect x=
-  \begin{bmatrix}\vect j\\ \vect m\end{bmatrix}.
-\end{equation}
-Правая часть формируется из касательных компонент падающих электрического и
-магнитного полей. В тракте Мюллера тождественные члены интегрального уравнения
-обеспечивают структуру второго рода. Это обычно благоприятнее для спектра
-дискретной системы, но не отменяет необходимости предобусловливания на больших
-сетках и при высоком показателе преломления.
-
-\section{Гладкие и острые поверхности}
-Для гладкой сферы доступен квадратичный узловой P2-базис
-\code{--edge-mode smooth}. На ребре многогранника единая сглаженная касательная
-плоскость физически не определена. Поэтому для призм, кубов и острых OBJ-сеток
-используется \code{--edge-mode hdiv}: BDM1-моменты на рёбрах и поверхностное
-преобразование Пиолы сохраняют согласованную конормальную компоненту тока.
-Режим \code{split} оставлен только для сопоставления с ранними экспериментами.
-
-\section{Сборка на RTX 3090 Ti}
-Основная смешанная сборка создаётся командой
-\begin{lstlisting}[language=bash]
-make muller-fp32 CXX=g++-12 CUDA_HOME=/usr -j16
-\end{lstlisting}
-и формирует \code{bin/muller_nodal_fmm_demo_fp32}. Двойная контрольная сборка:
-\begin{lstlisting}[language=bash]
-make bin/muller_nodal_fmm_demo CXX=g++-12 CUDA_HOME=/usr -j16
-\end{lstlisting}
-В смешанном варианте массивы pFFT, выбранные ближние операции, кэш
-плосковолновых фаз и накопление M2L/L2P используют FP32. Выходы стадий FMM,
-векторы пространства Крылова, ортогонализация, локальные LU-факторы MBJ и
-вычисление норм невязки остаются в FP64. Следовательно, это не полностью
-одинарная точность. Параметр \code{--fmm-near-fp64} возвращает ближнее
-действие к двойной точности; переменные поэтапного контроля FMM перечислены
-в главе о методе быстрых мультиполей.
-
-\section{Матрично-свободное действие и предобусловливание}
-Плотная матрица $A$ на больших сетках не хранится. Операция $A\vect v$
-включает проекцию токов в квадратурные точки, внешнее и внутреннее FMM-действие,
-точную разреженную поправку сингулярных и соседних пар и сборку двух строк
-уравнения Мюллера.
-
-Morton block-Jacobi (MBJ) строит локальные плотные блоки $P$ и применяется
-справа:
-\begin{equation}
- A P^{-1}\vect y=\vect b,\qquad \vect x=P^{-1}\vect y.
-\end{equation}
-Ключ \code{--mbj-nodes} задаёт номинальный размер блока, а
-\code{--mbj-overlap} --- перекрытие ограниченного аддитивного метода Шварца.
-Увеличение блока или перекрытия может сократить число итераций, но увеличивает
-время подготовки и память, поэтому ускорение оценивается только по полному
-времени.
-
-В режиме \code{--pfft-fgmres} приближённое pFFT-решение используется как
-переменный правый предобуславливатель, а внешнее действие выполняется FMM:
-\begin{equation}
- A_{\mathrm{pFFT}}\vect z_k\approx\vect v_k,\qquad
- \vect w_k=A_{\mathrm{FMM}}\vect z_k.
-\end{equation}
-Поскольку внутреннее действие меняется от шага к шагу, применяется гибкий
-GMRES. Критерием остановки остаётся внешняя невязка.
-
-\section{Дефляция по гармоническим векторам Ритца}
-Ключ \code{--gmres-deflation-rank K} включает операторно-информированную
-низкоранговую поправку для обычного GMRES с правым MBJ-предобуславливанием. После
-первого цикла Арнольди строятся парные базисы $U$ и $C=AU$, причём столбцы $C$
-ортонормируются. Последующие действия оператора проектируются на ортогональное
-дополнение к $\operatorname{span}(C)$, а поправка решения содержит соответствующий вклад из
-$\operatorname{span}(U)$.
-
-Ключ \code{--gmres-deflation-file FILE} атомарно сохраняет базис. Он загружается
-только при совпадении полной сигнатуры оператора и размера системы. Такой файл можно
-безопасно переиспользовать для другой поляризации или ориентации того же оператора.
-Режим требует обычный FMM+MBJ GMRES и рестарт больше $K+1$; он не совместим с
-pFFT--FGMRES. При ориентационном усреднении автоматически выбирается управляемый с CPU
-GMRES, так как текущий парный GPU-путь ещё не реализует GCRO-проекцию.
-
-\section{Контрольные точки и кэши}
-По умолчанию после каждой внешней итерации атомарно сохраняется контрольная
-точка с префиксом, производным от \code{--out}. Повтор той же команды продолжает
-совместимый расчёт. Подпись включает геометрию, материал, квадратуру, точность,
-размер системы и правую часть. Несовместимая точка отвергается.
-
-Необходимо различать три файла:
-\begin{itemize}
-\item контрольная точка решателя продолжает прерванное пространство Крылова;
-\item \code{--near-correction-cache} сохраняет ближнюю интегральную поправку;
-\item \code{--mbj-cache} сохраняет локальные LU-факторы предобуславливателя.
-\end{itemize}
-Загрузка кэша уменьшает повторное время подготовки, но не должна смешиваться
-со временем холодного первого запуска.
-
-Для частицы Shape A при \code{ref=2} холодная подготовка FMM и MBJ заняла
-$5{,}550+6{,}570=12{,}120$~с. Загрузка обоих кэшей сократила её до
-$1{,}696+0{,}071=1{,}767$~с, то есть в $6{,}86$ раза. Это ускорение подготовки,
-а не одной итерации пространства Крылова.
-
-\section{Ориентационное усреднение}
-Команда
-\begin{lstlisting}[language=bash]
-./bem average --shape prism --ka 25 --ri 1.3 \
-  --quality standard --alpha 256
-\end{lstlisting}
-по умолчанию последовательно уточняет вложенную сетку $(\beta,\gamma)$ и решает две
-падающие поляризации. Повороты по $\alpha$ восстанавливаются на стадии дальнего поля,
-поэтому рост \code{--alpha} не умножает число линейных систем. Для встроенной
-правильной призмы программа сама выбирает порядок вращательной симметрии и точное
-зеркальное переиспользование ориентаций; для произвольной OBJ-сетки симметрия не
-предполагается.
-
-Каждая завершённая базовая ориентация атомарно сохраняется в каталоге
-\code{orientation\_parts}. При повторе команды уже готовые углы загружаются, а один
-подготовленный оператор переиспользуется для всего расписания. В прямом режиме FMM
-две поляризации могут решаться парным GPU-GMRES; при pFFT-FGMRES сохраняется гибкий
-внешний решатель. Полный выбор, угловые допуски и число реально решённых ориентаций
-записываются в \code{effective\_config.json} и итоговый JSON.
-Проекционное начальное приближение принимается только тогда, когда оценка его
-невязки минимум на 2\% лучше приближения от соседней ориентации. Значение 0
-отключает это переиспользование. Режим \code{SOLVER=pfft} сохраняет прежний
-вложенный pFFT-FGMRES.
-
-В контрольном расчёте Shape~A, $ka=40$, \code{ref=3} парный GPU-путь сократил
-время десяти шагов для двух поляризаций с 8.780 до 8.226~с при неизменной
-невязке. На сетке ориентаций призмы, $ka=15$, \code{ref=2} обновляемый базис
-ранга 8 сократил 312 итераций до 298 и время с 1.653 до 1.570~с. Эти множители
-относятся только к управлению решателем поверх уже ускоренного FMM.
-
-Контроль гармонической дефляции выполнен на шестигранной призме $ka=5$, $m=2$,
-\code{ref=2}. Шестнадцать независимо решённых пар $(\beta,\gamma)$, две поляризации, восемь узлов
-$\alpha$ и шестикратная симметрия представляют 768 полных ориентационных образцов. Тёплый
-старт, прежняя переработка Крылова и парный GPU-GMRES были отключены в обоих запусках.
-Дефляция ранга 32 сократила 3161 итерацию до 2258, а полное время --- с 179.52 до
-129.40~с, то есть в 1.387 раза. Максимальные истинные невязки равны $1.996\cdot10^{-6}$ и
-$1.997\cdot10^{-6}$, а относительное отличие полной матрицы Мюллера по норме Фробениуса составило
-$3.63\cdot10^{-7}$. Это сравнение решателей на одной сетке, а не доказательство абсолютной сеточной
-точности \code{ref=2}.
-
-\begin{figure}[H]\centering
-\includegraphics[width=\textwidth]{benchmarks/ritz_orientation_20260807/orientation_deflation_comparison.png}
-\caption{Итерации, время и ускорение по каждой базовой ориентации с дефляцией ранга 32 и без неё.}
-\label{fig:ritz-orientation}
-\end{figure}
-
-\part{Физическая и математическая постановка}
-
-\chapter{Уравнения Максвелла и граничные условия}
-\section{Гармонические поля}
-В каждой однородной области $j\in\{e,i\}$ поля удовлетворяют
-\begin{align}
- \nabla\times\E_j &= \iu\omega\mu_j\Hf_j, &
- \nabla\times\Hf_j &= -\iu\omega\varepsilon_j\E_j,\\
- \nabla\cdot(\varepsilon_j\E_j)&=0, &
- \nabla\cdot(\mu_j\Hf_j)&=0.
-\end{align}
-Здесь $e$ обозначает внешнюю среду, $i$ --- внутренность частицы,
-$k_j=\omega\sqrt{\varepsilon_j\mu_j}$ и
-$\eta_j=\sqrt{\mu_j/\varepsilon_j}$. Для немагнитной частицы во внешней среде с
-единичным показателем $k_i=m k_e$ и $\eta_i=\eta_e/m$.
-
-\section{Конкретные граничные условия}
-Если на границе $\Gamma$ отсутствуют физические поверхностные заряды и токи, то
-непрерывны касательные компоненты:
-\begin{equation}
- \normal\times(\E_e-\E_i)=0,\qquad
- \normal\times(\Hf_e-\Hf_i)=0.
- \label{eq:bc}
-\end{equation}
-Нормаль направлена из частицы во внешнюю среду. Нормальные компоненты $\vect D$ и
-$\vect B$ также непрерывны при отсутствии свободного поверхностного заряда и
-магнитных монополей, но PMCHWT строится непосредственно из касательных следов.
-
-\section{Падающая и рассеянная волны}
-Во внешней области
-$\E_e=\E^{\rm inc}+\E^{\rm sca}$ и
-$\Hf_e=\Hf^{\rm inc}+\Hf^{\rm sca}$. Для плоской волны
-\begin{equation}
- \E^{\rm inc}(\vect r)=\E_0 e^{\iu k_e\widehat{\vect k}\cdot\vect r},\qquad
- \Hf^{\rm inc}=\eta_e^{-1}\widehat{\vect k}\times\E^{\rm inc}.
-\end{equation}
-Рассеянное поле удовлетворяет условию излучения Зоммерфельда. Две независимые
-линейные поляризации образуют два правых столбца одной и той же операторной системы.
-
-\chapter{Принцип эквивалентности и поверхностные токи}
-Эквивалентные токи не являются проводящими токами внутри диэлектрика. Это
-математические поверхностные плотности, заменяющие действие объёма при сохранении полей
-по выбранную сторону границы:
-\begin{equation}
- \J=\normal\times\Hf,\qquad
- \M=-\normal\times\E.
- \label{eq:currents}
-\end{equation}
-Оба вектора касательны поверхности, поскольку их скалярное произведение с нормалью
-равно нулю. Это не означает, что одна декартова компонента обязана исчезать: нулевой
-является только нормальная проекция $\normal\cdot\J=\normal\cdot\M=0$.
-
-Переход от полей к токам уменьшает размерность задачи: вместо трёхмерного поля во всём
-объёме определяются две касательные векторные функции на двумерной границе. Цена этого
-преимущества --- плотный не локальный оператор и сингулярные интегралы.
-
-\begin{figure}[p]
-\centering\includegraphics[width=0.96\textwidth]{fig_equiv_currents_sphere.png}
-\caption{Эквивалентные поверхностные токи для двух поляризаций падающей волны.
-Цвет показывает модуль тока, стрелки --- касательное направление. Цифры в обозначениях
-$J_1,M_1$ относятся к первому возбуждению, а не к компоненте вектора.}
-\label{fig:currents}
-\end{figure}
-
-\chapter{Интегральные операторы PMCHWT}
-\section{Функция Грина}
-Скалярная функция Грина уравнения Гельмгольца
-\begin{equation}
- G_j(\vect r,\vect r')=\frac{e^{\iu k_j R}}{4\pi R},\qquad
- R=|\vect r-\vect r'|
-\end{equation}
-задаёт связь каждой точки поверхности со всеми остальными. Индекс $j$ определяет
-волновое число внешней или внутренней среды.
-
-\section{Операторы электрического и магнитного типа}
-Для касательного тока $\vect X$ используем
-\begin{align}
- \mathcal L_j[\vect X](\vect r)
- &=\iu k_j\int_\Gamma G_j\vect X\,\dd S'
- -\frac{1}{\iu k_j}\nabla\int_\Gamma G_j
-   \nabla'_s\!\cdot\vect X\,\dd S',\label{eq:L}\\
- \mathcal K_j[\vect X](\vect r)
- &=\operatorname{p.v.}\int_\Gamma
-   \nabla G_j(\vect r,\vect r')\times\vect X(\vect r')\,\dd S'.\label{eq:K}
-\end{align}
-Символ p.v. означает главное значение Коши. Поверхностная дивергенция
-$\nabla_s\cdot\vect X$ действует вдоль поверхности. Первый член $\mathcal L$ связан с
-векторным потенциалом, второй обеспечивает вклад скалярного потенциала и сохранение
-заряда. Оператор $\mathcal K$ содержит градиент функции Грина и магнитный тип связи.
-
-\section{Блочная система}
-После суммирования внешних и внутренних граничных уравнений скачки взаимно уничтожаются.
-В используемой знаковой конвенции система имеет вид
-\begin{equation}
-\begin{bmatrix}
- \eta_e L_e+\eta_i L_i & -(K_e+K_i)\\
- K_e+K_i & L_e/\eta_e+L_i/\eta_i
-\end{bmatrix}
-\begin{bmatrix}J\\M\end{bmatrix}
-=
-\begin{bmatrix}b_E\\b_H\end{bmatrix}.
-\label{eq:pmchwt}
-\end{equation}
-Каждый символ $L_j,K_j$ в \cref{eq:pmchwt} означает уже дискретизированный оператор,
-а не одно число. Вектор $b_E$ --- проекция касательного следа падающего электрического
-поля, $b_H$ --- магнитного поля с согласованным знаком.
-
-\section{Сбалансированная система}
-Различие размерностей и масштабов электрического и магнитного токов ухудшает
-обусловленность. Режим \code{balanced} использует масштаб магнитного неизвестного и
-строки. Для комплексно-симметричных решателей дополнительно вводится точная замена
-\begin{equation}
- \widetilde M=\iu |m|M,\qquad M=-\frac{\iu}{|m|}\widetilde M,
-\end{equation}
-и магнитная строка умножается на $\iu$. Тогда блоки $-K$ и $K$ переходят в одинаковые
-перекрёстные блоки. На реальной сетке пылевой частицы дефект
-$|x^TAy-y^TAx|/(\|x\|\|Ay\|+\|y\|\|Ax\|)$ уменьшился с порядка $10^{-3}$ до
-$1.1\cdot10^{-9}$. Преобразование не меняет физическое решение при согласованном
-преобразовании правой части и обратном восстановлении $M$.
-
-\chapter{RWG-дискретизация}
-\section{Базисные функции}
-Каждому внутреннему ребру, общему для треугольников $T_n^+$ и $T_n^-$, соответствует
-функция Рао--Уилтона--Глиссона
-\begin{equation}
- \vect f_n(\vect r)=
- \begin{cases}
- \dfrac{l_n}{2A_n^+}(\vect r-\vect r_n^+),&\vect r\in T_n^+,\\[0.4em]
- \dfrac{l_n}{2A_n^-}(\vect r_n^--\vect r),&\vect r\in T_n^-,\\
- 0,&\text{иначе}.
- \end{cases}
-\end{equation}
-Здесь $l_n$ --- длина общего ребра, $A_n^\pm$ --- площади треугольников,
-$\vect r_n^\pm$ --- свободные вершины. Нормальная к ребру компонента внутри поверхности
-непрерывна, поэтому RWG естественно представляет ток и его поверхностную дивергенцию.
-
-Токи разлагаются как
-\begin{equation}
- \J_h=\sum_{n=1}^N j_n\vect f_n,\qquad
- \M_h=\sum_{n=1}^N m_n\vect f_n.
-\end{equation}
-В схеме Галёркина теми же функциями тестируются интегральные уравнения. Для замкнутой
-треугольной поверхности без дефектов число RWG равно числу рёбер.
-
-\section{Почему качество треугольников важно}
-Вытянутые треугольники создают сильно различающиеся нормы RWG, увеличивают ошибки
-квадратуры и ухудшают обусловленность. Проверяются минимальный угол, отношение сторон,
-отношение площадей соседей, двугранные углы, граничные и неманифолдные рёбра,
-ориентация объёма и подозрительные близкие несмежные панели. Рекомендуемый строгий
-порог: минимальный угол не ниже $20^\circ$ и аспект не выше 12. Нарушение порога не
-доказывает ошибочность результата, но требует усиленного исследования сходимости.
-
-\begin{figure}[p]
-\centering\includegraphics[width=0.95\textwidth]{fig_mesh_gallery.png}
-\caption{Примеры треугольных сеток сферы, гексагональной призмы и пылевой частицы.
-Сетка должна сохранять геометрию, быть замкнутой и согласованно ориентированной.}
-\label{fig:meshes}
-\end{figure}
-
-\chapter{Сингулярные и близкие интегралы}
-Пары панелей делятся на самодействующие, имеющие общее ребро, общую вершину,
-геометрически близкие несмежные и дальние. Обычная гауссова квадратура достаточна лишь
-для гладкой подынтегральной функции. Для сингулярных классов используются специальные
-коррекции и локальное подразделение. Параметр \code{--quad} принимает 4, 7 или 13;
-увеличение порядка не исправляет плохую геометрию автоматически.
-
-Контроль квадратуры проводится сравнением наблюдаемых величин при $q=7$ и $q=13$ на
-неизменной сетке и более точном FMM. Если изменение $M_{ij}$ превышает целевую ошибку,
-нужно сначала локализовать углы и классы панелей, а не механически ужесточать GMRES.
-
-\part{Вычислительные методы}
-
-\chapter{Плотный метод и эталонный контроль}
-Плотная сборка хранит все четыре блока и решает систему прямым LU. Память растёт как
-$O(N^2)$, время факторизации --- как $O(N^3)$, поэтому режим применим только к малым
-сеткам. Его роль --- независимый контроль знаков, масштабов, правой части и дальнего
-поля. Совпадение плотного и FMM-решения при одной сетке отделяет ошибку ускорения от
-ошибки геометрической дискретизации.
-
-\chapter{Метод быстрых мультиполей}
-\section{Иерархия}
-Квадратурные источники группируются в октодерево. Взаимодействия близких ячеек
-вычисляются непосредственно, дальние проходят этапы P2M, M2M, M2L, L2L и L2P.
-Плосковолновое представление функции Грина сокращает стоимость одного матвека по
-сравнению с плотным $O(N^2)$. Реальная асимптотика и константа зависят от $ka$,
-глубины дерева, порядка разложения и распределения точек.
-
-\section{Параметры точности}
-\code{--fmm-digits d} задаёт требуемый порядок аппроксимации, а \code{--max-leaf}
-управляет заполнением листа. Параметр digits не является гарантированным числом верных
-цифр итоговой матрицы Мюллера: это внутренний параметр дальнего взаимодействия.
-Для реализации уравнения Мюллера безопасный предел по умолчанию равен $d=5$.
-Более высокие значения разрешаются только явной переменной
-\code{BEM\_MULLER\_FMM\_DIGITS\_CAP} и требуют сравнения с плотным оператором
-или с расчётом при радиусе ближней зоны 3. Выбор $d=3$ допустим только для
-предварительной диагностики.
-
-Два векторных тока в действии оператора Мюллера по умолчанию обрабатываются
-совместно. Их шесть скалярных компонент используют один дальний проход,
-совместное вычисление L2P и общие геометрические величины и значения функции
-Грина в ближней зоне. В смешанной сборке ближнее ядро читает отдельные
-FP32-копии координат и зарядов. Для действительного волнового числа отдельная
-ветвь не вычисляет отсутствующее затухание и нулевые мнимые слагаемые.
-Кэш плосковолновых фаз, мультипольные коэффициенты, входы M2L, локальные
-коэффициенты M2L/L2L и накопление на стадиях M2L и L2P используют FP32, но
-собранные выходы оператора, векторы Крылова, факторы MBJ и нормы невязки
-остаются FP64. На контрольной OBJ-частице полная последовательность изменений
-сократила установившееся время действия оператора при \code{ref=2} с 1.086
-до 0.203--0.213~с. При необязательном строгом дереве глубины 6 время при
-\code{ref=3} уменьшилось с 10.39 до 1.713~с.
-
-Переменная \code{BEM_FMM_PAIR_CURRENTS=0}, заданная до запуска, возвращает
-раздельный путь и не выделяет дополнительную память для совместного дальнего
-прохода. Переменные \code{BEM_FMM_PAIR_FAR=0} и
-\code{BEM_FMM_PAIR_L2P=0} предназначены только для поэтапной диагностики.
-
-Для смешанной сборки на RTX~3090~Ti по умолчанию используются 512 потоков
-в совместном ядре прямых взаимодействий и 256 потоков в совместных ядрах
-L2P и дальнего прохода. Соответствующие переменные настройки:
-\code{BEM_FMM_P2P_PAIR_THREADS}, \code{BEM_FMM_L2P_PAIR_THREADS} и
-\code{BEM_FMM_PAIR_FAR_THREADS}. Профиль стадий включается переменной
-\code{BEM_FMM_PROFILE_BATCH3=1}, но добавляет синхронизации CUDA и потому
-не предназначен для измерения полного времени.
-Для дальнего прохода допустимо диагностическое значение 512, однако в
-десятиитерационном тесте оно было на 7\% медленнее 256, поэтому не является
-значением по умолчанию.
-Для контрольного отключения отдельных смешанных стадий служат
-\code{BEM_FMM_PHASE_CACHE=0}, \code{BEM_FMM_M2L_STORAGE_FP32=0},
-\code{BEM_FMM_MULTI_STORAGE_FP32=0},
-\code{BEM_FMM_LOCAL_STORAGE_FP32=0},
-\code{BEM_FMM_M2L_FP32=0}, \code{BEM_FMM_L2P_FP32=0} и
-\code{BEM_FMM_P2P_FAST_TRIG=0}.
-Кэш фаз по умолчанию оставляет свободными 6144~МиБ; резерв задаётся
-\code{BEM_FMM_PHASE_CACHE_RESERVE_MB}.
-
-Если транспонированная таблица фаз L2P не помещается, автоматически
-используется ядро «одна варп на одну точку» с основной таблицей. В задаче
-Shape~A, $ka=40$, \code{ref=3} оно освобождает около 4.43~ГиБ и в 1.086 раза
-быстрее прежнего нетранспонированного запасного пути. По сравнению с быстрым
-режимом, где помещаются обе таблицы, потеря времени составляет около 13\%.
-Выбор можно принудительно задать через
-\code{BEM_FMM_L2P_WARP_PER_TARGET=1|0}.
-
-Высокочастотный защитный механизм по умолчанию не разрешает глубину дерева
-больше 5, если это уменьшает порядок FMM-разложения. Проверенный режим глубины
-6 включается переменной \code{BEM_FMM_ALLOW_DEPTH6=1}; драйвер при этом
-автоматически сохраняет порядок, рассчитанный для глубины 5. Режим применяется
-с \code{--max-leaf 16} только при достаточной памяти: контрольный
-\code{ref=3} потребовал 13134~МиБ. Естественный уменьшенный порядок глубины 6
-был отклонён, поскольку изменял контрольный оператор примерно на 2\%.
-
-Для строгих расчётов сохраняется \code{--fmm-near-radius 3}. Радиус 2 дал
-ошибку порядка $10^{-6}$ в низкоконтрастных контрольных задачах, но ошибку
-$7.8\cdot10^{-3}$ для призмы при $ka=20$, $m=3$; использовать его без
-сравнения с радиусом 3 нельзя.
-Для проверенной призмы $ka=20$, $m=1.3$ сочетание радиуса 2 и $d=6$ дало
-ошибку оператора $1.23\cdot10^{-6}$ и уменьшило время трёх шагов при
-\code{ref=2} с 1.531 до 1.393~с, увеличив расход памяти примерно на
-604~МиБ. Это частный низкоконтрастный режим, а не новый общий параметр.
-
-\section{Симметрия FMM-оператора}
-Аудит показал, что диагональные $L$-блоки сохраняют комплексную симметрию примерно до
-$10^{-9}$. Исходный дефект полной PMCHWT-системы порядка $10^{-3}$ был связан не с FMM,
-а с противоположными знаками перекрёстных блоков. После фазового преобразования полный
-дефект также составляет около $10^{-9}$. Это открывает возможность коротких
-комплексно-симметричных решателей, но не гарантирует их быструю сходимость.
-
-\chapter{GMRES}
-Для системы $Ax=b$ GMRES строит пространство Крылова
-\begin{equation}
- \mathcal K_m(A,r_0)=\operatorname{span}\{r_0,Ar_0,\ldots,A^{m-1}r_0\}
-\end{equation}
-и минимизирует евклидову норму невязки. Арнольди требует ортогонализации нового вектора
-по всему базису, поэтому стоимость и память растут с \code{--gmres-restart}. После
-$m$ шагов выполняется перезапуск. Слишком малый $m$ вызывает стагнацию, слишком большой
-увеличивает память и стоимость ортогонализации.
-
-Основной рекомендуемый путь --- GPU-GMRES с истинной проверкой невязки. Допуск
-\code{--gmres-tol} относится к $\|b-Ax\|_2/\|b\|_2$. Для матрицы Мюллера ошибка может
-быть больше, особенно у слабых элементов, поэтому допуск решателя не равен ошибке
-физической величины.
-
-\section{Гармонические векторы Ритца и GCRO-проекция}
-Пусть цикл Арнольди даёт соотношение
-\begin{equation}
- A P^{-1}V_m=V_{m+1}\overline H_m.
-\end{equation}
-Гармонические векторы Ритца приближают моды, для которых обычный перезапуск GMRES
-теряет накопленную информацию. Из малой матрицы $\overline H_m$ выбираются $K$ направлений,
-соответствующих наименьшим по модулю гармоническим значениям. Из них строится $U$, а
-$C=AU$ ортонормируется. Для невязки $r$ начальная грубая поправка имеет вид
-\begin{equation}
- x\leftarrow x+UC^{\herm}r,\qquad r\leftarrow r-CC^{\herm}r.
-\end{equation}
-После этого в каждом матрично-векторном умножении удаляется компонента в $\operatorname{span}(C)$.
-Это не замена MBJ: локальный MBJ уменьшает цену большинства мод, а дефляция сохраняет малое
-подпространство медленных глобальных мод.
-
-\chapter{Короткорекуррентные решатели}
-\section{Общие преимущества и риск}
-BiCGSTAB, CGS, TFQMR, QMR2, COCR и COCG хранят фиксированное число векторов и не
-ортогонализуют длинный базис. Это уменьшает память, однако делает сходимость менее
-монотонной и чувствительной к breakdown. Каждый режим обязан периодически вычислять
-истинную невязку, сохранять лучшее решение и иметь безопасный откат на GMRES.
-
-\section{QMR2}
-QMR-CS-2 использует билинейные произведения без комплексного сопряжения,
-$v^Tv$ и $p^TAp$, поэтому требует $A^T=A$, а не $A^HA=A$. После фазовой балансировки
-условие выполнено с дефектом порядка $10^{-9}$. На сфере $ka=2$ QMR2 дал 67 матвеков
-и 0.76~с против 53 и 0.59~с GPU-GMRES. На пылевой частице $ka=10$ при одинаковом
-лимите QMR2 достиг $1.71\cdot10^{-3}$ за 316~с, а GMRES ---
-$2.22\cdot10^{-4}$ за 290~с. Поэтому QMR2 остаётся экспериментальным.
-
-\section{COCR}
-COCR предназначен для комплексно-симметричной матрицы и использует один матвек на
-итерацию. На малой сфере он дал 71 матвек и 0.80~с; симметричный локальный
-предобуславливатель уменьшил это до 62 матвеков и 0.70~с, но GPU-GMRES остался быстрее.
-
-\section{Блочный COCG}
-Для двух поляризаций реализован истинный блок с матричными коэффициентами $2\times2$.
-Он способен обмениваться направлениями между правыми частями, но при близкой линейной
-зависимости поляризаций теряет ранг. На сфере тест остановился после 64 матвеков с
-невязкой $1.30\cdot10^{-4}$. Для устойчивого развития необходим rank-revealing QR или
-SVD на каждом шаге. Режим \code{block-cocg} не является производственной рекомендацией.
-
-\chapter{Предобусловливание}
-Текущий общий предобуславливатель использует локальные блоки ближних взаимодействий.
-Односторонняя схема $P^{-1}A$ полезна GMRES, но разрушает комплексную симметрию и потому
-не должна напрямую применяться в QMR2/COCR.
-
-Для COCR реализована конгруэнтная схема
-\begin{equation}
- \widetilde A=S^TAS,\qquad \widetilde b=S^Tb,\qquad x=S\widetilde x,
-\end{equation}
-где для каждого RWG берётся $S_i=D_i^{-1/2}$ от симметричного диагонального блока
-$D_i\in\mathbb C^{2\times2}$. Численная проверка $S_i^TD_iS_i-I$ дала
-$4.68\cdot10^{-15}$ на сфере и $8.44\cdot10^{-15}$ на пыли. Несмотря на формальную
-корректность, на пыли этот локальный вариант ухудшил сходимость; он выключен по
-умолчанию.
-
-\part{Геометрия, ориентации и наблюдаемые величины}
-
-\chapter{Задание геометрии}
-\section{Сфера}
-\code{--shape sphere --ref r} строит икосаэдрическую сферу. Каждый уровень делит грань
-на четыре, поэтому число треугольников растёт примерно как $4^r$. Сфера служит главным
-эталоном благодаря точному решению Ми. Нельзя выбирать ref только по доступной памяти:
-для каждого $ka$ проводится сравнение минимум двух соседних уровней.
-
-\section{Гексагональная призма}
-\code{--shape hex\_prism --prism-aspect h} использует соглашение ADDA для отношения
-высоты к поперечному размеру. Рёбра создают локальные особенности токов, поэтому
-равномерная сетка может сходиться медленнее гладкой сферы. Экспериментальный
-\code{--edge-refine} меняет сетку и требует отдельного контроля геометрии.
-
-\section{OBJ}
-OBJ должен быть триангулированным, замкнутым, двухмногообразным и ориентированным наружу.
-Программа нормирует объём к единичной эквивалентной сфере. Плоское подразделение
-\code{--subdiv} не восстанавливает кривизну исходной поверхности и потому может лишь
-размельчить уже имеющуюся геометрическую ошибку.
-
-\chapter{Ориентации частицы}
-Ориентация задаётся углами Эйлера $\alpha,\beta,\gamma$. Для равномерного распределения
-по $SO(3)$ интегральная мера пропорциональна
-\begin{equation}
- \dd R=\frac{1}{8\pi^2}\dd\alpha\,\sin\beta\,\dd\beta\,\dd\gamma.
-\end{equation}
-Поэтому равномерная сетка по $\beta$ без веса $\sin\beta$ неверна. В явном файле
-ориентаций каждая строка содержит $\alpha\ \beta\ \gamma\ [w]$ в градусах.
-
-\code{--orient NA NB NG} решает $N_\alpha N_\beta N_\gamma$ правых частей.
-\code{--alpha-avg N} использует то, что изменение $\alpha$ можно перенести в дешёвую
-стадию дальнего поля: дорогие токи решаются по сетке $\beta,\gamma$, а $\alpha$
-усредняется аналитически/дискретно в постобработке. Это ускорение корректно только при
-согласованной поляризационной базе и проверено сравнением с явной сеткой.
-
-\begin{figure}[p]
-\centering\includegraphics[width=0.94\textwidth]{fig_orientation_convergence.png}
-\caption{Пример сходимости ориентационного усреднения. Оценивать следует не только
-$M_{11}$, но и нормированные сильные и слабые элементы матрицы Мюллера.}
-\label{fig:orientconv}
-\end{figure}
-
-\chapter{Амплитудная и Мюллерова матрицы}
-В дальней зоне комплексные амплитуды двух поляризаций образуют матрицу рассеяния.
-Матрица Мюллера переводит действительный вектор Стокса:
-\begin{equation}
- \vect S_{\rm sca}=\frac{1}{k^2r^2}\,\mathbf M(\theta,\phi)\vect S_{\rm inc}.
-\end{equation}
-$M_{11}$ является фазовой функцией с точностью до принятой нормировки и не может быть
-отрицательным. Отрицательный $M_{11}$ означает ошибку формул, индексов, усреднения или
-данных. Остальные элементы могут менять знак. Для графиков $M_{11}$ применяют
-логарифмическую шкалу, а остальные элементы удобно показывать как $M_{ij}/M_{11}$ на
-линейной шкале.
-
-Сравнение слабых элементов нельзя выполнять обычной поточечной относительной ошибкой
-вблизи нулей. Используются взвешенная $L_2$-ошибка, абсолютная ошибка после нормировки
-на интеграл $M_{11}$ и отдельный контроль сильных/слабых компонент.
-
-\part{Точность, производительность и практические профили}
-
-\chapter{Иерархия ошибок}
-Полная ошибка включает геометрию, RWG-дискретизацию, квадратуру, FMM, итерационный
-решатель, угловую сетку наблюдения и ориентационное усреднение. Уменьшение
-\code{gmres-tol} не исправляет грубую поверхность. Увеличение \code{fmm-digits} не
-исправляет недостаточный ref. Увеличение числа ориентаций не исправляет ошибку одной
-ориентации.
-
-Рекомендуемый порядок исследования:
 \begin{enumerate}
-\item проверить топологию и качество поверхности;
-\item на малой сетке сравнить dense и FMM;
-\item выбрать квадратуру и digits;
-\item добиться истинной невязки;
-\item уточнить поверхность при фиксированных параметрах оператора;
-\item только затем исследовать ориентационное усреднение.
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  Сетка: сравнение \nolinkurl{ref} и \nolinkurl{ref+1} при достаточном
+  L.
+\item
+  Порядок: последовательные усечения T, затем контроль большего
+  эталонного L.
+\item
+  Оператор: квадратура, Duffy, ближняя зона, FMM/FFT и FP64.
+\item
+  Решение: истинная невязка и устойчивость конечных элементов Мюллера.
+\item
+  Мультиразмер: новые прямые T в точках, не использованных для обучения.
 \end{enumerate}
 
-\chapter{Метрики сравнения}
-Для вектора значений $f_i$ и эталона $g_i$ вводится
-\begin{equation}
- \varepsilon_{L_2}=\frac{\left[\sum_i w_i|f_i-g_i|^2\right]^{1/2}}
- {\left[\sum_i w_i|g_i|^2\right]^{1/2}}.
-\end{equation}
-Для фазовой функции веса включают сферическую меру $\sin\theta$. Интегральный контроль
-\begin{equation}
- I_{11}=2\pi\int_0^\pi M_{11}(\theta)\sin\theta\,\dd\theta
-\end{equation}
-обнаруживает систематическую потерю бокового или обратного рассеяния. Совпадение только
-вперёд недостаточно: узкий передний пик может доминировать в невзвешенной метрике.
+Каждая проверка с допуском 1\% по отдельности не даёт суммарный бюджет
+1\%. Для итоговой цели нужен запас и прямой контроль конечного
+результата. Сравнение на дискретных углах также не является строгой
+оценкой между ними.
 
-\chapter{Проверка на сферах}
-\begin{figure}[p]
-\centering\includegraphics[width=0.98\textwidth]{fig_mie_validation_combined.png}
-\caption{Сравнение BEM с теорией Ми на сферах. График следует читать вместе с таблицей
-параметров сетки и невязки; одна визуальная близость кривых не является доказательством.}
-\label{fig:mie}
-\end{figure}
-Сфера проверяет одновременно знаки PMCHWT, нормировку геометрии, поляризационную базу,
-дальнее поле и матрицу Мюллера. Для больших $ka$ сферическая сетка должна уточняться,
-пока изменение результата не станет меньше целевой ошибки. Точка, не прошедшая контроль,
-не должна изображаться как обычная линия производительности.
+\hypertarget{ux437ux430ux432ux438ux441ux438ux43cux43eux441ux442ux44c-l-ux43eux442-ux440ux430ux437ux43cux435ux440ux430}{%
+\chapter{Зависимость L от
+размера}\label{ux437ux430ux432ux438ux441ux438ux43cux43eux441ux442ux44c-l-ux43eux442-ux440ux430ux437ux43cux435ux440ux430}}
 
-\chapter{Сравнение с ADDA}
-ADDA и BEM дискретизируют разные интегральные уравнения: ADDA --- объём, BEM --- границу.
-Одинаковый объект означает совпадение физической поверхности, материала, $ka$, направления
-волны, ориентаций, поляризационной базы и углов наблюдения, а не одинаковое число
-неизвестных. Для честного сравнения необходимо использовать одну и ту же явную сетку
-ориентаций или доказать эквивалентность ускоренного усреднения.
+Историческая серия: призма \(H/D_f=1\), \(m=1.3\); минимум по изученному
+критерию относительно конечного эталона:
 
-В выпуске 0.1.0-alpha.6 ускорение BEM относительно ADDA при одинаковой независимо
-пересчитанной невязке не заявляется. Сохранённые исторические серии
-\code{physical-fast} и ADDA
-использовали разные критерии остановки: точные невязки BEM составляли
-$2{,}277\cdot10^{-3}$, $3{,}424\cdot10^{-3}$ и $1{,}692\cdot10^{-3}$, тогда как
-для ADDA задавалось $10^{-4}$ без независимого пересчёта конечной невязки. Поэтому
-отношения сохранённых времён нельзя называть ускорением. Строгое сравнение требует
-одинаковой целевой невязки, её независимого пересчёта в обеих программах, одинакового
-углового вывода и исследования сходимости дискретизации каждого метода.
+\begin{longtable}[]{@{}rrrr@{}}
+\toprule\noalign{}
+ka & ref & Эталонный L & Минимальный L \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+3 & 3 & 9 & 6 \\
+6 & 3 & 18 & 10 \\
+12 & 4 & 28 & 17 \\
+20 & 5 & 44 & 27 \\
+\end{longtable}
 
-\begin{figure}[p]
-\centering\includegraphics[width=0.98\textwidth]{fig_dust_fullgrid_compare.png}
-\caption{Пример полного сравнения BEM и ADDA для пылевой частицы. Фазовая функция
-показана логарифмически, остальные элементы нормированы на $M_{11}$.}
-\label{fig:dustadda}
-\end{figure}
+Локальная линейная аппроксимация \(L\approx1.22667ka+2.42667\) описывает
+этот набор ka=3\ldots20. Она не определяет L для ka=100 или для другой
+формы.
 
-\chapter{Память GPU}
-Память FMM расходуется на квадратурные источники, дерево, переводы M2L, ближние пары,
-рабочие буферы матвека и векторы решателя. GMRES дополнительно хранит базис порядка
-\begin{equation}
- B_{\rm Krylov}\approx 2\,m\,(2N)\,16\ \text{байт}
-\end{equation}
-для двух поляризаций без учёта служебных массивов. Короткорекуррентные решатели уменьшают
-эту часть, но не память дерева FMM.
+Текущая серия \(m=1.3116\), \(H/D_f=10/7\), критерий включает все 16
+элементов и оба сечения. После устойчивого прохождения добавлен запас
+два порядка:
 
-\begin{figure}[p]
-\centering\includegraphics[width=0.96\textwidth]{fig_vram_forecast.png}
-\caption{Экспериментальная зависимость видеопамяти от размера и дискретизации. Линии
-следует интерпретировать только в пределах измеренного диапазона; форма и качество
-сетки изменяют число RWG при одинаковом $ka$.}
-\label{fig:vram}
+\begin{longtable}[]{@{}rrrrrr@{}}
+\toprule\noalign{}
+ka & ref & Эталон L & Минимум & L с запасом & Ошибка с запасом \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+5 & 2 & 14 & 9 & 11 & 0.0363\% \\
+10 & 3 & 20 & 16 & 18 & 0.0577\% \\
+40 & 6 & 64 & 56 & 58 & 0.2408\% \\
+\end{longtable}
+
+\begin{figure}
+\centering
+\includegraphics{manual_assets/v1.0.0/order_vs_size.png}
+\caption{Порядок T в зависимости от размера; серии с разной геометрией
+разделены.}
 \end{figure}
 
-Перед запуском следует оставлять запас не менее 10--15\% VRAM. CUDA OOM обычно завершает
-процесс, но перегрузка нескольких блоков питания или PCIe-моста может выключить весь
-узел; это аппаратная проблема и не должна маскироваться уменьшением допуска решателя.
+Для ka=40 переход 64→58 даёт 8448→6960 мод: на 17.61\% меньше мод и на
+32.12\% меньше хранения T. Это исследование \textbf{усечения}: хвост
+выше L=64 и независимая ошибка поверхности им не измерены.
+\nolinkurl{select_tmatrix_order.py} проверяет источник, хеш T,
+последовательность порядков, параметры и запас. Передать его заключение
+на другую задачу через \nolinkurl{order-study} без совпадения параметров
+нельзя.
 
-\chapter{Время расчёта}
-Полное время состоит из построения сетки, инициализации FMM, коррекций, решения всех
-правых частей и дальнего поля. Для одной геометрии и материала FMM-инициализация
-переиспользуется между ориентациями. Приведённые ниже архивные графики были получены
-на одной Tesla V100; их нельзя непосредственно переносить на выпускную RTX~3090~Ti.
-Современное сравнение обязано указывать GPU, commit, полный wall time и одинаковый
-критерий точности.
+\hypertarget{ux434ux43eux441ux442ux440ux43eux439ux43aux430-ux43fux43eux440ux44fux434ux43aux430-ux447ux435ux440ux435ux437-ux432ux437ux430ux438ux43cux43dux43eux441ux442ux44c}{%
+\section{Достройка порядка через
+взаимность}\label{ux434ux43eux441ux442ux440ux43eux439ux43aux430-ux43fux43eux440ux44fux434ux43aux430-ux447ux435ux440ux435ux437-ux432ux437ux430ux438ux43cux43dux43eux441ux442ux44c}}
 
-\begin{figure}[p]
-\centering\includegraphics[width=0.96\textwidth]{fig_shape_single_time.png}
-\caption{Измеренное время одной ориентации для разных форм. Рост определяется не только
-$ka$, но и необходимым числом треугольников и числом итераций.}
-\label{fig:time}
+\nolinkurl{tmatrix_reciprocal_extension.py} сохраняет прежний квадрат T
+и непосредственно вычисленные новые входящие столбцы. Недостающий блок
+новых исходящих/старых входящих мод восстанавливается взаимностью:
+знаковая перестановка \(m\to-m\) и \textbf{транспонирование}, без
+комплексного сопряжения.
+
+Ретроспективная проверка на полных сохранённых T дала максимальную
+ошибку: ka=5, 7→14 --- 0.08697\%; ka=10, 14→20 --- 0.05271\%; ka=40,
+54→64 --- 0.001505\%. При ka=40, 58→64 --- 0.0001303\%. Все девять
+случаев прошли 0.1\%. Это восстановление уже известного блока, не новый
+BEM-расчёт выше L=64. Измеренного ускорения настоящей достройки пока
+нет. Разные сетки проекции старой и новой T потребуют дополнительного
+контроля.
+
+\begin{figure}
+\centering
+\includegraphics{manual_assets/v1.0.0/reciprocal_extension.png}
+\caption{Ретроспективное восстановление блока T через взаимность.}
 \end{figure}
 
-\begin{figure}[p]
-\centering\includegraphics[width=0.96\textwidth]{fig_batch4_benchmark.png}
-\caption{Эффект пакетного вычисления двух токов и двух поляризаций. Ускорение относится
-к конкретной версии ядра и не заменяет контроль итоговой невязки.}
-\label{fig:batch4}
+\hypertarget{ux432ux43bux438ux44fux43dux438ux435-ux432ux44bux442ux44fux43dux443ux442ux43eux441ux442ux438-ux438-ux441ux43fux43bux44eux441ux43dux443ux442ux43eux441ux442ux438}{%
+\chapter{Влияние вытянутости и
+сплюснутости}\label{ux432ux43bux438ux44fux43dux438ux435-ux432ux44bux442ux44fux43dux443ux442ux43eux441ux442ux438-ux438-ux441ux43fux43bux44eux441ux43dux443ux442ux43eux441ux442ux438}}
+
+Шесть случаев с \(m=1.3116\). Минимальный L ниже относится к усечению;
+столбец сетки --- отдельное сравнение поверхности.
+
+\begin{longtable}[]{@{}rrrrcr@{}}
+\toprule\noalign{}
+ka & H/Df & R/a & Минимальный L & Сравнение ref & Ошибка сетки \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+2 & 0.2 & 1.6945 & 6 & 2→3 & 0.3258\% \\
+2 & 1 & 1.2916 & 4 & 2→3 & 0.3177\% \\
+2 & 5 & 2.5376 & 7 & 2→3 & 0.0926\% \\
+5 & 0.2 & 1.6945 & 11 & 3→4 & \textbf{1.1319\%} \\
+5 & 1 & 1.2916 & 9 & 3→4 & 0.1489\% \\
+5 & 5 & 2.5376 & 16 & 2→3 & 0.5350\% \\
+\end{longtable}
+
+\begin{figure}
+\centering
+\includegraphics{manual_assets/v1.0.0/shape_and_mesh.png}
+\caption{Влияние формы на порядок и независимую ошибку сетки.}
 \end{figure}
 
-\chapter{Рекомендуемые профили}
-\section{Адаптивный быстрый расчёт}
-Профиль \code{fast} применим к любой поддерживаемой форме при фиксированной ориентации:
-\begin{lstlisting}[language=bash]
-./bem run --shape prism --sides 7 --aspect 1.4 \
-  --ka 25 --ri 1.3 --quality fast
-\end{lstlisting}
-Сетка автоматически выбирается по $ka$, показателю преломления и геометрии. Один процесс
-сохраняет подготовленные FMM/pFFT-операторы и факторы MBJ между всеми уровнями. Для
-средних систем применяется обычный pFFT--FGMRES, для больших высокочастотных систем ---
-его полосовая FMM-конфигурация, а для малых систем --- прямой FMM+MBJ. Точная невязка
-полного FMM-оператора проверяется
-на уровнях $4\cdot10^{-3}$, $10^{-3}$, $3\cdot10^{-4}$, $10^{-4}$,
-$3\cdot10^{-5}$ и $10^{-5}$.
+Вытянутому объекту нужен больший порядок при том же равновеликом ka.
+Сплюснутая призма ka=5 на изученной сетке \textbf{не прошла 1\%}. Малый
+хвост T не исправляет эту ошибку. Для малых проверенных порядков
+аналитическое SO(3) совпало с независимым ориентационным контролем на
+уровне примерно \(10^{-14}\)\ldots{}\(2\cdot10^{-13}\); это проверка
+усреднения, а не поверхности.
 
-Раннее завершение разрешается только после двух независимых переходов, на которых не
-более чем на $10^{-3}$ изменяются полная матрица Мюллера с весом $\sin\theta$,
-нормированная $M_{11}$, значение $M_{11}(0)$, интеграл $I_{11}$ и величина экстинкции
-из оптической теоремы, пропорциональная $\operatorname{Re}[S_1(0)+S_2(0)]$.
-Невязка должна реально
-уменьшиться не менее чем в $1{,}25$ раза; нулевой шаг не считается подтверждением.
-Если критерий не выполнен, та же контрольная точка автоматически продолжается до
-$10^{-5}$, то есть до допуска \code{standard}. Внешний эталон при остановке не
-используется. Старое имя \code{physical-fast} сохранено только как совместимый псевдоним.
-Все промежуточные сравнения и выбранный допуск сохраняются в разделе
-\code{adaptive\_fast} итогового файла \code{result.json}.
+\begin{figure}
+\centering
+\includegraphics{manual_assets/v1.0.0/ka2_aspect0p2_all16.png}
+\caption{Все 16 элементов: ka=2, H/Df=0.2.}
+\end{figure}
 
-\section{Предварительная диагностика}
-Используется для проверки запуска и поиска грубых ошибок, но не для публикации:
-\begin{lstlisting}[language=bash]
-./bem run --shape prism --ka 25 --ri 1.3 --quality quick
-\end{lstlisting}
+\begin{figure}
+\centering
+\includegraphics{manual_assets/v1.0.0/ka2_aspect1_all16.png}
+\caption{Все 16 элементов: ka=2, H/Df=1.}
+\end{figure}
 
-\section{Контролируемая несферическая частица}
-\begin{lstlisting}[language=bash]
-./bem run --shape prism --ka 25 --ri 1.3 --quality standard
-./bem run --shape prism --ka 25 --ri 1.3 --quality strict --yes
-\end{lstlisting}
-Профиль \code{standard} требует истинную невязку $10^{-5}$. Профиль \code{strict}
-добавляет две поверхностные сетки и FP64-контроль; он предназначен для проверки
-сходимости, а не для каждого поискового запуска. Профиль \code{memory} уменьшает
-пиковую видеопамять с сохранением того же допуска. Эффективный план заранее виден с
-\code{--dry-run --json}; в публикации указываются значения из JSON, а не только команда.
+\begin{figure}
+\centering
+\includegraphics{manual_assets/v1.0.0/ka2_aspect5_all16.png}
+\caption{Все 16 элементов: ka=2, H/Df=5.}
+\end{figure}
 
-Узкий профиль \code{preview} разрешён только для явно записанной в программе
-контрольной области. Профиль \code{fast} универсален для фиксированной ориентации, а
-усреднение по ориентациям использует собственный контроллер в \code{standard} или
-\code{memory}. Полный актуальный список выводят команды \code{./bem presets} и
-\code{./bem explain ИМЯ}.
+\begin{figure}
+\centering
+\includegraphics{manual_assets/v1.0.0/ka5_aspect0p2_all16.png}
+\caption{Все 16 элементов: ka=5, H/Df=0.2; сеточный критерий не
+пройден.}
+\end{figure}
 
-\section{Экспериментальные решатели}
-\code{--krylov qmr2}, \code{cocr} и \code{block-cocg} предназначены для исследования.
-На текущих тестах они не превзошли GPU-GMRES. Автоматический откат должен оставаться
-включённым; отчёт обязан различать матвек-итерации предварительного решателя и GMRES.
+\begin{figure}
+\centering
+\includegraphics{manual_assets/v1.0.0/ka5_aspect1_all16.png}
+\caption{Все 16 элементов: ka=5, H/Df=1.}
+\end{figure}
 
-\part{Форматы, диагностика и воспроизводимость}
+\begin{figure}
+\centering
+\includegraphics{manual_assets/v1.0.0/ka5_aspect5_all16.png}
+\caption{Все 16 элементов: ka=5, H/Df=5.}
+\end{figure}
 
-\chapter{Выходной JSON}
-JSON содержит физические параметры, описание сетки, запрошенную и фактическую систему,
-backend, точность FMM, параметры GMRES, статистику сходимости, времена и массив
-\code{mueller}. Перед объединением частей проверяются совместимость $ka$, $m$, $N_\theta$,
-системы, сетки ориентаций и нормировки весов. Простое усреднение файлов с разными весами
-неправильно.
+Дополнительная серия \(H/D_f=1\), \(m=1.3116\): при ka=10, L=21
+сравнение ref4→5 дало 0.2366\%, а при ka=20, L=34 --- \textbf{5.5170\%}.
+При этом вклад последних четырёх порядков оценён всего в 0.1027\% и
+0.0750\%. Поэтому увеличение L само по себе не решает проблему сеточной
+сходимости.
 
-Ключи \code{gmres\_converged\_systems}, \code{gmres\_max\_final\_relres} и
-\code{accuracy\_policy\_adjusted} обязательны для аудита. Если отсутствует комплексный
-масштаб строки или происхождение сетки, старый файл нельзя автоматически считать
-эквивалентным новой версии.
+\hypertarget{ux43cux443ux43bux44cux442ux438ux440ux430ux437ux43cux435ux440ux43dux430ux44f-t-ux433ux434ux435-ux432ux43eux437ux43dux438ux43aux430ux435ux442-ux44dux43aux43eux43dux43eux43cux438ux44f}{%
+\chapter{Мультиразмерная T: где возникает
+экономия}\label{ux43cux443ux43bux44cux442ux438ux440ux430ux437ux43cux435ux440ux43dux430ux44f-t-ux433ux434ux435-ux432ux43eux437ux43dux438ux43aux430ux435ux442-ux44dux43aux43eux43dux43eux43cux438ux44f}}
 
-\chapter{Диагностика типичных ошибок}
-\section{Отрицательный $M_{11}$}
-Физически недопустим. Проверяются индексы амплитудной матрицы, формулы Стокса,
-комплексное сопряжение, веса ориентаций и повреждение JSON. Уменьшение GMRES tolerance
-не является первым исправлением.
+При фиксированной форме и материале геометрические структуры и кэши
+можно переиспользовать, но оператор зависит от ka. Одна T при ka=40 не
+определяет T соседних размеров без дополнительной информации о частотной
+зависимости.
 
-\section{Совпадение только в переднем направлении}
-Проверяются интеграл $I_{11}$, нормировка размера OBJ, геометрия боковых граней,
-квадратура близких панелей, поляризационная база и полнота ориентационной сетки.
-Передний пик может совпадать при существенной потере энергии в задней полусфере.
+Проверенный маршрут: несколько прямых опорных T → рациональная модель
+элементов T → независимые прямые контрольные размеры → аналитическое
+SO(3) для плотной сетки. Интерполируется \textbf{комплексная T}, затем
+вычисляются квадратичные величины; интерполяция одной M11 не
+восстанавливает полную T.
 
-\section{Сетка мельче, а ошибка не уменьшается}
-Возможны: неизменившаяся геометрическая аппроксимация, недостаточная квадратура,
-достигнутый предел FMM/GMRES, плохие треугольники или сравнение разных ориентаций.
-Изменять одновременно ref, quad, digits и tol нельзя: причина станет неидентифицируемой.
+Обязательны одинаковые геометрия, материал, базис, порядок, проекция и
+соглашения. Обучающие и контрольные размеры не пересекаются. При провале
+интервал сужается или добавляются опоры. Экстраполяция вне проверенного
+интервала запрещена политикой локальной модели.
 
-\section{Процесс завис около допуска}
-Короткая рекуррентность может иметь ложную рекурсивную невязку. Используется истинный
-пересчёт $b-Ax$, ограничение стагнации, сохранение лучшего решения и откат на GMRES.
-Файл без финального Mueller при нулевой загрузке GPU считается аварийно незавершённым.
+\hypertarget{ux432ux44bux43fux43eux43bux43dux435ux43dux43dux430ux44f-ux441ux435ux440ux438ux44f-ka1012}{%
+\section{Выполненная серия
+ka=10\ldots12}\label{ux432ux44bux43fux43eux43bux43dux435ux43dux43dux430ux44f-ux441ux435ux440ux438ux44f-ka1012}}
 
-\chapter{Воспроизводимый вычислительный эксперимент}
-Для каждой точки сохраняются:
+Параметры: \(m=1.3116\), \(\lambda=0.532\) мкм, \textbf{\(H/D_f=1\)},
+ref4, L=24. Девять опор ka=10, 10.25, \ldots, 12; четыре независимых
+прямых решения: 10.125, 10.875, 11.125, 11.875.
+
 \begin{itemize}
-\item commit Git и контрольная сумма бинарного файла;
-\item полная команда и значимые переменные окружения;
-\item GPU, драйвер CUDA и лимит мощности;
-\item исходная сетка и её отчёт качества;
-\item JSON, stdout/stderr и время;
-\item скрипт сравнения и эталонные данные;
-\item критерий принятия до запуска, а не после просмотра графика.
+\tightlist
+\item
+  Максимум ошибки всех 16 элементов относительно M11:
+  \textbf{0.38556\%}.
+\item
+  Максимальная относительная ошибка T по Фробениусу: \textbf{0.17689\%}.
+\item
+  Относительная ошибка отдельных слабых активных элементов доходила до
+  \textbf{14.65\%}; она не равна основной нормировке.
+\item
+  Контроли сетки на концах дали около 0.2366\% и 0.5314\%.
+\item
+  Вычисление \textbf{201 размера готовой моделью и усреднение заняли
+  88.30 с}, без новых BEM-решений. Построение опор и контролей в эти
+  88.30 с не входит.
+\item
+  Запрошенный более широкий диапазон этой серией не был охвачен.
 \end{itemize}
-Нельзя подгонять масштаб кривой или выбор углов после расчёта и затем называть результат
-прямым сравнением. Любое преобразование нормировки должно быть записано формулой.
 
-\appendix
-\part{Справочные приложения}
+\begin{figure}
+\centering
+\includegraphics{manual_assets/v1.0.0/interpolation_M11.png}
+\caption{Четыре независимых размера: M11, прямое решение и
+интерполяция.}
+\end{figure}
 
-\chapter{Справочник основных параметров CLI}
-\section{Решатель Мюллера}
-\begin{longtable}{p{0.30\textwidth}p{0.62\textwidth}}
-\toprule Параметр & Назначение и рекомендация\\\midrule
-\code{--ka F} & Размерный параметр эквивалентной по объёму сферы.\\
-\code{--ri F} & Действительный показатель преломления в текущем драйвере Мюллера.\\
-\code{--shape sphere|prism|cube} & Встроенная геометрия.\\
-\code{--obj FILE} & Импорт замкнутой треугольной поверхности.\\
-\code{--sides N / --aspect F} & Число граней и отношение высоты к диаметру призмы.\\
-\code{--ref N} & Уровень рекурсивного поверхностного сгущения.\\
-\code{--edge-mode smooth|split|hdiv} & Выбор базиса поверхностных токов.\\
-\code{--tol F} & Требуемая относительная невязка.\\
-\code{--digits N} & Целевая точность FMM-разложения.\\
-\code{--quad N / --duffy-order N} & Обычная и сингулярная квадратуры.\\
-\code{--max-leaf N} & Максимальное число квадратурных источников в листе FMM.\\
-\code{--mbj-nodes N} & Номинальный размер блока Morton block-Jacobi.\\
-\code{--mbj-overlap N} & Перекрытие ограниченного метода Шварца.\\
-\texttt{-}\texttt{-gmres-}\newline\texttt{deflation-rank N} & Ранг дефляции по гармоническим векторам Ритца; ноль отключает режим.\\
-\texttt{-}\texttt{-gmres-}\newline\texttt{deflation-file FILE} & Атомарно сохраняемый и проверяемый по сигнатуре базис $U,C=AU$.\\
-\code{--pfft-fgmres} & pFFT как переменный правый предобуславливатель FGMRES.\\
-\code{--pfft-inner-tol F} & Допуск внутреннего pFFT-решения.\\
-\code{--pfft-inner-iters auto|N} & Ограничение числа внутренних итераций.\\
-\code{--checkpoint PREFIX} & Явный префикс контрольных точек решателя.\\
-\code{--near-correction-cache FILE} & Кэш точной ближней поправки.\\
-\code{--mbj-cache FILE} & Кэш локальных LU-факторов.\\
-\code{--orient-average NA NB NG} & Ориентационное усреднение.\\
-\code{--orient-symmetry-order N} & Порядок доказанной вращательной симметрии.\\
-\code{--iteration-log FILE} & CSV с невязкой и временем каждой итерации.\\
-\code{--physical-check} & Две поляризации и физические наблюдаемые.\\
-\code{--setup-only} & Подготовка оператора и оценка ресурсов без решения.\\
-\code{--ntheta N} & Число углов рассеяния.\\
-\code{--out FILE} & Итоговый JSON и базовый путь контрольных точек.\\\bottomrule
+\begin{figure}
+\centering
+\includegraphics{manual_assets/v1.0.0/interpolation_all16.png}
+\caption{Только четыре контрольных размера, все 16 элементов; отмечены
+максимумы ошибок.}
+\end{figure}
+
+\begin{figure}
+\centering
+\includegraphics{manual_assets/v1.0.0/holdout_errors.png}
+\caption{Максимальные ошибки на независимых контрольных размерах.}
+\end{figure}
+
+Контроллер \nolinkurl{run_tmatrix_multisize.py} исторически настроен на
+эту призму \(H/D_f=1\). Он наследует абсолютный срок и нижний сеточный
+контроль из существующей серии через \nolinkurl{deadline-from}; время
+проверки и построения опор входит в общий бюджет. Это не универсальная
+команда для любого аспекта. Для столбика 10/7 сначала готовят и
+проверяют собственную семью через \nolinkurl{build_fmm_tmatrix.py}, а не
+подменяют геометрию старой модели.
+
+\hypertarget{ux43fux440ux438ux43cux435ux43dux435ux43dux438ux435-ux43a-ux441ux43eux431ux441ux442ux432ux435ux43dux43dux44bux43c-ux43eux43fux43eux440ux43dux44bux43c-t}{%
+\section{Применение к собственным опорным
+T}\label{ux43fux440ux438ux43cux435ux43dux435ux43dux438ux435-ux43a-ux441ux43eux431ux441ux442ux432ux435ux43dux43dux44bux43c-ux43eux43fux43eux440ux43dux44bux43c-t}}
+
+Для уже подготовленного нижнего сеточного контроля и ещё действующего
+срока исходной серии можно подготовить исторический контроллер:
+
+\begin{verbatim}
+python3 scripts/run_tmatrix_multisize.py \
+  --out runs/multisize_10_12 \
+  --deadline-from runs/size_series/plan.json \
+  --ka-min 10 --ka-max 12 --order 24 --ref 4 \
+  --ri 1.3116 --wavelength-um 0.532 --prepare-only
+\end{verbatim}
+
+Требуются существующие \nolinkurl{plan.json} и
+\nolinkurl{ka10_assessment.json} с успешным нижним контролем; пустой
+план или истёкший срок не подходят. Эта команда использует аспект 1.
+После проверки плана убирают \nolinkurl{prepare-only}.
+
+Для другой собственной семьи можно использовать API. Ниже предполагаются
+\textbf{заранее завершённые} девять опор и отдельная контрольная T,
+сохранённые по указанной схеме имён. В release эти большие файлы не
+вложены.
+
+\begin{verbatim}
+import json
+import sys
+from pathlib import Path
+import numpy as np
+sys.path.insert(0, "scripts")
+from tmatrix_size_interpolation import fit_aaa, validate_family
+from tmatrix_so3_mstm import analytic_mueller_tmatrix
+
+base = Path("runs/family")
+nodes = np.linspace(10, 12, 9)
+folders = [base / f"ka{x:.3f}" for x in nodes]
+reports = [json.loads((p / "summary.json").read_text()) for p in folders]
+assert all(r["complete"] for r in reports)
+validate_family([r["parameters"] for r in reports])
+samples = [np.load(p / "tmatrix.npy", mmap_mode="r") for p in folders]
+model, diagnostics = fit_aaa(nodes, samples, tolerance=1e-6)
+
+# Эта точка не входит в обучение; прямой контроль считается отдельно.
+x = 10.125
+control = base / f"ka{x:.3f}"
+report = json.loads((control / "summary.json").read_text())
+assert report["complete"]
+validate_family([reports[0]["parameters"], report["parameters"]])
+truth = np.load(control / "tmatrix.npy", mmap_mode="r")
+predicted = model.evaluate(x)
+L = reports[0]["parameters"]["order"]
+theta = np.linspace(0, 180, 1801)
+kwargs = dict(precision="fp64", threads=2, cyclic_order=6)
+reference, _ = analytic_mueller_tmatrix(truth, L, theta, **kwargs)
+candidate, _ = analytic_mueller_tmatrix(predicted, L, theta, **kwargs)
+error = np.max(np.abs(candidate-reference) / reference[:, 0, 0, None, None])
+print("All16 / M11 error, %:", 100*error)
+\end{verbatim}
+
+\nolinkurl{training_tolerance_met} в \nolinkurl{diagnostics} относится
+только к обучающим T. Перед выпуском плотной сетки нужны
+\textbf{несколько} исключённых контрольных размеров, проверки сечений и
+поверхности. \nolinkurl{cyclic_order=6} допустим только при проверенной
+C6-симметрии. Для произвольной формы используют 1. Оценка в новых точках
+использует барицентрические коэффициенты по размеру; она не переносит
+токи между новыми узлами поверхностной сетки.
+
+\hypertarget{ux43aux430ux43aux43eux439-ux448ux430ux433-ux440ux430ux437ux43cux435ux440ux430-ux434ux435ux439ux441ux442ux432ux438ux442ux435ux43bux44cux43dux43e-ux43fux440ux43eux432ux435ux440ux435ux43d}{%
+\section{Какой шаг размера действительно
+проверен}\label{ux43aux430ux43aux43eux439-ux448ux430ux433-ux440ux430ux437ux43cux435ux440ux430-ux434ux435ux439ux441ux442ux432ux438ux442ux435ux43bux44cux43dux43e-ux43fux440ux43eux432ux435ux440ux435ux43d}}
+
+Независимый опыт при ka=3 и 6, \(m=1.3116\), \(H/D_f=10/7\), ref2:
+
+\begin{longtable}[]{@{}lrrr@{}}
+\toprule\noalign{}
+Метод & Шаг опор Δka & Максимум при ka≈3 & Максимум при ka≈6 \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Линейный & 0.25 & 20.47\% & 20.56\% \\
+Кубический & 0.25 & 6.05\% & 6.39\% \\
+Рациональный AAA, 9 опор & 0.25 & \textbf{0.503\%} & \textbf{0.580\%} \\
+Кубический & 0.125 & \textbf{0.275\%} & \textbf{0.348\%} \\
+AAA, 9 опор & 0.125 & \textbf{0.00278\%} & \textbf{0.00302\%} \\
+Линейный, две опоры & 0.05 & \textbf{0.581\%} & \textbf{0.820\%} \\
 \end{longtable}
 
-\section{Решатель PMCHWT/RWG}
-\begin{longtable}{p{0.28\textwidth}p{0.64\textwidth}}
-\toprule Параметр & Назначение и рекомендация\\\midrule
-\code{--ka F} & Размерный параметр $ka_{\rm eq}$; обязателен.\\
-\code{--ri RE IM} & Комплексный показатель $m=\mathrm{RE}+\iu\mathrm{IM}$.\\
-\code{--shape sphere|hex\_prism} & Встроенная геометрия.\\
-\code{--obj FILE} & Замкнутая триангулированная поверхность, нормируемая по объёму.\\
-\code{--ref N} & Уровень икосферической сетки.\\
-\code{--prism-aspect F} & Отношение сторон призмы в соглашении ADDA.\\
-\code{--quad 4|7|13} & Порядок треугольной квадратуры.\\
-\code{--solver auto|dense|fmm|pfft|spfft} & Backend; рабочий большой расчёт использует FMM.\\
-\code{--system balanced} & Рекомендуемая масштабированная PMCHWT-система.\\
-\code{--fmm-digits N} & Точность дальнего FMM-взаимодействия, обычно 6--8.\\
-\code{--max-leaf N} & Максимум источников/частиц листа, обычно 128.\\
-\code{--gmres-tol F} & Истинная относительная невязка; строгий OBJ обычно $10^{-5}$.\\
-\code{--gmres-restart N} & Размер пространства до перезапуска; влияет на память.\\
-\code{--gmres-max-cycles N} & Максимум циклов перезапуска.\\
-\code{--krylov gmres} & Основной решатель; другие значения экспериментальны.\\
-\code{--single} & Одна ориентация без усреднения.\\
-\code{--orient NA NB NG} & Явная сетка углов Эйлера.\\
-\code{--orient-file FILE} & Явные углы и веса.\\
-\code{--orient-bg-file FILE} & Сетка $\beta,\gamma$ для ускоренного $\alpha$-усреднения.\\
-\code{--alpha-avg N} & Число дешёвых узлов по $\alpha$.\\
-\code{--orient-start/--orient-count} & Разбиение ориентаций на возобновляемые части.\\
-\code{--ntheta N} & Число углов рассеяния от 0 до $180^\circ$.\\
-\code{--scat-plane yz|xz} & Плоскость рассеяния одной ориентации.\\
-\code{--accurate} & Усиливает контролируемые настройки несферических частиц.\\
-\code{--fast-obj} & Старый быстрый профиль; только диагностика.\\
-\code{--mesh-quality-only} & Проверка поверхности без решения.\\
-\code{--mesh-quality-strict} & Остановка при непрохождении gate.\\
-\code{--export-currents FILE} & Экспорт токов VTK для одной ориентации.\\
-\code{--out FILE} & Итоговый JSON.\\\bottomrule
+\begin{figure}
+\centering
+\includegraphics{manual_assets/v1.0.0/interpolation_spacing.png}
+\caption{Ошибка и шаг опор: универсального безопасного шага нет.}
+\end{figure}
+
+При шаге 0.5 изученные методы не прошли: ошибки порядка 33--74\%.
+Фазовое/Hankel-масштабирование, преобразования Cayley и проверенные
+модели Loewner не подтвердили безопасный большой интервал. Успех AAA на
+ka=3/6 не переносится автоматически на ka=40, резонансы или поглощение.
+Для соседей ka=40 в опубликованном наборе нет законченного независимого
+сертификата интерполяции; частичный новый расчёт таким сертификатом не
+является.
+
+\hypertarget{ux43fux440ux43eux438ux437ux432ux43eux434ux43dux44bux435-taylor-paduxe9-ux438-ux441ux43cux435ux43dux430-ux446ux435ux43dux442ux440ux430}{%
+\section{Производные, Taylor, Padé и смена
+центра}\label{ux43fux440ux43eux438ux437ux432ux43eux434ux43dux44bux435-taylor-paduxe9-ux438-ux441ux43cux435ux43dux430-ux446ux435ux43dux442ux440ux430}}
+
+Из \(A(k)x(k)=b(k)\) следует рекурсия по производным: один оператор в
+центре и правые части из производных ядра/падающего поля. Это может
+заменить несколько независимых сборок, но требует решений для моментов и
+контроля радиуса применимости. Прямые производные ядра и физического
+входа доступны как экспериментальные средства.
+
+\begin{figure}
+\centering
+\includegraphics{manual_assets/v1.0.0/taylor.png}
+\caption{Сравнение локальных Taylor/рациональных моделей на малых
+задачах.}
+\end{figure}
+
+На малой CPU-модели центр ka=3, Taylor порядка 4, радиус 0.25: шесть
+контролей, максимум 0.2781\%. После переноса центра на 3.25 продолжение
+Taylor ещё на 0.25 дало \textbf{1.1132\%}, то есть провал. Padé(2,1) с
+радиусом 0.125 прошёл шесть свежих контролей с максимумом 0.1604\%.
+
+\begin{figure}
+\centering
+\includegraphics{manual_assets/v1.0.0/recenter.png}
+\caption{Перенос центра: область точности проверяется заново.}
+\end{figure}
+
+Это не измерение полной большой GPU T. Нативные FFT/FMM моменты и их
+полная стоимость остаются отдельными проверками плана ускорения.
+
+\hypertarget{ux43dux435ux432ux44fux437ux43aux430-ux438-ux438ux442ux43eux433ux43eux432ux430ux44f-ux43cux430ux442ux440ux438ux446ux430-ux43cux44eux43bux43bux435ux440ux430}{%
+\chapter{Невязка и итоговая матрица
+Мюллера}\label{ux43dux435ux432ux44fux437ux43aux430-ux438-ux438ux442ux43eux433ux43eux432ux430ux44f-ux43cux430ux442ux440ux438ux446ux430-ux43cux44eux43bux43bux435ux440ux430}}
+
+Невязка \(\|Ax-b\|/\|b\|\) не равна ошибке Мюллера. При ka=40, ref4,
+одном фиксированном осевом падении относительно более строгого контроля:
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedleft\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedleft\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Допуск
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Максимальная ошибка Мюллера
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Экономия времени данного теста
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+2e-6 & 0.0331\% & базовый вариант \\
+1e-5 & 0.2354\% & 13.0\% \\
+3e-5 & 0.8705\% & 19.3\% \\
+5e-5 & 1.2096\% & 22.5\% \\
+1e-4 & 2.1090\% & 27.0\% \\
+1e-3 & 23.5454\% & 43.3\% \\
 \end{longtable}
 
-\chapter{Классы переменных окружения}
-В коде присутствует большое число диагностических переменных \code{BEM\_*}. Они не
-являются стабильным пользовательским API. Основные классы:
-\begin{description}
-\item[Устройство.] Выбор GPU, пакетных ядер и pinned staging.
-\item[FMM.] Кэш M2L, размер рабочих слотов, локальные коррекции и аудит дерева.
-\item[GMRES/Krylov.] GPU-путь, частота истинной невязки, критерии стагнации и fallback.
-\item[Предобуславливатель.] Размер локального блока, ближний граф, число проходов.
-\item[Ориентации.] Пакет дальнего поля, аналитическое $\alpha$-усреднение, split output.
-\item[Аудит.] Проверка симметрии, коэффициентов, памяти и качества результата.
-\end{description}
-Перед публикацией переменные окружения записываются вместе с командой. Неописанная
-переменная из экспериментального скрипта не должна переноситься в производственный
-профиль без отдельного A/B-теста.
+\begin{figure}
+\centering
+\includegraphics{manual_assets/v1.0.0/residual_accuracy.png}
+\caption{Невязка и ошибка: фиксированное падение ka=40.}
+\end{figure}
 
-\chapter{Формат файлов ориентаций}
-\section{Полная сетка}
-\begin{Verbatim}[frame=single]
-# alpha_deg beta_deg gamma_deg weight
-0.0  35.2643897  0.0  0.0833333333
-90.0 35.2643897  0.0  0.0833333333
-\end{Verbatim}
-Сумма весов может быть произвольной, если объединяющий код явно нормирует её. Для
-частичных файлов сохраняется глобальный индекс ориентации.
+Для другого наклонного падения ошибка при 1e-3 была 2.576\%. Малые
+полные T на ref2 после усреднения гораздо менее чувствительны: ka=3/6/20
+дали около 0.0109/0.0248/0.0086\% при 1e-3. Это не разрешение применять
+1e-3 к большой T ka=40. Адаптивный допуск --- опция с более строгими
+контрольными пакетами и повторными решениями; полная тонкая проверка
+остаётся незавершённой на дату снимка. Строгий исходный результат ka=40
+использовал около 2e-6.
 
-\section{Фоновая сетка $\beta,\gamma$}
-\begin{Verbatim}[frame=single]
-# beta_deg gamma_deg weight
-35.2643897 0.0 0.25
-90.0       0.0 0.50
-144.7356103 0.0 0.25
-\end{Verbatim}
-Она используется совместно с \code{--alpha-avg}. Нельзя сравнивать результат с ADDA,
-если фактические узлы и веса ADDA неизвестны.
+\hypertarget{ux438ux437ux43cux435ux440ux435ux43dux43dux43eux435-ux432ux440ux435ux43cux44f-ux438-ux440ux435ux441ux443ux440ux441ux44b-ka40}{%
+\chapter{Измеренное время и ресурсы
+ka=40}\label{ux438ux437ux43cux435ux440ux435ux43dux43dux43eux435-ux432ux440ux435ux43cux44f-ux438-ux440ux435ux441ux443ux440ux441ux44b-ka40}}
 
-\chapter{Контрольный лист публикационного расчёта}
-\begin{enumerate}[label=\arabic*.]
-\item Геометрия замкнута, ориентирована наружу, отчёт качества сохранён.
-\item $ka$ определён через эквивалентный объём и совпадает с эталоном.
-\item Материал и знак мнимой части согласованы с $e^{-\iu\omega t}$.
-\item Плотный и FMM-пути совпадают на уменьшенной сетке.
-\item Два уровня поверхности дают изменение меньше целевой ошибки.
-\item $q=7$ и $q=13$ проверены хотя бы на наиболее сложном размере.
-\item digits увеличен на единицу без значимого изменения результата.
-\item Истинная невязка ниже выбранного допуска для обеих поляризаций.
-\item Интеграл $M_{11}$ стабилен; $M_{11}\ge0$.
-\item Ориентационное усреднение сошлось минимум на двух вложенных сетках.
-\item Сравнение использует одинаковые ориентации и поляризационную базу.
-\item Время приведено на одну указанную GPU и включает явно перечисленные этапы.
-\item Память является измеренной, прогнозы отмечены как прогнозы.
-\item Все не сошедшиеся точки исключены, а не скрыты масштабированием.
-\item Сохранены commit, команда, окружение, JSON, логи и исходная сетка.
-\end{enumerate}
+Машина исследования: RTX 3090 Ti 24 GiB, Ryzen 9 7950X (32 аппаратных
+потока), около 61 GiB доступной системе RAM. Параметры: \(m=1.3116\),
+\(\lambda=0.532\) мкм, \(H/D_f=10/7\), ref6, \textbf{1 032 192
+неизвестных}, L=64. Завершены все \textbf{8448 столбцов}.
 
-\chapter{Происхождение включённых графиков}
-Все рисунки и машинно-читаемые таблицы этого руководства находятся в отслеживаемом
-каталоге \code{manual\_assets} текущего выпуска:
-\begin{longtable}{p{0.38\textwidth}p{0.54\textwidth}}
-\toprule Рисунок & Таблица/назначение\\\midrule
-\code{fig\_mie\_validation\_combined.png} & \code{table\_mie\_validation.csv}, контроль Ми.\\
-\code{fig\_dust\_fullgrid\_compare.png} & \code{table\_dust\_fullgrid\_compare.csv}, BEM--ADDA.\\
-\code{fig\_vram\_forecast.png} & \code{table\_vram\_experiment.csv} и прогнозная таблица.\\
-\code{fig\_shape\_single\_time.png} & \code{table\_shape\_single\_time.csv}.\\
-\code{fig\_orientation\_convergence.png} & данные вложенных ориентационных сеток.\\
-\code{fig\_batch4\_benchmark.png} & \code{table\_batch4\_benchmark.csv}.\\
-\bottomrule
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedleft\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Величина
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Сохранённое измерение
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Что входит
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Последний этап с возобновлением & 37 539.03 с = \textbf{10.43 ч} & После
+загрузки 2412 готовых столбцов \\
+Аналитическое SO(3) & \textbf{34.70 с} & Уже готовая T \\
+T на диске & 1 141 899 392 байт & NPY complex128, около 1.064 GiB \\
+Максимальная строгая невязка & 1.994e-6 & Проверенные одиночные и
+закодированные RHS \\
+Контроль нового направления поля & 1.5104e-5 & Отдельная проверка
+проекции \\
+Csca / Cext & 7.43199 / 7.43512 & Принятые безразмерные сечения \\
 \end{longtable}
-Перед повторным использованием следует проверить \code{table\_figure\_provenance.csv}
-и свежесть результата относительно commit программы.
 
-\chapter{Атлас численных экспериментов}
-Этот атлас предназначен не для декоративного увеличения документа, а для фиксации
-типичных способов контроля. Каждый рисунок должен рассматриваться вместе с исходной
-таблицей и метаданными расчёта. Кривые из разных экспериментов нельзя объединять без
-проверки геометрии, материала, ориентаций и нормировки.
+\textbf{10.43 часа --- не время полного холодного построения.} Расчёт
+проходил несколько продолжений; последняя сводка не содержит суммарное
+холодное время всех этапов. Его нельзя восстановить простым умножением
+времени пары или приписать алгоритму как измеренный итог.
 
-Архивные растровые графики с результатами прежнего тракта относятся к реализации
-PMCHWT/RWG, которая теперь запускается как \code{bin/bem\_cuda\_fmm}. Эти данные
-не следует приписывать основному решателю Мюллера выпуска 0.1.0-alpha.6.
+В длительном текущем процессе ref6 измерялось примерно 21--23 GiB VRAM и
+35 GiB RAM; пик зависит от варианта и кэшей. Это наблюдение процесса, а
+не жёсткая верхняя граница потребления.
 
-\clearpage
-\section{Зависимость от показателя преломления}
-\begin{figure}[H]\centering
-\includegraphics[width=0.96\textwidth,height=0.78\textheight,keepaspectratio]{fig_index_sweep.png}
-\caption{Серия расчётов по показателю преломления. Рост $|m|$ обычно ухудшает
-обусловленность и повышает требования к сетке; отдельная точка не задаёт универсальный
-закон времени.}\end{figure}
-Перед интерпретацией следует проверить, что каждая точка прошла одинаковый критерий
-невязки и сеточной сходимости. Уменьшение времени при большем $m$ может быть следствием
-досрочной несходимости, а не ускорения метода.
+\hypertarget{ux43aux430ux43aux438ux435-ux443ux441ux43aux43eux440ux435ux43dux438ux44f-ux438ux437ux43cux435ux440ux435ux43dux44b-ux43eux442ux434ux435ux43bux44cux43dux43e}{%
+\section{Какие ускорения измерены
+отдельно}\label{ux43aux430ux43aux438ux435-ux443ux441ux43aux43eux440ux435ux43dux438ux44f-ux438ux437ux43cux435ux440ux435ux43dux44b-ux43eux442ux434ux435ux43bux44cux43dux43e}}
 
-\clearpage
-\section{Строгий контроль сферы}
-\begin{figure}[H]\centering
-\includegraphics[width=0.96\textwidth,height=0.78\textheight,keepaspectratio]{fig_mie_n7_ref3_compare.png}
-\caption{Покомпонентное сравнение BEM и Ми при фиксированной сетке. Фазовая функция
-и нормированные элементы требуют разных шкал.}\end{figure}
-Сфера выявляет ошибки поляризационной базы, которые могут быть незаметны по одному
-$M_{11}$. В отчёте указывается не только средняя ошибка, но и максимальная ошибка
-сильных элементов и интеграл фазовой функции.
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Опыт
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Было → стало
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Область применимости
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+FFT граней, ka40/ref5, два настоящих RHS & worker 88.64→74.09 с &
+−16.41\% времени worker \\
+Тот же запуск целиком & 106.31→102.69 с & Выигрыш уменьшается из-за
+подготовки \\
+CPU/GPU, ref4, два пакета & 57.89→51.96 с & −10.25\% \\
+CPU/GPU, ref5, два пакета & 271.17→267.75 с & −1.26\%, ещё 14.38 GiB
+RAM \\
+Другой CPU/GPU вариант ref5 & 271.17→280.37 с & \textbf{+3.39\%,
+замедление} \\
+\end{longtable}
 
-\clearpage
-\section{Необработанное сравнение с ADDA}
-\begin{figure}[H]\centering
-\includegraphics[width=0.96\textwidth,height=0.77\textheight,keepaspectratio]{fig_dust_raw_adda_compare.png}
-\caption{Сравнение исходных данных BEM и ADDA без искусственного масштабирования.}
+FFT используется на регулярных участках граней; углы, близкие
+взаимодействия и нерегулярные части требуют поправок. Спектральное
+умножение само по себе не устраняет итерации. Полезен
+предобуславливатель, приближающий физический обратный оператор; его
+качество измеряется вместе со стоимостью применения. Проверенные
+невыгодные варианты сохранены как отрицательные результаты.
+
+\hypertarget{ux441ux440ux430ux432ux43dux435ux43dux438ux435-bem-ux438-mbs-fast-ux43fux440ux438-ka40}{%
+\chapter{Сравнение BEM и MBS-fast при
+ka=40}\label{ux441ux440ux430ux432ux43dux435ux43dux438ux435-bem-ux438-mbs-fast-ux43fux440ux438-ka40}}
+
+Использована завершённая BEM T выше с аналитическим SO(3). MBS-fast:
+\(m=1.3116\), та же длина волны и объём, \(H/D_v=1.2371791483\). Новый
+бинарник со surface/shadow изменениями сравнивался в когерентном и
+некогерентном режимах. В переносимом наборе записаны commit и SHA256
+бинарника.
+
+Условия нового MBS: 8 независимых Haar/Owen--Sobol перемешиваний по 4096
+ориентаций, 32 азимутальных отсчёта, глубина 14, 222 угла рассеяния. Это
+\textbf{фиксированный объём выборки}, не новый успешно сошедшийся
+fullauto на 1\% или 4\%. Старые fullauto-запуски имеют свои отдельные
+статусы.
+
+Общая величина --- \(k^2\,d\sigma/d\Omega\). В сравнении использован
+физический масштаб 139.4878795 и перевод Stokes через диагональ
+\((1,1,-1,-1)\); подгонки амплитуды под BEM нет. 95\%-интервалы ---
+поточечные, не совместная гарантия всех углов/элементов. Они
+характеризуют статистику MBS, не точность его физической модели.
+
+\begin{longtable}[]{@{}lrr@{}}
+\toprule\noalign{}
+Сравнение с BEM & Когерентный MBS & Некогерентный MBS \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Взвешенная L2, все 16 элементов & 2.533\% & 5.520\% \\
+Максимум абсолютного отличия / M11 & 43.54\% & 59.09\% \\
+M11 вперёд, знаковое отличие & −1.005\% & +3.761\% \\
+M11 назад, знаковое отличие & −43.54\% & −29.67\% \\
+\end{longtable}
+
+Максимум когерентного варианта находится в M11 при 180°; некогерентного
+--- M44 около 177.76°. Малое интегральное отклонение не означает
+поточечную сходимость в обратном направлении.
+
+\begin{figure}
+\centering
+\includegraphics{manual_assets/v1.0.0/mbs_ka40_M11.png}
+\caption{BEM и оба режима MBS-fast: M11 в одной нормировке.}
 \end{figure}
-Такой график должен строиться первым. Масштабирование одной кривой для визуального
-совпадения допустимо только как отдельная диагностика нормировки и не является
-результатом физического сравнения.
 
-\clearpage
-\section{Диагностика общей нормировки}
-\begin{figure}[H]\centering
-\includegraphics[width=0.96\textwidth,height=0.77\textheight,keepaspectratio]{fig_dust_ka10_adda_scaled.png}
-\caption{Диагностическое масштабирование сравнения на пылевой частице.}
+\begin{figure}
+\centering
+\includegraphics{manual_assets/v1.0.0/mbs_ka40_all16.png}
+\caption{Все 16 элементов: когерентный и некогерентный MBS-fast поверх
+BEM.}
 \end{figure}
-Если один коэффициент улучшает все углы и элементы, проверяется нормировка амплитуды.
-Если коэффициент помогает только переднему пику, причина, вероятнее всего, в геометрии
-или угловом разрешении. Итоговые данные всегда возвращаются к физической нормировке.
 
-\clearpage
-\section{Слабые компоненты}
-\begin{figure}[H]\centering
-\includegraphics[width=0.96\textwidth,height=0.77\textheight,keepaspectratio]{fig_weak_component_metric.png}
-\caption{Метрика слабых элементов матрицы Мюллера.}\end{figure}
-Относительная ошибка около нуля неограниченно растёт, поэтому слабые элементы
-нормируются на устойчивый масштаб, например интеграл $M_{11}$. Сильные и слабые
-компоненты должны иметь раздельные критерии принятия.
+Весь новый пакет сравнений и контролей MBS занял 766.02 с. Он включает
+несколько вариантов; это не время одной T или одного MBS-прогона. BEM T
+была переиспользована. Прямое сравнение 766 с и 10.43 ч как времени двух
+методов при равной точности было бы некорректным.
 
-\clearpage
-\section{Точность гексагональной призмы}
-\begin{figure}[H]\centering
-\includegraphics[width=0.96\textwidth,height=0.76\textheight,keepaspectratio]{fig_hex_accuracy.png}
-\caption{Контроль точности для гексагональной призмы.}\end{figure}
-Рёбра призмы создают особенности поверхностных токов. Поэтому одинаковое среднее
-отношение длины волны к ребру не гарантирует одинаковую ошибку сферы и призмы.
+Поглощающий тест \(m=1.3116+10i\) при ka=20 --- отдельная задача
+проверки Френеля/отражения; результаты вещественной частицы выше на неё
+не переносятся. Экспериментальные инструменты
+\nolinkurl{audit_mbs_fresnel.py} и
+\nolinkurl{absorbing_fixed_comparison.py} входят в код, но универсальное
+улучшение MBS для поглощения не объявляется результатом этой BEM-версии.
 
-\clearpage
-\section{Скорость на призме}
-\begin{figure}[H]\centering
-\includegraphics[width=0.96\textwidth,height=0.76\textheight,keepaspectratio]{fig_hex_speed.png}
-\caption{Измеренное время расчёта призмы.}\end{figure}
-График скорости имеет смысл только для точек, прошедших заданный критерий точности.
-Не сошедшийся быстрый запуск отмечается отдельно и не соединяется производственной
-линией.
+No equal-accuracy speedup over ADDA is currently claimed. Сопоставимое
+по точности ускорение BEM относительно ADDA не заявляется. Построение
+полной T и численное усреднение заданного набора ориентаций имеют разную
+стоимость и разные возможности повторного использования.
 
-\clearpage
-\section{Обычный предобуславливатель}
-\begin{figure}[H]\centering
-\includegraphics[width=0.96\textwidth,height=0.76\textheight,keepaspectratio]{fig_hex_precond_benchmark.png}
-\caption{A/B-тест предобуславливателя на призме.}\end{figure}
-Сравниваются полное время, число матвеков, стоимость построения и истинная невязка.
-Снижение числа итераций не гарантирует снижение времени, если построение локальных
-блоков доминирует.
+\hypertarget{ux44dux43aux441ux43fux435ux440ux438ux43cux435ux43dux442ux430ux43bux44cux43dux44bux435-ux43dux430ux43fux440ux430ux432ux43bux435ux43dux438ux44f-ux438-ux432ux43eux441ux43fux440ux43eux438ux437ux432ux43eux434ux438ux43cux43eux441ux442ux44c}{%
+\chapter{Экспериментальные направления и
+воспроизводимость}\label{ux44dux43aux441ux43fux435ux440ux438ux43cux435ux43dux442ux430ux43bux44cux43dux44bux435-ux43dux430ux43fux440ux430ux432ux43bux435ux43dux438ux44f-ux438-ux432ux43eux441ux43fux440ux43eux438ux437ux432ux43eux434ux438ux43cux43eux441ux442ux44c}}
 
-\clearpage
-\section{Сравнение backend-ов}
-\begin{figure}[H]\centering
-\includegraphics[width=0.96\textwidth,height=0.76\textheight,keepaspectratio]{fig_backend_comparison.png}
-\caption{Сравнение вычислительных backend-ов при согласованной физической задаче.}
-\end{figure}
-Backend считается пригодным только после сравнения с плотным или более точным FMM на
-той же сетке. Совпадение времени без совпадения матрицы Мюллера не имеет ценности.
+\href{docs/acceleration_plan.md}{План ускорения} содержит P1--P13 и
+условия приёмки. Состояние в этой версии --- снимок на 1 ноября 2026 г.;
+будущие проверки в очереди не считаются выполненными результатами
+release.
 
-\clearpage
-\section{Память backend-ов}
-\begin{figure}[H]\centering
-\includegraphics[width=0.96\textwidth,height=0.76\textheight,keepaspectratio]{fig_memory_backend_comparison.png}
-\caption{Измеренная память разных backend-ов.}\end{figure}
-Следует различать выделенную CUDA-память, пик процесса и суммарную память узла.
-Прогноз за пределами измеренного диапазона маркируется как экстраполяция.
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Направление
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Состояние доказательств
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+P1 адаптивная невязка & Малые полные T проверены; большая тонкая
+проверка идёт \\
+P2 recycling & Выигрыш на серии пакетов; полная T требует контроля \\
+P3 пакетный FFT & Малый полный тест точен; выигрыша пока нет, тонкий
+тест ожидается \\
+P4 mapped FFT & Подготовлено; рабочий GPU-контроль ожидается \\
+P5 пакетный CPU FMM & Независимые CPU-проверки пройдены; совместный
+GPU-тест ожидается \\
+P6 объединение подпространств & Малый полный T: +1.72\% времени;
+распределение ранга проверяется \\
+P7 адаптивный L & Усечения и ретроспективная взаимность проверены; новая
+достройка открыта \\
+P8 SPAI & Изученный вариант медленнее на 10--21\%, отклонён \\
+P9 спектральный OSRC/MtE & Малый выигрыш подготовки; длинная серия
+ожидается \\
+P10 краевые блоки & Изученный вариант медленнее, отклонён \\
+P11 Taylor/Padé & Малые модели и перенос центра проверены; нативная
+большая модель открыта \\
+P12 начальные токи/MBS/Ritz & Малые проверки; убедительного выигрыша
+рабочей T нет \\
+P13 D6h-модель & Малые проверки; число действий с подготовкой не
+сократилось \\
+\end{longtable}
 
-\clearpage
-\section{Surface-pFFT}
-\begin{figure}[H]\centering
-\includegraphics[width=0.96\textwidth,height=0.76\textheight,keepaspectratio]{fig_spfft_benchmark.png}
-\caption{Экспериментальный Surface-pFFT относительно FMM.}\end{figure}
-В текущем CLI \code{spfft} может откатываться на FMM. Метаданные результата должны
-показывать фактически использованный backend, иначе график сравнивает названия команд,
-а не алгоритмы.
+\hypertarget{ux43fux435ux440ux435ux43dux43eux441ux438ux43cux44bux435-ux434ux430ux43dux43dux44bux435}{%
+\section{Переносимые
+данные}\label{ux43fux435ux440ux435ux43dux43eux441ux438ux43cux44bux435-ux434ux430ux43dux43dux44bux435}}
 
-\clearpage
-\section{Ускоренное усреднение по $\alpha$}
-\begin{figure}[H]\centering
-\includegraphics[width=0.96\textwidth,height=0.76\textheight,keepaspectratio]{fig_alpha_direct_benchmark.png}
-\caption{Сравнение явного и ускоренного $\alpha$-усреднения.}\end{figure}
-Правильность проверяется на одной и той же полной сетке углов Эйлера. Ускорение
-оценивается после подтверждения равенства матрицы Мюллера, а не только $M_{11}$.
+\nolinkurl{reference/v1.0.0/research/data.json} содержит сводки
+перечисленных серий; \nolinkurl{source_manifest.json} --- исходные
+относительные пути, размеры и SHA256; \nolinkurl{mbs_ka40_all16.csv} ---
+углы и все сравниваемые элементы. Большие T, поверхностные токи, кэши и
+приватные рабочие каталоги не входят в release. Исходные пути в manifest
+служат происхождением, а не обещанием наличия каждого многогигабайтного
+расчёта в архиве.
 
-\clearpage
-\section{Передача коэффициентов}
-\begin{figure}[H]\centering
-\includegraphics[width=0.96\textwidth,height=0.76\textheight,keepaspectratio]{fig_coeff_upload_benchmark.png}
-\caption{Накладные расходы передачи коэффициентов токов на GPU.}\end{figure}
-При большом числе ориентаций малая передача, повторяемая тысячи раз, становится
-измеримой. Пакетирование уменьшает накладные расходы, но увеличивает рабочую память.
+Перестроить новые сводные графики и PDF из опубликованных данных:
 
-\clearpage
-\section{Размер пылевой частицы}
-\begin{figure}[H]\centering
-\includegraphics[width=0.96\textwidth,height=0.76\textheight,keepaspectratio]{fig_greek_size.png}
-\caption{Серия размеров пылевой частицы.}\end{figure}
-Для произвольной формы $ka$ не определяет единственное число треугольников. С ростом
-размера одновременно меняются требования к поверхности, квадратуре и ориентациям.
+\begin{verbatim}
+python3 scripts/build_v1_research_assets.py
+python3 scripts/build_manual.py
+\end{verbatim}
 
-\clearpage
-\section{Совместная скорость и точность}
-\begin{figure}[H]\centering
-\includegraphics[width=0.96\textwidth,height=0.76\textheight,keepaspectratio]{fig_speed_pair_accuracy.png}
-\caption{Совместное представление времени и ошибки.}\end{figure}
-Оптимальной является точка на границе Парето. Выбор самого быстрого режима без
-ограничения ошибки или самого точного без учёта ресурсов не решает практическую задачу.
+Для PDF дополнительно нужны Pandoc и XeLaTeX с DejaVu-шрифтами.
+\nolinkurl{MANUAL.md} --- основной источник, \nolinkurl{MANUAL.tex}
+генерируется из него. Сборщик не запускает новых BEM-расчётов.
 
-\clearpage
-\section{Большая сфера}
-\begin{figure}[H]\centering
-\includegraphics[width=0.96\textwidth,height=0.76\textheight,keepaspectratio]{fig_mie_large_reference.png}
-\caption{Контроль большой сферы по теории Ми.}\end{figure}
-Этот тест особенно чувствителен к угловому разрешению переднего пика и дисперсионной
-ошибке поверхности. Ошибка $M_{11}$ оценивается с весом $\sin\theta$ и отдельно в
-задней полусфере.
+\hypertarget{ux430ux440ux445ux438ux432ux43dux44bux435-ux440ux430ux441ux442ux440ux43eux432ux44bux435-ux433ux440ux430ux444ux438ux43aux438}{%
+\section{Архивные растровые
+графики}\label{ux430ux440ux445ux438ux432ux43dux44bux435-ux440ux430ux441ux442ux440ux43eux432ux44bux435-ux433ux440ux430ux444ux438ux43aux438}}
 
-\clearpage
-\section{Точность ADDA OpenCL}
-\begin{figure}[H]\centering
-\includegraphics[width=0.96\textwidth,height=0.76\textheight,keepaspectratio]{fig_adda_ocl_accuracy.png}
-\caption{Контроль эталонных расчётов \code{adda\_ocl}.}\end{figure}
-ADDA не является точным решением для несферической частицы: его собственная сетка и
-допуск также должны сходиться. Эталон выбирается из наиболее строгого завершённого
-расчёта, а не из первого доступного файла.
+Графики четырёх контрольных размеров, шести форм, Taylor и взаимности
+сохранены из исходных исследований. Их происхождение и хеши
+зафиксированы. Новые сводные графики воспроизводятся из JSON/CSV; старые
+растровые изображения включены без перерисовки и без изменения исходных
+значений.
 
-\clearpage
-\section{Профили сетки призмы}
-\begin{figure}[H]\centering
-\includegraphics[width=0.96\textwidth,height=0.76\textheight,keepaspectratio]{fig_hex_accuracy_profile.png}
-\caption{Профиль дискретизации призмы по диапазону размеров.}\end{figure}
-Граница между уровнями ref определяется целевой ошибкой, а не круглым значением $ka$.
-В переходной области проверяются оба уровня.
-
-\clearpage
-\section{Сканирование параметров пыли}
-\begin{figure}[H]\centering
-\includegraphics[width=0.96\textwidth,height=0.76\textheight,keepaspectratio]{fig_dust_candidate_parameter_scan.png}
-\caption{Сканирование сетки, квадратуры и решателя для пылевой частицы.}\end{figure}
-Сканирование используется для поиска кандидатов, но финальная точка пересчитывается
-отдельно со строгими параметрами и полной ориентационной сеткой.
-
-\clearpage
-\section{Масштабирование по углам Эйлера}
-\begin{figure}[H]\centering
-\includegraphics[width=0.96\textwidth,height=0.76\textheight,keepaspectratio]{fig_hex_euler_scaling.png}
-\caption{Время и накладные расходы при росте числа ориентаций.}\end{figure}
-При большом ансамбле доля инициализации FMM уменьшается, поскольку оператор используется
-повторно. Для сравнения с ADDA учитываются одинаковое полное число ориентаций и число GPU.
-
-\chapter{Машинно-читаемые таблицы экспериментов}
-Ниже включены исходные CSV, на которых основаны ключевые рекомендации. Это позволяет
-проверить числа без распознавания графиков. Столбцы могут содержать диагностические
-точки; статус сходимости имеет приоритет над числовым значением времени.
-
-\csvsection{Валидация по Ми}{manual_assets/table_mie_validation.csv}
-\clearpage
-\csvsection{Требуемый уровень сферической сетки}{manual_assets/table_sphere_ref_requirement.csv}
-\clearpage
-\csvsection{Память: эксперимент}{manual_assets/table_vram_experiment.csv}
-\clearpage
-\csvsection{Память: прогноз}{manual_assets/table_vram_forecast.csv}
-\clearpage
-\csvsection{Время одной ориентации}{manual_assets/table_shape_single_time.csv}
-\clearpage
-\csvsection{Пакетный FMM}{manual_assets/table_batch4_benchmark.csv}
-\clearpage
-\csvsection{Сравнение backend-ов}{manual_assets/table_backend_comparison.csv}
-\clearpage
-\csvsection{Сходимость пылевой частицы}{manual_assets/table_dust_fullgrid_compare.csv}
-\clearpage
-\csvsection{Сравнение BEM и ADDA OpenCL}{manual_assets/table_bem_vs_adda_ocl_same_shape.csv}
-\clearpage
-\csvsection{Ускоренное $\alpha$-усреднение}{manual_assets/table_alpha_direct_benchmark.csv}
-\clearpage
-\csvsection{Требования к сетке по размеру}{manual_assets/table_mesh_level_requirement.csv}
-\clearpage
-\csvsection{Совместная скорость и точность}{manual_assets/table_speed_pair_accuracy_by_shape.csv}
-\clearpage
-\csvsection{Память backend-ов на одной форме}{manual_assets/table_memory_backend_same_shape.csv}
-\clearpage
-\csvsection{Предобуславливатель призмы}{manual_assets/table_hex_precond_benchmark.csv}
-\clearpage
-\csvsection{Sweep по показателю преломления}{manual_assets/table_index_sweep.csv}
-\clearpage
-\csvsection{Точность ADDA OpenCL}{manual_assets/table_adda_ocl_accuracy.csv}
-\clearpage
-
-\chapter{Литература и дальнейшее чтение}
-\begin{thebibliography}{99}
-\bibitem{PMCHWT1} A.~J.~Poggio, E.~K.~Miller. Integral equation solutions of
-three-dimensional scattering problems. In: \emph{Computer Techniques for
-Electromagnetics}, 1973.
-\bibitem{PMCHWT2} Y.~Chang, R.~F.~Harrington. A surface formulation for characteristic
-modes of material bodies. \emph{IEEE Trans. Antennas Propag.}, 25, 1977.
-\bibitem{PMCHWT3} T.~K.~Wu, L.~L.~Tsai. Scattering from arbitrarily-shaped lossy
-dielectric bodies of revolution. \emph{Radio Science}, 12, 1977.
-\bibitem{RWG} S.~M.~Rao, D.~R.~Wilton, A.~W.~Glisson. Electromagnetic scattering by
-surfaces of arbitrary shape. \emph{IEEE Trans. Antennas Propag.}, 30(3), 1982.
-\bibitem{Chew} W.~C.~Chew. \emph{Waves and Fields in Inhomogeneous Media}. IEEE Press.
-\bibitem{Nedelec} J.-C.~Nedelec. \emph{Acoustic and Electromagnetic Equations}.
-Springer, 2001.
-\bibitem{FMM} V.~Rokhlin. Rapid solution of integral equations of scattering theory in
-two dimensions. \emph{J. Comput. Phys.}, 86, 1990.
-\bibitem{MLFMA} J.~Song, C.-C.~Lu, W.~C.~Chew. Multilevel fast multipole algorithm for
-electromagnetic scattering. \emph{IEEE Trans. Antennas Propag.}, 45, 1997.
-\bibitem{GMRES} Y.~Saad, M.~H.~Schultz. GMRES: a generalized minimal residual algorithm.
-\emph{SIAM J. Sci. Stat. Comput.}, 7, 1986.
-\bibitem{QMR} R.~W.~Freund, N.~M.~Nachtigal. An implementation of QMR based on coupled
-two-term recurrences. \emph{SIAM J. Sci. Comput.}, 15, 1994.
-\bibitem{ADDAmanual} M.~A.~Yurkin, A.~G.~Hoekstra. User manual for the discrete dipole
-approximation code ADDA 1.4.0, 2020.
-\bibitem{DDAreview} M.~A.~Yurkin, A.~G.~Hoekstra. The discrete-dipole-approximation code
-ADDA: capabilities and known limitations. \emph{JQSRT}, 112, 2011.
-\end{thebibliography}
-
-\backmatter
-\chapter*{Заключение}
-BEM-CPP предоставляет два GPU-пути для поверхностного решения задачи рассеяния:
-PMCHWT/RWG и уравнение Мюллера второго рода. Для новых расчётов острых частиц основным
-является $H(\mathrm{div})$-согласованный BDM1-вариант Мюллера со смешанной
-FMM/pFFT-реализацией, MBJ и обязательным контролем истинной невязки. Сильная сторона
-метода --- отсутствие объёмной сетки и повторное использование оператора для множества
-ориентаций. Основные ограничения --- качество треугольной поверхности, стоимость
-нелокального оператора и сложность итерационной сходимости. Надёжный результат
-получается не одной ``лучшей'' комбинацией флагов, а последовательным контролем
-линейной, операторной, поверхностной и ориентационной ошибок.
+Полное старое руководство, таблицы прежних ориентационных исследований и
+материалы сходимости остаются в репозитории. Их параметры и даты не
+переписаны под текущий столбик. Для проверки программной версии
+используются \nolinkurl{tests/test_*.py}, native host checks и
+\nolinkurl{scripts/release_audit.sh --gpu}. Фактически выполненные
+release-проверки и исключения перечисляются в отчёте проверки,
+приложенном к GitHub release.
 
 \end{document}

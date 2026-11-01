@@ -59,6 +59,8 @@ def main():
                 data = json.dumps(value).encode()
                 connection.sendall(struct.pack('=Q',len(data))+data)
             message({'rhs_points':len(positions),'system_dofs':len(positions)*6,
+                     'per_packet_tolerance':os.environ.get('BEM_TEST_FAKE_OLD_PROTOCOL')!='1',
+                     'hybrid_batch_capacity':2 if os.environ.get('BEM_TEST_FAKE_HYBRID')=='1' else 1,
                      'solver_backend':'CPU_TEST_FIXTURE_NOT_BEM','prism_dihedral_mesh':mirror,
                      'symmetry_warm_start':os.environ.get('BEM_TEST_FAKE_WARM_SUPPORT')=='1',
                      'krylov_recycle_capacity':int(os.environ.get('BEM_TMATRIX_RECYCLE_RANK','0')),
@@ -66,17 +68,36 @@ def main():
                      'recycle_signature':os.environ.get('BEM_TMATRIX_RECYCLE_SIGNATURE'),
                      'recycle_path':os.environ.get('BEM_TMATRIX_RECYCLE_PATH')})
             connection.sendall(positions.astype(float).tobytes())
+            batch_remaining=0
+            pending_results=[]
+            responses=0
             while True:
                 operation = np.empty(1, np.int32); receive(connection,operation)
                 if operation[0] == 0:
                     break
+                if operation[0] == 4:
+                    if batch_remaining or os.environ.get('BEM_TEST_FAKE_HYBRID')!='1':
+                        raise ValueError('invalid hybrid batch')
+                    count=np.empty(1,np.int32);receive(connection,count)
+                    if count[0]!=2:raise ValueError('invalid batch size')
+                    batch_remaining=2
+                    continue
+                tolerance=float(sys.argv[9])
+                if operation[0]==5:
+                    receive(connection,operation)
+                    value=np.empty(1);receive(connection,value)
+                    tolerance=float(value[0])
+                    if not np.isfinite(tolerance) or not 0<tolerance<=float(sys.argv[9]):
+                        raise ValueError('invalid per-packet tolerance')
                 if operation[0] in (1,3):
                     receive(connection, fields)
                     coefficients = inverse@fields.reshape(2,-1).T
                     outgoing_coefficients = kernel@(coefficients/scales[:,None]/(4*np.pi*phase[:,None]))
                     for slot in range(2):
                         active = np.flatnonzero(np.abs(coefficients[:,slot]) > 1e-7*np.max(np.abs(coefficients[:,slot])))
-                        if len(active) > 1 and injection and (injection=='audit' or modal[active[0]][1] not in audit_degrees):
+                        inject=len(active)>1 and bool(injection) and (injection in ('audit','adaptive') or modal[active[0]][1] not in audit_degrees)
+                        if injection=='adaptive' and tolerance<=2e-6:inject=False
+                        if len(active) > 1 and inject:
                             source = active[0]
                             if injection=='mirror':
                                 if len({modal[i][0] for i in active})<2:
@@ -94,10 +115,19 @@ def main():
                     raise ValueError('unknown test operation')
                 transverse = transverse.reshape(len(directions),2,2)
                 far = (et[:,:,None]*transverse[:,0,None,:]+ep[:,:,None]*transverse[:,1,None,:]).transpose(2,0,1)
-                message({'strict_residual_x':1e-12,'strict_residual_y':1e-12,'iterations':1,
+                residual=float(os.environ.get('BEM_TEST_FAKE_BAD_RESIDUAL_VALUE','1e-2')) if responses==0 and os.environ.get('BEM_TEST_FAKE_BAD_RESIDUAL')=='1' else 1e-12
+                status={'strict_residual_x':residual,'strict_residual_y':residual,'iterations':1,
+                         'requested_tolerance':tolerance,
                          'received_operation':int(operation[0]),
-                         'solve_s':0.,'total_worker_s':0.,'farfield_s':0.})
-                connection.sendall(np.ascontiguousarray(far).tobytes())
+                         'hybrid_packet':bool(batch_remaining),
+                         'solve_s':0.,'total_worker_s':0.,'farfield_s':0.}
+                responses+=1
+                pending_results.append((status,np.ascontiguousarray(far).tobytes()))
+                if batch_remaining:batch_remaining-=1
+                if not batch_remaining:
+                    for status,data in pending_results:
+                        message(status);connection.sendall(data)
+                    pending_results.clear()
 
 
 if __name__ == '__main__':

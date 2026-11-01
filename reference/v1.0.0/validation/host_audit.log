@@ -1,0 +1,962 @@
+==> tests/bdm_mesh_transfer_check
+aspect 1.4285714 symmetry 0 transfer_defect 8.828e-16
+aspect 1.4285714 symmetry 1 transfer_defect 9.803e-16
+aspect 1.4285714 symmetry 2 transfer_defect 9.215e-16
+aspect 1.4285714 exact polynomial error 9.509e-16 storage 483840
+aspect 1 symmetry 0 transfer_defect 8.655e-16
+aspect 1 symmetry 1 transfer_defect 1.552e-15
+aspect 1 symmetry 2 transfer_defect 9.365e-16
+aspect 1 exact polynomial error 7.656e-16 storage 626688
+BDM current transfer passed
+==> tests/bdm_mesh_transfer_points_check
+{"case":"random_currents","fine_elements":2688,"points":34944,"relative_l2":2.3291593159944837e-15,"maximum_error_over_peak":5.3858554147717324e-15,"maximum_position_error":7.4479256993617598e-16,"four_children_per_parent":true}
+==> tests/prism_edge_phase_basis_check
+{"scalar_jet_error":9.2818805589660623e-07,"quadrature_error":1.0940272446726137e-15,"D6h_defect":6.0046799347225375e-15,"plane_trace_error":7.5725854393937086e-16,"normal_flux_jump":6.5954291142544546e-16,"passed":true}
+==> tests/prism_sparse_inverse_check
+QR exact solve, least-squares stationarity 8.428e-14, rank loss passed
+ref=0 patches=10 bytes=42560 D6h_defect=6.784e-19 exact exchange/alias/zero/stencils passed
+ref=1 patches=17 bytes=72352 D6h_defect=0.000e+00 exact exchange/alias/zero/stencils passed
+ref=2 patches=51 bytes=217056 D6h_defect=0.000e+00 exact exchange/alias/zero/stencils passed
+==> tests/planar_muller_symbol_check
+PASS planar two-media symbol: inverse 3.553e-15, independent radial integral 9.752e-10; MtE duality, passive root, both polarizations, glancing rejection, equal media
+==> tests/planar_bdm_symbol_check
+ref=2 kind=0 exact mass 4.606e-16, Fourier quadrature 6.521e-16, inverse 9.930e-16
+ref=2 kind=1 exact mass 4.606e-16, Fourier quadrature 6.521e-16, inverse 9.930e-16
+ref=3 kind=0 exact mass 7.388e-16, Fourier quadrature 6.521e-16, inverse 1.026e-15
+ref=3 kind=1 exact mass 7.388e-16, Fourier quadrature 6.521e-16, inverse 1.026e-15
+PASS exact BDM1 mass, reciprocal normalization, passive two-medium symbol, Nyquist periodicity and invertibility
+==> tests/streaming_host_gmres_check
+mixed host GMRES adaptive=0 warm=0: 10 iterations, strict 9.255e-13, error 9.931e-13
+mixed host GMRES adaptive=0 warm=1: 8 iterations, strict 2.170e-11, error 2.555e-11
+mixed host GMRES adaptive=0 warm=2: 0 iterations, strict 0.000e+00, error 0.000e+00
+mixed host GMRES adaptive=1 warm=0: 9 iterations, strict 1.229e-11, error 1.345e-11
+mixed host GMRES adaptive=1 warm=1: 8 iterations, strict 2.170e-11, error 2.555e-11
+mixed host GMRES adaptive=1 warm=2: 0 iterations, strict 0.000e+00, error 0.000e+00
+==> tests/streaming_flexible_check
+flexible/polynomial interval=1 mode=0 steps=9 inverse_calls=12 residual=6.328e-12 error=8.226e-12
+flexible/polynomial interval=1 mode=1 steps=12 inverse_calls=12 residual=6.442e-12 error=8.539e-12
+flexible/polynomial interval=1 mode=2 steps=20 inverse_calls=20 residual=6.787e-13 error=8.973e-13
+flexible/polynomial interval=4 mode=0 steps=9 inverse_calls=12 residual=6.328e-12 error=8.226e-12
+flexible/polynomial interval=4 mode=1 steps=22 inverse_calls=22 residual=6.347e-12 error=8.265e-12
+flexible/polynomial interval=4 mode=2 steps=36 inverse_calls=36 residual=6.316e-12 error=8.195e-12
+IDR(1) period=8 actions=23 residual=7.251e-12 error=1.010e-11
+IDR(1) period=128 actions=40 residual=6.591e-12 error=8.918e-12
+IDR(4) period=8 actions=23 residual=6.966e-12 error=1.006e-11
+IDR(4) period=128 actions=40 residual=6.380e-12 error=8.279e-12
+IDR(8) period=8 actions=23 residual=7.811e-12 error=1.152e-11
+IDR(8) period=128 actions=40 residual=6.625e-12 error=8.823e-12
+==> tests/streaming_recycle_check
+rhs=0 plain=196 recycle=196 rank=8 strict=4.364e-10 error=1.340e-07
+rhs=1 plain=171 recycle=30 rank=8 strict=3.528e-10 error=6.381e-09
+rhs=2 plain=220 recycle=30 rank=8 strict=3.927e-10 error=4.714e-09
+rhs=3 plain=160 recycle=30 rank=8 strict=4.057e-10 error=5.181e-09
+rhs=4 plain=260 recycle=30 rank=8 strict=3.807e-10 error=5.901e-09
+rhs=5 plain=200 recycle=30 rank=8 strict=3.595e-10 error=6.627e-09
+subsequent RHS: 1011 -> 150 iterations; checkpoint and strict fallback passed
+==> tests/streaming_recycle_merge_check
+Merge: complementary spans, A U=C, rank budget, duplicate rejection, sector masks, checkpoints, strict fallback passed
+==> tests/sector_recycle_budget_check
+PASS sector memory budget, held-out training guard, mirror pairs, masks and invalid inputs
+==> tests/sector_recycle_rebudget_check
+PASS rebudget A U=C, pruning, orthogonality, memory, independent lanes, original FP64 gate
+==> tests/streaming_two_level_check
+two-level inverse: 120 -> 15 iterations; exact action, aliasing, strict residual and frozen-space guard passed
+==> tests/streaming_deferred_strict_check
+limit exit: interval=1 iterations=7 strict=4 deferred=0 residual=1.980e-04
+limit exit: interval=4 iterations=7 strict=1 deferred=3 residual=1.980e-04
+convergence: interval=1 mixed=0 warm=0 iterations=24 strict=8 deferred=0 residual=3.244e-11
+convergence: interval=1 mixed=0 warm=1 iterations=21 strict=8 deferred=0 residual=7.514e-11
+convergence: interval=1 mixed=0 warm=2 iterations=0 strict=1 deferred=0 residual=0.000e+00
+convergence: interval=1 mixed=1 warm=0 iterations=24 strict=8 deferred=0 residual=3.244e-11
+convergence: interval=1 mixed=1 warm=1 iterations=21 strict=8 deferred=0 residual=7.513e-11
+convergence: interval=1 mixed=1 warm=2 iterations=0 strict=1 deferred=0 residual=0.000e+00
+convergence: interval=2 mixed=0 warm=0 iterations=24 strict=4 deferred=4 residual=3.244e-11
+convergence: interval=2 mixed=0 warm=1 iterations=21 strict=5 deferred=3 residual=7.514e-11
+convergence: interval=2 mixed=0 warm=2 iterations=0 strict=1 deferred=0 residual=0.000e+00
+convergence: interval=2 mixed=1 warm=0 iterations=24 strict=4 deferred=4 residual=3.242e-11
+convergence: interval=2 mixed=1 warm=1 iterations=21 strict=5 deferred=3 residual=7.512e-11
+convergence: interval=2 mixed=1 warm=2 iterations=0 strict=1 deferred=0 residual=0.000e+00
+convergence: interval=4 mixed=0 warm=0 iterations=24 strict=2 deferred=6 residual=3.244e-11
+convergence: interval=4 mixed=0 warm=1 iterations=21 strict=3 deferred=5 residual=7.514e-11
+convergence: interval=4 mixed=0 warm=2 iterations=0 strict=1 deferred=0 residual=0.000e+00
+convergence: interval=4 mixed=1 warm=0 iterations=24 strict=2 deferred=6 residual=3.316e-11
+convergence: interval=4 mixed=1 warm=1 iterations=21 strict=3 deferred=5 residual=7.542e-11
+convergence: interval=4 mixed=1 warm=2 iterations=0 strict=1 deferred=0 residual=0.000e+00
+convergence: interval=8 mixed=0 warm=0 iterations=24 strict=1 deferred=7 residual=3.244e-11
+convergence: interval=8 mixed=0 warm=1 iterations=21 strict=2 deferred=6 residual=7.514e-11
+convergence: interval=8 mixed=0 warm=2 iterations=0 strict=1 deferred=0 residual=0.000e+00
+convergence: interval=8 mixed=1 warm=0 iterations=33 strict=2 deferred=9 residual=1.530e-11
+convergence: interval=8 mixed=1 warm=1 iterations=27 strict=3 deferred=7 residual=2.669e-11
+convergence: interval=8 mixed=1 warm=2 iterations=0 strict=1 deferred=0 residual=0.000e+00
+convergence: interval=16 mixed=0 warm=0 iterations=24 strict=1 deferred=7 residual=3.244e-11
+convergence: interval=16 mixed=0 warm=1 iterations=21 strict=2 deferred=6 residual=7.514e-11
+convergence: interval=16 mixed=0 warm=2 iterations=0 strict=1 deferred=0 residual=0.000e+00
+convergence: interval=16 mixed=1 warm=0 iterations=33 strict=2 deferred=9 residual=1.530e-11
+convergence: interval=16 mixed=1 warm=1 iterations=27 strict=3 deferred=7 residual=2.669e-11
+convergence: interval=16 mixed=1 warm=2 iterations=0 strict=1 deferred=0 residual=0.000e+00
+deferred strict checks: complex recurrence, FP32 refinement, warm starts and iteration limit passed
+==> tests/host_hybrid_scheduler_check
+PASS: original residuals, isolated CPU snapshot, GPU owner, useful overlap=22, exception draining
+==> tests/host_hybrid_batch_check
+PASS: independent buffers, equal-kind pairing, single fallback, unequal lane lengths, strict gates and paired exception draining
+==> tests/muller_cpu_cross_map_check
+PASS rectangular maps, permuted leaf IDs, near/far, phase cache, AVX512/scalar; worst 1.026e-15
+==> tests/host_fmm_batch_check
+  [SphereQuad] p=3, L=32 (4 theta x 8 phi)
+  [SphereQuad] p=3, L=32 (4 theta x 8 phi)
+  [SphereQuad] p=3, L=32 (4 theta x 8 phi)
+  [SphereQuad] p=3, L=32 (4 theta x 8 phi)
+  [SphereQuad] p=3, L=32 (4 theta x 8 phi)
+  [SphereQuad] p=3, L=32 (4 theta x 8 phi)
+  [SphereQuad] p=3, L=32 (4 theta x 8 phi)
+  [SphereQuad] p=3, L=32 (4 theta x 8 phi)
+{"passed":true,"cases":256,"independent_kernel_error":7.8639751437821586e-16}
+==> tests/host_spectral_inverse_check
+PASS: CPU FFT matches explicit 2D DFT, complex channel coupling, adjoint, odd alignment, in-place; error 9.00597e-16
+==> tests/tmatrix_symmetry_warm_start_check
+dense equivariance reflection=0 error=1.074439e-15
+dense equivariance reflection=1 error=2.068172e-06
+orbit QR rank=12 rhs_fit=5.702146e-16 solution_error=5.537728e-16
+axial RHS rank=4 fit=3.047569e-15
+==> tests/tmatrix_rhs_assembly_check
+RHS basis=P2 curved=1 threads=1 chunk=3 error=1.734e-16
+RHS basis=P2 curved=1 threads=1 chunk=64 error=1.734e-16
+RHS basis=P2 curved=1 threads=1 chunk=512 error=1.734e-16
+RHS basis=P2 curved=1 threads=1 chunk=2048 error=1.734e-16
+RHS basis=P2 curved=1 threads=4 chunk=3 error=1.734e-16
+RHS basis=P2 curved=1 threads=4 chunk=64 error=1.734e-16
+RHS basis=P2 curved=1 threads=4 chunk=512 error=1.734e-16
+RHS basis=P2 curved=1 threads=4 chunk=2048 error=1.734e-16
+RHS basis=BDM1 curved=0 threads=1 chunk=3 error=2.224e-16
+RHS basis=BDM1 curved=0 threads=1 chunk=64 error=2.224e-16
+RHS basis=BDM1 curved=0 threads=1 chunk=512 error=2.224e-16
+RHS basis=BDM1 curved=0 threads=1 chunk=2048 error=2.224e-16
+RHS basis=BDM1 curved=0 threads=4 chunk=3 error=2.224e-16
+RHS basis=BDM1 curved=0 threads=4 chunk=64 error=2.224e-16
+RHS basis=BDM1 curved=0 threads=4 chunk=512 error=2.224e-16
+RHS basis=BDM1 curved=0 threads=4 chunk=2048 error=2.224e-16
+RHS basis=BDM1 curved=1 threads=1 chunk=3 error=2.255e-16
+RHS basis=BDM1 curved=1 threads=1 chunk=64 error=2.255e-16
+RHS basis=BDM1 curved=1 threads=1 chunk=512 error=2.255e-16
+RHS basis=BDM1 curved=1 threads=1 chunk=2048 error=2.255e-16
+RHS basis=BDM1 curved=1 threads=4 chunk=3 error=2.255e-16
+RHS basis=BDM1 curved=1 threads=4 chunk=64 error=2.255e-16
+RHS basis=BDM1 curved=1 threads=4 chunk=512 error=2.255e-16
+RHS basis=BDM1 curved=1 threads=4 chunk=2048 error=2.255e-16
+==> tests/sphere_interpolation_check
+  [SphereQuad] p=3, L=32 (4 theta x 8 phi)
+  [SphereQuad] p=7, L=128 (8 theta x 16 phi)
+  [SphereQuad] p=8, L=162 (9 theta x 18 phi)
+  [SphereQuad] p=17, L=648 (18 theta x 36 phi)
+  [SphereQuad] p=24, L=1250 (25 theta x 50 phi)
+  [SphereQuad] p=49, L=5000 (50 theta x 100 phi)
+  [SphereQuad] p=36, L=2738 (37 theta x 74 phi)
+  [SphereQuad] p=73, L=10952 (74 theta x 148 phi)
+spherical polynomial interpolation max absolute error 3.718e-14
+==> tests/alpha_fourier_check
+alpha Fourier coherency maximum error: 2.017e-15
+==> tests/prism_dihedral_check
+{"ref":0,"triangles":60,"system_dofs":360,"C6_missing":0,"horizontal_missing":0,"vertical_missing":0,"closed_outward":true}
+{"ref":1,"triangles":144,"system_dofs":864,"C6_missing":0,"horizontal_missing":0,"vertical_missing":0,"closed_outward":true}
+{"ref":2,"triangles":576,"system_dofs":3456,"C6_missing":0,"horizontal_missing":0,"vertical_missing":0,"closed_outward":true}
+{"ref":5,"triangles":33792,"system_dofs":202752,"C6_missing":0,"horizontal_missing":0,"vertical_missing":0,"closed_outward":true}
+{"ref":6,"triangles":135168,"system_dofs":811008,"C6_missing":0,"horizontal_missing":0,"vertical_missing":0,"closed_outward":true}
+==> tests/operator_config_check
+==> tests/precond_policy_check
+preconditioner policy: ok
+==> tests/solver_policy_check
+solver accuracy policy: ok
+==> tests/mesh_quality_check
+  [Mesh] Generic feature-edge refinement: requested=1, applied=1, threshold=45.0 deg, min_angle=30.0 deg, below25=0/720
+  [Mesh] Generic feature-edge refinement: requested=1, applied=0, threshold=45.0 deg, min_angle=54.4 deg, below25=0/320
+mesh quality check: ok
+==> tests/krylov_deflation_check
+krylov deflation check passed
+==> tests/muller_nodal_check
+Muller P2 geometry/kernel check: nodes=162 dofs=648 frame_error=4.510e-17 hessian_error=9.445e-06 prism_feature_edges=24 prism_split_nodes=128
+==> tests/muller_dense_check
+Muller dense assembly check: elements=20 nodes=42 dofs=168 quadrature_pairs=178760 mbj_residual=3.549e-16 prism_dofs=512 hdiv_prism_dofs=216 prism_edge_pairs=108
+==> tests/output_json_mesh_check
+Results written to /tmp/bem_output_json_mesh_check.json
+output json mesh metadata: ok
+python3 scripts/check_result_metadata.py --strict /tmp/bem_output_json_mesh_check.json
+/tmp/bem_output_json_mesh_check.json: metadata ok
+self-test: ok
+==> tests/test_adaptive_tmatrix_tolerance.py
+....
+----------------------------------------------------------------------
+Ran 4 tests in 3.634s
+
+OK
+==> tests/test_adda_alpha_average_convention.py
+adda alpha average convention: ok
+==> tests/test_analyze_convergence_study.py
+convergence analysis metrics: ok
+==> tests/test_async_fp64_residual.py
+...
+----------------------------------------------------------------------
+Ran 3 tests in 0.015s
+
+OK
+==> tests/test_banded_memory_profile.py
+s
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+OK (skipped=1)
+==> tests/test_batched_tolerance_gmres.py
+..
+----------------------------------------------------------------------
+Ran 2 tests in 0.372s
+
+OK
+==> tests/test_bem_frontend.py
+bem frontend: ok
+==> tests/test_bem_optimization_benchmark.py
+strict BEM optimization benchmark: ok
+==> tests/test_constrained_current_inverse.py
+.....
+----------------------------------------------------------------------
+Ran 5 tests in 0.004s
+
+OK
+==> tests/test_convergence_study_runner.py
+convergence study runner: ok
+==> tests/test_cpu_pmchwt_centroid_reference.py
+cpu pmchwt centroid reference: ok
+==> tests/test_cuda_toolchain_detection.py
+cuda toolchain detection: ok
+==> tests/test_documentation_freshness.py
+documentation freshness: 1.0.0, ok
+==> tests/test_equal_accuracy_benchmark.py
+equal-accuracy ten-case benchmark: ok
+==> tests/test_farfield_workspace_policy.py
+farfield workspace policy: ok
+==> tests/test_fmm_m2l_radial_cache.py
+FMM M2L radial cache: ok
+==> tests/test_fmm_tmatrix_streaming.py
+ssss
+----------------------------------------------------------------------
+Ran 4 tests in 0.000s
+
+OK (skipped=4)
+==> tests/test_large_tmatrix_runner.py
+........./usr/lib/python3.12/traceback.py:241: ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmp6dees2xz/controller.lock' mode='w' encoding='UTF-8'>
+  tb.tb_frame.clear()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+.{
+  "created_utc": "2026-11-01T09:04:58.157906+00:00",
+  "parameters": {
+    "ka": 112.0,
+    "ref": 7,
+    "order": 4,
+    "ri": 1.3,
+    "tol": 3e-05,
+    "prism_aspect": 1.0,
+    "wavelength": null,
+    "restart": 80,
+    "max_iters": 1000,
+    "mbj_nodes": null,
+    "mbj_overlap": 0,
+    "wave_rank": 0,
+    "fft_inner": 0,
+    "fft_radius": 1.0,
+    "fft_memory": "device",
+    "circulant_blend": 0.0,
+    "cutoff_orders": null,
+    "strict_interval": 4,
+    "incident_prefetch": false,
+    "angular_band": 0,
+    "gpu_assembly": false,
+    "strict_face_fft": false,
+    "gpu_host_correction": false,
+    "worker_binary": null,
+    "solver_restart_from": null,
+    "solver_restart_proof": null,
+    "sector_gmres": true,
+    "orbit_nodes": 50,
+    "hybrid_cpu": true,
+    "adaptive_tight_tol": 2e-06
+  },
+  "profile": {
+    "OMP_NUM_THREADS": "16",
+    "OPENBLAS_NUM_THREADS": "1",
+    "BEM_FMM_BANDED_SPLIT_DEPTH": "4",
+    "BEM_FMM_BANDED_COARSE_MAX_LEAF": "2048",
+    "BEM_FMM_BANDED_MIDDLE_MAX_LEAF": "230",
+    "BEM_FMM_BANDED_COARSE_ORDER_REFERENCE_DEPTH": "3",
+    "BEM_FMM_ALLOW_DEPTH6": "1",
+    "BEM_TMATRIX_MAX_LEAF": "29",
+    "BEM_FMM_ORDER_REFERENCE_DEPTH": "6",
+    "BEM_FMM_MULTILEVEL": "1",
+    "BEM_MULLER_GPU_ASSEMBLY": "0",
+    "BEM_FMM_MULTILEVEL_GPU_ASSEMBLY": "0",
+    "BEM_TMATRIX_MBJ_NODES": "12",
+    "BEM_FMM_PAIR_CURRENTS": "0",
+    "BEM_FMM_PHASE_CACHE": "0",
+    "BEM_FMM_FLAT_NEAR_SOURCES": "0",
+    "BEM_FMM_STRICT_PAIR_WORKSPACE": "0",
+    "BEM_FMM_L2P_FP32": "0",
+    "BEM_MIXED_ITERATIVE_REFINEMENT": "1",
+    "BEM_FMM_BANDED_MINIMAL_WORKSPACE": "1",
+    "BEM_FMM_CONCURRENT_MEDIA": "1",
+    "BEM_FMM_MULTILEVEL_COMPACT_TEMP": "1",
+    "BEM_FMM_P2P_SHARED_SOURCES": "1",
+    "BEM_FMM_P2P_THREADS": "128",
+    "BEM_FMM_P2P_SHARED_REAL": "1",
+    "BEM_FMM_MULTILEVEL_P2M_SHARED": "1",
+    "BEM_FMM_M2L_DIRECTION_BLOCKS": "1",
+    "BEM_TMATRIX_D6H_MESH": "1",
+    "BEM_TMATRIX_DUFFY_ORDER": "6",
+    "BEM_TMATRIX_SYMMETRY_WARM_START": "1",
+    "BEM_HOST_GMRES_STRICT_INTERVAL": "4",
+    "BEM_TMATRIX_HYBRID": "1",
+    "BEM_TMATRIX_CPU_STRICT": "1",
+    "OMP_WAIT_POLICY": "PASSIVE",
+    "GOMP_SPINCOUNT": "0",
+    "BEM_CPU_FFTW_LIBRARY": "/tmp/bem-v1-fftw/libfftw3.so.3.6.10",
+    "BEM_CPU_THREADS": "16",
+    "BEM_CIRCULANT_CPU_FFT": "auto",
+    "BEM_TMATRIX_SECTOR_GMRES": "1",
+    "BEM_TMATRIX_ORBIT_NODES": "50"
+  },
+  "physical_dimensions": {
+    "volume_equivalent_radius_um": null,
+    "width_across_flats_um": null,
+    "height_um": null
+  },
+  "order_evidence": null,
+  "mode_count": 48,
+  "C2_representatives": 28,
+  "ideal_D6h_packets": 4,
+  "independent_control_pairs": 14,
+  "coded_audit_pairs": 2,
+  "production_pairs": 2,
+  "initial_worker_pairs_including_audits": 18,
+  "one_T_gib": 3.4332275390625e-05,
+  "columns_kernel_T_and_SO3_temp_gib": 0.0001373291015625,
+  "extra_operator_cache_estimate_gib": 10,
+  "disk_reserve_gib": 40,
+  "time_limit": null,
+  "orientation_average": "full analytic SO3, all 16 Mueller entries, zero Euler nodes",
+  "cutoff_and_mesh_1pct_convergence": "requires convergence controls for this size and aspect; linear residual is a separate gate",
+  "command": [
+    "/usr/bin/python3",
+    "/tmp/tmpjahlhda0/runtime/scripts/build_fmm_tmatrix.py",
+    "--shape",
+    "prism",
+    "--ref",
+    "7",
+    "--ka",
+    "112.0",
+    "--ri",
+    "1.3",
+    "--order",
+    "4",
+    "--tol",
+    "3e-05",
+    "--restart",
+    "80",
+    "--max-iters",
+    "1000",
+    "--prism-aspect",
+    "1.0",
+    "--c2-reuse",
+    "--c6-pack",
+    "--mirror-pack",
+    "--fast-mlfma",
+    "--c2-audit-tol",
+    "1e-4",
+    "--c6-audit-tol",
+    "1e-4",
+    "--average-backend",
+    "mstm",
+    "--so3-precision",
+    "auto",
+    "--so3-threads",
+    "4",
+    "--ntheta",
+    "7201",
+    "--out",
+    "/tmp/tmpjahlhda0/main_ref7_L4",
+    "--hybrid-cpu",
+    "--adaptive-tight-tol",
+    "2e-06"
+  ],
+  "resume_command": [
+    "/usr/bin/python3",
+    "/tmp/tmpjahlhda0/runtime/scripts/run_large_tmatrix.py",
+    "--out",
+    "/tmp/tmpjahlhda0",
+    "--ka",
+    "112.0",
+    "--ref",
+    "7",
+    "--order",
+    "4",
+    "--ri",
+    "1.3",
+    "--tol",
+    "3e-05",
+    "--prism-aspect",
+    "1.0",
+    "--restart",
+    "80",
+    "--max-iters",
+    "1000",
+    "--wave-rank",
+    "0",
+    "--mbj-overlap",
+    "0",
+    "--fft-inner",
+    "0",
+    "--fft-radius",
+    "1.0",
+    "--fft-memory",
+    "device",
+    "--strict-interval",
+    "4",
+    "--hybrid-cpu",
+    "--adaptive-tight-tol",
+    "2e-06",
+    "--sector-gmres",
+    "--orbit-nodes",
+    "50"
+  ]
+}
+{
+  "created_utc": "2026-11-01T09:04:58.172613+00:00",
+  "parameters": {
+    "ka": 112.0,
+    "ref": 7,
+    "order": 14,
+    "ri": 1.3,
+    "tol": 1e-05,
+    "prism_aspect": 1.4285714285714286,
+    "wavelength": null,
+    "restart": 80,
+    "max_iters": 1000,
+    "mbj_nodes": null,
+    "mbj_overlap": 0,
+    "wave_rank": 0,
+    "fft_inner": 0,
+    "fft_radius": 1.0,
+    "fft_memory": "device",
+    "circulant_blend": 0.0,
+    "cutoff_orders": null,
+    "strict_interval": 4,
+    "incident_prefetch": false,
+    "angular_band": 18,
+    "gpu_assembly": true,
+    "strict_face_fft": true,
+    "gpu_host_correction": true,
+    "worker_binary": null,
+    "solver_restart_from": null,
+    "solver_restart_proof": null,
+    "sector_gmres": true,
+    "orbit_nodes": 50
+  },
+  "profile": {
+    "OMP_NUM_THREADS": "16",
+    "OPENBLAS_NUM_THREADS": "1",
+    "BEM_FMM_BANDED_SPLIT_DEPTH": "4",
+    "BEM_FMM_BANDED_COARSE_MAX_LEAF": "2048",
+    "BEM_FMM_BANDED_MIDDLE_MAX_LEAF": "230",
+    "BEM_FMM_BANDED_COARSE_ORDER_REFERENCE_DEPTH": "3",
+    "BEM_FMM_ALLOW_DEPTH6": "1",
+    "BEM_TMATRIX_MAX_LEAF": "29",
+    "BEM_FMM_ORDER_REFERENCE_DEPTH": "6",
+    "BEM_FMM_MULTILEVEL": "1",
+    "BEM_MULLER_GPU_ASSEMBLY": "1",
+    "BEM_FMM_MULTILEVEL_GPU_ASSEMBLY": "1",
+    "BEM_TMATRIX_MBJ_NODES": "12",
+    "BEM_FMM_PAIR_CURRENTS": "0",
+    "BEM_FMM_PHASE_CACHE": "0",
+    "BEM_FMM_FLAT_NEAR_SOURCES": "0",
+    "BEM_FMM_STRICT_PAIR_WORKSPACE": "0",
+    "BEM_FMM_L2P_FP32": "0",
+    "BEM_MIXED_ITERATIVE_REFINEMENT": "1",
+    "BEM_FMM_BANDED_MINIMAL_WORKSPACE": "1",
+    "BEM_FMM_CONCURRENT_MEDIA": "1",
+    "BEM_FMM_MULTILEVEL_COMPACT_TEMP": "1",
+    "BEM_FMM_P2P_SHARED_SOURCES": "1",
+    "BEM_FMM_P2P_THREADS": "128",
+    "BEM_FMM_P2P_SHARED_REAL": "1",
+    "BEM_FMM_MULTILEVEL_P2M_SHARED": "1",
+    "BEM_FMM_M2L_DIRECTION_BLOCKS": "1",
+    "BEM_TMATRIX_D6H_MESH": "1",
+    "BEM_TMATRIX_DUFFY_ORDER": "6",
+    "BEM_TMATRIX_SYMMETRY_WARM_START": "1",
+    "BEM_HOST_GMRES_STRICT_INTERVAL": "4",
+    "BEM_MULLER_GPU_HOST_CORRECTION": "1",
+    "BEM_TMATRIX_FACE_FFT": "1",
+    "BEM_FACE_FFT_STRICT_ONLY": "1",
+    "BEM_FACE_FFT_NEAR_CACHE": "1",
+    "BEM_FACE_FFT_TARGET_FACES": "1",
+    "BEM_FACE_FFT_REUSE_CROSS": "1",
+    "BEM_FMM_PRUNE_EMPTY": "1",
+    "BEM_MULLER_GPU_STRICT_ONLY": "1",
+    "BEM_FACE_FFT_SMOOTH_PADDING": "1",
+    "BEM_FACE_FFT_DEDUP_KERNELS": "1",
+    "BEM_TMATRIX_SECTOR_GMRES": "1",
+    "BEM_TMATRIX_ORBIT_NODES": "50"
+  },
+  "physical_dimensions": {
+    "volume_equivalent_radius_um": null,
+    "width_across_flats_um": null,
+    "height_um": null
+  },
+  "order_evidence": null,
+  "mode_count": 448,
+  "C2_representatives": 238,
+  "ideal_D6h_packets": 26,
+  "independent_control_pairs": 21,
+  "coded_audit_pairs": 2,
+  "production_pairs": 24,
+  "initial_worker_pairs_including_audits": 47,
+  "one_T_gib": 0.00299072265625,
+  "columns_kernel_T_and_SO3_temp_gib": 0.011962890625,
+  "extra_operator_cache_estimate_gib": 10,
+  "disk_reserve_gib": 40,
+  "time_limit": null,
+  "orientation_average": "full analytic SO3, all 16 Mueller entries, zero Euler nodes",
+  "cutoff_and_mesh_1pct_convergence": "requires convergence controls for this size and aspect; linear residual is a separate gate",
+  "command": [
+    "/usr/bin/python3",
+    "/tmp/tmp_6nepyqj/runtime/scripts/build_fmm_tmatrix.py",
+    "--shape",
+    "prism",
+    "--ref",
+    "7",
+    "--ka",
+    "112.0",
+    "--ri",
+    "1.3",
+    "--order",
+    "14",
+    "--tol",
+    "1e-05",
+    "--restart",
+    "80",
+    "--max-iters",
+    "1000",
+    "--prism-aspect",
+    "1.4285714285714286",
+    "--c2-reuse",
+    "--c6-pack",
+    "--mirror-pack",
+    "--fast-mlfma",
+    "--c2-audit-tol",
+    "1e-4",
+    "--c6-audit-tol",
+    "1e-4",
+    "--average-backend",
+    "mstm",
+    "--so3-precision",
+    "auto",
+    "--so3-threads",
+    "4",
+    "--ntheta",
+    "7201",
+    "--out",
+    "/tmp/tmp_6nepyqj/main_ref7_L14",
+    "--angular-band",
+    "18"
+  ],
+  "resume_command": [
+    "/usr/bin/python3",
+    "/tmp/tmp_6nepyqj/runtime/scripts/run_large_tmatrix.py",
+    "--out",
+    "/tmp/tmp_6nepyqj",
+    "--ka",
+    "112.0",
+    "--ref",
+    "7",
+    "--order",
+    "14",
+    "--ri",
+    "1.3",
+    "--tol",
+    "1e-05",
+    "--prism-aspect",
+    "1.4285714285714286",
+    "--restart",
+    "80",
+    "--max-iters",
+    "1000",
+    "--wave-rank",
+    "0",
+    "--mbj-overlap",
+    "0",
+    "--fft-inner",
+    "0",
+    "--fft-radius",
+    "1.0",
+    "--fft-memory",
+    "device",
+    "--strict-interval",
+    "4",
+    "--angular-band",
+    "18",
+    "--gpu-assembly",
+    "--gpu-host-correction",
+    "--strict-face-fft",
+    "--sector-gmres",
+    "--orbit-nodes",
+    "50"
+  ]
+}...
+----------------------------------------------------------------------
+Ran 13 tests in 0.045s
+
+OK
+
+==> tests/test_mbs_coherent_field.py
+..
+----------------------------------------------------------------------
+Ran 2 tests in 0.020s
+
+OK
+==> tests/test_mbs_tmatrix_seed.py
+...
+----------------------------------------------------------------------
+Ran 3 tests in 0.057s
+
+OK
+==> tests/test_mie_mueller_symmetry.py
+mie mueller symmetry: ok
+==> tests/test_mueller_audit_physical.py
+mueller audit physical gates: ok
+==> tests/test_multilevel_fmm.py
+ssssss
+----------------------------------------------------------------------
+Ran 6 tests in 0.000s
+
+OK (skipped=6)
+==> tests/test_near_singular_audit.py
+near singular audit: ok
+==> tests/test_profile_command.py
+profiled command exit=0, wall=0.427s
+resources: /tmp/tmpr571bv6w/profile/resources.json
+profiled command exit=-15, wall=0.176s
+resources: /tmp/tmpqnzrampc/interrupted/resources.json
+profile command: ok
+==> tests/test_q13_local_corrections_policy.py
+q13 local correction policy: ok
+==> tests/test_release_metadata.py
+release metadata: 1.0.0, ok
+==> tests/test_result_metadata_check.py
+result metadata check: ok
+==> tests/test_rhs_workspace_policy.py
+rhs workspace policy: ok
+==> tests/test_size_series_runner.py
+....
+----------------------------------------------------------------------
+Ran 4 tests in 0.026s
+
+OK
+==> tests/test_tmatrix_c6.py
+...............
+----------------------------------------------------------------------
+Ran 15 tests in 10.603s
+
+OK
+==> tests/test_tmatrix_checkpoint_migration.py
+.
+----------------------------------------------------------------------
+Ran 1 test in 3.286s
+
+OK
+==> tests/test_tmatrix_continuation_policy.py
+.......
+----------------------------------------------------------------------
+Ran 7 tests in 0.001s
+
+OK
+==> tests/test_tmatrix_cutoff.py
+...
+----------------------------------------------------------------------
+Ran 3 tests in 0.013s
+
+OK
+==> tests/test_tmatrix_day.py
+....
+----------------------------------------------------------------------
+Ran 4 tests in 0.021s
+
+OK
+==> tests/test_tmatrix_incident.py
+.....
+----------------------------------------------------------------------
+Ran 5 tests in 0.550s
+
+OK
+==> tests/test_tmatrix_incident_taylor.py
+{'central_error': np.float64(1.8812153350735828e-16), 'contour_scaled_error': np.float64(1.2941666619828356e-12), 'nearby_error': np.float64(2.3868918397258496e-14)}
+..
+----------------------------------------------------------------------
+Ran 2 tests in 0.209s
+
+OK
+==> tests/test_tmatrix_multisize_runner.py
+......
+----------------------------------------------------------------------
+Ran 6 tests in 0.007s
+
+OK
+==> tests/test_tmatrix_neighbors.py
+......
+----------------------------------------------------------------------
+Ran 6 tests in 0.010s
+
+OK
+==> tests/test_tmatrix_order_selection.py
+.....
+----------------------------------------------------------------------
+Ran 5 tests in 0.008s
+
+OK
+{
+  "created_utc": "2026-11-01T09:05:16.506547+00:00",
+  "parameters": {
+    "ka": 40.0,
+    "ref": 6,
+    "order": 58,
+    "ri": 1.3116,
+    "tol": 1e-05,
+    "prism_aspect": 1.4285714285714286,
+    "wavelength": 0.532,
+    "restart": 80,
+    "max_iters": 1000,
+    "mbj_nodes": null,
+    "mbj_overlap": 0,
+    "wave_rank": 0,
+    "fft_inner": 0,
+    "fft_radius": 1.0,
+    "fft_memory": "device",
+    "circulant_blend": 0.0,
+    "cutoff_orders": null,
+    "strict_interval": 4,
+    "incident_prefetch": false,
+    "angular_band": 0,
+    "gpu_assembly": false,
+    "strict_face_fft": false,
+    "gpu_host_correction": false,
+    "worker_binary": null,
+    "solver_restart_from": null,
+    "solver_restart_proof": null
+  },
+  "profile": {
+    "OMP_NUM_THREADS": "16",
+    "OPENBLAS_NUM_THREADS": "1",
+    "BEM_FMM_BANDED_SPLIT_DEPTH": "4",
+    "BEM_FMM_BANDED_COARSE_MAX_LEAF": "3696",
+    "BEM_FMM_BANDED_MIDDLE_MAX_LEAF": "462",
+    "BEM_FMM_BANDED_COARSE_ORDER_REFERENCE_DEPTH": "3",
+    "BEM_FMM_ALLOW_DEPTH6": "1",
+    "BEM_TMATRIX_MAX_LEAF": "64",
+    "BEM_FMM_ORDER_REFERENCE_DEPTH": "6",
+    "BEM_FMM_MULTILEVEL": "1",
+    "BEM_MULLER_GPU_ASSEMBLY": "0",
+    "BEM_FMM_MULTILEVEL_GPU_ASSEMBLY": "0",
+    "BEM_TMATRIX_MBJ_NODES": "50",
+    "BEM_FMM_PAIR_CURRENTS": "0",
+    "BEM_FMM_PHASE_CACHE": "0",
+    "BEM_FMM_FLAT_NEAR_SOURCES": "0",
+    "BEM_FMM_STRICT_PAIR_WORKSPACE": "0",
+    "BEM_FMM_L2P_FP32": "0",
+    "BEM_MIXED_ITERATIVE_REFINEMENT": "1",
+    "BEM_FMM_BANDED_MINIMAL_WORKSPACE": "1",
+    "BEM_FMM_CONCURRENT_MEDIA": "1",
+    "BEM_FMM_MULTILEVEL_COMPACT_TEMP": "1",
+    "BEM_FMM_P2P_SHARED_SOURCES": "1",
+    "BEM_FMM_P2P_THREADS": "128",
+    "BEM_FMM_P2P_SHARED_REAL": "1",
+    "BEM_FMM_MULTILEVEL_P2M_SHARED": "1",
+    "BEM_FMM_M2L_DIRECTION_BLOCKS": "1",
+    "BEM_TMATRIX_D6H_MESH": "1",
+    "BEM_TMATRIX_DUFFY_ORDER": "6",
+    "BEM_TMATRIX_SYMMETRY_WARM_START": "1",
+    "BEM_HOST_GMRES_STRICT_INTERVAL": "4"
+  },
+  "physical_dimensions": {
+    "volume_equivalent_radius_um": 3.386817188995533,
+    "width_across_flats_um": 5.085618299480355,
+    "height_um": 7.265168999257651
+  },
+  "order_evidence": {
+    "status": "selected",
+    "selected_L": 58,
+    "physical_key": {
+      "shape": "prism",
+      "ka": 40.0,
+      "ri": 1.3116,
+      "ri_imag": 0.0,
+      "prism_aspect": 1.4285714285714286,
+      "wavelength": 0.532,
+      "ref": 6,
+      "geometry_digest": null
+    }
+  },
+  "mode_count": 6960,
+  "C2_representatives": 3538,
+  "ideal_D6h_packets": 319,
+  "independent_control_pairs": 21,
+  "coded_audit_pairs": 2,
+  "production_pairs": 317,
+  "initial_worker_pairs_including_audits": 340,
+  "one_T_gib": 0.7218360900878906,
+  "columns_kernel_T_and_SO3_temp_gib": 2.526426315307617,
+  "extra_operator_cache_estimate_gib": 10,
+  "disk_reserve_gib": 40,
+  "time_limit": null,
+  "orientation_average": "full analytic SO3, all 16 Mueller entries, zero Euler nodes",
+  "cutoff_and_mesh_1pct_convergence": "requires convergence controls for this size and aspect; linear residual is a separate gate",
+  "command": [
+    "/usr/bin/python3",
+    "/tmp/tmpb723vjjv/runtime/scripts/build_fmm_tmatrix.py",
+    "--shape",
+    "prism",
+    "--ref",
+    "6",
+    "--ka",
+    "40.0",
+    "--ri",
+    "1.3116",
+    "--order",
+    "58",
+    "--tol",
+    "1e-05",
+    "--restart",
+    "80",
+    "--max-iters",
+    "1000",
+    "--prism-aspect",
+    "1.4285714285714286",
+    "--c2-reuse",
+    "--c6-pack",
+    "--mirror-pack",
+    "--fast-mlfma",
+    "--c2-audit-tol",
+    "1e-4",
+    "--c6-audit-tol",
+    "1e-4",
+    "--average-backend",
+    "mstm",
+    "--so3-precision",
+    "auto",
+    "--so3-threads",
+    "4",
+    "--ntheta",
+    "7201",
+    "--out",
+    "/tmp/tmpb723vjjv/main_ref6_L58",
+    "--wavelength",
+    "0.532"
+  ],
+  "resume_command": [
+    "/usr/bin/python3",
+    "/tmp/tmpb723vjjv/runtime/scripts/run_large_tmatrix.py",
+    "--out",
+    "/tmp/tmpb723vjjv",
+    "--ka",
+    "40.0",
+    "--ref",
+    "6",
+    "--order",
+    "58",
+    "--ri",
+    "1.3116",
+    "--tol",
+    "1e-05",
+    "--prism-aspect",
+    "1.4285714285714286",
+    "--restart",
+    "80",
+    "--max-iters",
+    "1000",
+    "--wavelength",
+    "0.532",
+    "--wave-rank",
+    "0",
+    "--mbj-overlap",
+    "0",
+    "--fft-inner",
+    "0",
+    "--fft-radius",
+    "1.0",
+    "--fft-memory",
+    "device",
+    "--strict-interval",
+    "4",
+    "--order-study",
+    "/tmp/tmpb723vjjv/study",
+    "--order-error-budget",
+    "0.01",
+    "--order-guard",
+    "2"
+  ]
+}
+==> tests/test_tmatrix_pipeline.py
+....
+----------------------------------------------------------------------
+Ran 4 tests in 5.252s
+
+OK
+==> tests/test_tmatrix_projection.py
+..
+----------------------------------------------------------------------
+Ran 2 tests in 0.153s
+
+OK
+==> tests/test_tmatrix_reciprocal_extension.py
+.....
+----------------------------------------------------------------------
+Ran 5 tests in 0.008s
+
+OK
+==> tests/test_tmatrix_reference.py
+.....
+----------------------------------------------------------------------
+Ran 5 tests in 0.129s
+
+OK
+==> tests/test_tmatrix_size_interpolation.py
+...
+----------------------------------------------------------------------
+Ran 3 tests in 0.030s
+
+OK
+==> tests/test_tmatrix_size_loewner.py
+..
+----------------------------------------------------------------------
+Ran 2 tests in 0.006s
+
+OK
+==> tests/test_tmatrix_size_rom.py
+...
+----------------------------------------------------------------------
+Ran 3 tests in 0.006s
+
+OK
+==> tests/test_tmatrix_size_taylor.py
+...
+----------------------------------------------------------------------
+Ran 3 tests in 0.001s
+
+OK
+==> tests/test_tmatrix_so3_mstm.py
+.....
+----------------------------------------------------------------------
+Ran 5 tests in 0.258s
+
+OK
+==> tests/test_tmatrix_symmetry.py
+..
+----------------------------------------------------------------------
+Ran 2 tests in 0.013s
+
+OK
+==> tests/test_verify_mie_mueller.py
+verify mie mueller: ok
+Host release audit: ok

@@ -1,0 +1,17 @@
+
+Mie check: full Mueller matrix
+  absolute metrics use solid-angle weights
+  absolute M11 rel L2 = 3.2276e-02
+  M11(0) BEM/Mie     = 0.98095408
+  normalization = each matrix divided by M11(theta=0)
+  max main floor2 err = 4.3050e-02
+  worst component     = M31 (1.7029e-01)
+
+  theta       BEM M11       Mie M11      rel err
+     0.0   1.00000e+00   1.00000e+00  0.000e+00
+    30.0   8.27002e-01   8.32932e-01  7.119e-03
+    60.0   5.02332e-01   5.14323e-01  2.331e-02
+    90.0   3.16221e-01   3.24136e-01  2.442e-02
+   120.0   3.13247e-01   3.15166e-01  6.089e-03
+   150.0   3.75230e-01   3.75027e-01  5.416e-04
+   180.0   4.05730e-01   4.05262e-01  1.156e-03

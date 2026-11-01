@@ -36,6 +36,20 @@ private:
     }
 public:
     double setup_seconds=0;
+    static size_t estimated_storage_bytes(const bem_tmatrix::PrismGroupMaps& group,int system_dofs,int nodes){
+        if(system_dofs<4 || system_dofs%4 || nodes<1 || group.image.size()!=12 || int(group.image[0].size())!=system_dofs)
+            throw std::invalid_argument("orbit inverse storage dimensions");
+        const int edges=system_dofs/4;std::vector<bool> visited(edges,false);size_t seeds=0;
+        for(int e=0;e<edges;++e)if(!visited[e]){
+            ++seeds;for(int g=0;g<12;++g)visited.at(group.image[g][2*e]/2)=true;
+        }
+        size_t bytes=0;
+        for(size_t first=0;first<seeds;first+=nodes){
+            const size_t d=4*std::min(size_t(nodes),seeds-first);
+            bytes+=sizeof(Block)+sizeof(Complex)*d*d+sizeof(int)*13*d+12*d+sizeof(double)*d;
+        }
+        return bytes;
+    }
     size_t block_count()const{return blocks_.size();}
     size_t storage_bytes()const {
         size_t total=0;for(const auto& b:blocks_)total+=sizeof(Block)+sizeof(Complex)*b.lu.size()+

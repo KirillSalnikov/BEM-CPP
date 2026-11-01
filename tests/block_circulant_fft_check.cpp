@@ -26,6 +26,18 @@ int main()try {
         restored.apply(x.data(),out.data());
         error=norm=0;for(size_t j=0;j<x.size();++j){error+=std::norm(out[j]-ax[j]);norm+=std::norm(ax[j]);}
         if(std::sqrt(error/norm)>2e-13)throw std::runtime_error("inverse kernel roundtrip failed");
+        std::vector<C> pair_first(x.size()),pair_second(x.size()),serial_second(x.size());
+        inverse.apply(seed.data(),serial_second.data());inverse.prepare_batch2();
+        for(bool duplicate:{false,true}){
+            inverse.apply_batch2(x.data(),duplicate?x.data():seed.data(),pair_first.data(),pair_second.data());
+            const auto& expected_second=duplicate?ax:serial_second;
+            double e=0,d=0;
+            for(size_t j=0;j<x.size();++j){e+=std::norm(pair_first[j]-ax[j])+std::norm(pair_second[j]-expected_second[j]);d+=std::norm(ax[j])+std::norm(expected_second[j]);}
+            if(std::sqrt(e/d)>3e-13)throw std::runtime_error("two RHS FFT differs from independent inverses");
+        }
+        std::fill(pair_second.begin(),pair_second.end(),C(0));
+        inverse.apply_batch2(x.data(),pair_second.data(),pair_first.data(),pair_second.data());
+        for(auto z:pair_second)if(std::abs(z)>1e-14)throw std::runtime_error("two RHS FFT leaked into zero RHS");
         C h=0,t=0;double scale=0;
         for(size_t j=0;j<x.size();++j){h+=std::conj(seed[j])*ax[j]-std::conj(ah[j])*x[j];t+=seed[j]*ax[j]-at[j]*x[j];scale+=std::abs(seed[j]*ax[j]);}
         if(std::abs(h)/scale>2e-13 || std::abs(t)/scale>2e-13)throw std::runtime_error("periodic inverse adjoint failed");
@@ -36,6 +48,17 @@ int main()try {
                 recovered[(b*c+s)*g+u*ny+v]+=std::conj(kernel[(r*c+s)*g+(i-u+nx)%nx*ny+(j-v+ny)%ny])*ah[(b*c+r)*g+i*ny+j];
         error=norm=0;for(size_t j=0;j<x.size();++j){error+=std::norm(recovered[j]-seed[j]);norm+=std::norm(seed[j]);}
         if(std::sqrt(error/norm)>2e-12)throw std::runtime_error("direct adjoint inverse failed");
+        if(inverse.prepare_cpu()) {
+            inverse.enable_cpu(true);
+            const auto compare=[&](const std::vector<C>& reference) {
+                double e=0,d=0;for(size_t j=0;j<out.size();++j){e+=std::norm(out[j]-reference[j]);d+=std::norm(reference[j]);}
+                if(std::sqrt(e/d)>2e-13)throw std::runtime_error("CPU FFT differs from GPU inverse/adjoint/transpose");
+            };
+            inverse.apply(x.data(),out.data());compare(ax);
+            inverse.apply_adjoint(seed.data(),out.data());compare(ah);
+            inverse.apply_transpose(seed.data(),out.data());compare(at);
+            std::puts("CPU FFT inverse/adjoint/transpose agree with cuFFT");
+        }
     }
     // Independent full 2c block inverse versus the two c-channel parity
     // inverses, for noncommuting, complex D/X kernels and multiple pairs.

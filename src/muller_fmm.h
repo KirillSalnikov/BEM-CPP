@@ -61,6 +61,7 @@ struct MullerFmmOperator {
     }
     bool gpu_operator_assembly = false;
     bool gpu_operator_assembly_requested = false;
+    bool gpu_host_correction = false;
     bool fmm_near_fp32 = false;
     int fmm_digits_requested = 5;
     int fmm_digits_effective = 5;
@@ -128,6 +129,11 @@ struct MullerFmmOperator {
     void matvec_strict(
         const std::complex<double>* input,
         std::complex<double>* output);
+    // Two host RHS through shared multilevel L2P/P2P kernels. Non-aliasing
+    // outputs; requires four GPU assembly slots and an inactive face FFT.
+    bool host_batch2_available() const;
+    void matvec_batch2(const std::complex<double>* first,const std::complex<double>* second,
+                      std::complex<double>* first_result,std::complex<double>* second_result);
     // Host system_dofs vectors, same [J,M] ordering as matvec. Transpose does
     // not conjugate material/Helmholtz coefficients; adjoint conjugates all
     // coefficients by conj(A^T conj(x)). Strict variants restore mixed mode
@@ -174,7 +180,7 @@ struct MullerFmmOperator {
 
     void select_pfft_backend();
     void select_fmm_backend();
-    void enable_prism_face_fft(int refinement);
+    void enable_prism_face_fft(int refinement,double aspect=1.);
     void set_fmm_near_fp32(bool enabled);
 
     // O(Q^2) validation action with the same quadrature/correction split.
@@ -235,6 +241,8 @@ private:
         std::vector<std::complex<double>>& mass) const;
 
     void prepare_gpu_assembly();
+    void add_host_correction(const std::complex<double>* input,
+                             std::complex<double>* output) const;
     void apply_current_operators_gpu(int input_offset, int slot);
     void apply_current_operator_pair_gpu(bool strict = false);
     void apply_current_operator_quad_gpu();

@@ -12,8 +12,12 @@
 #include "prism_wave_basis.h"
 #include "streaming_polynomial_inverse.h"
 #include "prism_sector_solver.h"
+#include "sector_recycle_rebudget.h"
 #include "prism_vertical_inverse.h"
 #include "prism_symmetric_circulant.h"
+#include "muller_fmm_cpu.h"
+#include "host_hybrid_scheduler.h"
+#include "host_thread_affinity.h"
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/resource.h>
@@ -71,6 +75,11 @@ int main(int argc,char** argv) try {
     const double ka=std::stod(argv[4]),tol=std::stod(argv[9]);
     const Complex ri(std::stod(argv[5]),std::stod(argv[6]));
     if(ka<=0||tol<=0||ref<0||restart<2||maxiter<1) throw std::runtime_error("invalid worker parameters");
+    const char* gpu_batch_setting=std::getenv("BEM_TMATRIX_GPU_BATCH2");
+    if(gpu_batch_setting && std::strcmp(gpu_batch_setting,"0") && std::strcmp(gpu_batch_setting,"1"))
+        throw std::runtime_error("BEM_TMATRIX_GPU_BATCH2 must be 0 or 1");
+    const bool gpu_batch2=gpu_batch_setting && std::strcmp(gpu_batch_setting,"0")!=0;
+    if(gpu_batch2)setenv("BEM_MULLER_BATCH2_HOST","1",1);
     int recycle_capacity=0;
     if(const char* setting=std::getenv("BEM_TMATRIX_RECYCLE_RANK")) {
         char* end=nullptr;const long value=std::strtol(setting,&end,10);
@@ -153,8 +162,7 @@ int main(int argc,char** argv) try {
     if(const char* face_fft=std::getenv("BEM_TMATRIX_FACE_FFT")) {
         if(std::strcmp(face_fft,"0")!=0) {
             if(shape!="prism"||!d6h_mesh)throw std::runtime_error("face FFT requires the regular D6h prism");
-            if(prism_aspect!=1.)throw std::runtime_error("exact face FFT currently requires prism aspect=1");
-            op.enable_prism_face_fft(ref);
+            op.enable_prism_face_fft(ref,prism_aspect);
         }
     }
 #ifdef BEM_DEFAULT_FMM_NEAR_FP32
@@ -167,9 +175,14 @@ int main(int argc,char** argv) try {
     const int mbj_nodes=mbj_environment?std::max(1,std::atoi(mbj_environment)):(op.system_dofs>=2000000?12:50);
     const int mbj_overlap=std::getenv("BEM_TMATRIX_MBJ_OVERLAP")?std::stoi(std::getenv("BEM_TMATRIX_MBJ_OVERLAP")):0;
     if(mbj_overlap<0 || mbj_overlap>=mbj_nodes)throw std::runtime_error("invalid MBJ overlap");
-    const bool device_solver=op.device_matvec_available();
     const char* sector_setting=std::getenv("BEM_TMATRIX_SECTOR_GMRES");
     const bool sector_solver=sector_setting && std::strcmp(sector_setting,"0")!=0;
+    const bool hybrid_requested=std::getenv("BEM_TMATRIX_HYBRID") && std::strcmp(std::getenv("BEM_TMATRIX_HYBRID"),"0")!=0;
+    const bool cpu_requested=hybrid_requested && (!std::getenv("BEM_TMATRIX_CPU_STRICT") || std::strcmp(std::getenv("BEM_TMATRIX_CPU_STRICT"),"0")!=0);
+    if(hybrid_requested&&!sector_solver)throw std::runtime_error("hybrid T worker requires sector GMRES");
+    // Sector Arnoldi lives in host RAM, independently of where the operator
+    // projects currents and assembles its result. matvec() handles transfers.
+    const bool device_solver=op.device_matvec_available() && !sector_solver;
     const auto sector_integer=[](const char* name,int fallback,int maximum) {
         const char* setting=std::getenv(name);if(!setting)return fallback;
         char* end=nullptr;const long value=std::strtol(setting,&end,10);
@@ -177,7 +190,15 @@ int main(int argc,char** argv) try {
         return int(value);
     };
     const int sector_recycle_capacity=sector_integer("BEM_TMATRIX_SECTOR_RECYCLE_RANK",0,64);
+    const int gpu_pair_wait=sector_integer("BEM_TMATRIX_BATCH2_WAIT_US",2000,1000000);
+    if(gpu_batch2 && !hybrid_requested)throw std::runtime_error("GPU batching requires hybrid solver lanes");
+    const bool merge_lane_recycle=sector_integer("BEM_TMATRIX_MERGE_RECYCLE",0,1)!=0;
+    if(merge_lane_recycle && (!hybrid_requested || !sector_recycle_capacity))
+        throw std::runtime_error("lane recycle merging requires hybrid packets and sector recycling");
     const unsigned sector_recycle_mask=sector_integer("BEM_TMATRIX_SECTOR_RECYCLE_MASK",4095,4095);
+    const int sector_budget_packets=sector_integer("BEM_TMATRIX_SECTOR_BUDGET_PACKETS",0,1024);
+    if(sector_budget_packets && (!sector_solver || !sector_recycle_capacity))
+        throw std::runtime_error("sector budget learning requires sector recycling");
     const bool vertical_preconditioner=sector_integer("BEM_TMATRIX_VERTICAL_PRECONDITIONER",0,1)!=0;
     double sector_first_pass_factor=0;
     if(const char* value=std::getenv("BEM_SECTOR_FIRST_PASS_FACTOR")) {
@@ -203,6 +224,9 @@ int main(int argc,char** argv) try {
     // This optional accelerator stays in RAM between production packets.
     // Column checkpoints are independent; a restarted worker relearns it.
     bem_streaming::SectorRecycleSpace sector_recycle(symmetry_sectors.offsets,sector_recycle_capacity,sector_recycle_mask);
+    std::unique_ptr<bem_streaming::SectorBudgetLearner> sector_budget;
+    if(sector_budget_packets)sector_budget.reset(new bem_streaming::SectorBudgetLearner(
+        symmetry_sectors.offsets,sector_recycle_capacity,sector_recycle_mask,sector_budget_packets));
     const char* circ_setting=std::getenv("BEM_TMATRIX_CIRCULANT_BLEND");
     const double circ_blend=circ_setting?std::stod(circ_setting):0.;
     if(!std::isfinite(circ_blend) || circ_blend<0 || circ_blend>1)
@@ -273,6 +297,73 @@ int main(int argc,char** argv) try {
     const bool symmetry_warm_start=!device_solver && shape=="prism" && d6h_mesh &&
         warm_setting && std::strcmp(warm_setting,"0")!=0;
     if(symmetry_warm_start && !sector_solver) symmetry_orbit.build(op.mesh);
+    const bem_streaming::Action perform_inverse=[&](const Complex* x,Complex* y){
+                if(sector_solver){if(symmetric_circulant.full_fft_symmetry())symmetric_circulant.apply_full_fft_symmetry(x,y,circ_blend);else if(vertical_preconditioner)vertical_inverse.apply(x,y);else if(circ_blend>0)symmetric_circulant.apply(x,y,circ_blend);else orbit_inverse.apply(x,y);}
+                else if(fft_inner)fft_inverse->solve(x,y,.1);else if(wave_rank)wave.apply(x,y);else if(circ_blend>0)circulant.apply(x,y,circ_blend);else mbj.apply(x,y);};
+    const int cpu_threads=sector_integer("BEM_CPU_THREADS",16,256);
+    const int gpu_threads=sector_integer("BEM_CPU_GPU_THREADS",4,256);
+    const int solver_threads=sector_integer("BEM_CPU_SOLVER_THREADS",4,256);
+    if(hybrid_requested && (!cpu_threads||!gpu_threads||!solver_threads))throw std::runtime_error("hybrid thread counts must be positive");
+    if(hybrid_requested)bem_cpu::configure_threads(gpu_threads,"BEM_CPU_GPU_AFFINITY");
+    bool cpu_fft_enabled=false,cpu_fft_available=false;
+    double cpu_fft_s=0,gpu_fft_s=0,cpu_fft_error=0;
+    const char* fft_choice=std::getenv("BEM_CIRCULANT_CPU_FFT");
+    const std::string cpu_fft_mode=fft_choice?fft_choice:(hybrid_requested?"auto":"0");
+    if(cpu_fft_mode!="0"&&cpu_fft_mode!="1"&&cpu_fft_mode!="auto")throw std::runtime_error("BEM_CIRCULANT_CPU_FFT must be 0, 1 or auto");
+    if(gpu_batch2 && cpu_fft_mode!="0")throw std::runtime_error("GPU batching requires explicit BEM_CIRCULANT_CPU_FFT=0");
+    if(cpu_fft_mode!="0" && sector_solver && circ_blend>0) {
+        cpu_fft_available=circulant.prepare_cpu();
+        if(!cpu_fft_available&&cpu_fft_mode=="1")throw std::runtime_error("CPU FFTW runtime unavailable; set BEM_CPU_FFTW_LIBRARY");
+        if(cpu_fft_available) {
+            std::vector<Complex> input(op.system_dofs),reference(input.size()),host(input.size());
+            for(size_t i=0;i<input.size();++i)input[i]=Complex(std::sin(.117*i),std::cos(.193*i));
+            // Time the COMPLETE preconditioner, including symmetry and local
+            // blocks, rather than timing an isolated FFT plan.
+            perform_inverse(input.data(),reference.data());
+            for(int j=0;j<3;++j){const auto t=Clock::now();perform_inverse(input.data(),reference.data());gpu_fft_s+=seconds(t)/3;}
+            circulant.enable_cpu(true);perform_inverse(input.data(),host.data());
+            for(int j=0;j<3;++j){const auto t=Clock::now();perform_inverse(input.data(),host.data());cpu_fft_s+=seconds(t)/3;}
+            long double num=0,den=0;for(size_t i=0;i<input.size();++i){num+=std::norm(host[i]-reference[i]);den+=std::norm(reference[i]);}
+            cpu_fft_error=std::sqrt(double(num/std::max(den,1e-300L)));
+            if(!std::isfinite(cpu_fft_error)||cpu_fft_error>1e-11)throw std::runtime_error("CPU FFT preconditioner disagrees with GPU symbol");
+            cpu_fft_enabled=cpu_fft_mode=="1" || cpu_fft_s<.95*gpu_fft_s;
+            circulant.enable_cpu(cpu_fft_enabled);
+            std::printf("[spectral CPU] full preconditioner CPU %.6fs GPU %.6fs relative error %.3e selected=%d\n",cpu_fft_s,gpu_fft_s,cpu_fft_error,int(cpu_fft_enabled));
+        }
+    }
+    std::unique_ptr<bem_cpu::MullerAction> cpu_checker;
+    if(gpu_batch2){
+        const char* host_mixed=std::getenv("BEM_MULLER_GPU_STRICT_ONLY");
+        if(!op.host_batch2_available() || (host_mixed && std::strcmp(host_mixed,"0")!=0) ||
+           !symmetric_circulant.full_fft_symmetry())
+            throw std::runtime_error("GPU batching requires mixed GPU assembly, multilevel FMM and native full D6h FFT inverse");
+        symmetric_circulant.prepare_batch2();
+    }
+    double cpu_setup_seconds=0,cpu_validation_error=0;
+    size_t cpu_phase_budget=size_t(sector_integer("BEM_CPU_PHASE_MB",8192,65536))*1024*1024;
+    if(cpu_requested) {
+        const auto before=Clock::now();
+        const size_t budget=size_t(sector_integer("BEM_CPU_MEMORY_MB",24576,262144))*1024*1024;
+        while(cpu_phase_budget && bem_cpu::MullerAction::estimated_workspace_bytes(op,cpu_phase_budget)>budget)cpu_phase_budget/=2;
+        if(bem_cpu::MullerAction::estimated_workspace_bytes(op,cpu_phase_budget)>budget)
+            throw std::runtime_error("CPU checker exceeds BEM_CPU_MEMORY_MB before allocating its workspace");
+        setenv("BEM_CPU_AVX512","1",0);
+        bem_cpu::configure_threads(cpu_threads,"BEM_CPU_AFFINITY");
+        cpu_checker.reset(new bem_cpu::MullerAction(op,cpu_phase_budget));
+        std::vector<Complex> probe(op.system_dofs),host(probe.size()),device(probe.size());
+        for(size_t j=0;j<probe.size();++j)probe[j]=Complex(std::sin(.173*j),std::cos(.137*j));
+        cpu_checker->apply(probe.data(),host.data());
+        bem_cpu::configure_threads(gpu_threads,"BEM_CPU_GPU_AFFINITY");
+        op.matvec_strict(probe.data(),device.data());
+        long double num=0,den=0;
+        for(size_t j=0;j<probe.size();++j){num+=std::norm(host[j]-device[j]);den+=std::norm(device[j]);}
+        cpu_validation_error=std::sqrt(double(num/std::max(den,1e-300L)));
+        if(!std::isfinite(cpu_validation_error)||cpu_validation_error>2e-7)
+            throw std::runtime_error("CPU checker failed startup GPU FP64 operator comparison");
+        cpu_setup_seconds=seconds(before);
+        std::printf("[hybrid] independent CPU FP64 checker ready: %.3f GiB, error %.3e, setup %.3fs\n",
+            cpu_checker->workspace_bytes()/1073741824.,cpu_validation_error,cpu_setup_seconds);
+    }
     const double mbj_seconds=seconds(mbj_start);
     const TriQuad quad=tri_quadrature(13);
     bem_tmatrix::StreamingRhsAssembler rhs_assembler(quad.npts);
@@ -299,7 +390,26 @@ int main(int argc,char** argv) try {
          <<",\"operator_setup_s\":"<<setup_seconds<<",\"mbj_setup_s\":"<<mbj_seconds
          <<",\"mbj_storage_mb\":"<<mbj.storage_megabytes()
          <<",\"sector_gmres\":"<<(sector_solver?"true":"false")<<",\"orbit_nodes\":"<<(sector_solver?orbit_nodes:0)
+         <<",\"hybrid_batch_capacity\":"<<(hybrid_requested?2:1)
+         <<",\"hybrid_merge_recycle\":"<<(merge_lane_recycle?"true":"false")
+         <<",\"hybrid_gpu_batch2\":"<<(gpu_batch2?"true":"false")
+         <<",\"hybrid_gpu_batch_wait_us\":"<<(gpu_batch2?gpu_pair_wait:0)
+         <<",\"per_packet_tolerance\":true"
+         <<",\"hybrid_cpu_strict\":"<<(cpu_checker?"true":"false")
+         <<",\"hybrid_cpu_threads\":"<<(cpu_requested?cpu_threads:0)
+         <<",\"hybrid_gpu_host_threads\":"<<(hybrid_requested?gpu_threads:0)
+         <<",\"hybrid_solver_threads_per_lane\":"<<(hybrid_requested?solver_threads:0)
+         <<",\"hybrid_cpu_avx512_near_bands\":"<<(cpu_checker?cpu_checker->avx512_near_bands:0)
+         <<",\"hybrid_cpu_setup_s\":"<<cpu_setup_seconds<<",\"hybrid_cpu_validation_error\":"<<cpu_validation_error
+         <<",\"hybrid_cpu_workspace_bytes\":"<<(cpu_checker?cpu_checker->workspace_bytes():0)
+         <<",\"hybrid_cpu_phase_budget_bytes_per_band\":"<<cpu_phase_budget
+         <<",\"cpu_fft_available\":"<<(cpu_fft_available?"true":"false")<<",\"cpu_fft_enabled\":"<<(cpu_fft_enabled?"true":"false")
+         <<",\"cpu_fft_preconditioner_s\":"<<cpu_fft_s<<",\"gpu_fft_preconditioner_s\":"<<gpu_fft_s
+         <<",\"cpu_fft_relative_error\":"<<cpu_fft_error<<",\"cpu_fft_storage_bytes\":"<<circulant.cpu_storage_bytes()
+         <<",\"gpu_operator_assembly\":"<<(op.gpu_operator_assembly?"true":"false")
+         <<",\"gpu_host_correction\":"<<(op.gpu_host_correction?"true":"false")
          <<",\"sector_recycle_capacity\":"<<sector_recycle_capacity<<",\"sector_recycle_mask\":"<<sector_recycle_mask
+         <<",\"sector_budget_training_packets\":"<<sector_budget_packets
          <<",\"sector_recycle_disk_checkpoint\":false"
          <<",\"sector_first_pass_factor\":"<<sector_first_pass_factor
          <<",\"vertical_preconditioner\":"<<(vertical_preconditioner?"true":"false")
@@ -325,21 +435,38 @@ int main(int argc,char** argv) try {
          <<",\"fmm_order_exterior\":"<<op.fmm_exterior.p
          <<",\"fmm_order_interior\":"<<op.fmm_interior.p
          <<",\"near_field_fp32\":"<<(op.fmm_near_fp32 ? "true" : "false")
-         <<",\"dense_matrix_formed\":false,\"resident_solution_columns\":2}";
+         <<",\"dense_matrix_formed\":false,\"resident_solution_columns\":"<<(hybrid_requested?4:2)<<"}";
     message(client,hello.str()); transfer(client,positions.data(),positions.size()*sizeof(double),true);
     std::vector<double>().swap(positions);
     const int n=op.system_dofs;
-    std::vector<Complex> rhs[2]={std::vector<Complex>(n),std::vector<Complex>(n)};
-    std::vector<Complex> solution[2]={std::vector<Complex>(n),std::vector<Complex>(n)};
-    // Consume incident samples in bounded chunks; do not duplicate the full
-    // surface frame cache or a two-polarization E/H slab on the worker.
+    struct Packet {
+        std::vector<Complex> rhs[2],solution[2];
+        MullerPairedGmresResult result;
+        bem_tmatrix::WarmStartResult warm;
+        int iterations_x=0,iterations_y=0,strict_checks_x=0,strict_checks_y=0,deferred_checks_x=0,deferred_checks_y=0;
+        double recycle_update_seconds=0,host_action_seconds=0,host_strict_seconds=0,host_orthogonalization_seconds=0;
+        int32_t operation=0;double rhs_seconds=0,batch_seconds=0,tolerance=0;bool hybrid=false;
+        double merge_seconds=0,rebudget_seconds=0;int merge_candidates=0;
+        std::array<int,12> sector_iterations_x{},sector_iterations_y{},sector_capacities_used{};
+        Clock::time_point started;
+        bem_streaming::HybridScheduler::Statistics hybrid_stats;
+        explicit Packet(int n):started(Clock::now()){for(int j=0;j<2;++j){rhs[j].resize(n);solution[j].resize(n);}}
+    };
     const size_t field_chunk=rhs_assembler.chunk_points();
     std::vector<Complex> fields(field_chunk*6);
     int completed_pairs=0;
-    while(true) {
-        int32_t operation=0; transfer(client,&operation,sizeof(operation),false);
-        if(operation==0) break;
-        const auto request_start=Clock::now();
+    std::unique_ptr<bem_streaming::SectorRecycleSpace> lane_recycle[2];
+    if(hybrid_requested)for(auto& lane:lane_recycle)lane.reset(new bem_streaming::SectorRecycleSpace(
+        symmetry_sectors.offsets,sector_recycle_capacity,sector_recycle_mask));
+    const auto receive_packet=[&](Packet& packet,int32_t operation) {
+        packet.tolerance=tol;
+        if(operation==5) {
+            transfer(client,&operation,sizeof(operation),false);
+            transfer(client,&packet.tolerance,sizeof(packet.tolerance),false);
+            if(!std::isfinite(packet.tolerance) || packet.tolerance<=0 || packet.tolerance>tol)
+                throw std::runtime_error("packet tolerance must be positive and no looser than the worker ceiling");
+        }
+        packet.operation=operation;packet.started=Clock::now();auto& rhs=packet.rhs;
         if(operation==1 || operation==3) {
             std::fill(rhs[0].begin(),rhs[0].end(),Complex(0));
             std::fill(rhs[1].begin(),rhs[1].end(),Complex(0));
@@ -355,25 +482,57 @@ int main(int argc,char** argv) try {
             rhs[0]=muller_nodal_planewave_rhs(op.mesh,ka,Vec3(plane[0],plane[1],plane[2]),khat,13);
             rhs[1]=muller_nodal_planewave_rhs(op.mesh,ka,Vec3(plane[3],plane[4],plane[5]),khat,13);
         } else throw std::runtime_error("invalid worker operation");
-        const double rhs_seconds=seconds(request_start);
+        packet.rhs_seconds=seconds(packet.started);
+    };
+    const auto solve_packet=[&](Packet& packet,int lane,bem_streaming::HybridScheduler* scheduler,
+                               bem_streaming::SectorRecycleSpace* active_recycle) {
+        const double tol=packet.tolerance;
+        auto& rhs=packet.rhs;auto& solution=packet.solution;auto& result=packet.result;auto& warm=packet.warm;
+        const int32_t operation=packet.operation;
+        if(operation==3 && active_recycle)for(int s=0;s<12;++s)
+            packet.sector_capacities_used[s]=active_recycle->sector(s).capacity();
+        auto& iterations_x=packet.iterations_x;
+        auto& iterations_y=packet.iterations_y;
+        auto& strict_checks_x=packet.strict_checks_x;
+        auto& strict_checks_y=packet.strict_checks_y;
+        auto& deferred_checks_x=packet.deferred_checks_x;
+        auto& deferred_checks_y=packet.deferred_checks_y;
+        auto& recycle_update_seconds=packet.recycle_update_seconds;
+        auto& host_action_seconds=packet.host_action_seconds;
+        auto& host_strict_seconds=packet.host_strict_seconds;
+        auto& host_orthogonalization_seconds=packet.host_orthogonalization_seconds;
+        if(scheduler)bem_cpu::configure_threads(solver_threads,"BEM_CPU_GPU_AFFINITY");
         for(auto& vector:solution) std::fill(vector.begin(),vector.end(),Complex(0));
-        MullerPairedGmresResult result;
-        bem_tmatrix::WarmStartResult warm;
-        int iterations_x=0,iterations_y=0;
-        int strict_checks_x=0,strict_checks_y=0,deferred_checks_x=0,deferred_checks_y=0;
-        double recycle_update_seconds=0;
         if(device_solver) {
             result=solve_muller_paired_gmres_device(op,mbj,rhs[0].data(),rhs[1].data(),
                 solution[0].data(),solution[1].data(),restart,tol,maxiter,true);
         } else {
-            const bem_streaming::Action action=[&](const Complex* x,Complex* y){op.matvec(x,y);};
-            const bem_streaming::Action strict=[&](const Complex* x,Complex* y){op.matvec_strict(x,y);};
+            const bem_streaming::Action action=[&](const Complex* x,Complex* y){
+                if(scheduler && gpu_batch2)scheduler->gpu_pairable(lane,1,x,y,[&]{op.matvec(x,y);},
+                    [&](const void* a,void* b,const void* c,void* d){
+                        op.matvec_batch2(static_cast<const Complex*>(a),static_cast<const Complex*>(c),
+                                        static_cast<Complex*>(b),static_cast<Complex*>(d));});
+                else if(scheduler)scheduler->gpu(lane,[&]{op.matvec(x,y);});else op.matvec(x,y);
+            };
+            const bem_streaming::Action strict=[&](const Complex* x,Complex* y){
+                if(!scheduler){op.matvec_strict(x,y);return;}
+                // The CPU task owns the exact candidate being checked. The
+                // owning solver cannot advance until its original gate returns.
+                const std::vector<Complex> snapshot(x,x+n);
+                bem_streaming::HybridScheduler::Work host;
+                if(cpu_checker)host=[&]{bem_cpu::configure_threads(cpu_threads,"BEM_CPU_AFFINITY");cpu_checker->apply(snapshot.data(),y);};
+                scheduler->strict(lane,[&]{op.matvec_strict(snapshot.data(),y);},host);
+            };
             const bem_streaming::Action inverse=[&](const Complex* x,Complex* y){
-                if(sector_solver){if(symmetric_circulant.full_fft_symmetry())symmetric_circulant.apply_full_fft_symmetry(x,y,circ_blend);else if(vertical_preconditioner)vertical_inverse.apply(x,y);else if(circ_blend>0)symmetric_circulant.apply(x,y,circ_blend);else orbit_inverse.apply(x,y);}
-                else if(fft_inner)fft_inverse->solve(x,y,.1);else if(wave_rank)wave.apply(x,y);else if(circ_blend>0)circulant.apply(x,y,circ_blend);else mbj.apply(x,y);};
+                if(scheduler && gpu_batch2)scheduler->gpu_pairable(lane,2,x,y,[&]{perform_inverse(x,y);},
+                    [&](const void* a,void* b,const void* c,void* d){
+                        symmetric_circulant.apply_full_fft_symmetry_batch2(static_cast<const Complex*>(a),static_cast<const Complex*>(c),
+                            static_cast<Complex*>(b),static_cast<Complex*>(d),circ_blend);});
+                else if(scheduler)scheduler->gpu(lane,[&]{perform_inverse(x,y);});else perform_inverse(x,y);
+            };
             const auto x=sector_solver?bem_tmatrix::solve_prism_sectors(action,strict,inverse,symmetry_sectors,
                 rhs[0].data(),solution[0].data(),restart,tol,maxiter,false,true,
-                operation==3 && sector_recycle_capacity?&sector_recycle:nullptr):
+                operation==3 && sector_recycle_capacity?active_recycle:nullptr,&packet.sector_iterations_x):
                 bem_streaming::gmres(action,strict,inverse,rhs[0].data(),solution[0].data(),n,restart,tol,maxiter,
                 true,false,fft_inner?nullptr:&recycle,operation==3,fft_inner>0);
             // Operation 3 is reserved for production packets. Independent
@@ -386,10 +545,13 @@ int main(int argc,char** argv) try {
             }
             const auto y=sector_solver?bem_tmatrix::solve_prism_sectors(action,strict,inverse,symmetry_sectors,
                 rhs[1].data(),solution[1].data(),restart,tol,maxiter,warm.fitted,true,
-                operation==3 && sector_recycle_capacity?&sector_recycle:nullptr):
+                operation==3 && sector_recycle_capacity?active_recycle:nullptr,&packet.sector_iterations_y):
                 bem_streaming::gmres(action,strict,inverse,rhs[1].data(),solution[1].data(),n,restart,tol,maxiter,
                 true,warm.fitted,fft_inner?nullptr:&recycle,operation==3,fft_inner>0);
             recycle_update_seconds=x.recycle_seconds+y.recycle_seconds;
+            host_action_seconds=x.action_seconds+y.action_seconds;
+            host_strict_seconds=x.strict_seconds+y.strict_seconds;
+            host_orthogonalization_seconds=x.orthogonalization_seconds+y.orthogonalization_seconds;
             iterations_x=x.iterations;iterations_y=y.iterations;
             strict_checks_x=x.strict_checks;strict_checks_y=y.strict_checks;
             deferred_checks_x=x.deferred_strict_checks;deferred_checks_y=y.deferred_strict_checks;
@@ -398,11 +560,44 @@ int main(int argc,char** argv) try {
             result.final_residual_x=x.residual;result.final_residual_y=y.residual;
             result.converged_x=x.residual<=tol;result.converged_y=y.residual<=tol;
         }
+    };
+    const auto record_budget=[&](const Packet& packet){
+        if(sector_budget && packet.operation==3)
+            sector_budget->record_packet(packet.sector_iterations_x,packet.sector_iterations_y);
+    };
+    const auto freeze_budget=[&](){
+        const auto start=Clock::now();
+        if(!sector_budget || !sector_budget->freeze_after_batch())return 0.;
+        const auto& plan=sector_budget->plan();
+        if(plan.trained)bem_streaming::rebudget_sector_recycle(sector_recycle,symmetry_sectors.offsets,plan);
+        std::printf("[sector rank budget] frozen after %u packets, trained=%d, entries=%zu/%zu\n",
+            sector_budget->packets(),plan.trained,plan.entries,plan.entry_budget);
+        std::fflush(stdout);return seconds(start);
+    };
+    const auto json_array=[](const std::array<int,12>& values){
+        std::ostringstream out;out<<"[";for(int s=0;s<12;++s){if(s)out<<",";out<<values[s];}out<<"]";return out.str();
+    };
+    const auto finish_packet=[&](Packet& packet) {
+        const double tol=packet.tolerance;
+        auto& rhs=packet.rhs;auto& solution=packet.solution;auto& result=packet.result;auto& warm=packet.warm;
+        const int32_t operation=packet.operation;
+        auto& iterations_x=packet.iterations_x;
+        auto& iterations_y=packet.iterations_y;
+        auto& strict_checks_x=packet.strict_checks_x;
+        auto& strict_checks_y=packet.strict_checks_y;
+        auto& deferred_checks_x=packet.deferred_checks_x;
+        auto& deferred_checks_y=packet.deferred_checks_y;
+        auto& recycle_update_seconds=packet.recycle_update_seconds;
+        auto& host_action_seconds=packet.host_action_seconds;
+        auto& host_strict_seconds=packet.host_strict_seconds;
+        auto& host_orthogonalization_seconds=packet.host_orthogonalization_seconds;
+        const auto request_start=packet.started;const double rhs_seconds=packet.rhs_seconds;
         const auto check_start=Clock::now();
         const char* refinement=std::getenv("BEM_MIXED_ITERATIVE_REFINEMENT");
         const char* recheck=std::getenv("BEM_TMATRIX_VERIFY_RESIDUAL");
         const bool solver_strict=!device_solver || (refinement && std::strcmp(refinement,"0")!=0);
-        const bool independent_check=!solver_strict || (recheck && std::strcmp(recheck,"0")!=0);
+        const bool independent_check=!solver_strict || (recheck && std::strcmp(recheck,"0")!=0) ||
+            (packet.hybrid_stats.cpu_checks && std::max(result.final_residual_x,result.final_residual_y)>.9*tol);
         // In strict refinement mode the final solver residual already comes
         // from a complete FP64 operator action, not the Arnoldi estimate.
         const double rx=independent_check ? relative_residual(op,solution[0],rhs[0]) : result.final_residual_x;
@@ -418,7 +613,34 @@ int main(int argc,char** argv) try {
         rusage usage={}; getrusage(RUSAGE_SELF,&usage);
         std::ostringstream status;
         status<<std::setprecision(17)<<"{\"iterations\":"<<result.iterations<<",\"solve_s\":"<<result.seconds
+              <<",\"requested_tolerance\":"<<tol
+              <<",\"hybrid_accounted_worker_s\":"<<(packet.hybrid?.5*packet.batch_seconds+rhs_seconds+check_seconds+farfield_seconds+recycle_checkpoint_seconds:seconds(request_start))
+              <<",\"hybrid_packet\":"<<(packet.hybrid?"true":"false")
+              <<",\"hybrid_merge_recycle_s\":"<<packet.merge_seconds
+              <<",\"hybrid_merge_recycle_candidates\":"<<packet.merge_candidates
+              <<",\"sector_rebudget_s\":"<<packet.rebudget_seconds
+              <<",\"sector_iterations_x\":"<<json_array(packet.sector_iterations_x)
+              <<",\"sector_iterations_y\":"<<json_array(packet.sector_iterations_y)
+              <<",\"sector_capacities_used\":"<<json_array(packet.sector_capacities_used)
+              <<",\"sector_budget_frozen\":"<<(sector_budget && sector_budget->frozen()?"true":"false")
+              <<",\"sector_budget_trained\":"<<(sector_budget && sector_budget->plan().trained?"true":"false")
+              <<",\"sector_budget_observed_packets\":"<<(sector_budget?sector_budget->packets():0)
+              <<",\"sector_budget_entry_limit\":"<<(sector_budget?sector_budget->plan().entry_budget:0)
+              <<",\"sector_budget_entries\":"<<(sector_budget?sector_budget->plan().entries:0)
+              <<",\"hybrid_batch_s\":"<<packet.batch_seconds
+              <<",\"hybrid_cpu_checks\":"<<packet.hybrid_stats.cpu_checks
+              <<",\"hybrid_gpu_checks\":"<<packet.hybrid_stats.gpu_checks
+              <<",\"hybrid_cpu_action_s\":"<<packet.hybrid_stats.cpu_seconds
+              <<",\"hybrid_gpu_paired_actions\":"<<packet.hybrid_stats.gpu_paired_actions
+              <<",\"hybrid_gpu_paired_matvecs\":"<<packet.hybrid_stats.paired_kinds[1]
+              <<",\"hybrid_gpu_paired_inverses\":"<<packet.hybrid_stats.paired_kinds[2]
+              <<",\"hybrid_gpu_actions\":"<<packet.hybrid_stats.gpu_actions
+              <<",\"hybrid_gpu_pair_wait_s\":"<<packet.hybrid_stats.pair_wait_seconds
               <<",\"sector_gmres\":"<<(sector_solver?"true":"false")
+              <<",\"host_timings_available\":"<<(!device_solver?"true":"false")
+              <<",\"host_krylov_action_s\":"<<host_action_seconds
+              <<",\"host_strict_s\":"<<host_strict_seconds
+              <<",\"host_orthogonalization_s\":"<<host_orthogonalization_seconds
               <<",\"host_iterations_x\":"<<iterations_x<<",\"host_iterations_y\":"<<iterations_y
               <<",\"host_strict_checks_x\":"<<strict_checks_x<<",\"host_strict_checks_y\":"<<strict_checks_y
               <<",\"host_deferred_strict_checks_x\":"<<deferred_checks_x<<",\"host_deferred_strict_checks_y\":"<<deferred_checks_y
@@ -439,6 +661,42 @@ int main(int argc,char** argv) try {
         message(client,status.str());
         transfer(client,far_x.data(),far_x.size()*sizeof(Complex),true);
         transfer(client,far_y.data(),far_y.size()*sizeof(Complex),true);
+    };
+    while(true) {
+        int32_t operation=0;transfer(client,&operation,sizeof(operation),false);
+        if(operation==0)break;
+        if(operation==4) {
+            int32_t count=0;transfer(client,&count,sizeof(count),false);
+            if(!hybrid_requested||count!=2)throw std::runtime_error("unsupported hybrid batch");
+            Packet first(n),second(n);
+            for(Packet* packet:{&first,&second}) {
+                int32_t kind=0;transfer(client,&kind,sizeof(kind),false);
+                if(kind!=1 && kind!=2 && kind!=3 && kind!=5)throw std::runtime_error("invalid hybrid operation");
+                receive_packet(*packet,kind);packet->hybrid=true;
+            }
+            bem_cpu::configure_threads(gpu_threads,"BEM_CPU_GPU_AFFINITY");
+            *lane_recycle[0]=sector_recycle;
+            bem_streaming::HybridScheduler scheduler(gpu_batch2?gpu_pair_wait:0);const auto before=Clock::now();
+            scheduler.run([&]{solve_packet(first,0,&scheduler,lane_recycle[0].get());},
+                          [&]{solve_packet(second,1,&scheduler,lane_recycle[1].get());},true,
+                          [&]{*lane_recycle[1]=*lane_recycle[0];});
+            sector_recycle=*lane_recycle[1];
+            if(merge_lane_recycle){
+                const auto merge_start=Clock::now();
+                const int added=sector_recycle.merge_from(*lane_recycle[0]);
+                first.merge_seconds=second.merge_seconds=.5*seconds(merge_start);
+                first.merge_candidates=second.merge_candidates=added;
+            }
+            record_budget(first);record_budget(second);
+            first.rebudget_seconds=second.rebudget_seconds=.5*freeze_budget();
+            first.batch_seconds=second.batch_seconds=seconds(before);
+            first.hybrid_stats=scheduler.statistics(0);second.hybrid_stats=scheduler.statistics(1);
+            finish_packet(first);finish_packet(second);
+        }else {
+            Packet packet(n);receive_packet(packet,operation);
+            solve_packet(packet,0,nullptr,&sector_recycle);
+            record_budget(packet);packet.rebudget_seconds=freeze_budget();finish_packet(packet);
+        }
     }
     checkpoint_recycle();
     mbj.cleanup_device(); op.cleanup(); close(client); unlink(socket_path.c_str());

@@ -5,6 +5,7 @@
 #include <climits>
 #include <cmath>
 #include <cstdlib>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -17,7 +18,32 @@ void fftcheck(cufftResult e) {
 }
 int padded(int n) {
     if(n<1 || n>16384) throw std::runtime_error("face FFT dimension must be 1..16384");
-    int m=1; while(m<2*n-1) m*=2; return m;
+    int m=1; while(m<2*n-1) m*=2;
+    const char* smooth=std::getenv("BEM_FACE_FFT_SMOOTH_PADDING");
+    if(smooth && std::string(smooth)!="0")
+        for(int candidate=2*n-1;candidate<m;++candidate) {
+            int remainder=candidate;
+            for(int factor:{2,3,5})while(remainder%factor==0)remainder/=factor;
+            if(remainder==1)return candidate;
+        }
+    return m;
+}
+
+struct KernelShift {double3 offset;double separation;};
+// A lower bound on the distance from this shift to every lattice point.
+// Scaling the matching tolerance by it prevents merging nearly coincident
+// interactions whose derivatives can be arbitrarily sensitive to geometry.
+double separation_bound(double3 x,const double u[3],const double v[3]) {
+    const double normal[3]={u[1]*v[2]-u[2]*v[1],u[2]*v[0]-u[0]*v[2],u[0]*v[1]-u[1]*v[0]};
+    const double determinant=normal[0]*normal[0]+normal[1]*normal[1]+normal[2]*normal[2];
+    double a=0,b=0,c=0,du=0,dv=0;
+    const double offset[3]={x.x,x.y,x.z};
+    for(int d=0;d<3;++d){a+=u[d]*u[d];b+=u[d]*v[d];c+=v[d]*v[d];du+=offset[d]*u[d];dv+=offset[d]*v[d];}
+    const double fx=(c*du-b*dv)/determinant,fy=(a*dv-b*du)/determinant;
+    const double dx=fx-std::nearbyint(fx),dy=fy-std::nearbyint(fy);
+    const double lambda_max=.5*(a+c+std::hypot(a-c,2*b));
+    const double z=(x.x*normal[0]+x.y*normal[1]+x.z*normal[2])/std::sqrt(determinant);
+    return std::sqrt((determinant/lambda_max)*(dx*dx+dy*dy)+z*z);
 }
 __device__ double2 add(double2 a,double2 b) { return make_double2(a.x+b.x,a.y+b.y); }
 __device__ double2 sub(double2 a,double2 b) { return make_double2(a.x-b.x,a.y-b.y); }
@@ -62,16 +88,17 @@ __global__ void scatter(const double2* input,double2* spectrum,int nx,int ny,int
 }
 
 __global__ void contract(const double2* kernels,const double2* charges,double2* output,int grid,int channels,
-                         int fx,int fy,int components,bool parity) {
+                         int fx,int fy,int components,bool parity,const int* pairmap) {
     const int i=blockIdx.x*blockDim.x+threadIdx.x;
     const int t=blockIdx.y;if(i>=grid) return;
     double2 result[6];for(int a=0;a<6;++a) result[a]=make_double2(0,0);
     for(int s=0;s<channels;++s) {
         double2 g[9];for(int a=0;a<9;++a)g[a]=make_double2(0,0);
-        const bool reversed=parity && s>t;
+        const int mapping=pairmap?pairmap[t*channels+s]:0;
+        const bool reversed=pairmap?mapping<0:parity && s>t;
         const int hi=t>s?t:s,lo=t<s?t:s;
         const int frequency=reversed?((fx-i/fy)%fx)*fy+(fy-i%fy)%fy:i;
-        const size_t pair=parity?size_t(hi)*(hi+1)/2+lo:size_t(t)*channels+s;
+        const size_t pair=pairmap?size_t(abs(mapping)-1):parity?size_t(hi)*(hi+1)/2+lo:size_t(t)*channels+s;
         const size_t base=pair*components*grid+frequency;
         const int planar[6]={0,1,3,4,6,8};
         for(int a=0;a<components;++a) {
@@ -103,19 +130,23 @@ __global__ void gather(const double2* spectrum,double2* output,int nx,int ny,int
 struct RegularFaceFFT::Impl {
     int nx=0,ny=0,fx=0,fy=0,grid=0,channels=0;
     int components=9;bool parity=false,ready=false;
+    int kernel_count=0;
+    int* pairmap=nullptr;
     double2 *kernel=nullptr,*qhat=nullptr,*ohat=nullptr,*input=nullptr,*output=nullptr;
     void* workspace=nullptr;
     cufftHandle kplan=0,qplan=0,oplan=0;
     size_t bytes=0;
     ~Impl() {
         if(kplan)cufftDestroy(kplan);if(qplan)cufftDestroy(qplan);if(oplan)cufftDestroy(oplan);
-        cudaFree(kernel);cudaFree(qhat);cudaFree(ohat);cudaFree(input);cudaFree(output);cudaFree(workspace);
+        cudaFree(kernel);cudaFree(qhat);cudaFree(ohat);cudaFree(input);cudaFree(output);cudaFree(workspace);cudaFree(pairmap);
     }
 };
 RegularFaceFFT::RegularFaceFFT():p(new Impl){}
 RegularFaceFFT::~RegularFaceFFT()=default;
 void RegularFaceFFT::cleanup(){p.reset(new Impl);}
 std::size_t RegularFaceFFT::storage_bytes() const{return p->bytes;}
+int RegularFaceFFT::stored_kernel_count() const{return p->kernel_count;}
+std::array<int,2> RegularFaceFFT::padded_dimensions() const{return {{p->fx,p->fy}};}
 std::size_t RegularFaceFFT::estimated_array_bytes(int nx,int ny,int c) {
     if(c<1||c>128) throw std::runtime_error("face FFT channels must be 1..128");
     const size_t grid=size_t(padded(nx))*padded(ny);
@@ -140,8 +171,30 @@ void RegularFaceFFT::init(int nx,int ny,const double u[3],const double v[3],
     bool xy=u[2]==0 && v[2]==0;
     for(size_t i=2;i<source.size();i+=3)xy=xy && source[i]==source[2] && target[i]==source[2];
     p->components=compact && xy?6:9;
-    const size_t pairs=p->parity?size_t(p->channels)*(p->channels+1)/2:size_t(p->channels)*p->channels;
-    p->bytes=sizeof(double2)*(size_t(p->grid)*(pairs*p->components+9*p->channels)+size_t(nx)*ny*9*p->channels);
+    const char* dedup_flag=std::getenv("BEM_FACE_FFT_DEDUP_KERNELS");
+    const bool dedup=compact && dedup_flag && std::string(dedup_flag)!="0";
+    std::vector<KernelShift> shifts;
+    std::vector<int> pairmap(dedup?size_t(p->channels)*p->channels:0);
+    for(int t=0;t<p->channels;++t)for(int s=0;s<(p->parity?t+1:p->channels);++s) {
+        const double3 offset=make_double3(target[3*t]-source[3*s],target[3*t+1]-source[3*s+1],target[3*t+2]-source[3*s+2]);
+        const double separation=dedup?separation_bound(offset,u,v):0;
+        int mapping=0;
+        if(dedup)for(size_t i=0;i<shifts.size() && !mapping;++i)for(int sign:{1,-1}) {
+            const auto& previous=shifts[i];
+            const double error=std::hypot(std::hypot(offset.x-sign*previous.offset.x,offset.y-sign*previous.offset.y),offset.z-sign*previous.offset.z);
+            const double tolerance=128*std::numeric_limits<double>::epsilon()*
+                std::min(std::min(separation,previous.separation),1./std::max(1.,std::abs(k)));
+            if(error<=tolerance){mapping=sign*int(i+1);break;}
+        }
+        if(!mapping){shifts.push_back({offset,separation});mapping=int(shifts.size());}
+        if(dedup) {
+            pairmap[size_t(t)*p->channels+s]=mapping;
+            if(p->parity && t!=s)pairmap[size_t(s)*p->channels+t]=-mapping;
+        }
+    }
+    const size_t pairs=shifts.size();p->kernel_count=int(pairs);
+    p->bytes=sizeof(double2)*(size_t(p->grid)*(pairs*p->components+9*p->channels)+size_t(nx)*ny*9*p->channels)
+             +pairmap.size()*sizeof(int);
     size_t free=0,total=0;check(cudaMemGetInfo(&free,&total));
     if(p->bytes>free || free-p->bytes<2ULL*1024*1024*1024)
         throw std::runtime_error("face FFT arrays would violate 2 GiB GPU reserve");
@@ -151,6 +204,10 @@ void RegularFaceFFT::init(int nx,int ny,const double u[3],const double v[3],
     check(cudaMalloc(&p->ohat,grid*c*6*sizeof(double2)));
     check(cudaMalloc(&p->input,cells*c*3*sizeof(double2)));
     check(cudaMalloc(&p->output,cells*c*6*sizeof(double2)));
+    if(dedup) {
+        check(cudaMalloc(&p->pairmap,pairmap.size()*sizeof(int)));
+        check(cudaMemcpy(p->pairmap,pairmap.data(),pairmap.size()*sizeof(int),cudaMemcpyHostToDevice));
+    }
     const int dims[2]={p->fx,p->fy};int n[2]={dims[0],dims[1]};
     size_t work=0;
     auto plan=[&](cufftHandle& handle,int batch) {
@@ -164,12 +221,11 @@ void RegularFaceFFT::init(int nx,int ny,const double u[3],const double v[3],
     if(work)check(cudaMalloc(&p->workspace,work));
     for(cufftHandle handle:{p->kplan,p->qplan,p->oplan})fftcheck(cufftSetWorkArea(handle,p->workspace));
     p->bytes+=work;
-    for(int t=0;t<int(c);++t)for(int s=0;s<(p->parity?t+1:int(c));++s) {
-        const size_t pair=p->parity?size_t(t)*(t+1)/2+s:size_t(t)*c+s;
+    for(size_t pair=0;pair<pairs;++pair) {
         double2* kernel=p->kernel+pair*p->components*grid;
         kernels<<<(grid+255)/256,256>>>(kernel,nx,ny,p->fx,p->fy,
             make_double3(u[0],u[1],u[2]),make_double3(v[0],v[1],v[2]),
-            make_double3(target[3*t]-source[3*s],target[3*t+1]-source[3*s+1],target[3*t+2]-source[3*s+2]),k.real(),k.imag(),p->components);
+            shifts[pair].offset,k.real(),k.imag(),p->components);
         check(cudaGetLastError());fftcheck(cufftExecZ2Z(p->kplan,kernel,kernel,CUFFT_FORWARD));
     }
     check(cudaDeviceSynchronize());
@@ -202,7 +258,7 @@ void RegularFaceFFT::evaluate_device() {
     scatter<<<(3*count+255)/256,256>>>(p->input,p->qhat,p->nx,p->ny,p->fy,p->grid,p->channels);
     check(cudaGetLastError());fftcheck(cufftExecZ2Z(p->qplan,p->qhat,p->qhat,CUFFT_FORWARD));
     contract<<<dim3((p->grid+127)/128,p->channels),128>>>(p->kernel,p->qhat,p->ohat,p->grid,p->channels,
-                                                                      p->fx,p->fy,p->components,p->parity);
+                                                                      p->fx,p->fy,p->components,p->parity,p->pairmap);
     check(cudaGetLastError());fftcheck(cufftExecZ2Z(p->oplan,p->ohat,p->ohat,CUFFT_INVERSE));
     gather<<<(6*count+255)/256,256>>>(p->ohat,p->output,p->nx,p->ny,p->fy,p->grid,p->channels);
     check(cudaGetLastError());

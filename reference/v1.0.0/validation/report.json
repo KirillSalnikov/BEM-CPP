@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "release": "1.0.0",
+  "date": "2026-11-01",
+  "source_identification": "Enclosing v1.0.0 annotated tag; source_sha256.json records the audited source contents.",
+  "base_commit": "167a661e9e2912b54babad1671710ae57909dee1",
+  "host_audit": {
+    "status": "passed",
+    "command": "scripts/release_audit.sh --host",
+    "native_checks": 32,
+    "python_test_files": 51,
+    "unittest_cases_including_skips": 135,
+    "optional_gpu_cases_skipped": 11,
+    "skipped_files": {
+      "test_banded_memory_profile.py": 1,
+      "test_fmm_tmatrix_streaming.py": 4,
+      "test_multilevel_fmm.py": 6
+    }
+  },
+  "extended_host": {
+    "status": "passed",
+    "targets": [
+      "host-face-fft-checks",
+      "host-taylor-checks",
+      "host-osrc-checks",
+      "host-symmetry-check"
+    ],
+    "OMP_NUM_THREADS": 2,
+    "OPENBLAS_NUM_THREADS": 1,
+    "FFTW_library": "libfftw3.so.3.6.10",
+    "FFTW_sha256": "b5cc02c4d360b5b20111cb0a251f8368af8c9ce3145357f5ba54c51ac4ca9b35"
+  },
+  "cuda_header_and_main_syntax": {
+    "status": "passed",
+    "files": [
+      "tests/test_main_syntax_smoke.py",
+      "tests/test_rhs_header_compile.py"
+    ]
+  },
+  "sphere_physical_reference": {
+    "status": "passed",
+    "backend": "CPU dense Muller",
+    "reference": "../small_sphere.json",
+    "is_gpu_validation": false
+  },
+  "documentation": {
+    "status": "passed",
+    "pages": 32,
+    "figures": 18,
+    "pdf_layout_warnings": 0,
+    "portable_PNG_and_CSV_regeneration": "byte-identical",
+    "private_research_tree_required_for_regeneration": false
+  },
+  "full_gpu_runtime_audit": {
+    "status": "not_run",
+    "reason": "The only GPU remains occupied by an existing large T calculation. No competing GPU jobs were started for this release.",
+    "required_follow_up": "scripts/release_audit.sh --gpu and optional BEM_TEST_GPU=1 integration tests on an idle GPU."
+  },
+  "scope": [
+    "Host and compile validation do not certify all experimental accelerations on large meshes.",
+    "Historical numerical studies retain their original parameters and validation limits.",
+    "The fresh CPU sphere smoke is a 4%/5% release regression gate, not a 1% mesh certificate."
+  ],
+  "cuda_build": {
+    "status": "passed",
+    "command": "make muller-fp32 bin/muller_tmatrix_fmm_server -j1 CXX=g++-12 CUDA_HOME=/usr",
+    "exit_code": 0,
+    "GPU_runtime_exercised": false,
+    "architecture": "sm_86",
+    "host_optimization": "native Zen 4",
+    "binaries": {
+      "muller_nodal_fmm_demo_fp32": "73ae0843ae3e48f500659ec0b086b0b6f38103bd9fd63ef4e7c8bb17074c63c6",
+      "muller_tmatrix_fmm_server": "02c56b8a03b72c05e24d280104a81af8f4d6ce7e789062a5013f0f0ac6cff18f",
+      "tmatrix_so3_mstm": "555d789748c6bc799aee257a96637f12fe1347d6076543dabd7bbc6a4d0005c0",
+      "tmatrix_so3_mstm_fp32": "1ff152fe4d14868f35086f2f466c7b7e20e6b9cb5840af7b6d4d27efdcac8952"
+    },
+    "version_cli": "BEM-CPP Muller solver 1.0.0"
+  },
+  "log_sha256": {
+    "cuda_syntax.log": "8ad601d5e05ecd56cf9c4cf2243939c0887ceb2e0f3ae7bcc24b79c10cccb0f1",
+    "sphere_cpu.log": "e944b7b63824756e0952d2ad51c26ecc11e81b7f668bbf6705de9d8bcc308831",
+    "manual_build.log": "7ab2e314996d7409fe7640a6f6a571262bdadfbf265ef5f292102a5b03ce6353",
+    "host_audit.log": "7d59665898aedea94e89b419f190bda71049fc886fbda9631930b1dcd9a40765",
+    "sphere_mie.log": "e1c2a9974034da42d5d963520b65668e9b63d7204e884db2107fc262ca3db1d1",
+    "cuda_build.log": "ab6cea4be67dfab665ecfcca2d2e2d443036b4e66e14059d530569e627bb0525",
+    "extended_host.log": "4db938e794331ad040ad958ed48730da5913917a776256695172a67a0b516741",
+    "figure_regeneration.log": "9a09f2f008e08c4f06aaf74e980b6ab01cc4e14945e68842a20eb86e8fe892e8"
+  }
+}

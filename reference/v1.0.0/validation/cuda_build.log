@@ -1,0 +1,58 @@
+CUDA_HOME="/usr" CXX="g++-12" python3 scripts/detect_cuda_toolchain.py --summary --require-local-build
+CUDA toolkit ok for local build: /usr
+/usr/bin/nvcc -arch=sm_86 -ccbin g++-12  -DBEM_VERSION=\"1.0.0\" -O3 -I/usr/include -Xcompiler "-O3 -march=native -Wall -Wno-unknown-pragmas -std=c++11" -std=c++11 -Xcompiler -fopenmp --default-stream per-thread \
+	-DBEM_DEFAULT_FMM_NEAR_FP32 -DBEM_PFFT_FP32 -DBEM_FMM_CONCURRENT_MEDIA_DEFAULT -DBEM_MULLER_GPU_ASSEMBLY_DEFAULT \
+	-x cu -c -o build/muller-fp32/prism_face_fft.o src/prism_face_fft.cpp
+/usr/bin/nvcc -arch=sm_86 -ccbin g++-12  -DBEM_VERSION=\"1.0.0\" -O3 -I/usr/include -Xcompiler "-O3 -march=native -Wall -Wno-unknown-pragmas -std=c++11" -std=c++11 -Xcompiler -fopenmp --default-stream per-thread \
+	-DBEM_DEFAULT_FMM_NEAR_FP32 -DBEM_PFFT_FP32 -DBEM_FMM_CONCURRENT_MEDIA_DEFAULT -DBEM_MULLER_GPU_ASSEMBLY_DEFAULT -c -o build/muller-fp32/regular_face_fft.o src/regular_face_fft.cu
+/usr/bin/nvcc -arch=sm_86 -ccbin g++-12  -DBEM_VERSION=\"1.0.0\" -O3 -I/usr/include -Xcompiler "-O3 -march=native -Wall -Wno-unknown-pragmas -std=c++11" -std=c++11 -Xcompiler -fopenmp --default-stream per-thread \
+	-DBEM_DEFAULT_FMM_NEAR_FP32 -DBEM_PFFT_FP32 -DBEM_FMM_CONCURRENT_MEDIA_DEFAULT -DBEM_MULLER_GPU_ASSEMBLY_DEFAULT \
+	-x cu -c -o build/muller-fp32/muller_fmm.o src/muller_fmm.cpp
+src/muller_fmm_transpose.inc(38): warning #550-D: variable "concurrent" was set but never used
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+/usr/bin/nvcc -arch=sm_86 -ccbin g++-12  -DBEM_VERSION=\"1.0.0\" -O3 -I/usr/include -Xcompiler "-O3 -march=native -Wall -Wno-unknown-pragmas -std=c++11" -std=c++11 -Xcompiler -fopenmp --default-stream per-thread \
+	-DBEM_DEFAULT_FMM_NEAR_FP32 -DBEM_PFFT_FP32 -DBEM_FMM_CONCURRENT_MEDIA_DEFAULT -DBEM_MULLER_GPU_ASSEMBLY_DEFAULT \
+	-x cu -c -o build/muller-fp32/muller_dense.o src/muller_dense.cpp
+/usr/bin/nvcc -arch=sm_86 -ccbin g++-12  -DBEM_VERSION=\"1.0.0\" -O3 -I/usr/include -Xcompiler "-O3 -march=native -Wall -Wno-unknown-pragmas -std=c++11" -std=c++11 -Xcompiler -fopenmp --default-stream per-thread \
+	-DBEM_DEFAULT_FMM_NEAR_FP32 -DBEM_PFFT_FP32 -DBEM_FMM_CONCURRENT_MEDIA_DEFAULT -DBEM_MULLER_GPU_ASSEMBLY_DEFAULT \
+	-x cu -c -o build/muller-fp32/muller_mbj.o src/muller_mbj.cpp
+/usr/bin/nvcc -arch=sm_86 -ccbin g++-12  -DBEM_VERSION=\"1.0.0\" -O3 -I/usr/include -Xcompiler "-O3 -march=native -Wall -Wno-unknown-pragmas -std=c++11" -std=c++11 -Xcompiler -fopenmp --default-stream per-thread \
+	-DBEM_DEFAULT_FMM_NEAR_FP32 -DBEM_PFFT_FP32 -DBEM_FMM_CONCURRENT_MEDIA_DEFAULT -DBEM_MULLER_GPU_ASSEMBLY_DEFAULT \
+	-x cu -c -o build/muller-fp32/muller_mbj_fmm.o src/muller_mbj_fmm.cpp
+/usr/bin/nvcc -arch=sm_86 -ccbin g++-12  -DBEM_VERSION=\"1.0.0\" -O3 -I/usr/include -Xcompiler "-O3 -march=native -Wall -Wno-unknown-pragmas -std=c++11" -std=c++11 -Xcompiler -fopenmp --default-stream per-thread \
+	-DBEM_DEFAULT_FMM_NEAR_FP32 -DBEM_PFFT_FP32 -DBEM_FMM_CONCURRENT_MEDIA_DEFAULT -DBEM_MULLER_GPU_ASSEMBLY_DEFAULT \
+	-x cu -c -o build/muller-fp32/muller_nodal.o src/muller_nodal.cpp
+/usr/bin/nvcc -arch=sm_86 -ccbin g++-12  -DBEM_VERSION=\"1.0.0\" -O3 -I/usr/include -Xcompiler "-O3 -march=native -Wall -Wno-unknown-pragmas -std=c++11" -std=c++11 -Xcompiler -fopenmp --default-stream per-thread \
+	-DBEM_DEFAULT_FMM_NEAR_FP32 -DBEM_PFFT_FP32 -DBEM_FMM_CONCURRENT_MEDIA_DEFAULT -DBEM_MULLER_GPU_ASSEMBLY_DEFAULT \
+	-x cu -c -o build/muller-fp32/muller_duffy.o src/muller_duffy.cpp
+/usr/bin/nvcc -arch=sm_86 -ccbin g++-12  -DBEM_VERSION=\"1.0.0\" -O3 -I/usr/include -Xcompiler "-O3 -march=native -Wall -Wno-unknown-pragmas -std=c++11" -std=c++11 -Xcompiler -fopenmp --default-stream per-thread \
+	-DBEM_DEFAULT_FMM_NEAR_FP32 -DBEM_PFFT_FP32 -DBEM_FMM_CONCURRENT_MEDIA_DEFAULT -DBEM_MULLER_GPU_ASSEMBLY_DEFAULT \
+	-x cu -c -o build/muller-fp32/mesh.o src/mesh.cpp
+/usr/bin/nvcc -arch=sm_86 -ccbin g++-12  -DBEM_VERSION=\"1.0.0\" -O3 -I/usr/include -Xcompiler "-O3 -march=native -Wall -Wno-unknown-pragmas -std=c++11" -std=c++11 -Xcompiler -fopenmp --default-stream per-thread \
+	-DBEM_DEFAULT_FMM_NEAR_FP32 -DBEM_PFFT_FP32 -DBEM_FMM_CONCURRENT_MEDIA_DEFAULT -DBEM_MULLER_GPU_ASSEMBLY_DEFAULT \
+	-x cu -c -o build/muller-fp32/orient.o src/orient.cpp
+/usr/bin/nvcc -arch=sm_86 -ccbin g++-12  -DBEM_VERSION=\"1.0.0\" -O3 -I/usr/include -Xcompiler "-O3 -march=native -Wall -Wno-unknown-pragmas -std=c++11" -std=c++11 -Xcompiler -fopenmp --default-stream per-thread \
+	-DBEM_DEFAULT_FMM_NEAR_FP32 -DBEM_PFFT_FP32 -DBEM_FMM_CONCURRENT_MEDIA_DEFAULT -DBEM_MULLER_GPU_ASSEMBLY_DEFAULT -c -o build/muller-fp32/muller_fmm_gpu.o src/muller_fmm_gpu.cu
+/usr/bin/nvcc -arch=sm_86 -ccbin g++-12  -DBEM_VERSION=\"1.0.0\" -O3 -I/usr/include -Xcompiler "-O3 -march=native -Wall -Wno-unknown-pragmas -std=c++11" -std=c++11 -Xcompiler -fopenmp --default-stream per-thread \
+	-DBEM_DEFAULT_FMM_NEAR_FP32 -DBEM_PFFT_FP32 -DBEM_FMM_CONCURRENT_MEDIA_DEFAULT -DBEM_MULLER_GPU_ASSEMBLY_DEFAULT -c -o build/muller-fp32/muller_mbj_gpu.o src/muller_mbj_gpu.cu
+/usr/bin/nvcc -arch=sm_86 -ccbin g++-12  -DBEM_VERSION=\"1.0.0\" -O3 -I/usr/include -Xcompiler "-O3 -march=native -Wall -Wno-unknown-pragmas -std=c++11" -std=c++11 -Xcompiler -fopenmp --default-stream per-thread \
+	-DBEM_DEFAULT_FMM_NEAR_FP32 -DBEM_PFFT_FP32 -DBEM_FMM_CONCURRENT_MEDIA_DEFAULT -DBEM_MULLER_GPU_ASSEMBLY_DEFAULT -c -o build/muller-fp32/muller_paired_gmres.o src/muller_paired_gmres.cu
+/usr/bin/nvcc -arch=sm_86 -ccbin g++-12  -DBEM_VERSION=\"1.0.0\" -O3 -I/usr/include -Xcompiler "-O3 -march=native -Wall -Wno-unknown-pragmas -std=c++11" -std=c++11 -Xcompiler -fopenmp --default-stream per-thread \
+	-DBEM_DEFAULT_FMM_NEAR_FP32 -DBEM_PFFT_FP32 -DBEM_FMM_CONCURRENT_MEDIA_DEFAULT -DBEM_MULLER_GPU_ASSEMBLY_DEFAULT -c -o build/muller-fp32/fmm.o src/fmm.cu
+/usr/bin/nvcc -arch=sm_86 -ccbin g++-12  -DBEM_VERSION=\"1.0.0\" -O3 -I/usr/include -Xcompiler "-O3 -march=native -Wall -Wno-unknown-pragmas -std=c++11" -std=c++11 -Xcompiler -fopenmp --default-stream per-thread \
+	-DBEM_DEFAULT_FMM_NEAR_FP32 -DBEM_PFFT_FP32 -DBEM_FMM_CONCURRENT_MEDIA_DEFAULT -DBEM_MULLER_GPU_ASSEMBLY_DEFAULT -c -o build/muller-fp32/p2p.o src/p2p.cu
+/usr/bin/nvcc -arch=sm_86 -ccbin g++-12  -DBEM_VERSION=\"1.0.0\" -O3 -I/usr/include -Xcompiler "-O3 -march=native -Wall -Wno-unknown-pragmas -std=c++11" -std=c++11 -Xcompiler -fopenmp --default-stream per-thread \
+	-DBEM_DEFAULT_FMM_NEAR_FP32 -DBEM_PFFT_FP32 -DBEM_FMM_CONCURRENT_MEDIA_DEFAULT -DBEM_MULLER_GPU_ASSEMBLY_DEFAULT -c -o build/muller-fp32/pfft.o src/pfft.cu
+/usr/bin/nvcc -arch=sm_86 -ccbin g++-12  -DBEM_VERSION=\"1.0.0\" -O3 -I/usr/include -Xcompiler "-O3 -march=native -Wall -Wno-unknown-pragmas -std=c++11" -std=c++11 -Xcompiler -fopenmp -DBEM_DEFAULT_FMM_NEAR_FP32 -DBEM_PFFT_FP32 -DBEM_FMM_CONCURRENT_MEDIA_DEFAULT -DBEM_MULLER_GPU_ASSEMBLY_DEFAULT \
+	-Isrc -o bin/muller_nodal_fmm_demo_fp32 tools/muller_nodal_fmm_demo.cpp build/muller-fp32/prism_face_fft.o build/muller-fp32/regular_face_fft.o build/muller-fp32/muller_fmm.o build/muller-fp32/muller_dense.o build/muller-fp32/muller_mbj.o build/muller-fp32/muller_mbj_fmm.o build/muller-fp32/muller_nodal.o build/muller-fp32/muller_duffy.o build/muller-fp32/mesh.o build/muller-fp32/orient.o build/muller-fp32/muller_fmm_gpu.o build/muller-fp32/muller_mbj_gpu.o build/muller-fp32/muller_paired_gmres.o build/muller-fp32/fmm.o build/muller-fp32/p2p.o build/muller-fp32/pfft.o -L/usr/lib -L/usr/lib/x86_64-linux-gnu -L/usr/lib64 -L/usr/lib -lcudart -lcufft -lcusparse -lm -ldl -lstdc++ -Xlinker -rpath -Xlinker /usr/lib -Xlinker -rpath -Xlinker /usr/lib/x86_64-linux-gnu -Xlinker -rpath -Xlinker /usr/lib64 -Xlinker -rpath -Xlinker /usr/lib -Xcompiler -fopenmp -lcublas
+nvlink warning : Skipping incompatible '/usr/lib/x86_64-linux-gnu/libdl.a' when searching for -ldl
+nvlink warning : Skipping incompatible '/usr/lib/x86_64-linux-gnu/libdl.a' when searching for -ldl
+Built optimized mixed-precision solver: bin/muller_nodal_fmm_demo_fp32
+g++-12 -O3 -march=native -fcx-limited-range -pthread -Wall -std=c++11 -DBEM_VERSION=\"1.0.0\" -I/usr/include -DBEM_DEFAULT_FMM_NEAR_FP32 -DBEM_PFFT_FP32 -DBEM_FMM_CONCURRENT_MEDIA_DEFAULT -DBEM_MULLER_GPU_ASSEMBLY_DEFAULT -fopenmp -Isrc -c tools/muller_tmatrix_fmm_server.cpp -o build/muller_tmatrix_server_host.o
+/usr/bin/nvcc -arch=sm_86 -ccbin g++-12  -DBEM_VERSION=\"1.0.0\" -O3 -I/usr/include -Xcompiler "-O3 -march=native -fcx-limited-range -pthread -Wall -Wno-unknown-pragmas -std=c++11" -std=c++11 -Xcompiler -fopenmp -DBEM_DEFAULT_FMM_NEAR_FP32 -DBEM_PFFT_FP32 -DBEM_FMM_CONCURRENT_MEDIA_DEFAULT -DBEM_MULLER_GPU_ASSEMBLY_DEFAULT -Isrc -o bin/muller_tmatrix_fmm_server build/muller_tmatrix_server_host.o build/muller-fp32/prism_face_fft.o build/muller-fp32/regular_face_fft.o build/muller-fp32/muller_fmm.o build/muller-fp32/muller_dense.o build/muller-fp32/muller_mbj.o build/muller-fp32/muller_mbj_fmm.o build/muller-fp32/muller_nodal.o build/muller-fp32/muller_duffy.o build/muller-fp32/mesh.o build/muller-fp32/orient.o build/muller-fp32/muller_fmm_gpu.o build/muller-fp32/muller_mbj_gpu.o build/muller-fp32/muller_paired_gmres.o build/muller-fp32/fmm.o build/muller-fp32/p2p.o build/muller-fp32/pfft.o src/block_circulant_fft.cu src/prism_circulant_layout.cpp src/prism_circulant_inverse.cpp src/global_coarse_inverse.cu src/prism_orbit_inverse.cpp -L/usr/lib -L/usr/lib/x86_64-linux-gnu -L/usr/lib64 -L/usr/lib -lcudart -lcufft -lcusparse -lm -ldl -lstdc++ -Xlinker -rpath -Xlinker /usr/lib -Xlinker -rpath -Xlinker /usr/lib/x86_64-linux-gnu -Xlinker -rpath -Xlinker /usr/lib64 -Xlinker -rpath -Xlinker /usr/lib -Xcompiler -fopenmp -lcublas -ldl
+nvlink warning : Skipping incompatible '/usr/lib/x86_64-linux-gnu/libdl.a' when searching for -ldl
+nvlink warning : Skipping incompatible '/usr/lib/x86_64-linux-gnu/libdl.a' when searching for -ldl
+nvlink warning : Skipping incompatible '/usr/lib/x86_64-linux-gnu/libdl.a' when searching for -ldl
+nvlink warning : Skipping incompatible '/usr/lib/x86_64-linux-gnu/libdl.a' when searching for -ldl

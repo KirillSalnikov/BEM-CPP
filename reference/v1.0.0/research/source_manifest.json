@@ -1,0 +1,201 @@
+{
+  "sources": [
+    {
+      "path": "benchmarks/cutoff_study_20261027/summary.json",
+      "sha256": "faac68f85f3f1e958229ef75159131246f07c898683c392c87ca241e03836eae",
+      "bytes": 9374
+    },
+    {
+      "path": "benchmarks/acceleration_plan_20261101/P7/ka5_selection.json",
+      "sha256": "711458e80d707f0aa54426da6e101407cab1321d1d3acc9a7852d4b9896de0b8",
+      "bytes": 10719
+    },
+    {
+      "path": "benchmarks/acceleration_plan_20261101/P7/ka10_selection.json",
+      "sha256": "d4b5d6c6fe579b9883e7e31647e211e9072941366a59a75d47d0919c0aa627a1",
+      "bytes": 14760
+    },
+    {
+      "path": "benchmarks/acceleration_plan_20261101/P7/ka40_selection.json",
+      "sha256": "6ad7ac73d4043865e9d39d15c9286fdd35f80c832d84c0987f6202743225edd7",
+      "bytes": 44572
+    },
+    {
+      "path": "runs/aspect_small_20261030/report.json",
+      "sha256": "3aa209d24300e6fa2ea9a92cec1cff12c1125277fa576395270f7ba67d96c44e",
+      "bytes": 7294
+    },
+    {
+      "path": "runs/size_series_n13116_0532_12h_20261028/ka10_assessment.json",
+      "sha256": "68834e93dd40a11b3ea0bb147984d74e1ea8bcd21d6d2ee074fa0aecbf6893dd",
+      "bytes": 1803
+    },
+    {
+      "path": "runs/size_series_n13116_0532_12h_20261028/ka20_assessment.json",
+      "sha256": "94266aa3f471f6df1219aae716055d0f2549b39f2f543d0b1d750b76d0d355c3",
+      "bytes": 1794
+    },
+    {
+      "path": "benchmarks/interpolation_step_20261031/summary.json",
+      "sha256": "e5101df37f012b555351dd01b457636c5ba8be995ced06908977adcf06b81dcd",
+      "bytes": 222180
+    },
+    {
+      "path": "benchmarks/interpolation_improvement_20261031/summary.json",
+      "sha256": "28288b4f6ca6cc8dc130302956373845cd48af609454cbbc0988e4e65e573b68",
+      "bytes": 5567
+    },
+    {
+      "path": "runs/multisize_n13116_0532_20261028/holdout_audit_20261028/report.json",
+      "sha256": "e9ea936bc59a4c6bb297c081e7310ee3a20e67eaf656a71579bb83f7e5141571",
+      "bytes": 6643
+    },
+    {
+      "path": "runs/multisize_n13116_0532_20261028/results.json",
+      "sha256": "60ec5980b9ae3e0f54fd7226dfd46a6d593b98d8ddf732f09842a1b916614920",
+      "bytes": 10288
+    },
+    {
+      "path": "benchmarks/size_taylor_20261031/comparison_summary.json",
+      "sha256": "323bbd295062c27b3e46b51c39b10eedc68c296c5fc24e5657ab9ff1861cab3d",
+      "bytes": 6654
+    },
+    {
+      "path": "benchmarks/acceleration_plan_20261101/P11/recentering_assessment.json",
+      "sha256": "a3a58e791390f1bc8aafae5feda04f36927b6e787d2f40c51e868e9018d6ce25",
+      "bytes": 2173
+    },
+    {
+      "path": "benchmarks/acceleration_plan_20261101/P7/reciprocal_extension/report.json",
+      "sha256": "393a20dd95aa0ecc897debb94b2fc409de14b8ce53c79c3374260ba3d380ecda",
+      "bytes": 26510
+    },
+    {
+      "path": "benchmarks/solver_tolerance_20261031/summary.json",
+      "sha256": "2b05bc91c5c77982f5ab4064fa9ace36139e9e3fc944b2cb8fd6733e9617bf2d",
+      "bytes": 45414
+    },
+    {
+      "path": "benchmarks/adaptive_tolerance_20261101/summary.json",
+      "sha256": "b9c841d0383de40462598197097274ecd6948b445eabb2f89e47d8a158ce39a4",
+      "bytes": 13304
+    },
+    {
+      "path": "benchmarks/production_hybrid_20261031/summary.json",
+      "sha256": "3fe89afd1317d33caa0af211262ddd6fbac8415fee65774daf13e2a8079dcf85",
+      "bytes": 4678
+    },
+    {
+      "path": "benchmarks/fft_aspect_20261030/summary.json",
+      "sha256": "cca8c78b5c002c9be090dbd8493f652a2740dac575dc69d19992c92cd8d9fbd4",
+      "bytes": 75681
+    },
+    {
+      "path": "runs/ka40_n1p3116_l0p532_aspect10over7_fft_blend_20261030/main_ref6_L64/summary.json",
+      "sha256": "573f3f533d9cafa1abf0b2a2ee3fecf03446f40e3dea5601baabbbb26b6dafc5",
+      "bytes": 2898526
+    },
+    {
+      "path": "runs/ka40_n1p3116_l0p532_aspect10over7_fft_blend_20261030/main_ref6_L64/solver_migration.json",
+      "sha256": "e8321b6874e1bf2f11264df09097a802bc387f594ef4002fffbdef16a5f2a91b",
+      "bytes": 208086
+    },
+    {
+      "path": "runs/mbs_surface_shadow_ka40_20261101/comparison/comparison_summary.json",
+      "sha256": "c5ceb19fd4ec6fea197f8c56cf682573f30f18ef8e00ffb4bc4ec86837e0bc92",
+      "bytes": 24991
+    },
+    {
+      "path": "runs/mbs_surface_shadow_ka40_20261101/comparison/comparison_all16.npz",
+      "sha256": "068bed8a1a6dc7e2594d07406f95991adddc7ce0ddf7d53a43032ec59ec4a67c",
+      "bytes": 1976001
+    },
+    {
+      "path": "benchmarks/acceleration_plan_20261101/status.json",
+      "sha256": "dd4a35dbc69242afa8a9b712be6b8c2a18087f78eb68e5839c91f9f8a8344b95",
+      "bytes": 36683
+    },
+    {
+      "path": "runs/multisize_n13116_0532_20261028/plots_four_holdouts/all16_normalized.png",
+      "sha256": "2f48d448b5e2ea83e27cf5a1d4056befd9e10c454f9fbef98d25392546a884fb",
+      "bytes": 1349048
+    },
+    {
+      "path": "runs/multisize_n13116_0532_20261028/plots_four_holdouts/M11_four_holdouts.png",
+      "sha256": "84dc07339364eb9b2d2f23e9c5b60b28213770ed757ab29ffc7b99ba316d1e40",
+      "bytes": 314561
+    },
+    {
+      "path": "runs/aspect_small_20261030/cutoff_convergence.png",
+      "sha256": "58e48b695adde24d252f2e4d91a5868be0d6047edf839d8e9ab74efb644224b7",
+      "bytes": 137076
+    },
+    {
+      "path": "runs/aspect_small_20261030/mesh_convergence.png",
+      "sha256": "edc7d65064be2df80737518e53a00fd9738d6677bc913824eec1f876d60fb674",
+      "bytes": 334151
+    },
+    {
+      "path": "benchmarks/size_taylor_20261031/size_continuation_comparison.png",
+      "sha256": "0dbdd43cac6a3e19675571b02d1cd06bfd13f32eb8b70fe5313c824fb3459189",
+      "bytes": 285206
+    },
+    {
+      "path": "benchmarks/acceleration_plan_20261101/P7/reciprocal_extension/comparison.png",
+      "sha256": "1295d4a0fbe4b923f241f7abd82e94b67c3117e076b17a20131ae7be45eb7037",
+      "bytes": 130294
+    },
+    {
+      "path": "benchmarks/acceleration_plan_20261101/P11/recentering_comparison.png",
+      "sha256": "a4597a0cf779c825912aa5fb64078a4d3d4f285c5ea02f977b39f7b3b43e1a40",
+      "bytes": 99091
+    },
+    {
+      "path": "runs/aspect_small_20261030/ka2_aspect0p2/mesh_all16.png",
+      "sha256": "63353d3073dde1b1a02d0cd07bd88f1e28cc7b2d39dbee15c0c9324ad670a807",
+      "bytes": 436861
+    },
+    {
+      "path": "runs/aspect_small_20261030/ka2_aspect1/mesh_all16.png",
+      "sha256": "6fcde4fbbcc2084eaa6acd414f28956e9ddfe01e5310b9798972710582d452d6",
+      "bytes": 399017
+    },
+    {
+      "path": "runs/aspect_small_20261030/ka2_aspect5/mesh_all16.png",
+      "sha256": "1dfb2378e83ebc29b3563eabea4d033f07768d0d214918e1704d902f8e0ed656",
+      "bytes": 430538
+    },
+    {
+      "path": "runs/aspect_small_20261030/ka5_aspect0p2/mesh_all16.png",
+      "sha256": "0e0553b575804bafc453b0b3e6e28b5f5046d05035d360c9ddfb4658131289ac",
+      "bytes": 482521
+    },
+    {
+      "path": "runs/aspect_small_20261030/ka5_aspect1/mesh_all16.png",
+      "sha256": "c0575392344200d614ac06a1b33b9927e8c892082c808f6df38559111749d7c6",
+      "bytes": 492063
+    },
+    {
+      "path": "runs/aspect_small_20261030/ka5_aspect5/mesh_all16.png",
+      "sha256": "3b701e658564721e41fa6887d0c509ac86bc45587193820b1c04e7741b88643b",
+      "bytes": 466310
+    }
+  ],
+  "published_data_sha256": "5fe0dfe7564d409b5f79e22fa6fa65f7035f4945f00f1f6e5f832ea858cd52f1",
+  "copied_figures": {
+    "interpolation_all16.png": "2f48d448b5e2ea83e27cf5a1d4056befd9e10c454f9fbef98d25392546a884fb",
+    "interpolation_M11.png": "84dc07339364eb9b2d2f23e9c5b60b28213770ed757ab29ffc7b99ba316d1e40",
+    "shape_cutoff.png": "58e48b695adde24d252f2e4d91a5868be0d6047edf839d8e9ab74efb644224b7",
+    "shape_mesh.png": "edc7d65064be2df80737518e53a00fd9738d6677bc913824eec1f876d60fb674",
+    "taylor.png": "0dbdd43cac6a3e19675571b02d1cd06bfd13f32eb8b70fe5313c824fb3459189",
+    "reciprocal_extension.png": "1295d4a0fbe4b923f241f7abd82e94b67c3117e076b17a20131ae7be45eb7037",
+    "recenter.png": "a4597a0cf779c825912aa5fb64078a4d3d4f285c5ea02f977b39f7b3b43e1a40",
+    "ka2_aspect0p2_all16.png": "63353d3073dde1b1a02d0cd07bd88f1e28cc7b2d39dbee15c0c9324ad670a807",
+    "ka2_aspect1_all16.png": "6fcde4fbbcc2084eaa6acd414f28956e9ddfe01e5310b9798972710582d452d6",
+    "ka2_aspect5_all16.png": "1dfb2378e83ebc29b3563eabea4d033f07768d0d214918e1704d902f8e0ed656",
+    "ka5_aspect0p2_all16.png": "0e0553b575804bafc453b0b3e6e28b5f5046d05035d360c9ddfb4658131289ac",
+    "ka5_aspect1_all16.png": "c0575392344200d614ac06a1b33b9927e8c892082c808f6df38559111749d7c6",
+    "ka5_aspect5_all16.png": "3b701e658564721e41fa6887d0c509ac86bc45587193820b1c04e7741b88643b"
+  },
+  "scope": "Original numerical summaries and Mueller curves only. Large T matrices, currents and private credentials excluded."
+}
