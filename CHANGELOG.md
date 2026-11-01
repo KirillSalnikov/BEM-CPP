@@ -7,6 +7,10 @@ Semantic Versioning while its public interfaces are stabilizing.
 
 - Fix CPU-only build recipes that omitted the existing CUDA-header fallback;
   host tests now compile with the repository stubs when CUDA is absent.
+- Require SciPy 1.15+ for the T-matrix spherical harmonics; reject the legacy
+  near-pole-inaccurate fallback and pin the validated numerical CI environment.
+- Make the size-series pilot test independent of free CI disk space while
+  retaining an explicit low-disk refusal check.
 
 ## [1.0.0] - 2026-11-01
 

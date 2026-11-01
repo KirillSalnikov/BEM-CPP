@@ -14,10 +14,12 @@ import math
 import numpy as np
 try:
     from scipy.special import sph_harm_y
-except ImportError:  # scipy 1.10--1.14, supported by requirements-analysis.txt
-    from scipy.special import sph_harm
-    def sph_harm_y(l, m, theta, phi):
-        return sph_harm(m, l, phi, theta)
+except ImportError as error:
+    raise ImportError(
+        'BEM T-matrix modes require SciPy >= 1.15 with sph_harm_y. '
+        'The legacy sph_harm backend loses near-pole accuracy; '
+        'install requirements-analysis.txt.'
+    ) from error
 
 
 def modes(order):

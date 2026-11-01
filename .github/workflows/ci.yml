@@ -18,7 +18,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential gfortran python3 python3-matplotlib python3-numpy \
-            python3-psutil python3-pytest python3-scipy libfftw3-double3
+            python3-psutil python3-pytest python3-scipy python3-venv libfftw3-double3
+      - name: Install validated numerical Python dependencies
+        run: |
+          python3 -m venv "$RUNNER_TEMP/bem-analysis-venv"
+          "$RUNNER_TEMP/bem-analysis-venv/bin/python" -m pip install \
+            -r requirements-analysis.txt numpy==2.4.2 scipy==1.17.0 pytest
+          echo "$RUNNER_TEMP/bem-analysis-venv/bin" >> "$GITHUB_PATH"
       - name: Build full analytic SO3 backends
         run: make bin/tmatrix_so3_mstm bin/tmatrix_so3_mstm_fp32
       - name: Run release host audit

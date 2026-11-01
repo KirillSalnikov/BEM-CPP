@@ -30,7 +30,7 @@ CPU FFT also needs the double-precision FFTW runtime (`libfftw3-double3` on
 Ubuntu); `BEM_CPU_FFTW_LIBRARY` can select a non-system installation:
 
 ```bash
-python3 -m pip install numpy scipy matplotlib psutil
+python3 -m pip install -r requirements-analysis.txt
 make muller-fp32 CXX=g++-12 CUDA_HOME=/usr -j2
 make bin/muller_tmatrix_fmm_server CXX=g++-12 CUDA_HOME=/usr -j2
 make bin/tmatrix_so3_mstm bin/tmatrix_so3_mstm_fp32
@@ -47,6 +47,11 @@ python3 scripts/build_fmm_tmatrix.py \
   --c6-pack --mirror-pack --so3-precision fp64 --ntheta 181 \
   --out runs/example_ka3
 ```
+
+T-matrix modes require Python 3.10+ and SciPy 1.15+ with
+[`sph_harm_y`](https://docs.scipy.org/doc/scipy-1.15.0/reference/generated/scipy.special.sph_harm_y.html).
+The legacy `sph_harm` fallback is rejected because it loses near-pole accuracy.
+CI uses the validated NumPy 2.4.2 / SciPy 1.17.0 combination.
 
 This is a demonstration, not a mesh-convergence certificate. Check
 `summary.json` for completion and validation before using the result.
