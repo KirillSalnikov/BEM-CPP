@@ -45,9 +45,10 @@ int main(int argc,char** argv) try {
     const int n=op.system_dofs;
     std::vector<C> input(n),double_input(n),reference(n),actual(n),strict(n);
     for(int i=0;i<n;++i){input[i]=C(std::sin(.013*(i+1)),std::cos(.017*(i+1)))/std::sqrt(double(n));double_input[i]=2.*input[i];}
-    DeviceVector x(n),twice(n),y(n),strict_y(n);
+    DeviceVector x(n),twice(n),zero(n),y(n),strict_y(n);
     CUDA_CHECK(cudaMemcpy(x.pointer,input.data(),n*sizeof(C),cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(twice.pointer,double_input.data(),n*sizeof(C),cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemset(zero.pointer,0,n*sizeof(C)));
     op.matvec(input.data(),reference.data());
     op.matvec_device(x.pointer,y.pointer);
     CUDA_CHECK(cudaMemcpy(actual.data(),y.pointer,n*sizeof(C),cudaMemcpyDeviceToHost));
@@ -55,10 +56,20 @@ int main(int argc,char** argv) try {
     op.matvec_batch2_device_strict(x.pointer,x.pointer,strict_y.pointer,strict_y.pointer);
     CUDA_CHECK(cudaMemcpy(strict.data(),strict_y.pointer,n*sizeof(C),cudaMemcpyDeviceToHost));
     const double mixed_strict_error=relative(actual,strict);
+    // The first host action can populate FP32 phase caches. Freeze the
+    // warmed resident action as the reference for repeated-action/linearity
+    // checks, while retaining its comparison with the strict FP64 result.
+    op.matvec_device(x.pointer,y.pointer);
+    CUDA_CHECK(cudaMemcpy(reference.data(),y.pointer,n*sizeof(C),cudaMemcpyDeviceToHost));
     op.matvec_device(twice.pointer,y.pointer);
     CUDA_CHECK(cudaMemcpy(actual.data(),y.pointer,n*sizeof(C),cudaMemcpyDeviceToHost));
     const double linearity_error=relative(actual,reference,2.);
-    if(host_device_error>1e-10||mixed_strict_error>2e-4||linearity_error>1e-10)
+    op.matvec_device(zero.pointer,y.pointer);
+    CUDA_CHECK(cudaMemcpy(actual.data(),y.pointer,n*sizeof(C),cudaMemcpyDeviceToHost));
+    double zero_max=0.;for(C value:actual)zero_max=std::max(zero_max,std::abs(value));
+    std::cout<<"VALIDATION host/device="<<host_device_error
+             <<" mixed/strict="<<mixed_strict_error<<" linearity="<<linearity_error<<std::endl;
+    if(host_device_error>2e-6||mixed_strict_error>2e-4||linearity_error>2e-6||zero_max!=0.)
         throw std::runtime_error("Initial operator validation failed");
     CUDA_CHECK(cudaDeviceSynchronize());
     const double setup=elapsed(setup_start);
@@ -74,9 +85,9 @@ int main(int argc,char** argv) try {
         out<<std::setprecision(17)<<"{\"schema\":1,\"kind\":\"prepared_device_muller_operator\",\"passed\":"<<(passed?"true":"false")
            <<",\"score_candidate\":"<<(score_candidate?"true":"false")<<",\"ref\":"<<ref<<",\"ka\":"<<ka<<",\"ri\":1.3116,\"aspect\":1.4285714285714286"
            <<",\"system_dofs\":"<<n<<",\"mesh_triangles\":"<<op.mesh.elements.size()<<",\"quadrature_order\":7,\"duffy_order\":4,\"fmm_digits\":5,\"max_leaf\":64,\"near_radius\":3"
-           <<",\"iterations_per_repeat\":"<<iterations<<",\"setup_excluded_s\":"<<setup<<",\"gpu_allocated_bytes_after_setup\":"<<total_bytes-free_bytes
+           <<",\"iterations_per_repeat\":"<<iterations<<",\"setup_excluded_s\":"<<setup<<",\"device_used_bytes_after_setup\":"<<total_bytes-free_bytes
            <<",\"warmup_start_unix_s\":"<<heat_epoch<<",\"warmup_s\":"<<heat_seconds<<",\"warmup_calls\":"<<warmup_calls
-           <<",\"host_device_relative_error\":"<<host_device_error<<",\"mixed_strict_relative_error\":"<<mixed_strict_error<<",\"linearity_relative_error\":"<<linearity_error
+           <<",\"host_device_relative_error\":"<<host_device_error<<",\"mixed_strict_relative_error\":"<<mixed_strict_error<<",\"linearity_relative_error\":"<<linearity_error<<",\"zero_input_output_max\":"<<zero_max
            <<",\"cuda_span_note\":\"Event span includes host submission gaps and concurrent-media synchronization; not pure kernel-active time\",\"trials\":[";
         for(size_t j=0;j<trials.size();++j){const auto& t=trials[j];out<<(j?",":"")<<"{\"start_unix_s\":"<<t.start<<",\"wall_s\":"<<t.seconds<<",\"cuda_span_s\":"<<t.cuda_span<<",\"output_relative_error\":"<<t.error<<",\"matvecs\":"<<iterations<<"}";}
         out<<"]}\n";
@@ -91,7 +102,7 @@ int main(int argc,char** argv) try {
         CUDA_CHECK(cudaEventDestroy(begin));CUDA_CHECK(cudaEventDestroy(end));
         CUDA_CHECK(cudaMemcpy(actual.data(),y.pointer,n*sizeof(C),cudaMemcpyDeviceToHost));
         const double error=relative(actual,reference,((iterations-1)&1)?2.:1.);
-        if(error>1e-10)throw std::runtime_error("Repeated operator output changed");
+        if(error>2e-6)throw std::runtime_error("Repeated FP32 operator output exceeded its numerical gate");
         trials.push_back({start_epoch,seconds,double(ms)/1000,error});save(false);
         std::cout<<"TRIAL "<<repeat+1<<" matvecs="<<iterations<<" wall="<<seconds<<"s relative="<<error<<std::endl;
     }

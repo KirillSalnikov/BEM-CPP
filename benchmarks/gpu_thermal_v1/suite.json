@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "id": "gpu-thermal-operator-v1",
+  "case": {
+    "shape": "hexagonal prism",
+    "ref": 5,
+    "ka": 20,
+    "ri": 1.3116,
+    "aspect": 1.4285714285714286,
+    "system_dofs": 258048,
+    "mesh_triangles": 43008,
+    "iterations_per_repeat": 4096,
+    "quadrature_order": 7,
+    "duffy_order": 4,
+    "fmm_digits": 5,
+    "max_leaf": 64,
+    "near_radius": 3,
+    "precision": "FP32 FMM near interaction, FP64 currents and combination",
+    "resident_inputs": "x_i=(sin(.013*(i+1))+i*cos(.017*(i+1)))/sqrt(N), alternating x and 2*x"
+  }
+}
