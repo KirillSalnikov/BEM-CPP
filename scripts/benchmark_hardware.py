@@ -80,7 +80,17 @@ def build_info(args,suite):
     python=Path(python or sys.executable).absolute()
     comments=capture(['readelf','--string-dump=.comment',native]) if shutil.which('readelf') else ''
     compiler_ids=sorted(set(re.findall(r'GCC:\s*([^\n]+)',comments or '')))
-    return dict(executable=str(executable),native_binary=str(native),binary_sha256=sha(native),version=version,numerical_source_sha256=h.hexdigest(),host_compiler_build_ids=compiler_ids,source_root=str(source),python=str(python),exports=exports,installation=manifest)
+    components={};analysis={}
+    if suite['program']=='bem-cpp':
+        for name in ['muller_tmatrix_fmm_server','tmatrix_so3_mstm']:
+            path=source/'bin'/name
+            if not path.exists():raise RuntimeError('BEM pipeline component missing: '+str(path))
+            components[name]=dict(path=str(path),sha256=sha(path))
+            text=capture(['readelf','--string-dump=.comment',path]) if shutil.which('readelf') else ''
+            compiler_ids=sorted(set(compiler_ids+re.findall(r'GCC:\s*([^\n]+)',text or '')))
+        analysis=json.loads(capture([python,'-c','import sys,json,numpy,scipy;print(json.dumps(dict(python=sys.version,numpy=numpy.__version__,scipy=scipy.__version__)))']) or '{}')
+        if not analysis:raise RuntimeError('BEM pipeline Python requires NumPy and SciPy')
+    return dict(executable=str(executable),native_binary=str(native),binary_sha256=sha(native),components=components,analysis_environment=analysis,version=version,numerical_source_sha256=h.hexdigest(),host_compiler_build_ids=compiler_ids,source_root=str(source),python=str(python),exports=exports,installation=manifest)
 
 def smi_path():return shutil.which('nvidia-smi') or ('/usr/lib/wsl/lib/nvidia-smi' if Path('/usr/lib/wsl/lib/nvidia-smi').exists() else None)
 def gpu_sample(device):
@@ -192,7 +202,7 @@ def compare_reports(baseline,candidate):
         if min(b['statistics']['wall_s']['n'],c['statistics']['wall_s']['n'])<3:raise ValueError('At least three measured repeats required for ranking')
         same_source=baseline['build']['numerical_source_sha256']==candidate['build']['numerical_source_sha256']
         compilers=baseline['build'].get('host_compiler_build_ids');nvcc=baseline['build'].get('installation',{}).get('nvcc')
-        same_toolchain=bool(compilers and nvcc and compilers==candidate['build'].get('host_compiler_build_ids') and nvcc==candidate['build'].get('installation',{}).get('nvcc'))
+        same_toolchain=bool(compilers and nvcc and compilers==candidate['build'].get('host_compiler_build_ids') and nvcc==candidate['build'].get('installation',{}).get('nvcc') and baseline['build'].get('analysis_environment',{})==candidate['build'].get('analysis_environment',{}))
         rows.append(dict(case=b['id'],baseline_label=baseline['hardware']['label'],candidate_label=candidate['hardware']['label'],speedup_baseline_over_candidate=b['statistics']['wall_s']['median']/c['statistics']['wall_s']['median'],same_numerical_source=same_source,same_recorded_toolchain=same_toolchain,scope='hardware/platform comparison' if same_source and same_toolchain else 'software/toolchain and hardware comparison',baseline_relative_MAD=b['statistics']['wall_s']['relative_MAD'],candidate_relative_MAD=c['statistics']['wall_s']['relative_MAD']))
     return rows
 
