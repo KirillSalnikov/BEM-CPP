@@ -1,0 +1,106 @@
+{
+  "schema": 1,
+  "id": "hardware-v1",
+  "program": "bem-cpp",
+  "default_profile": "mixed",
+  "profiles": {
+    "mixed": {
+      "wrapper": "bem-gpu",
+      "relative_binary": "bin/muller_nodal_fmm_demo_fp32",
+      "validation": {
+        "max_scaled_M11": 0.005,
+        "relative_L2": 0.001
+      }
+    }
+  },
+  "cases": [
+    {
+      "id": "bem-prism-ka10-r3",
+      "kind": "bem_fixed",
+      "angles": 181,
+      "residual_limit": 1e-05,
+      "work": {
+        "system_dofs": 16128,
+        "mesh_triangles": 2688,
+        "polarizations": 2
+      },
+      "arguments": [
+        "--shape",
+        "prism",
+        "--sides",
+        "6",
+        "--aspect",
+        "1.4285714285714286",
+        "--ref",
+        "3",
+        "--ka",
+        "10",
+        "--ri",
+        "1.3116",
+        "--edge-mode",
+        "hdiv",
+        "--quad",
+        "7",
+        "--duffy-order",
+        "4",
+        "--digits",
+        "5",
+        "--max-leaf",
+        "64",
+        "--fmm-near-radius",
+        "3",
+        "--tol",
+        "1e-5",
+        "--max-iters",
+        "500",
+        "--gmres-restart",
+        "100",
+        "--mbj-only",
+        "--mbj-nodes",
+        "50",
+        "--no-checkpoint",
+        "--no-dense-validation",
+        "--physical-check",
+        "--ntheta",
+        "181"
+      ]
+    },
+    {
+      "id": "bem-tmatrix-ka1p5-r1-L4",
+      "kind": "bem_tmatrix",
+      "angles": 181,
+      "residual_limit": 1e-05,
+      "work": {
+        "system_dofs": 1008,
+        "columns": 48,
+        "solve_pairs": 24
+      },
+      "arguments": [
+        "--shape",
+        "prism",
+        "--ref",
+        "1",
+        "--prism-aspect",
+        "1.4285714285714286",
+        "--ka",
+        "1.5",
+        "--ri",
+        "1.3116",
+        "--order",
+        "4",
+        "--tol",
+        "1e-5",
+        "--restart",
+        "100",
+        "--max-iters",
+        "500",
+        "--ntheta",
+        "181",
+        "--so3-precision",
+        "fp64",
+        "--wavelength",
+        ".532"
+      ]
+    }
+  ]
+}
