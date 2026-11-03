@@ -1,0 +1,162 @@
+{
+  "passed": true,
+  "note": "CPU dense LU controls, fixed coarse spherical discretization; not mesh-converged physical accuracy or a GPU timing score",
+  "old_commit": "7d5a7be",
+  "old_kernel_source_sha256": "18efa64ddca4e81896481bcec5f94deb66daee2218c5a32a8a1e2cbc5d023fe1",
+  "new_kernel_source_sha256": "ef210e9115f82660caca845fd2ca4d3976dbf451affa69f580de79f381c720b2",
+  "cases": [
+    {
+      "ka": 0.01,
+      "error": {
+        "max_scaled_M11": 5.670696803397849e-06,
+        "relative_L2": 3.945998004222794e-06
+      },
+      "runs": [
+        {
+          "command": [
+            "/home/user/ADDA_RNF_A/kika_build_20261103/green_dense_impact/before",
+            "--shape",
+            "sphere",
+            "--ref",
+            "0",
+            "--ka",
+            "0.01",
+            "--ri",
+            "1.3116",
+            "0",
+            "--ntheta",
+            "181",
+            "--out",
+            "/home/user/ADDA_RNF_A/kika_build_20261103/green_dense_impact/0.01_before.json"
+          ],
+          "residual": 7.545917190838054e-16,
+          "system_dofs": 168,
+          "M11_back": 3.23730818010216e-14
+        },
+        {
+          "command": [
+            "/home/user/ADDA_RNF_A/kika_build_20261103/green_dense_impact/after",
+            "--shape",
+            "sphere",
+            "--ref",
+            "0",
+            "--ka",
+            "0.01",
+            "--ri",
+            "1.3116",
+            "0",
+            "--ntheta",
+            "181",
+            "--out",
+            "/home/user/ADDA_RNF_A/kika_build_20261103/green_dense_impact/0.01_after.json"
+          ],
+          "residual": 8.595661711781969e-16,
+          "system_dofs": 168,
+          "M11_back": 3.237309758021469e-14
+        }
+      ]
+    },
+    {
+      "ka": 1.0,
+      "error": {
+        "max_scaled_M11": 2.0732786435740472e-08,
+        "relative_L2": 1.8435162181365786e-08
+      },
+      "runs": [
+        {
+          "command": [
+            "/home/user/ADDA_RNF_A/kika_build_20261103/green_dense_impact/before",
+            "--shape",
+            "sphere",
+            "--ref",
+            "0",
+            "--ka",
+            "1.0",
+            "--ri",
+            "1.3116",
+            "0",
+            "--ntheta",
+            "181",
+            "--out",
+            "/home/user/ADDA_RNF_A/kika_build_20261103/green_dense_impact/1.0_before.json"
+          ],
+          "residual": 9.200607678400255e-16,
+          "system_dofs": 168,
+          "M11_back": 0.016938897561665812
+        },
+        {
+          "command": [
+            "/home/user/ADDA_RNF_A/kika_build_20261103/green_dense_impact/after",
+            "--shape",
+            "sphere",
+            "--ref",
+            "0",
+            "--ka",
+            "1.0",
+            "--ri",
+            "1.3116",
+            "0",
+            "--ntheta",
+            "181",
+            "--out",
+            "/home/user/ADDA_RNF_A/kika_build_20261103/green_dense_impact/1.0_after.json"
+          ],
+          "residual": 8.822628431318903e-16,
+          "system_dofs": 168,
+          "M11_back": 0.016938897607117243
+        }
+      ]
+    },
+    {
+      "ka": 10.0,
+      "error": {
+        "max_scaled_M11": 2.0928978328022443e-10,
+        "relative_L2": 1.014016343600923e-10
+      },
+      "runs": [
+        {
+          "command": [
+            "/home/user/ADDA_RNF_A/kika_build_20261103/green_dense_impact/before",
+            "--shape",
+            "sphere",
+            "--ref",
+            "0",
+            "--ka",
+            "10.0",
+            "--ri",
+            "1.3116",
+            "0",
+            "--ntheta",
+            "181",
+            "--out",
+            "/home/user/ADDA_RNF_A/kika_build_20261103/green_dense_impact/10.0_before.json"
+          ],
+          "residual": 1.3032865078828142e-15,
+          "system_dofs": 168,
+          "M11_back": 3.524182777862423
+        },
+        {
+          "command": [
+            "/home/user/ADDA_RNF_A/kika_build_20261103/green_dense_impact/after",
+            "--shape",
+            "sphere",
+            "--ref",
+            "0",
+            "--ka",
+            "10.0",
+            "--ri",
+            "1.3116",
+            "0",
+            "--ntheta",
+            "181",
+            "--out",
+            "/home/user/ADDA_RNF_A/kika_build_20261103/green_dense_impact/10.0_after.json"
+          ],
+          "residual": 1.3123525583574455e-15,
+          "system_dofs": 168,
+          "M11_back": 3.524182777507516
+        }
+      ]
+    }
+  ]
+}

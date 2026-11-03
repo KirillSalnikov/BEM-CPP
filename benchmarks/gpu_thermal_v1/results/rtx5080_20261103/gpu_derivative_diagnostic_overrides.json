@@ -1,0 +1,53 @@
+[
+  {
+    "command": [
+      "/home/kika/build_latest_20261103/fmm_hessian_green_check"
+    ],
+    "environment": {
+      "BEM_FMM_PHASE_CACHE": "0",
+      "BEM_FMM_L2P_FP32": "0",
+      "BEM_FMM_M2L_FP32": "0",
+      "BEM_FMM_M2L_STORAGE_FP32": "0",
+      "BEM_FMM_LOCAL_STORAGE_FP32": "0",
+      "BEM_FMM_MULTI_STORAGE_FP32": "0"
+    },
+    "exit_code": 0,
+    "stdout": "  [Octree] Near pairs: 936, Far (M2L) pairs: 3096\n  [Octree] 73 nodes, 64 leaves, depth=2, 1024 points, near-radius=1\n  [SphereQuad] p=15, L=512 (16 theta x 32 phi)\n  [FMM] Precomputing M2L transfers...\n  [FMM] 316 unique transfers, 3059 total M2L pairs\n  [FMM] Uploading to GPU...\n  [FMM] Init complete: p=15 L=512, 73 nodes, 453.9ms\nFMM Hessian check (volume): relative_l2=7.157e-06 gradient_l2=1.794e-05 combined_difference=3.863e-09 batch3_l2=7.225e-06 contracted_l2=4.312e-09 max_relative=3.974e-03 batch3_s=0.004374 near_precision=fp64\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/home/kika/build_latest_20261103/fmm_hessian_green_check",
+      "--surface"
+    ],
+    "environment": {
+      "BEM_FMM_PHASE_CACHE": "0",
+      "BEM_FMM_L2P_FP32": "0",
+      "BEM_FMM_M2L_FP32": "0",
+      "BEM_FMM_M2L_STORAGE_FP32": "0",
+      "BEM_FMM_LOCAL_STORAGE_FP32": "0",
+      "BEM_FMM_MULTI_STORAGE_FP32": "0"
+    },
+    "exit_code": 1,
+    "stdout": "  [Octree] Near pairs: 1728, Far (M2L) pairs: 1352\n  [Octree] 65 nodes, 56 leaves, depth=2, 1120 points, near-radius=2\n  [SphereQuad] p=16, L=578 (17 theta x 34 phi)\n  [FMM] Precomputing M2L transfers...\n  [FMM] 218 unique transfers, 1352 total M2L pairs\n  [FMM] Uploading to GPU...\n  [FMM] Init complete: p=16 L=578, 65 nodes, 143.0ms\nFMM Hessian check (surface): relative_l2=3.846e-05 gradient_l2=2.362e-04 combined_difference=1.573e-06 batch3_l2=4.534e-05 contracted_l2=2.554e-06 max_relative=6.000e-03 batch3_s=0.004363 near_precision=fp64\n  [Octree] Near pairs: 1728, Far (M2L) pairs: 1352\n  [Octree] 65 nodes, 56 leaves, depth=2, 1120 points, near-radius=2\n  [SphereQuad] p=16, L=578 (17 theta x 34 phi)\n  [FMM] Precomputing M2L transfers...\n  [FMM] 218 unique transfers, 1352 total M2L pairs\n  [FMM] Uploading to GPU...\n  [FMM] Init complete: p=16 L=578, 65 nodes, 19.6ms\nFMM reinitialization check: relative_l2=3.841e-05\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/home/kika/build_latest_20261103/fmm_hessian_green_check",
+      "--surface",
+      "--near-fp32"
+    ],
+    "environment": {
+      "BEM_FMM_PHASE_CACHE": "0",
+      "BEM_FMM_L2P_FP32": "0",
+      "BEM_FMM_M2L_FP32": "0",
+      "BEM_FMM_M2L_STORAGE_FP32": "0",
+      "BEM_FMM_LOCAL_STORAGE_FP32": "0",
+      "BEM_FMM_MULTI_STORAGE_FP32": "0"
+    },
+    "exit_code": 1,
+    "stdout": "  [Octree] Near pairs: 1728, Far (M2L) pairs: 1352\n  [Octree] 65 nodes, 56 leaves, depth=2, 1120 points, near-radius=2\n  [SphereQuad] p=16, L=578 (17 theta x 34 phi)\n  [FMM] Precomputing M2L transfers...\n  [FMM] 218 unique transfers, 1352 total M2L pairs\n  [FMM] Uploading to GPU...\n  [FMM] Init complete: p=16 L=578, 65 nodes, 145.5ms\nFMM Hessian check (surface): relative_l2=3.843e-05 gradient_l2=2.350e-04 combined_difference=1.522e-06 batch3_l2=4.535e-05 contracted_l2=2.604e-06 max_relative=5.842e-03 batch3_s=0.005741 near_precision=fp32\n  [Octree] Near pairs: 1728, Far (M2L) pairs: 1352\n  [Octree] 65 nodes, 56 leaves, depth=2, 1120 points, near-radius=2\n  [SphereQuad] p=16, L=578 (17 theta x 34 phi)\n  [FMM] Precomputing M2L transfers...\n  [FMM] 218 unique transfers, 1352 total M2L pairs\n  [FMM] Uploading to GPU...\n  [FMM] Init complete: p=16 L=578, 65 nodes, 21.5ms\nFMM reinitialization check: relative_l2=3.848e-05\n",
+    "stderr": ""
+  }
+]

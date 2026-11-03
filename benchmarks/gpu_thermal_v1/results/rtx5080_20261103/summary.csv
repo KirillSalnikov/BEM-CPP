@@ -1,0 +1,4 @@
+name,warmup,wall_s,matvecs,gpu_util_median,gpu_util_p10,gpu_temperature_median_C,gpu_power_median_W,output_relative_error
+repeat_1,False,102.675055343,1536,99.0,99.0,73.7,342.64,1.4048773379637222e-07
+repeat_2,False,102.703935476,1536,99.0,99.0,74.3,342.94,1.3903828651624208e-07
+repeat_3,False,102.707914831,1536,99.0,99.0,74.7,342.94,1.393409382596633e-07

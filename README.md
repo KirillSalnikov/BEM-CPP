@@ -2,6 +2,9 @@
 
 [Reproducible hardware benchmark v1](benchmarks/hardware_v1/README.md): fixed workloads, frozen numerical references and validated equipment comparisons.
 
+[Minute-scale GPU test](benchmarks/gpu_thermal_v1/README.md): warmed, resident Muller operator and exclusive-GPU checks.
+[Independent Green-function audit and Hessian correction](docs/GREEN_FUNCTION_AUDIT_20261103.md).
+
 RTX 50 / Blackwell: [one-command Linux/WSL installer](docs/INSTALL_RTX50.md) with verified CUDA downloads and native `sm_120` builds.
 
 **Electromagnetic scattering with surface BEM, T matrices and analytic orientation averaging.**

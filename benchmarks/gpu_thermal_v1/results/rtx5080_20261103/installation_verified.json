@@ -1,0 +1,20 @@
+{
+  "passed": true,
+  "revision": "23fe894",
+  "prefix": "/home/kika/.local/opt/bem-cpp",
+  "backup": "/home/kika/build_latest_20261103/before_green_promotion_1793703279412252044",
+  "binary_sha256": {
+    "bem-gpu": "24964ea3d99e1f8c8484e982270417a80907bd734d23b677a926516a9099f6eb",
+    "bem-gpu-thermal": "8564ec7322a46a0b7f9032e95809a1dbfd922c57e4e65221cea5285a7dba134b",
+    "bem-tmatrix-server": "33409124c47dfb7ada63922149813651e3dce7d6076af860b83e3a1a378508fd",
+    "bem-so3-fp64": "8c83000c2f930e5128cad2cf5239261190bbd63e310dfe5da60924a85d6671ff",
+    "bem-so3-fp32": "9d8d62963677bdc0fe15933e0fcca19c8af6ab44d51ab6b939d750d19d2a545e",
+    "bem-cpu-reference": "f26159063bd187347eaecf10bad7be6d1e03c96a80fa68abc2d3065315602daa"
+  },
+  "native_cubins_verified": {
+    "bem-gpu": true,
+    "bem-tmatrix-server": true,
+    "bem-gpu-thermal": true
+  },
+  "version": "BEM-CPP Muller solver 1.0.0\n"
+}

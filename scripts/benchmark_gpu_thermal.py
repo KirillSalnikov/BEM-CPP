@@ -62,7 +62,9 @@ def main():
             if text is None:entry['error']='GPU process query unavailable'
             for token in (text or '').splitlines():
                 pid=token.strip()
-                if not pid.isdigit():continue
+                if not pid.isdigit():
+                    entry['error']='Unrecognized GPU process query output'
+                    continue
                 try:
                     status=Path('/proc/'+pid+'/stat').read_text().split();executable=str(Path('/proc/'+pid+'/exe').resolve())
                     ours=executable==str(native) and int(status[3])==os.getpid()
@@ -70,11 +72,14 @@ def main():
                     entry['processes'].append(dict(pid=int(pid),state=status[2],start_ticks=status[21],benchmark=ours,leased_pause=paused))
                     if not ours and not paused:entry['forbidden'].append(int(pid))
                 except FileNotFoundError:continue
+                except (OSError,ValueError,IndexError) as error:
+                    entry['error']='Cannot identify GPU PID '+pid+': '+str(error)
             guard.append(entry)
             stop.wait(1)
     thread=threading.Thread(target=monitor_processes,daemon=True);thread.start()
     try:run=b.timed_process(command,env,a.output/'execution',a.device,a.timeout)
-    finally:stop.set();thread.join(timeout=30)
+    finally:stop.set();thread.join(timeout=35)
+    if thread.is_alive():guard.append(dict(error='GPU process monitor did not terminate',forbidden=[]))
 
     result=json.loads(destination.read_text());assert result['passed'] and result['system_dofs']==case['system_dofs']
     assert result['mesh_triangles']==case['mesh_triangles'] and result['iterations_per_repeat']==count
@@ -91,7 +96,7 @@ def main():
         trial['temperature_range_C']=[min(temperatures),max(temperatures)] if temperatures else None
     b.write(a.output/'results.json',report)
     if a.pilot:print('UNSCORED PILOT',result['trials'],flush=True);return
-    if any(v.get('error') or v['forbidden'] for v in guard):raise RuntimeError('Concurrent/unidentified GPU compute process; hardware score rejected')
+    if not guard or any(v.get('error') or v['forbidden'] for v in guard):raise RuntimeError('Concurrent/unidentified GPU compute process; hardware score rejected')
     validate_thermal_score(result)
     stats=b.statistics_of([t['wall_s'] for t in result['trials']]);report.update(passed=True,statistics=dict(wall_s=stats,matvec_per_s=case['iterations_per_repeat']/stats['median']),timing_stable=stats['relative_MAD']<=.1,
         comparison_key=b.digest([suite,120,3,'prepared resident operator; no setup/solver timing; exclusive compute process guard v1']))

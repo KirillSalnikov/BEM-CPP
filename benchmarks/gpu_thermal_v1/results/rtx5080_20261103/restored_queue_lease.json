@@ -1,0 +1,27 @@
+{
+  "reason": "Exclusive RTX 5080 thermal measurement",
+  "started_unix_s": 1793702092.7842185,
+  "deadline_unix_s": 1793703292.7842188,
+  "processes": [
+    {
+      "pid": 61989,
+      "ppid": 468,
+      "state": "S",
+      "start_ticks": "1368571"
+    },
+    {
+      "pid": 61992,
+      "ppid": 61989,
+      "state": "R",
+      "start_ticks": "1368590"
+    },
+    {
+      "pid": 61997,
+      "ppid": 61992,
+      "state": "R",
+      "start_ticks": "1368613"
+    }
+  ],
+  "restored": true,
+  "restored_unix_s": 1793702534.6732526
+}

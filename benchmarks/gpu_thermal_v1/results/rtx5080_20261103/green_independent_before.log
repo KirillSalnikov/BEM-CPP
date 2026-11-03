@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "/home/user/ADDA_RNF_A/kika_build_20261103/repos/BEM-CPP/tests/test_green_function_independent.py", line 56, in <module>
+    if max(errors.values())>5e-10:raise AssertionError(dict(ke=str(ke),ki=str(ki),point=list(map(str,point)),errors=errors))
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'ke': '(3.0 + 0.0j)', 'ki': '(4.5 + 0.0j)', 'point': ['0.0003333333333333333222021910291488211441901512444019317626953125', '-0.000444444444444444465742993788381909325835295021533966064453125', '0.000962250448649376219877049631890031378134153783321380615234375'], 'errors': {'hessian_relative': 4.255715010202963e-06, 'gradient_relative': 4.26292629937543e-17, 'scalar_relative': 4.1089017514941457e-16, 'helmholtz_trace_scaled': 4.255715009531809e-06}}

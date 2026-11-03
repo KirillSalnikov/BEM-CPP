@@ -1,0 +1,29 @@
+[
+  {
+    "command": [
+      "/home/kika/build_latest_20261103/fmm_hessian_green_check"
+    ],
+    "exit_code": 0,
+    "stdout": "  [Octree] Near pairs: 936, Far (M2L) pairs: 3096\n  [Octree] 73 nodes, 64 leaves, depth=2, 1024 points, near-radius=1\n  [SphereQuad] p=15, L=512 (16 theta x 32 phi)\n  [FMM] Precomputing M2L transfers...\n  [FMM] 316 unique transfers, 3059 total M2L pairs\n  [FMM] Uploading to GPU...\n  [FMM] Init complete: p=15 L=512, 73 nodes, 593.9ms\nFMM Hessian check (volume): relative_l2=7.157e-06 gradient_l2=1.794e-05 combined_difference=3.786e-09 batch3_l2=7.225e-06 contracted_l2=4.312e-09 max_relative=3.974e-03 batch3_s=0.004142 near_precision=fp64\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/home/kika/build_latest_20261103/fmm_hessian_green_check",
+      "--surface"
+    ],
+    "exit_code": 1,
+    "stdout": "  [Octree] Near pairs: 1728, Far (M2L) pairs: 1352\n  [Octree] 65 nodes, 56 leaves, depth=2, 1120 points, near-radius=2\n  [SphereQuad] p=16, L=578 (17 theta x 34 phi)\n  [FMM] Precomputing M2L transfers...\n  [FMM] 218 unique transfers, 1352 total M2L pairs\n  [FMM] Uploading to GPU...\n  [FMM] Init complete: p=16 L=578, 65 nodes, 170.1ms\nFMM Hessian check (surface): relative_l2=3.840e-05 gradient_l2=2.352e-04 combined_difference=1.562e-06 batch3_l2=4.534e-05 contracted_l2=2.554e-06 max_relative=6.129e-03 batch3_s=0.014346 near_precision=fp64\n  [Octree] Near pairs: 1728, Far (M2L) pairs: 1352\n  [Octree] 65 nodes, 56 leaves, depth=2, 1120 points, near-radius=2\n  [SphereQuad] p=16, L=578 (17 theta x 34 phi)\n  [FMM] Precomputing M2L transfers...\n  [FMM] 218 unique transfers, 1352 total M2L pairs\n  [FMM] Uploading to GPU...\n  [FMM] Init complete: p=16 L=578, 65 nodes, 21.7ms\nFMM reinitialization check: relative_l2=3.846e-05\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/home/kika/build_latest_20261103/fmm_hessian_green_check",
+      "--surface",
+      "--near-fp32"
+    ],
+    "exit_code": 1,
+    "stdout": "  [Octree] Near pairs: 1728, Far (M2L) pairs: 1352\n  [Octree] 65 nodes, 56 leaves, depth=2, 1120 points, near-radius=2\n  [SphereQuad] p=16, L=578 (17 theta x 34 phi)\n  [FMM] Precomputing M2L transfers...\n  [FMM] 218 unique transfers, 1352 total M2L pairs\n  [FMM] Uploading to GPU...\n  [FMM] Init complete: p=16 L=578, 65 nodes, 132.3ms\nFMM Hessian check (surface): relative_l2=3.843e-05 gradient_l2=2.360e-04 combined_difference=1.554e-06 batch3_l2=4.535e-05 contracted_l2=2.604e-06 max_relative=5.686e-03 batch3_s=0.010285 near_precision=fp32\n  [Octree] Near pairs: 1728, Far (M2L) pairs: 1352\n  [Octree] 65 nodes, 56 leaves, depth=2, 1120 points, near-radius=2\n  [SphereQuad] p=16, L=578 (17 theta x 34 phi)\n  [FMM] Precomputing M2L transfers...\n  [FMM] 218 unique transfers, 1352 total M2L pairs\n  [FMM] Uploading to GPU...\n  [FMM] Init complete: p=16 L=578, 65 nodes, 17.9ms\nFMM reinitialization check: relative_l2=3.847e-05\n",
+    "stderr": ""
+  }
+]

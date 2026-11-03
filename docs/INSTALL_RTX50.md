@@ -54,14 +54,18 @@ FP64 phase construction/trigonometry. Fast math and reduced/consumer phase
 profiles are not silently enabled.
 
 BEM installs the mixed-precision Muller solver, T-matrix FMM server, CPU dense
-reference, and FP64/FP32 analytic SO(3) tools. CUDA compilation uses C++17 for
+reference, the prepared-operator GPU thermal benchmark, and FP64/FP32 analytic SO(3) tools. CUDA compilation uses C++17 for
 current CCCL and the build handles the CUDA 13 managed-memory advice API.
 
 Executables are available under:
 
 - `~/.local/opt/mbs-fast/bin/`: `mbs-po-cpu`, `mbs-po-gpu-fp64`, `mbs-po-gpu-fp32`;
 - `~/.local/opt/bem-cpp/bin/`: `bem`, `bem-gpu`, `bem-tmatrix-server`,
-  `bem-so3-fp64`, `bem-so3-fp32`, `bem-cpu-reference`.
+  `bem-so3-fp64`, `bem-so3-fp32`, `bem-cpu-reference`, `bem-gpu-thermal`.
+
+After installation, run the [minute-scale GPU workload](../benchmarks/gpu_thermal_v1/README.md)
+with `python3 scripts/benchmark_gpu_thermal.py --output runs/thermal`. It excludes
+120 seconds of warmup and verifies numerical output and GPU load before scoring.
 
 Use `--prefix /other/install/directory` to change the destination. Source
 snapshots and build caches are isolated by source hash, revision, toolkit,

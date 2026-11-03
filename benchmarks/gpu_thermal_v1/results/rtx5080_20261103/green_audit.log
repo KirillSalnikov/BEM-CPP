@@ -1,0 +1,21 @@
+g++ -O2 -Wall -std=c++11 -DBEM_VERSION=\"1.0.0\" -Itests/host_cuda_stubs -Isrc -o tests/muller_nodal_check tests/muller_nodal_check.cpp src/muller_nodal.cpp src/muller_duffy.cpp src/mesh.cpp
+python3 tests/test_green_function_independent.py
+{
+  "passed": true,
+  "cases": 48,
+  "precision_decimal_digits": 80,
+  "mpmath_version": "1.3.0",
+  "oracle": "mpmath Cartesian differentiation of exp(+ikR)/(4*pi*R)",
+  "worst_errors": {
+    "hessian_relative": 3.3956770233339645e-11,
+    "gradient_relative": 1.7401094642551322e-15,
+    "scalar_relative": 1.905179402896563e-15,
+    "helmholtz_trace_scaled": 3.026868727815251e-11
+  }
+}
+tests/muller_nodal_check
+Muller P2 geometry/kernel check: nodes=162 dofs=648 frame_error=4.510e-17 hessian_error=3.430e-11 prism_feature_edges=24 prism_split_nodes=128
+tests/muller_taylor_kernel_check
+PASS Muller kernel moments 0..6: central 3.443e-13, independent contour scaled defect 2.340e-13; both media, small-distance branch, i/k normalization, equal media
+tests/muller_kernel_bundle_check
+combined Muller kernels: 128 cases, worst normalized difference 4.49e-16

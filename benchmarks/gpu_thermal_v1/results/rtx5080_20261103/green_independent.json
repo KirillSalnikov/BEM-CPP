@@ -1,0 +1,13 @@
+{
+  "passed": true,
+  "cases": 48,
+  "precision_decimal_digits": 80,
+  "mpmath_version": "1.3.0",
+  "oracle": "mpmath Cartesian differentiation of exp(+ikR)/(4*pi*R)",
+  "worst_errors": {
+    "hessian_relative": 3.3956770233339645e-11,
+    "gradient_relative": 1.7401094642551322e-15,
+    "scalar_relative": 1.905179402896563e-15,
+    "helmholtz_trace_scaled": 3.026868727815251e-11
+  }
+}
