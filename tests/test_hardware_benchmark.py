@@ -65,4 +65,12 @@ class BenchmarkTests(unittest.TestCase):
         for r in [baseline,candidate]:r['profile']='cpu';r['build']['installation']={}
         self.assertTrue(b.compare_reports(baseline,candidate)[0]['same_recorded_toolchain'])
 
+    def test_numerical_source_signature_includes_native_include_fragments(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            for name in ['src/algorithm.cpp','src/algorithm.inc','src/kernels.inl','src/coefficients.F90','cpu/GpuSupportStub.cpp']:
+                path=root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text('numerical code')
+            names={str(p.relative_to(root)) for p in b.numerical_files(root,'mbs-fast')}
+            self.assertIn('src/algorithm.inc',names);self.assertIn('src/kernels.inl',names);self.assertIn('src/coefficients.F90',names)
+
 if __name__=='__main__':unittest.main()
