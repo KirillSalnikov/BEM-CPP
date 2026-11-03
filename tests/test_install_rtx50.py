@@ -58,4 +58,12 @@ class InstallerTests(unittest.TestCase):
             result=subprocess.run([str(p),'$(false)','argument with spaces'],capture_output=True,text=True,check=True)
             self.assertEqual(result.stdout,'$(false)\nargument with spaces\n')
 
+    def test_supplied_venv_retains_its_python_prefix(self):
+        with tempfile.TemporaryDirectory() as temp:
+            env=Path(temp)/'venv'
+            subprocess.run([sys.executable,'-m','venv','--without-pip',str(env)],check=True)
+            python=setup.python_path(str(env/'bin/python'))
+            result=subprocess.run([str(python),'-c','import sys;assert sys.prefix!=sys.base_prefix;print(sys.prefix)'],capture_output=True,text=True,check=True)
+            self.assertEqual(result.stdout.strip(),str(env))
+
 if __name__=='__main__':unittest.main()

@@ -22,6 +22,11 @@ def run(cmd,**kw):
 
 def output(cmd,**kw):return run(cmd,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,**kw).stdout.strip()
 
+def python_path(requested):
+    # Resolving a venv's executable symlink selects the system interpreter and
+    # discards its installed packages. Keep the executable inside the venv.
+    return Path(shutil.which(requested) or requested).expanduser().absolute()
+
 def project(root):return 'mbs-fast' if (root/'cpu/Makefile').exists() else 'bem-cpp'
 
 def gpu_arch(device=0):
@@ -142,7 +147,7 @@ def main():
         bins={'mbs-po-cpu':'cpu/bin/mbs_po_mpi','mbs-po-gpu-fp64':'gpu/bin/mbs_po_gpu_double','mbs-po-gpu-fp32':'gpu/bin/mbs_po_gpu_float'}
     else:
         bins={'bem-gpu':'bin/muller_nodal_fmm_demo_fp32','bem-tmatrix-server':'bin/muller_tmatrix_fmm_server','bem-so3-fp64':'bin/tmatrix_so3_mstm','bem-so3-fp32':'bin/tmatrix_so3_mstm_fp32','bem-cpu-reference':'bin/muller_nodal_demo'}
-        python=Path(shutil.which(args.python) or args.python).resolve();version=output([python,'-c','import sys;print(sys.version_info.major*100+sys.version_info.minor)'])
+        python=python_path(args.python);version=output([python,'-c','import sys;print(sys.version_info.major*100+sys.version_info.minor)'])
         if int(version)<310:raise RuntimeError('BEM Python launcher needs Python >=3.10')
         check=[python,'-c','import numpy, scipy, scipy.special; assert hasattr(scipy.special,"sph_harm_y")']
         if subprocess.run([str(v) for v in check],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode:
