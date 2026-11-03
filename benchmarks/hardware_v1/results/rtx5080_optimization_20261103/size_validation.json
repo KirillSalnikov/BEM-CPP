@@ -1,0 +1,830 @@
+{
+  "passed": true,
+  "cases": [
+    {
+      "id": "ka20-r3",
+      "passed": true,
+      "runs": [
+        {
+          "build": {
+            "executable": "/home/kika/.local/opt/bem-cpp/bin/bem-gpu",
+            "native_binary": "/home/kika/.local/opt/bem-cpp/build/7e86ce314f4e7a01/src/bin/muller_nodal_fmm_demo_fp32",
+            "binary_sha256": "3e84429101d69f7ccf0a17a8addfce23499a2803ed0ffdb2654f291942dd1afa",
+            "components": {
+              "muller_tmatrix_fmm_server": {
+                "path": "/home/kika/.local/opt/bem-cpp/build/7e86ce314f4e7a01/src/bin/muller_tmatrix_fmm_server",
+                "sha256": "3237f90c473d3a6d9ab112669555b776b3778e0721640f7612bedd5cd158d5c3"
+              },
+              "tmatrix_so3_mstm": {
+                "path": "/home/kika/.local/opt/bem-cpp/build/7e86ce314f4e7a01/src/bin/tmatrix_so3_mstm",
+                "sha256": "8c83000c2f930e5128cad2cf5239261190bbd63e310dfe5da60924a85d6671ff"
+              }
+            },
+            "analysis_environment": {
+              "python": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+              "numpy": "2.5.4",
+              "scipy": "1.18.1"
+            },
+            "version": "BEM-CPP Muller solver 1.0.0",
+            "numerical_source_signature_schema": 2,
+            "numerical_source_sha256": "9c82e638c21930e1d10a8fbbeecba192d3911f3b9133c23b58a9188ef513d59a",
+            "host_compiler_build_ids": [
+              "(Ubuntu 14.3.0-14ubuntu1) 14.3.0",
+              "(Ubuntu 15.2.0-16ubuntu1) 15.2.0"
+            ],
+            "source_root": "/home/kika/.local/opt/bem-cpp/build/7e86ce314f4e7a01/src",
+            "python": "/home/kika/BEM-CPP-20261103/.venv/bin/python",
+            "exports": {
+              "LD_LIBRARY_PATH": "/home/kika/.local/share/cuda/13.4.3/lib64:/usr/lib/wsl/lib:/home/kika/.local/bem-cuda-13.1/usr/lib/x86_64-linux-gnu:"
+            },
+            "installation": {
+              "project": "bem-cpp",
+              "revision": "ee83342",
+              "source_sha256": "0f2317ef021d938ea2410c8b90969a569847e4868905102c3f2309b9af648e28",
+              "architecture": "sm_120",
+              "hardware": {
+                "gpu": "NVIDIA GeForce RTX 5080",
+                "compute": 120,
+                "driver_api": 13050,
+                "runtime_api": 13040,
+                "kernel_result": 120
+              },
+              "cuda_home": "/home/kika/.local/share/cuda/13.4.3",
+              "nvcc": "nvcc: NVIDIA (R) Cuda compiler driver\nCopyright (c) 2005-2026 NVIDIA Corporation\nBuilt on Tue_Sep_01_08:45:21_PDT_2026\nCuda compilation tools, release 13.4, V13.4.92\nBuild cuda_13.4.r13.4/compiler.38855100_0",
+              "compiler": "/home/kika/.local/bem-cuda-13.1/usr/bin/x86_64-linux-gnu-g++-14",
+              "commands": [
+                {
+                  "stage": "cpu-reference",
+                  "command": [
+                    "make",
+                    "bin/muller_nodal_demo",
+                    "-j4",
+                    "CXX=/home/kika/.local/bem-cuda-13.1/usr/bin/x86_64-linux-gnu-g++-14",
+                    "CUDA_HOME=/home/kika/.local/share/cuda/13.4.3",
+                    "ARCH=-arch=sm_120",
+                    "CUDA_CPP_STD=c++17"
+                  ],
+                  "seconds": 4.188076734542847
+                },
+                {
+                  "stage": "so3-fp64",
+                  "command": [
+                    "make",
+                    "bin/tmatrix_so3_mstm",
+                    "-j1",
+                    "CXX=/home/kika/.local/bem-cuda-13.1/usr/bin/x86_64-linux-gnu-g++-14",
+                    "CUDA_HOME=/home/kika/.local/share/cuda/13.4.3",
+                    "ARCH=-arch=sm_120",
+                    "CUDA_CPP_STD=c++17"
+                  ],
+                  "seconds": 0.8676543235778809
+                },
+                {
+                  "stage": "so3-fp32",
+                  "command": [
+                    "make",
+                    "bin/tmatrix_so3_mstm_fp32",
+                    "-j1",
+                    "CXX=/home/kika/.local/bem-cuda-13.1/usr/bin/x86_64-linux-gnu-g++-14",
+                    "CUDA_HOME=/home/kika/.local/share/cuda/13.4.3",
+                    "ARCH=-arch=sm_120",
+                    "CUDA_CPP_STD=c++17"
+                  ],
+                  "seconds": 0.773430347442627
+                },
+                {
+                  "stage": "gpu",
+                  "command": [
+                    "make",
+                    "muller-fp32",
+                    "-j4",
+                    "CXX=/home/kika/.local/bem-cuda-13.1/usr/bin/x86_64-linux-gnu-g++-14",
+                    "CUDA_HOME=/home/kika/.local/share/cuda/13.4.3",
+                    "ARCH=-arch=sm_120",
+                    "CUDA_CPP_STD=c++17"
+                  ],
+                  "seconds": 60.398149251937866
+                },
+                {
+                  "stage": "tmatrix-server",
+                  "command": [
+                    "make",
+                    "bin/muller_tmatrix_fmm_server",
+                    "-j4",
+                    "CXX=/home/kika/.local/bem-cuda-13.1/usr/bin/x86_64-linux-gnu-g++-14",
+                    "CUDA_HOME=/home/kika/.local/share/cuda/13.4.3",
+                    "ARCH=-arch=sm_120",
+                    "CUDA_CPP_STD=c++17"
+                  ],
+                  "seconds": 20.689451932907104
+                }
+              ],
+              "binaries": {
+                "bem-gpu": "/home/kika/.local/opt/bem-cpp/build/7e86ce314f4e7a01/src/bin/muller_nodal_fmm_demo_fp32",
+                "bem-tmatrix-server": "/home/kika/.local/opt/bem-cpp/build/7e86ce314f4e7a01/src/bin/muller_tmatrix_fmm_server",
+                "bem-so3-fp64": "/home/kika/.local/opt/bem-cpp/build/7e86ce314f4e7a01/src/bin/tmatrix_so3_mstm",
+                "bem-so3-fp32": "/home/kika/.local/opt/bem-cpp/build/7e86ce314f4e7a01/src/bin/tmatrix_so3_mstm_fp32",
+                "bem-cpu-reference": "/home/kika/.local/opt/bem-cpp/build/7e86ce314f4e7a01/src/bin/muller_nodal_demo"
+              },
+              "binary_sha256": {
+                "bem-gpu": "3e84429101d69f7ccf0a17a8addfce23499a2803ed0ffdb2654f291942dd1afa",
+                "bem-tmatrix-server": "3237f90c473d3a6d9ab112669555b776b3778e0721640f7612bedd5cd158d5c3",
+                "bem-so3-fp64": "8c83000c2f930e5128cad2cf5239261190bbd63e310dfe5da60924a85d6671ff",
+                "bem-so3-fp32": "9d8d62963677bdc0fe15933e0fcca19c8af6ab44d51ab6b939d750d19d2a545e",
+                "bem-cpu-reference": "59aeb3bce524c4bc0a8d51fecce20d1ddaa1dbacd7527989f95a962d6b01f673"
+              },
+              "native_cubins_verified": {
+                "bem-gpu": true,
+                "bem-tmatrix-server": true
+              },
+              "versions": {
+                "bem-gpu": "BEM-CPP Muller solver 1.0.0"
+              },
+              "driver_installed": false,
+              "fast_math_enabled": false,
+              "scope": "Native sm_120 build and GPU execution probe; this does not certify full numerical convergence or all possible kernel optimizations"
+            }
+          },
+          "command": [
+            "/home/kika/.local/opt/bem-cpp/build/7e86ce314f4e7a01/src/bin/muller_nodal_fmm_demo_fp32",
+            "--shape",
+            "prism",
+            "--sides",
+            "6",
+            "--aspect",
+            "1.4285714285714286",
+            "--ref",
+            "3",
+            "--ka",
+            "20",
+            "--ri",
+            "1.3116",
+            "--edge-mode",
+            "hdiv",
+            "--quad",
+            "7",
+            "--duffy-order",
+            "4",
+            "--digits",
+            "5",
+            "--max-leaf",
+            "64",
+            "--fmm-near-radius",
+            "3",
+            "--tol",
+            "1e-5",
+            "--max-iters",
+            "500",
+            "--gmres-restart",
+            "100",
+            "--mbj-only",
+            "--mbj-nodes",
+            "50",
+            "--no-checkpoint",
+            "--no-dense-validation",
+            "--physical-check",
+            "--ntheta",
+            "181",
+            "--out",
+            "/home/kika/benchmarks/bem_optimization_size_validation_20261103_v2/ka20-r3/baseline/result.json"
+          ],
+          "wall_s": 5.9182413760008785,
+          "metrics": {
+            "fmm_setup_s": 1.110568897,
+            "mbj_setup_s": 2.920122607,
+            "solve_s": 1.031228454,
+            "farfield_s": 0.001073052,
+            "max_residual": 9.6532473475173e-06
+          },
+          "work": {
+            "system_dofs": 16128,
+            "mesh_triangles": 2688,
+            "polarizations": 2,
+            "iterations": [
+              35,
+              36
+            ]
+          }
+        },
+        {
+          "build": {
+            "executable": "/home/kika/.local/opt/bem-cpp-rtx5080-opt2/bin/bem-gpu",
+            "native_binary": "/home/kika/.local/opt/bem-cpp-rtx5080-opt2/build/37e92a6d8dae681d/src/bin/muller_nodal_fmm_demo_fp32",
+            "binary_sha256": "133702d0e74f6c61bfdc233e22eae07dba4bdbeec2625d070979059ad1b68de2",
+            "components": {
+              "muller_tmatrix_fmm_server": {
+                "path": "/home/kika/.local/opt/bem-cpp-rtx5080-opt2/build/37e92a6d8dae681d/src/bin/muller_tmatrix_fmm_server",
+                "sha256": "723d8e8872f4e2ea206682a2c86875523a2af6daa75e47b22646b9e9979b9037"
+              },
+              "tmatrix_so3_mstm": {
+                "path": "/home/kika/.local/opt/bem-cpp-rtx5080-opt2/build/37e92a6d8dae681d/src/bin/tmatrix_so3_mstm",
+                "sha256": "8c83000c2f930e5128cad2cf5239261190bbd63e310dfe5da60924a85d6671ff"
+              }
+            },
+            "analysis_environment": {
+              "python": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+              "numpy": "2.5.4",
+              "scipy": "1.18.1"
+            },
+            "version": "BEM-CPP Muller solver 1.0.0",
+            "numerical_source_signature_schema": 2,
+            "numerical_source_sha256": "539f529ac9adc50b9bd6b2f7af0838720d22adf5eaabc2f1d5e6450240180fdf",
+            "host_compiler_build_ids": [
+              "(Ubuntu 14.3.0-14ubuntu1) 14.3.0",
+              "(Ubuntu 15.2.0-16ubuntu1) 15.2.0"
+            ],
+            "source_root": "/home/kika/.local/opt/bem-cpp-rtx5080-opt2/build/37e92a6d8dae681d/src",
+            "python": "/home/kika/BEM-CPP-20261103/.venv/bin/python",
+            "exports": {
+              "LD_LIBRARY_PATH": "/home/kika/.local/share/cuda/13.4.3/lib64:/usr/lib/wsl/lib:"
+            },
+            "installation": {
+              "project": "bem-cpp",
+              "revision": "6b3d590",
+              "source_sha256": "73d37e4b9110dde75e19ee42d3bcb3ea22e76e550c47096ced209a35ce1835a7",
+              "architecture": "sm_120",
+              "hardware": {
+                "gpu": "NVIDIA GeForce RTX 5080",
+                "compute": 120,
+                "driver_api": 13050,
+                "runtime_api": 13040,
+                "kernel_result": 120
+              },
+              "cuda_home": "/home/kika/.local/share/cuda/13.4.3",
+              "nvcc": "nvcc: NVIDIA (R) Cuda compiler driver\nCopyright (c) 2005-2026 NVIDIA Corporation\nBuilt on Tue_Sep_01_08:45:21_PDT_2026\nCuda compilation tools, release 13.4, V13.4.92\nBuild cuda_13.4.r13.4/compiler.38855100_0",
+              "compiler": "/home/kika/.local/bem-cuda-13.1/usr/bin/x86_64-linux-gnu-g++-14",
+              "commands": [
+                {
+                  "stage": "cpu-reference",
+                  "command": [
+                    "make",
+                    "bin/muller_nodal_demo",
+                    "-j4",
+                    "CXX=/home/kika/.local/bem-cuda-13.1/usr/bin/x86_64-linux-gnu-g++-14",
+                    "CUDA_HOME=/home/kika/.local/share/cuda/13.4.3",
+                    "ARCH=-arch=sm_120",
+                    "CUDA_CPP_STD=c++17"
+                  ],
+                  "seconds": 3.5290067195892334
+                },
+                {
+                  "stage": "so3-fp64",
+                  "command": [
+                    "make",
+                    "bin/tmatrix_so3_mstm",
+                    "-j1",
+                    "CXX=/home/kika/.local/bem-cuda-13.1/usr/bin/x86_64-linux-gnu-g++-14",
+                    "CUDA_HOME=/home/kika/.local/share/cuda/13.4.3",
+                    "ARCH=-arch=sm_120",
+                    "CUDA_CPP_STD=c++17"
+                  ],
+                  "seconds": 0.8635993003845215
+                },
+                {
+                  "stage": "so3-fp32",
+                  "command": [
+                    "make",
+                    "bin/tmatrix_so3_mstm_fp32",
+                    "-j1",
+                    "CXX=/home/kika/.local/bem-cuda-13.1/usr/bin/x86_64-linux-gnu-g++-14",
+                    "CUDA_HOME=/home/kika/.local/share/cuda/13.4.3",
+                    "ARCH=-arch=sm_120",
+                    "CUDA_CPP_STD=c++17"
+                  ],
+                  "seconds": 0.7821383476257324
+                },
+                {
+                  "stage": "gpu",
+                  "command": [
+                    "make",
+                    "muller-fp32",
+                    "-j4",
+                    "CXX=/home/kika/.local/bem-cuda-13.1/usr/bin/x86_64-linux-gnu-g++-14",
+                    "CUDA_HOME=/home/kika/.local/share/cuda/13.4.3",
+                    "ARCH=-arch=sm_120",
+                    "CUDA_CPP_STD=c++17"
+                  ],
+                  "seconds": 61.17915487289429
+                },
+                {
+                  "stage": "tmatrix-server",
+                  "command": [
+                    "make",
+                    "bin/muller_tmatrix_fmm_server",
+                    "-j4",
+                    "CXX=/home/kika/.local/bem-cuda-13.1/usr/bin/x86_64-linux-gnu-g++-14",
+                    "CUDA_HOME=/home/kika/.local/share/cuda/13.4.3",
+                    "ARCH=-arch=sm_120",
+                    "CUDA_CPP_STD=c++17"
+                  ],
+                  "seconds": 18.91835618019104
+                }
+              ],
+              "binaries": {
+                "bem-gpu": "/home/kika/.local/opt/bem-cpp-rtx5080-opt2/build/37e92a6d8dae681d/src/bin/muller_nodal_fmm_demo_fp32",
+                "bem-tmatrix-server": "/home/kika/.local/opt/bem-cpp-rtx5080-opt2/build/37e92a6d8dae681d/src/bin/muller_tmatrix_fmm_server",
+                "bem-so3-fp64": "/home/kika/.local/opt/bem-cpp-rtx5080-opt2/build/37e92a6d8dae681d/src/bin/tmatrix_so3_mstm",
+                "bem-so3-fp32": "/home/kika/.local/opt/bem-cpp-rtx5080-opt2/build/37e92a6d8dae681d/src/bin/tmatrix_so3_mstm_fp32",
+                "bem-cpu-reference": "/home/kika/.local/opt/bem-cpp-rtx5080-opt2/build/37e92a6d8dae681d/src/bin/muller_nodal_demo"
+              },
+              "binary_sha256": {
+                "bem-gpu": "133702d0e74f6c61bfdc233e22eae07dba4bdbeec2625d070979059ad1b68de2",
+                "bem-tmatrix-server": "723d8e8872f4e2ea206682a2c86875523a2af6daa75e47b22646b9e9979b9037",
+                "bem-so3-fp64": "8c83000c2f930e5128cad2cf5239261190bbd63e310dfe5da60924a85d6671ff",
+                "bem-so3-fp32": "9d8d62963677bdc0fe15933e0fcca19c8af6ab44d51ab6b939d750d19d2a545e",
+                "bem-cpu-reference": "59aeb3bce524c4bc0a8d51fecce20d1ddaa1dbacd7527989f95a962d6b01f673"
+              },
+              "native_cubins_verified": {
+                "bem-gpu": true,
+                "bem-tmatrix-server": true
+              },
+              "versions": {
+                "bem-gpu": "BEM-CPP Muller solver 1.0.0"
+              },
+              "driver_installed": false,
+              "fast_math_enabled": false,
+              "scope": "Native sm_120 build and GPU execution probe; this does not certify full numerical convergence or all possible kernel optimizations"
+            }
+          },
+          "command": [
+            "/home/kika/.local/opt/bem-cpp-rtx5080-opt2/build/37e92a6d8dae681d/src/bin/muller_nodal_fmm_demo_fp32",
+            "--shape",
+            "prism",
+            "--sides",
+            "6",
+            "--aspect",
+            "1.4285714285714286",
+            "--ref",
+            "3",
+            "--ka",
+            "20",
+            "--ri",
+            "1.3116",
+            "--edge-mode",
+            "hdiv",
+            "--quad",
+            "7",
+            "--duffy-order",
+            "4",
+            "--digits",
+            "5",
+            "--max-leaf",
+            "64",
+            "--fmm-near-radius",
+            "3",
+            "--tol",
+            "1e-5",
+            "--max-iters",
+            "500",
+            "--gmres-restart",
+            "100",
+            "--mbj-only",
+            "--mbj-nodes",
+            "50",
+            "--no-checkpoint",
+            "--no-dense-validation",
+            "--physical-check",
+            "--ntheta",
+            "181",
+            "--out",
+            "/home/kika/benchmarks/bem_optimization_size_validation_20261103_v2/ka20-r3/optimized/result.json"
+          ],
+          "wall_s": 3.5331502669996553,
+          "metrics": {
+            "fmm_setup_s": 0.893832445,
+            "mbj_setup_s": 1.409261732,
+            "solve_s": 0.991585884,
+            "farfield_s": 0.001140788,
+            "max_residual": 9.649525919048515e-06
+          },
+          "work": {
+            "system_dofs": 16128,
+            "mesh_triangles": 2688,
+            "polarizations": 2,
+            "iterations": [
+              35,
+              36
+            ]
+          }
+        }
+      ],
+      "validation": {
+        "max_scaled_M11": 2.3637212214743202e-05,
+        "relative_L2": 7.170123192055376e-08
+      }
+    },
+    {
+      "id": "ka10-r4",
+      "passed": true,
+      "runs": [
+        {
+          "build": {
+            "executable": "/home/kika/.local/opt/bem-cpp/bin/bem-gpu",
+            "native_binary": "/home/kika/.local/opt/bem-cpp/build/7e86ce314f4e7a01/src/bin/muller_nodal_fmm_demo_fp32",
+            "binary_sha256": "3e84429101d69f7ccf0a17a8addfce23499a2803ed0ffdb2654f291942dd1afa",
+            "components": {
+              "muller_tmatrix_fmm_server": {
+                "path": "/home/kika/.local/opt/bem-cpp/build/7e86ce314f4e7a01/src/bin/muller_tmatrix_fmm_server",
+                "sha256": "3237f90c473d3a6d9ab112669555b776b3778e0721640f7612bedd5cd158d5c3"
+              },
+              "tmatrix_so3_mstm": {
+                "path": "/home/kika/.local/opt/bem-cpp/build/7e86ce314f4e7a01/src/bin/tmatrix_so3_mstm",
+                "sha256": "8c83000c2f930e5128cad2cf5239261190bbd63e310dfe5da60924a85d6671ff"
+              }
+            },
+            "analysis_environment": {
+              "python": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+              "numpy": "2.5.4",
+              "scipy": "1.18.1"
+            },
+            "version": "BEM-CPP Muller solver 1.0.0",
+            "numerical_source_signature_schema": 2,
+            "numerical_source_sha256": "9c82e638c21930e1d10a8fbbeecba192d3911f3b9133c23b58a9188ef513d59a",
+            "host_compiler_build_ids": [
+              "(Ubuntu 14.3.0-14ubuntu1) 14.3.0",
+              "(Ubuntu 15.2.0-16ubuntu1) 15.2.0"
+            ],
+            "source_root": "/home/kika/.local/opt/bem-cpp/build/7e86ce314f4e7a01/src",
+            "python": "/home/kika/BEM-CPP-20261103/.venv/bin/python",
+            "exports": {
+              "LD_LIBRARY_PATH": "/home/kika/.local/share/cuda/13.4.3/lib64:/usr/lib/wsl/lib:/home/kika/.local/bem-cuda-13.1/usr/lib/x86_64-linux-gnu:"
+            },
+            "installation": {
+              "project": "bem-cpp",
+              "revision": "ee83342",
+              "source_sha256": "0f2317ef021d938ea2410c8b90969a569847e4868905102c3f2309b9af648e28",
+              "architecture": "sm_120",
+              "hardware": {
+                "gpu": "NVIDIA GeForce RTX 5080",
+                "compute": 120,
+                "driver_api": 13050,
+                "runtime_api": 13040,
+                "kernel_result": 120
+              },
+              "cuda_home": "/home/kika/.local/share/cuda/13.4.3",
+              "nvcc": "nvcc: NVIDIA (R) Cuda compiler driver\nCopyright (c) 2005-2026 NVIDIA Corporation\nBuilt on Tue_Sep_01_08:45:21_PDT_2026\nCuda compilation tools, release 13.4, V13.4.92\nBuild cuda_13.4.r13.4/compiler.38855100_0",
+              "compiler": "/home/kika/.local/bem-cuda-13.1/usr/bin/x86_64-linux-gnu-g++-14",
+              "commands": [
+                {
+                  "stage": "cpu-reference",
+                  "command": [
+                    "make",
+                    "bin/muller_nodal_demo",
+                    "-j4",
+                    "CXX=/home/kika/.local/bem-cuda-13.1/usr/bin/x86_64-linux-gnu-g++-14",
+                    "CUDA_HOME=/home/kika/.local/share/cuda/13.4.3",
+                    "ARCH=-arch=sm_120",
+                    "CUDA_CPP_STD=c++17"
+                  ],
+                  "seconds": 4.188076734542847
+                },
+                {
+                  "stage": "so3-fp64",
+                  "command": [
+                    "make",
+                    "bin/tmatrix_so3_mstm",
+                    "-j1",
+                    "CXX=/home/kika/.local/bem-cuda-13.1/usr/bin/x86_64-linux-gnu-g++-14",
+                    "CUDA_HOME=/home/kika/.local/share/cuda/13.4.3",
+                    "ARCH=-arch=sm_120",
+                    "CUDA_CPP_STD=c++17"
+                  ],
+                  "seconds": 0.8676543235778809
+                },
+                {
+                  "stage": "so3-fp32",
+                  "command": [
+                    "make",
+                    "bin/tmatrix_so3_mstm_fp32",
+                    "-j1",
+                    "CXX=/home/kika/.local/bem-cuda-13.1/usr/bin/x86_64-linux-gnu-g++-14",
+                    "CUDA_HOME=/home/kika/.local/share/cuda/13.4.3",
+                    "ARCH=-arch=sm_120",
+                    "CUDA_CPP_STD=c++17"
+                  ],
+                  "seconds": 0.773430347442627
+                },
+                {
+                  "stage": "gpu",
+                  "command": [
+                    "make",
+                    "muller-fp32",
+                    "-j4",
+                    "CXX=/home/kika/.local/bem-cuda-13.1/usr/bin/x86_64-linux-gnu-g++-14",
+                    "CUDA_HOME=/home/kika/.local/share/cuda/13.4.3",
+                    "ARCH=-arch=sm_120",
+                    "CUDA_CPP_STD=c++17"
+                  ],
+                  "seconds": 60.398149251937866
+                },
+                {
+                  "stage": "tmatrix-server",
+                  "command": [
+                    "make",
+                    "bin/muller_tmatrix_fmm_server",
+                    "-j4",
+                    "CXX=/home/kika/.local/bem-cuda-13.1/usr/bin/x86_64-linux-gnu-g++-14",
+                    "CUDA_HOME=/home/kika/.local/share/cuda/13.4.3",
+                    "ARCH=-arch=sm_120",
+                    "CUDA_CPP_STD=c++17"
+                  ],
+                  "seconds": 20.689451932907104
+                }
+              ],
+              "binaries": {
+                "bem-gpu": "/home/kika/.local/opt/bem-cpp/build/7e86ce314f4e7a01/src/bin/muller_nodal_fmm_demo_fp32",
+                "bem-tmatrix-server": "/home/kika/.local/opt/bem-cpp/build/7e86ce314f4e7a01/src/bin/muller_tmatrix_fmm_server",
+                "bem-so3-fp64": "/home/kika/.local/opt/bem-cpp/build/7e86ce314f4e7a01/src/bin/tmatrix_so3_mstm",
+                "bem-so3-fp32": "/home/kika/.local/opt/bem-cpp/build/7e86ce314f4e7a01/src/bin/tmatrix_so3_mstm_fp32",
+                "bem-cpu-reference": "/home/kika/.local/opt/bem-cpp/build/7e86ce314f4e7a01/src/bin/muller_nodal_demo"
+              },
+              "binary_sha256": {
+                "bem-gpu": "3e84429101d69f7ccf0a17a8addfce23499a2803ed0ffdb2654f291942dd1afa",
+                "bem-tmatrix-server": "3237f90c473d3a6d9ab112669555b776b3778e0721640f7612bedd5cd158d5c3",
+                "bem-so3-fp64": "8c83000c2f930e5128cad2cf5239261190bbd63e310dfe5da60924a85d6671ff",
+                "bem-so3-fp32": "9d8d62963677bdc0fe15933e0fcca19c8af6ab44d51ab6b939d750d19d2a545e",
+                "bem-cpu-reference": "59aeb3bce524c4bc0a8d51fecce20d1ddaa1dbacd7527989f95a962d6b01f673"
+              },
+              "native_cubins_verified": {
+                "bem-gpu": true,
+                "bem-tmatrix-server": true
+              },
+              "versions": {
+                "bem-gpu": "BEM-CPP Muller solver 1.0.0"
+              },
+              "driver_installed": false,
+              "fast_math_enabled": false,
+              "scope": "Native sm_120 build and GPU execution probe; this does not certify full numerical convergence or all possible kernel optimizations"
+            }
+          },
+          "command": [
+            "/home/kika/.local/opt/bem-cpp/build/7e86ce314f4e7a01/src/bin/muller_nodal_fmm_demo_fp32",
+            "--shape",
+            "prism",
+            "--sides",
+            "6",
+            "--aspect",
+            "1.4285714285714286",
+            "--ref",
+            "4",
+            "--ka",
+            "10",
+            "--ri",
+            "1.3116",
+            "--edge-mode",
+            "hdiv",
+            "--quad",
+            "7",
+            "--duffy-order",
+            "4",
+            "--digits",
+            "5",
+            "--max-leaf",
+            "64",
+            "--fmm-near-radius",
+            "3",
+            "--tol",
+            "1e-5",
+            "--max-iters",
+            "500",
+            "--gmres-restart",
+            "100",
+            "--mbj-only",
+            "--mbj-nodes",
+            "50",
+            "--no-checkpoint",
+            "--no-dense-validation",
+            "--physical-check",
+            "--ntheta",
+            "181",
+            "--out",
+            "/home/kika/benchmarks/bem_optimization_size_validation_20261103_v2/ka10-r4/baseline/result.json"
+          ],
+          "wall_s": 15.479789900000469,
+          "metrics": {
+            "fmm_setup_s": 0.948244274,
+            "mbj_setup_s": 10.839577292,
+            "solve_s": 3.4230478890000002,
+            "farfield_s": 0.003827932,
+            "max_residual": 9.51770660000882e-06
+          },
+          "work": {
+            "system_dofs": 64512,
+            "mesh_triangles": 10752,
+            "polarizations": 2,
+            "iterations": [
+              25,
+              25
+            ]
+          }
+        },
+        {
+          "build": {
+            "executable": "/home/kika/.local/opt/bem-cpp-rtx5080-opt2/bin/bem-gpu",
+            "native_binary": "/home/kika/.local/opt/bem-cpp-rtx5080-opt2/build/37e92a6d8dae681d/src/bin/muller_nodal_fmm_demo_fp32",
+            "binary_sha256": "133702d0e74f6c61bfdc233e22eae07dba4bdbeec2625d070979059ad1b68de2",
+            "components": {
+              "muller_tmatrix_fmm_server": {
+                "path": "/home/kika/.local/opt/bem-cpp-rtx5080-opt2/build/37e92a6d8dae681d/src/bin/muller_tmatrix_fmm_server",
+                "sha256": "723d8e8872f4e2ea206682a2c86875523a2af6daa75e47b22646b9e9979b9037"
+              },
+              "tmatrix_so3_mstm": {
+                "path": "/home/kika/.local/opt/bem-cpp-rtx5080-opt2/build/37e92a6d8dae681d/src/bin/tmatrix_so3_mstm",
+                "sha256": "8c83000c2f930e5128cad2cf5239261190bbd63e310dfe5da60924a85d6671ff"
+              }
+            },
+            "analysis_environment": {
+              "python": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+              "numpy": "2.5.4",
+              "scipy": "1.18.1"
+            },
+            "version": "BEM-CPP Muller solver 1.0.0",
+            "numerical_source_signature_schema": 2,
+            "numerical_source_sha256": "539f529ac9adc50b9bd6b2f7af0838720d22adf5eaabc2f1d5e6450240180fdf",
+            "host_compiler_build_ids": [
+              "(Ubuntu 14.3.0-14ubuntu1) 14.3.0",
+              "(Ubuntu 15.2.0-16ubuntu1) 15.2.0"
+            ],
+            "source_root": "/home/kika/.local/opt/bem-cpp-rtx5080-opt2/build/37e92a6d8dae681d/src",
+            "python": "/home/kika/BEM-CPP-20261103/.venv/bin/python",
+            "exports": {
+              "LD_LIBRARY_PATH": "/home/kika/.local/share/cuda/13.4.3/lib64:/usr/lib/wsl/lib:"
+            },
+            "installation": {
+              "project": "bem-cpp",
+              "revision": "6b3d590",
+              "source_sha256": "73d37e4b9110dde75e19ee42d3bcb3ea22e76e550c47096ced209a35ce1835a7",
+              "architecture": "sm_120",
+              "hardware": {
+                "gpu": "NVIDIA GeForce RTX 5080",
+                "compute": 120,
+                "driver_api": 13050,
+                "runtime_api": 13040,
+                "kernel_result": 120
+              },
+              "cuda_home": "/home/kika/.local/share/cuda/13.4.3",
+              "nvcc": "nvcc: NVIDIA (R) Cuda compiler driver\nCopyright (c) 2005-2026 NVIDIA Corporation\nBuilt on Tue_Sep_01_08:45:21_PDT_2026\nCuda compilation tools, release 13.4, V13.4.92\nBuild cuda_13.4.r13.4/compiler.38855100_0",
+              "compiler": "/home/kika/.local/bem-cuda-13.1/usr/bin/x86_64-linux-gnu-g++-14",
+              "commands": [
+                {
+                  "stage": "cpu-reference",
+                  "command": [
+                    "make",
+                    "bin/muller_nodal_demo",
+                    "-j4",
+                    "CXX=/home/kika/.local/bem-cuda-13.1/usr/bin/x86_64-linux-gnu-g++-14",
+                    "CUDA_HOME=/home/kika/.local/share/cuda/13.4.3",
+                    "ARCH=-arch=sm_120",
+                    "CUDA_CPP_STD=c++17"
+                  ],
+                  "seconds": 3.5290067195892334
+                },
+                {
+                  "stage": "so3-fp64",
+                  "command": [
+                    "make",
+                    "bin/tmatrix_so3_mstm",
+                    "-j1",
+                    "CXX=/home/kika/.local/bem-cuda-13.1/usr/bin/x86_64-linux-gnu-g++-14",
+                    "CUDA_HOME=/home/kika/.local/share/cuda/13.4.3",
+                    "ARCH=-arch=sm_120",
+                    "CUDA_CPP_STD=c++17"
+                  ],
+                  "seconds": 0.8635993003845215
+                },
+                {
+                  "stage": "so3-fp32",
+                  "command": [
+                    "make",
+                    "bin/tmatrix_so3_mstm_fp32",
+                    "-j1",
+                    "CXX=/home/kika/.local/bem-cuda-13.1/usr/bin/x86_64-linux-gnu-g++-14",
+                    "CUDA_HOME=/home/kika/.local/share/cuda/13.4.3",
+                    "ARCH=-arch=sm_120",
+                    "CUDA_CPP_STD=c++17"
+                  ],
+                  "seconds": 0.7821383476257324
+                },
+                {
+                  "stage": "gpu",
+                  "command": [
+                    "make",
+                    "muller-fp32",
+                    "-j4",
+                    "CXX=/home/kika/.local/bem-cuda-13.1/usr/bin/x86_64-linux-gnu-g++-14",
+                    "CUDA_HOME=/home/kika/.local/share/cuda/13.4.3",
+                    "ARCH=-arch=sm_120",
+                    "CUDA_CPP_STD=c++17"
+                  ],
+                  "seconds": 61.17915487289429
+                },
+                {
+                  "stage": "tmatrix-server",
+                  "command": [
+                    "make",
+                    "bin/muller_tmatrix_fmm_server",
+                    "-j4",
+                    "CXX=/home/kika/.local/bem-cuda-13.1/usr/bin/x86_64-linux-gnu-g++-14",
+                    "CUDA_HOME=/home/kika/.local/share/cuda/13.4.3",
+                    "ARCH=-arch=sm_120",
+                    "CUDA_CPP_STD=c++17"
+                  ],
+                  "seconds": 18.91835618019104
+                }
+              ],
+              "binaries": {
+                "bem-gpu": "/home/kika/.local/opt/bem-cpp-rtx5080-opt2/build/37e92a6d8dae681d/src/bin/muller_nodal_fmm_demo_fp32",
+                "bem-tmatrix-server": "/home/kika/.local/opt/bem-cpp-rtx5080-opt2/build/37e92a6d8dae681d/src/bin/muller_tmatrix_fmm_server",
+                "bem-so3-fp64": "/home/kika/.local/opt/bem-cpp-rtx5080-opt2/build/37e92a6d8dae681d/src/bin/tmatrix_so3_mstm",
+                "bem-so3-fp32": "/home/kika/.local/opt/bem-cpp-rtx5080-opt2/build/37e92a6d8dae681d/src/bin/tmatrix_so3_mstm_fp32",
+                "bem-cpu-reference": "/home/kika/.local/opt/bem-cpp-rtx5080-opt2/build/37e92a6d8dae681d/src/bin/muller_nodal_demo"
+              },
+              "binary_sha256": {
+                "bem-gpu": "133702d0e74f6c61bfdc233e22eae07dba4bdbeec2625d070979059ad1b68de2",
+                "bem-tmatrix-server": "723d8e8872f4e2ea206682a2c86875523a2af6daa75e47b22646b9e9979b9037",
+                "bem-so3-fp64": "8c83000c2f930e5128cad2cf5239261190bbd63e310dfe5da60924a85d6671ff",
+                "bem-so3-fp32": "9d8d62963677bdc0fe15933e0fcca19c8af6ab44d51ab6b939d750d19d2a545e",
+                "bem-cpu-reference": "59aeb3bce524c4bc0a8d51fecce20d1ddaa1dbacd7527989f95a962d6b01f673"
+              },
+              "native_cubins_verified": {
+                "bem-gpu": true,
+                "bem-tmatrix-server": true
+              },
+              "versions": {
+                "bem-gpu": "BEM-CPP Muller solver 1.0.0"
+              },
+              "driver_installed": false,
+              "fast_math_enabled": false,
+              "scope": "Native sm_120 build and GPU execution probe; this does not certify full numerical convergence or all possible kernel optimizations"
+            }
+          },
+          "command": [
+            "/home/kika/.local/opt/bem-cpp-rtx5080-opt2/build/37e92a6d8dae681d/src/bin/muller_nodal_fmm_demo_fp32",
+            "--shape",
+            "prism",
+            "--sides",
+            "6",
+            "--aspect",
+            "1.4285714285714286",
+            "--ref",
+            "4",
+            "--ka",
+            "10",
+            "--ri",
+            "1.3116",
+            "--edge-mode",
+            "hdiv",
+            "--quad",
+            "7",
+            "--duffy-order",
+            "4",
+            "--digits",
+            "5",
+            "--max-leaf",
+            "64",
+            "--fmm-near-radius",
+            "3",
+            "--tol",
+            "1e-5",
+            "--max-iters",
+            "500",
+            "--gmres-restart",
+            "100",
+            "--mbj-only",
+            "--mbj-nodes",
+            "50",
+            "--no-checkpoint",
+            "--no-dense-validation",
+            "--physical-check",
+            "--ntheta",
+            "181",
+            "--out",
+            "/home/kika/benchmarks/bem_optimization_size_validation_20261103_v2/ka10-r4/optimized/result.json"
+          ],
+          "wall_s": 9.622091943001578,
+          "metrics": {
+            "fmm_setup_s": 0.795961816,
+            "mbj_setup_s": 5.393785956,
+            "solve_s": 3.1718897139999997,
+            "farfield_s": 0.003953006,
+            "max_residual": 9.477135201524175e-06
+          },
+          "work": {
+            "system_dofs": 64512,
+            "mesh_triangles": 10752,
+            "polarizations": 2,
+            "iterations": [
+              25,
+              25
+            ]
+          }
+        }
+      ],
+      "validation": {
+        "max_scaled_M11": 0.00015881269089072832,
+        "relative_L2": 9.017921828236327e-07
+      }
+    }
+  ],
+  "note": "One-off numerical/scaling controls, not five-repeat hardware scores"
+}

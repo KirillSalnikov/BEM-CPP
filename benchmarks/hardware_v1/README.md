@@ -127,3 +127,6 @@ checkpoints and intermediate run directories are intentionally not committed.
 
 
 [Measured RTX 5080 baseline (2026-11-03)](results/rtx5080_20261103/README.md)
+
+
+[RTX 5080 optimization checks (2026-11-03)](results/rtx5080_optimization_20261103/README.md)

@@ -1,0 +1,12 @@
+[
+  {
+    "command": "tests/muller_kernel_bundle_check",
+    "exit_code": 0,
+    "stdout": "combined Muller kernels: 128 cases, worst normalized difference 4.49e-16\n"
+  },
+  {
+    "command": "tests/muller_local_block_check",
+    "exit_code": 0,
+    "stdout": "curved P2 ka=0.001 local block relative L2 4.52e-18\ncurved P2 ka=1 local block relative L2 2.18e-17\ncurved P2 ka=10 local block relative L2 1.98e-16\nBDM1 ka=0.001 local block relative L2 8.83e-17\nBDM1 ka=1 local block relative L2 1.46e-17\nBDM1 ka=10 local block relative L2 1.2e-16\nsix independent dense/local block controls passed; worst L2 1.98e-16\n"
+  }
+]

@@ -1,0 +1,1200 @@
+{
+  "schema": 1,
+  "suite": "hardware-v1",
+  "profile": "mixed",
+  "threads": 8,
+  "timing_protocol": "fresh processes and solver setup, warmed driver/filesystem cache, no completed-work reuse; spread OpenMP core binding",
+  "controlled_environment": {
+    "OMP_NUM_THREADS": "8",
+    "OPENBLAS_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+    "OMP_DYNAMIC": "FALSE",
+    "OMP_PROC_BIND": "spread",
+    "OMP_PLACES": "cores",
+    "CUDA_MODULE_LOADING": "EAGER",
+    "MBS_GPU_TIMING": "1",
+    "BEM_MIXED_ITERATIVE_REFINEMENT": "1"
+  },
+  "warmups": 1,
+  "repeats": 5,
+  "time": 1793696766.75168,
+  "runner_sha256": "07ea8cb599436da1865bbe981f6569873992e8fbb1fcceca3744c5c418270e85",
+  "build": {
+    "executable": "/home/kika/.local/opt/bem-cpp/bin/bem-gpu",
+    "native_binary": "/home/kika/.local/opt/bem-cpp/build/7e86ce314f4e7a01/src/bin/muller_nodal_fmm_demo_fp32",
+    "binary_sha256": "3e84429101d69f7ccf0a17a8addfce23499a2803ed0ffdb2654f291942dd1afa",
+    "components": {
+      "muller_tmatrix_fmm_server": {
+        "path": "/home/kika/.local/opt/bem-cpp/build/7e86ce314f4e7a01/src/bin/muller_tmatrix_fmm_server",
+        "sha256": "3237f90c473d3a6d9ab112669555b776b3778e0721640f7612bedd5cd158d5c3"
+      },
+      "tmatrix_so3_mstm": {
+        "path": "/home/kika/.local/opt/bem-cpp/build/7e86ce314f4e7a01/src/bin/tmatrix_so3_mstm",
+        "sha256": "8c83000c2f930e5128cad2cf5239261190bbd63e310dfe5da60924a85d6671ff"
+      }
+    },
+    "analysis_environment": {
+      "python": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+      "numpy": "2.5.4",
+      "scipy": "1.18.1"
+    },
+    "version": "BEM-CPP Muller solver 1.0.0",
+    "numerical_source_signature_schema": 2,
+    "numerical_source_sha256": "9c82e638c21930e1d10a8fbbeecba192d3911f3b9133c23b58a9188ef513d59a",
+    "host_compiler_build_ids": [
+      "(Ubuntu 14.3.0-14ubuntu1) 14.3.0",
+      "(Ubuntu 15.2.0-16ubuntu1) 15.2.0"
+    ],
+    "source_root": "/home/kika/.local/opt/bem-cpp/build/7e86ce314f4e7a01/src",
+    "python": "/home/kika/BEM-CPP-20261103/.venv/bin/python",
+    "installation": {
+      "project": "bem-cpp",
+      "revision": "ee83342",
+      "source_sha256": "0f2317ef021d938ea2410c8b90969a569847e4868905102c3f2309b9af648e28",
+      "architecture": "sm_120",
+      "hardware": {
+        "gpu": "NVIDIA GeForce RTX 5080",
+        "compute": 120,
+        "driver_api": 13050,
+        "runtime_api": 13040,
+        "kernel_result": 120
+      },
+      "cuda_home": "/home/kika/.local/share/cuda/13.4.3",
+      "nvcc": "nvcc: NVIDIA (R) Cuda compiler driver\nCopyright (c) 2005-2026 NVIDIA Corporation\nBuilt on Tue_Sep_01_08:45:21_PDT_2026\nCuda compilation tools, release 13.4, V13.4.92\nBuild cuda_13.4.r13.4/compiler.38855100_0",
+      "compiler": "/home/kika/.local/bem-cuda-13.1/usr/bin/x86_64-linux-gnu-g++-14",
+      "commands": [
+        {
+          "stage": "cpu-reference",
+          "command": [
+            "make",
+            "bin/muller_nodal_demo",
+            "-j4",
+            "CXX=/home/kika/.local/bem-cuda-13.1/usr/bin/x86_64-linux-gnu-g++-14",
+            "CUDA_HOME=/home/kika/.local/share/cuda/13.4.3",
+            "ARCH=-arch=sm_120",
+            "CUDA_CPP_STD=c++17"
+          ],
+          "seconds": 4.188076734542847
+        },
+        {
+          "stage": "so3-fp64",
+          "command": [
+            "make",
+            "bin/tmatrix_so3_mstm",
+            "-j1",
+            "CXX=/home/kika/.local/bem-cuda-13.1/usr/bin/x86_64-linux-gnu-g++-14",
+            "CUDA_HOME=/home/kika/.local/share/cuda/13.4.3",
+            "ARCH=-arch=sm_120",
+            "CUDA_CPP_STD=c++17"
+          ],
+          "seconds": 0.8676543235778809
+        },
+        {
+          "stage": "so3-fp32",
+          "command": [
+            "make",
+            "bin/tmatrix_so3_mstm_fp32",
+            "-j1",
+            "CXX=/home/kika/.local/bem-cuda-13.1/usr/bin/x86_64-linux-gnu-g++-14",
+            "CUDA_HOME=/home/kika/.local/share/cuda/13.4.3",
+            "ARCH=-arch=sm_120",
+            "CUDA_CPP_STD=c++17"
+          ],
+          "seconds": 0.773430347442627
+        },
+        {
+          "stage": "gpu",
+          "command": [
+            "make",
+            "muller-fp32",
+            "-j4",
+            "CXX=/home/kika/.local/bem-cuda-13.1/usr/bin/x86_64-linux-gnu-g++-14",
+            "CUDA_HOME=/home/kika/.local/share/cuda/13.4.3",
+            "ARCH=-arch=sm_120",
+            "CUDA_CPP_STD=c++17"
+          ],
+          "seconds": 60.398149251937866
+        },
+        {
+          "stage": "tmatrix-server",
+          "command": [
+            "make",
+            "bin/muller_tmatrix_fmm_server",
+            "-j4",
+            "CXX=/home/kika/.local/bem-cuda-13.1/usr/bin/x86_64-linux-gnu-g++-14",
+            "CUDA_HOME=/home/kika/.local/share/cuda/13.4.3",
+            "ARCH=-arch=sm_120",
+            "CUDA_CPP_STD=c++17"
+          ],
+          "seconds": 20.689451932907104
+        }
+      ],
+      "binaries": {
+        "bem-gpu": "/home/kika/.local/opt/bem-cpp/build/7e86ce314f4e7a01/src/bin/muller_nodal_fmm_demo_fp32",
+        "bem-tmatrix-server": "/home/kika/.local/opt/bem-cpp/build/7e86ce314f4e7a01/src/bin/muller_tmatrix_fmm_server",
+        "bem-so3-fp64": "/home/kika/.local/opt/bem-cpp/build/7e86ce314f4e7a01/src/bin/tmatrix_so3_mstm",
+        "bem-so3-fp32": "/home/kika/.local/opt/bem-cpp/build/7e86ce314f4e7a01/src/bin/tmatrix_so3_mstm_fp32",
+        "bem-cpu-reference": "/home/kika/.local/opt/bem-cpp/build/7e86ce314f4e7a01/src/bin/muller_nodal_demo"
+      },
+      "binary_sha256": {
+        "bem-gpu": "3e84429101d69f7ccf0a17a8addfce23499a2803ed0ffdb2654f291942dd1afa",
+        "bem-tmatrix-server": "3237f90c473d3a6d9ab112669555b776b3778e0721640f7612bedd5cd158d5c3",
+        "bem-so3-fp64": "8c83000c2f930e5128cad2cf5239261190bbd63e310dfe5da60924a85d6671ff",
+        "bem-so3-fp32": "9d8d62963677bdc0fe15933e0fcca19c8af6ab44d51ab6b939d750d19d2a545e",
+        "bem-cpu-reference": "59aeb3bce524c4bc0a8d51fecce20d1ddaa1dbacd7527989f95a962d6b01f673"
+      },
+      "native_cubins_verified": {
+        "bem-gpu": true,
+        "bem-tmatrix-server": true
+      },
+      "versions": {
+        "bem-gpu": "BEM-CPP Muller solver 1.0.0"
+      },
+      "driver_installed": false,
+      "fast_math_enabled": false,
+      "scope": "Native sm_120 build and GPU execution probe; this does not certify full numerical convergence or all possible kernel optimizations"
+    }
+  },
+  "hardware": {
+    "label": "RTX5080-baseline",
+    "cpu": {
+      "model": "AMD Ryzen 9 9950X3D 16-Core Processor",
+      "logical_cpus": 32,
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31
+      ],
+      "lscpu": {
+        "lscpu": [
+          {
+            "field": "Architecture:",
+            "data": "x86_64"
+          },
+          {
+            "field": "CPU op-mode(s):",
+            "data": "32-bit, 64-bit"
+          },
+          {
+            "field": "Address sizes:",
+            "data": "48 bits physical, 48 bits virtual"
+          },
+          {
+            "field": "Byte Order:",
+            "data": "Little Endian"
+          },
+          {
+            "field": "CPU(s):",
+            "data": "32"
+          },
+          {
+            "field": "On-line CPU(s) list:",
+            "data": "0-31"
+          },
+          {
+            "field": "Vendor ID:",
+            "data": "AuthenticAMD"
+          },
+          {
+            "field": "Model name:",
+            "data": "AMD Ryzen 9 9950X3D 16-Core Processor"
+          },
+          {
+            "field": "CPU family:",
+            "data": "26"
+          },
+          {
+            "field": "Model:",
+            "data": "68"
+          },
+          {
+            "field": "Thread(s) per core:",
+            "data": "2"
+          },
+          {
+            "field": "Core(s) per socket:",
+            "data": "16"
+          },
+          {
+            "field": "Socket(s):",
+            "data": "1"
+          },
+          {
+            "field": "Stepping:",
+            "data": "0"
+          },
+          {
+            "field": "BogoMIPS:",
+            "data": "8599.82"
+          },
+          {
+            "field": "Flags:",
+            "data": "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm constant_tsc rep_good nopl tsc_reliable nonstop_tsc cpuid extd_apicid tsc_known_freq pni pclmulqdq ssse3 fma cx16 sse4_1 sse4_2 movbe popcnt aes xsave avx f16c rdrand hypervisor lahf_lm cmp_legacy svm cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw topoext perfctr_core ssbd ibrs ibpb stibp vmmcall fsgsbase bmi1 avx2 smep bmi2 erms invpcid avx512f avx512dq rdseed adx smap avx512ifma clflushopt clwb avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves avx_vnni avx512_bf16 clzero xsaveerptr arat npt nrip_save tsc_scale vmcb_clean flushbyasid decodeassists pausefilter pfthreshold v_vmsave_vmload avx512vbmi umip avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg avx512_vpopcntdq rdpid fsrm avx512_vp2intersect"
+          },
+          {
+            "field": "Virtualization:",
+            "data": "AMD-V"
+          },
+          {
+            "field": "Hypervisor vendor:",
+            "data": "Microsoft"
+          },
+          {
+            "field": "Virtualization type:",
+            "data": "full"
+          },
+          {
+            "field": "L1d cache:",
+            "data": "768 KiB (16 instances)"
+          },
+          {
+            "field": "L1i cache:",
+            "data": "512 KiB (16 instances)"
+          },
+          {
+            "field": "L2 cache:",
+            "data": "16 MiB (16 instances)"
+          },
+          {
+            "field": "L3 cache:",
+            "data": "96 MiB (1 instance)"
+          },
+          {
+            "field": "NUMA node(s):",
+            "data": "1"
+          },
+          {
+            "field": "NUMA node0 CPU(s):",
+            "data": "0-31"
+          },
+          {
+            "field": "Vulnerability Gather data sampling:",
+            "data": "Not affected"
+          },
+          {
+            "field": "Vulnerability Indirect target selection:",
+            "data": "Not affected"
+          },
+          {
+            "field": "Vulnerability Itlb multihit:",
+            "data": "Not affected"
+          },
+          {
+            "field": "Vulnerability L1tf:",
+            "data": "Not affected"
+          },
+          {
+            "field": "Vulnerability Mds:",
+            "data": "Not affected"
+          },
+          {
+            "field": "Vulnerability Meltdown:",
+            "data": "Not affected"
+          },
+          {
+            "field": "Vulnerability Mmio stale data:",
+            "data": "Not affected"
+          },
+          {
+            "field": "Vulnerability Reg file data sampling:",
+            "data": "Not affected"
+          },
+          {
+            "field": "Vulnerability Retbleed:",
+            "data": "Not affected"
+          },
+          {
+            "field": "Vulnerability Spec rstack overflow:",
+            "data": "Not affected"
+          },
+          {
+            "field": "Vulnerability Spec store bypass:",
+            "data": "Mitigation; Speculative Store Bypass disabled via prctl"
+          },
+          {
+            "field": "Vulnerability Spectre v1:",
+            "data": "Mitigation; usercopy/swapgs barriers and __user pointer sanitization"
+          },
+          {
+            "field": "Vulnerability Spectre v2:",
+            "data": "Mitigation; Retpolines; IBPB conditional; IBRS_FW; STIBP always-on; RSB filling; PBRSB-eIBRS Not affected; BHI Not affected"
+          },
+          {
+            "field": "Vulnerability Srbds:",
+            "data": "Not affected"
+          },
+          {
+            "field": "Vulnerability Tsa:",
+            "data": "Not affected"
+          },
+          {
+            "field": "Vulnerability Tsx async abort:",
+            "data": "Not affected"
+          },
+          {
+            "field": "Vulnerability Vmscape:",
+            "data": "Not affected"
+          }
+        ]
+      }
+    },
+    "gpu": "NVIDIA GeForce RTX 5080, 12.0, 16303 MiB, 621.01, 360.00 W",
+    "os": "Linux-6.6.114.1-microsoft-standard-WSL2-x86_64-with-glibc2.43",
+    "python": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+    "meminfo": "MemTotal:       60264436 kB\nMemFree:        55825412 kB\nMemAvailable:   59070696 kB\nBuffers:           20752 kB\nCached:          3652124 kB\nSwapCached:            0 kB\nActive:          2641600 kB\nInactive:        1179364 kB\nActive(anon):       2672 kB\nInactive(anon):   150496 kB\nActive(file):    2638928 kB\nInactive(file):  1028868 kB\nUnevictable:           0 kB\nMlocked:               0 kB\nSwapTotal:      12435456 kB\nSwapFree:       12435456 kB\nDirty:               436 kB\nWriteback:             0 kB\nAnonPages:        148096 kB\nMapped:           145668 kB\nShmem:              5076 kB\nKReclaimable:     136488 kB\nSlab:             260052 kB\nSReclaimable:     136488 kB\nSUnreclaim:       123564 kB\nKernelStack:        7040 kB\nPageTables:         3356 kB\nSecPageTables:         0 kB\nNFS_Unstable:          0 kB\nBounce:                0 kB\nWritebackTmp:          0 kB\nCommitLimit:    42567672 kB\nCommitted_AS:     789944 kB\nVmallocTotal:   34359738367 kB\nVmallocUsed:       35536 kB\nVmallocChunk:          0 kB\nPercpu:            15744 kB\nHardwareCorrupted:     0 kB\nAnonHugePages:         0 kB\nShmemHugePages:        0 kB\nShmemPmdMapped:        0 kB\nFileHugePages:         0 kB\nFilePmdMapped:         0 kB\nUnaccepted:            0 kB\nHugePages_Total:       0\nHugePages_Free:        0\nHugePages_Rsvd:        0\nHugePages_Surp:        0\nHugepagesize:       2048 kB\nHugetlb:               0 kB\nDirectMap4k:      125952 kB\nDirectMap2M:    13080576 kB\nDirectMap1G:    56623104 kB\n",
+    "loadavg": [
+      3.86767578125,
+      2.3369140625,
+      1.83349609375
+    ],
+    "before": {
+      "time": 1793696766.7310498,
+      "temperature.gpu": 42.7,
+      "utilization.gpu": 0.0,
+      "memory.used": 344.0,
+      "power.draw": 22.24,
+      "clocks.sm": 247.0,
+      "clocks.mem": 810.0
+    },
+    "nvcc": "nvcc: NVIDIA (R) Cuda compiler driver\nCopyright (c) 2005-2026 NVIDIA Corporation\nBuilt on Tue_Sep_01_08:45:21_PDT_2026\nCuda compilation tools, release 13.4, V13.4.92\nBuild cuda_13.4.r13.4/compiler.38855100_0"
+  },
+  "cases": [
+    {
+      "id": "bem-prism-ka10-r3",
+      "workload_sha256": "e441582f576b75bdef8d5e5636fefca5173157ef369075caa89481a80671f387",
+      "reference_sha256": "cc4c61cdd130601bf50310119206d290c541057e34f9ec8a427c8e09e4f42b2c",
+      "comparison_key": "68b2aa8a2e78945ebcdfdc09b803d4dd2a3e16ac8afb36d9c07b3c7d662344bc",
+      "runs": [
+        {
+          "wall_s": 5.817379867999989,
+          "cpu_user_s": 25.266798,
+          "cpu_system_s": 2.081833,
+          "peak_child_rss_MiB": 598.69140625,
+          "telemetry": [
+            {
+              "time": 1793696766.9321623,
+              "temperature.gpu": 42.7,
+              "utilization.gpu": 0.0,
+              "memory.used": 344.0,
+              "power.draw": 18.21,
+              "clocks.sm": 180.0,
+              "clocks.mem": 810.0
+            },
+            {
+              "time": 1793696768.0398183,
+              "temperature.gpu": 43.7,
+              "utilization.gpu": 0.0,
+              "memory.used": 607.0,
+              "power.draw": 34.49,
+              "clocks.sm": 2632.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793696769.1588907,
+              "temperature.gpu": 44.0,
+              "utilization.gpu": 1.0,
+              "memory.used": 1451.0,
+              "power.draw": 47.72,
+              "clocks.sm": 2640.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793696770.2027073,
+              "temperature.gpu": 44.0,
+              "utilization.gpu": 0.0,
+              "memory.used": 1451.0,
+              "power.draw": 47.21,
+              "clocks.sm": 2632.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793696771.2413716,
+              "temperature.gpu": 44.1,
+              "utilization.gpu": 0.0,
+              "memory.used": 1451.0,
+              "power.draw": 47.22,
+              "clocks.sm": 2632.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793696772.2806015,
+              "temperature.gpu": 51.2,
+              "utilization.gpu": 78.0,
+              "memory.used": 1451.0,
+              "power.draw": 104.23,
+              "clocks.sm": 2767.0,
+              "clocks.mem": 14801.0
+            }
+          ],
+          "name": "warmup_0",
+          "warmup": true,
+          "command": [
+            "/home/kika/.local/opt/bem-cpp/build/7e86ce314f4e7a01/src/bin/muller_nodal_fmm_demo_fp32",
+            "--shape",
+            "prism",
+            "--sides",
+            "6",
+            "--aspect",
+            "1.4285714285714286",
+            "--ref",
+            "3",
+            "--ka",
+            "10",
+            "--ri",
+            "1.3116",
+            "--edge-mode",
+            "hdiv",
+            "--quad",
+            "7",
+            "--duffy-order",
+            "4",
+            "--digits",
+            "5",
+            "--max-leaf",
+            "64",
+            "--fmm-near-radius",
+            "3",
+            "--tol",
+            "1e-5",
+            "--max-iters",
+            "500",
+            "--gmres-restart",
+            "100",
+            "--mbj-only",
+            "--mbj-nodes",
+            "50",
+            "--no-checkpoint",
+            "--no-dense-validation",
+            "--physical-check",
+            "--ntheta",
+            "181",
+            "--out",
+            "/home/kika/benchmarks/bem_rtx5080_paired_baseline_20261103/bem-prism-ka10-r3/warmup_0/result.json"
+          ],
+          "metrics": {
+            "fmm_setup_s": 1.311134203,
+            "mbj_setup_s": 2.877935937,
+            "solve_s": 0.7158338630000001,
+            "farfield_s": 0.001088482,
+            "max_residual": 9.191756326184467e-06
+          },
+          "work": {
+            "system_dofs": 16128,
+            "mesh_triangles": 2688,
+            "polarizations": 2,
+            "iterations": [
+              25,
+              26
+            ]
+          },
+          "validation": {
+            "max_scaled_M11": 0.0001903321460997287,
+            "relative_L2": 8.808922567736931e-07
+          },
+          "matrix_sha256": "cc90864fc3fce763dd0d56f05589e1c2e60bac0c95cc1f2d07f2608d007a7496"
+        },
+        {
+          "wall_s": 4.3809418759992695,
+          "cpu_user_s": 24.929948,
+          "cpu_system_s": 0.255609,
+          "peak_child_rss_MiB": 596.26953125,
+          "telemetry": [
+            {
+              "time": 1793696772.6396298,
+              "temperature.gpu": 51.2,
+              "utilization.gpu": 48.0,
+              "memory.used": 344.0,
+              "power.draw": 131.62,
+              "clocks.sm": 2857.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793696773.7287285,
+              "temperature.gpu": 45.1,
+              "utilization.gpu": 0.0,
+              "memory.used": 1451.0,
+              "power.draw": 50.79,
+              "clocks.sm": 2865.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793696774.7639399,
+              "temperature.gpu": 44.7,
+              "utilization.gpu": 0.0,
+              "memory.used": 1451.0,
+              "power.draw": 49.01,
+              "clocks.sm": 2805.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793696775.8040946,
+              "temperature.gpu": 44.5,
+              "utilization.gpu": 0.0,
+              "memory.used": 1451.0,
+              "power.draw": 47.22,
+              "clocks.sm": 2632.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793696776.8425894,
+              "temperature.gpu": 53.2,
+              "utilization.gpu": 84.0,
+              "memory.used": 1451.0,
+              "power.draw": 125.98,
+              "clocks.sm": 2850.0,
+              "clocks.mem": 14801.0
+            }
+          ],
+          "name": "repeat_1",
+          "warmup": false,
+          "command": [
+            "/home/kika/.local/opt/bem-cpp/build/7e86ce314f4e7a01/src/bin/muller_nodal_fmm_demo_fp32",
+            "--shape",
+            "prism",
+            "--sides",
+            "6",
+            "--aspect",
+            "1.4285714285714286",
+            "--ref",
+            "3",
+            "--ka",
+            "10",
+            "--ri",
+            "1.3116",
+            "--edge-mode",
+            "hdiv",
+            "--quad",
+            "7",
+            "--duffy-order",
+            "4",
+            "--digits",
+            "5",
+            "--max-leaf",
+            "64",
+            "--fmm-near-radius",
+            "3",
+            "--tol",
+            "1e-5",
+            "--max-iters",
+            "500",
+            "--gmres-restart",
+            "100",
+            "--mbj-only",
+            "--mbj-nodes",
+            "50",
+            "--no-checkpoint",
+            "--no-dense-validation",
+            "--physical-check",
+            "--ntheta",
+            "181",
+            "--out",
+            "/home/kika/benchmarks/bem_rtx5080_paired_baseline_20261103/bem-prism-ka10-r3/repeat_1/result.json"
+          ],
+          "metrics": {
+            "fmm_setup_s": 0.511384571,
+            "mbj_setup_s": 2.916688205,
+            "solve_s": 0.7180114209999999,
+            "farfield_s": 0.001136203,
+            "max_residual": 9.181959219508452e-06
+          },
+          "work": {
+            "system_dofs": 16128,
+            "mesh_triangles": 2688,
+            "polarizations": 2,
+            "iterations": [
+              25,
+              26
+            ]
+          },
+          "validation": {
+            "max_scaled_M11": 0.0001707975954117242,
+            "relative_L2": 7.912279655989653e-07
+          },
+          "matrix_sha256": "f20f1c132539c42706b4297632920bae75e9bf6970a3da2b43b8b55898ead7b0"
+        },
+        {
+          "wall_s": 4.23487838300025,
+          "cpu_user_s": 24.217184,
+          "cpu_system_s": 0.222833,
+          "peak_child_rss_MiB": 594.921875,
+          "telemetry": [
+            {
+              "time": 1793696777.023094,
+              "temperature.gpu": 53.2,
+              "utilization.gpu": 46.0,
+              "memory.used": 344.0,
+              "power.draw": 131.82,
+              "clocks.sm": 2850.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793696778.083412,
+              "temperature.gpu": 45.3,
+              "utilization.gpu": 0.0,
+              "memory.used": 1451.0,
+              "power.draw": 51.34,
+              "clocks.sm": 2865.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793696779.1130807,
+              "temperature.gpu": 44.9,
+              "utilization.gpu": 0.0,
+              "memory.used": 1451.0,
+              "power.draw": 49.22,
+              "clocks.sm": 2715.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793696780.1503272,
+              "temperature.gpu": 44.8,
+              "utilization.gpu": 0.0,
+              "memory.used": 1451.0,
+              "power.draw": 47.25,
+              "clocks.sm": 2632.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793696781.19026,
+              "temperature.gpu": 51.1,
+              "utilization.gpu": 80.0,
+              "memory.used": 607.0,
+              "power.draw": 129.96,
+              "clocks.sm": 2850.0,
+              "clocks.mem": 14801.0
+            }
+          ],
+          "name": "repeat_2",
+          "warmup": false,
+          "command": [
+            "/home/kika/.local/opt/bem-cpp/build/7e86ce314f4e7a01/src/bin/muller_nodal_fmm_demo_fp32",
+            "--shape",
+            "prism",
+            "--sides",
+            "6",
+            "--aspect",
+            "1.4285714285714286",
+            "--ref",
+            "3",
+            "--ka",
+            "10",
+            "--ri",
+            "1.3116",
+            "--edge-mode",
+            "hdiv",
+            "--quad",
+            "7",
+            "--duffy-order",
+            "4",
+            "--digits",
+            "5",
+            "--max-leaf",
+            "64",
+            "--fmm-near-radius",
+            "3",
+            "--tol",
+            "1e-5",
+            "--max-iters",
+            "500",
+            "--gmres-restart",
+            "100",
+            "--mbj-only",
+            "--mbj-nodes",
+            "50",
+            "--no-checkpoint",
+            "--no-dense-validation",
+            "--physical-check",
+            "--ntheta",
+            "181",
+            "--out",
+            "/home/kika/benchmarks/bem_rtx5080_paired_baseline_20261103/bem-prism-ka10-r3/repeat_2/result.json"
+          ],
+          "metrics": {
+            "fmm_setup_s": 0.491027194,
+            "mbj_setup_s": 2.817637159,
+            "solve_s": 0.700500599,
+            "farfield_s": 0.001079713,
+            "max_residual": 9.19059853876629e-06
+          },
+          "work": {
+            "system_dofs": 16128,
+            "mesh_triangles": 2688,
+            "polarizations": 2,
+            "iterations": [
+              25,
+              26
+            ]
+          },
+          "validation": {
+            "max_scaled_M11": 0.00012623106014729982,
+            "relative_L2": 6.905909946672691e-07
+          },
+          "matrix_sha256": "f24eaee0c88490d2859fe8a3b3b1a0389c260f13fbf56c87e453a4c16b2ffd04"
+        },
+        {
+          "wall_s": 4.124474205000297,
+          "cpu_user_s": 23.598315,
+          "cpu_system_s": 0.16963,
+          "peak_child_rss_MiB": 597.09375,
+          "telemetry": [
+            {
+              "time": 1793696781.26365,
+              "temperature.gpu": 51.1,
+              "utilization.gpu": 62.0,
+              "memory.used": 344.0,
+              "power.draw": 131.91,
+              "clocks.sm": 2850.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793696782.2983532,
+              "temperature.gpu": 45.6,
+              "utilization.gpu": 0.0,
+              "memory.used": 1451.0,
+              "power.draw": 52.92,
+              "clocks.sm": 2865.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793696783.3329825,
+              "temperature.gpu": 45.2,
+              "utilization.gpu": 0.0,
+              "memory.used": 1451.0,
+              "power.draw": 49.46,
+              "clocks.sm": 2662.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793696784.3731978,
+              "temperature.gpu": 45.0,
+              "utilization.gpu": 0.0,
+              "memory.used": 1451.0,
+              "power.draw": 47.27,
+              "clocks.sm": 2632.0,
+              "clocks.mem": 14801.0
+            }
+          ],
+          "name": "repeat_3",
+          "warmup": false,
+          "command": [
+            "/home/kika/.local/opt/bem-cpp/build/7e86ce314f4e7a01/src/bin/muller_nodal_fmm_demo_fp32",
+            "--shape",
+            "prism",
+            "--sides",
+            "6",
+            "--aspect",
+            "1.4285714285714286",
+            "--ref",
+            "3",
+            "--ka",
+            "10",
+            "--ri",
+            "1.3116",
+            "--edge-mode",
+            "hdiv",
+            "--quad",
+            "7",
+            "--duffy-order",
+            "4",
+            "--digits",
+            "5",
+            "--max-leaf",
+            "64",
+            "--fmm-near-radius",
+            "3",
+            "--tol",
+            "1e-5",
+            "--max-iters",
+            "500",
+            "--gmres-restart",
+            "100",
+            "--mbj-only",
+            "--mbj-nodes",
+            "50",
+            "--no-checkpoint",
+            "--no-dense-validation",
+            "--physical-check",
+            "--ntheta",
+            "181",
+            "--out",
+            "/home/kika/benchmarks/bem_rtx5080_paired_baseline_20261103/bem-prism-ka10-r3/repeat_3/result.json"
+          ],
+          "metrics": {
+            "fmm_setup_s": 0.486768061,
+            "mbj_setup_s": 2.728277688,
+            "solve_s": 0.688718492,
+            "farfield_s": 0.001047241,
+            "max_residual": 9.158935033996284e-06
+          },
+          "work": {
+            "system_dofs": 16128,
+            "mesh_triangles": 2688,
+            "polarizations": 2,
+            "iterations": [
+              25,
+              26
+            ]
+          },
+          "validation": {
+            "max_scaled_M11": 0.00022137286875191061,
+            "relative_L2": 8.213494515314781e-07
+          },
+          "matrix_sha256": "5684a5d241a04665b3c7a4dc1d3abdbdd87acc12b43072075ad34b5ecb3261b8"
+        },
+        {
+          "wall_s": 4.24221406200013,
+          "cpu_user_s": 24.273617,
+          "cpu_system_s": 0.206787,
+          "peak_child_rss_MiB": 597.31640625,
+          "telemetry": [
+            {
+              "time": 1793696785.3950486,
+              "temperature.gpu": 52.0,
+              "utilization.gpu": 89.0,
+              "memory.used": 344.0,
+              "power.draw": 131.71,
+              "clocks.sm": 2857.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793696786.4547307,
+              "temperature.gpu": 45.9,
+              "utilization.gpu": 0.0,
+              "memory.used": 1451.0,
+              "power.draw": 51.71,
+              "clocks.sm": 2865.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793696787.4944258,
+              "temperature.gpu": 45.5,
+              "utilization.gpu": 0.0,
+              "memory.used": 1451.0,
+              "power.draw": 49.28,
+              "clocks.sm": 2662.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793696788.531742,
+              "temperature.gpu": 45.3,
+              "utilization.gpu": 0.0,
+              "memory.used": 1451.0,
+              "power.draw": 47.28,
+              "clocks.sm": 2632.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793696789.5722501,
+              "temperature.gpu": 50.9,
+              "utilization.gpu": 83.0,
+              "memory.used": 599.0,
+              "power.draw": 123.44,
+              "clocks.sm": 2850.0,
+              "clocks.mem": 14801.0
+            }
+          ],
+          "name": "repeat_4",
+          "warmup": false,
+          "command": [
+            "/home/kika/.local/opt/bem-cpp/build/7e86ce314f4e7a01/src/bin/muller_nodal_fmm_demo_fp32",
+            "--shape",
+            "prism",
+            "--sides",
+            "6",
+            "--aspect",
+            "1.4285714285714286",
+            "--ref",
+            "3",
+            "--ka",
+            "10",
+            "--ri",
+            "1.3116",
+            "--edge-mode",
+            "hdiv",
+            "--quad",
+            "7",
+            "--duffy-order",
+            "4",
+            "--digits",
+            "5",
+            "--max-leaf",
+            "64",
+            "--fmm-near-radius",
+            "3",
+            "--tol",
+            "1e-5",
+            "--max-iters",
+            "500",
+            "--gmres-restart",
+            "100",
+            "--mbj-only",
+            "--mbj-nodes",
+            "50",
+            "--no-checkpoint",
+            "--no-dense-validation",
+            "--physical-check",
+            "--ntheta",
+            "181",
+            "--out",
+            "/home/kika/benchmarks/bem_rtx5080_paired_baseline_20261103/bem-prism-ka10-r3/repeat_4/result.json"
+          ],
+          "metrics": {
+            "fmm_setup_s": 0.506650279,
+            "mbj_setup_s": 2.825934397,
+            "solve_s": 0.692417557,
+            "farfield_s": 0.001172884,
+            "max_residual": 9.184442851666807e-06
+          },
+          "work": {
+            "system_dofs": 16128,
+            "mesh_triangles": 2688,
+            "polarizations": 2,
+            "iterations": [
+              25,
+              26
+            ]
+          },
+          "validation": {
+            "max_scaled_M11": 0.00010521722788756845,
+            "relative_L2": 8.000967300276727e-07
+          },
+          "matrix_sha256": "39d79d1ce84a26fbbe101b34ee2cea9acc7a8ca79f23f5504482b7f2a5556f0a"
+        },
+        {
+          "wall_s": 4.381244301001061,
+          "cpu_user_s": 25.045863,
+          "cpu_system_s": 0.17284,
+          "peak_child_rss_MiB": 594.94921875,
+          "telemetry": [
+            {
+              "time": 1793696789.6419506,
+              "temperature.gpu": 50.9,
+              "utilization.gpu": 54.0,
+              "memory.used": 344.0,
+              "power.draw": 132.3,
+              "clocks.sm": 2850.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793696790.7144103,
+              "temperature.gpu": 46.2,
+              "utilization.gpu": 0.0,
+              "memory.used": 1451.0,
+              "power.draw": 52.61,
+              "clocks.sm": 2865.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793696791.7520385,
+              "temperature.gpu": 45.8,
+              "utilization.gpu": 0.0,
+              "memory.used": 1451.0,
+              "power.draw": 49.66,
+              "clocks.sm": 2805.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793696792.7875352,
+              "temperature.gpu": 45.5,
+              "utilization.gpu": 0.0,
+              "memory.used": 1451.0,
+              "power.draw": 47.33,
+              "clocks.sm": 2632.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793696793.8299985,
+              "temperature.gpu": 54.3,
+              "utilization.gpu": 82.0,
+              "memory.used": 1451.0,
+              "power.draw": 125.75,
+              "clocks.sm": 2850.0,
+              "clocks.mem": 14801.0
+            }
+          ],
+          "name": "repeat_5",
+          "warmup": false,
+          "command": [
+            "/home/kika/.local/opt/bem-cpp/build/7e86ce314f4e7a01/src/bin/muller_nodal_fmm_demo_fp32",
+            "--shape",
+            "prism",
+            "--sides",
+            "6",
+            "--aspect",
+            "1.4285714285714286",
+            "--ref",
+            "3",
+            "--ka",
+            "10",
+            "--ri",
+            "1.3116",
+            "--edge-mode",
+            "hdiv",
+            "--quad",
+            "7",
+            "--duffy-order",
+            "4",
+            "--digits",
+            "5",
+            "--max-leaf",
+            "64",
+            "--fmm-near-radius",
+            "3",
+            "--tol",
+            "1e-5",
+            "--max-iters",
+            "500",
+            "--gmres-restart",
+            "100",
+            "--mbj-only",
+            "--mbj-nodes",
+            "50",
+            "--no-checkpoint",
+            "--no-dense-validation",
+            "--physical-check",
+            "--ntheta",
+            "181",
+            "--out",
+            "/home/kika/benchmarks/bem_rtx5080_paired_baseline_20261103/bem-prism-ka10-r3/repeat_5/result.json"
+          ],
+          "metrics": {
+            "fmm_setup_s": 0.506561844,
+            "mbj_setup_s": 2.962603289,
+            "solve_s": 0.697818943,
+            "farfield_s": 0.001201755,
+            "max_residual": 9.207822918858746e-06
+          },
+          "work": {
+            "system_dofs": 16128,
+            "mesh_triangles": 2688,
+            "polarizations": 2,
+            "iterations": [
+              25,
+              26
+            ]
+          },
+          "validation": {
+            "max_scaled_M11": 0.0001177012529694906,
+            "relative_L2": 9.04140041218446e-07
+          },
+          "matrix_sha256": "19fe1ab0935e039255d2d793ecebfdc8eeda57ad01a3f841a09f8505863395e1"
+        }
+      ],
+      "passed": true,
+      "statistics": {
+        "wall_s": {
+          "n": 5,
+          "median": 4.24221406200013,
+          "min": 4.124474205000297,
+          "max": 4.381244301001061,
+          "mean": 4.272750565400202,
+          "MAD": 0.11773985699983314,
+          "relative_MAD": 0.027754341313064444
+        },
+        "cpu_user_s": {
+          "n": 5,
+          "median": 24.273617,
+          "min": 23.598315,
+          "max": 25.045863,
+          "mean": 24.4129854,
+          "MAD": 0.656330999999998,
+          "relative_MAD": 0.02703886281142188
+        },
+        "cpu_system_s": {
+          "n": 5,
+          "median": 0.206787,
+          "min": 0.16963,
+          "max": 0.255609,
+          "mean": 0.2055398,
+          "MAD": 0.033947000000000005,
+          "relative_MAD": 0.16416409155314407
+        },
+        "peak_child_rss_MiB": {
+          "n": 5,
+          "median": 596.26953125,
+          "min": 594.921875,
+          "max": 597.31640625,
+          "mean": 596.11015625,
+          "MAD": 1.046875,
+          "relative_MAD": 0.001755707687772282
+        },
+        "solve_s": {
+          "n": 5,
+          "median": 0.697818943,
+          "min": 0.688718492,
+          "max": 0.7180114209999999,
+          "mean": 0.6994934024,
+          "MAD": 0.0054013860000000635,
+          "relative_MAD": 0.0077403831669844245
+        },
+        "max_residual": {
+          "n": 5,
+          "median": 9.184442851666807e-06,
+          "min": 9.158935033996284e-06,
+          "max": 9.207822918858746e-06,
+          "mean": 9.184751712559316e-06,
+          "MAD": 6.155687099483088e-09,
+          "relative_MAD": 0.0006702297786485704
+        },
+        "fmm_setup_s": {
+          "n": 5,
+          "median": 0.506561844,
+          "min": 0.486768061,
+          "max": 0.511384571,
+          "mean": 0.5004783898,
+          "MAD": 0.004822726999999971,
+          "relative_MAD": 0.0095205097997866
+        },
+        "farfield_s": {
+          "n": 5,
+          "median": 0.001136203,
+          "min": 0.001047241,
+          "max": 0.001201755,
+          "mean": 0.0011275592,
+          "MAD": 5.648999999999997e-05,
+          "relative_MAD": 0.04971822816873391
+        },
+        "mbj_setup_s": {
+          "n": 5,
+          "median": 2.825934397,
+          "min": 2.728277688,
+          "max": 2.962603289,
+          "mean": 2.8502281475999998,
+          "MAD": 0.09075380799999966,
+          "relative_MAD": 0.03211461953835287
+        }
+      },
+      "timing_stable": true
+    }
+  ],
+  "passed": true
+}

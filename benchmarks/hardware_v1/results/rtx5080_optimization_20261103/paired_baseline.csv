@@ -1,0 +1,2 @@
+case,profile,threads,median_wall_s,min_wall_s,max_wall_s,MAD_s,passed
+bem-prism-ka10-r3,mixed,8,4.24221406200013,4.124474205000297,4.381244301001061,0.11773985699983314,True

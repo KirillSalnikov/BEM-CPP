@@ -1,0 +1,13 @@
+[
+  {
+    "case": "bem-prism-ka10-r3",
+    "baseline_label": "RTX5080-baseline",
+    "candidate_label": "RTX5080-optimized",
+    "speedup_baseline_over_candidate": 1.4359124525667217,
+    "same_numerical_source": false,
+    "same_recorded_toolchain": true,
+    "scope": "software/toolchain and hardware comparison",
+    "baseline_relative_MAD": 0.027754341313064444,
+    "candidate_relative_MAD": 0.005034926280353928
+  }
+]
