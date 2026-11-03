@@ -1028,8 +1028,15 @@ void HelmholtzPFFT::init(const double* targets, int n_tgt,
         const size_t bytes=size_t(corr_nnz)*sizeof(float);
         if(corr_in_ram) {
             CUDA_CHECK(cudaMallocManaged(&device,bytes));
+#if CUDART_VERSION >= 13000
+            const cudaMemLocation host_location = {cudaMemLocationTypeHost, 0};
+            const cudaMemLocation device_location = {cudaMemLocationTypeDevice, corr_device};
+            CUDA_CHECK(cudaMemAdvise(device,bytes,cudaMemAdviseSetPreferredLocation,host_location));
+            CUDA_CHECK(cudaMemAdvise(device,bytes,cudaMemAdviseSetAccessedBy,device_location));
+#else
             CUDA_CHECK(cudaMemAdvise(device,bytes,cudaMemAdviseSetPreferredLocation,cudaCpuDeviceId));
             CUDA_CHECK(cudaMemAdvise(device,bytes,cudaMemAdviseSetAccessedBy,corr_device));
+#endif
             std::memcpy(device,host.data(),bytes);
         } else {
             CUDA_CHECK(cudaMalloc(&device,bytes));

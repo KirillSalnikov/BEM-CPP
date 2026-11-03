@@ -1,5 +1,7 @@
 # BEM-CPP
 
+RTX 50 / Blackwell: [one-command Linux/WSL installer](docs/INSTALL_RTX50.md) with verified CUDA downloads and native `sm_120` builds.
+
 **Electromagnetic scattering with surface BEM, T matrices and analytic orientation averaging.**
 
 Current release: `1.0.0`

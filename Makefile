@@ -10,6 +10,9 @@ CUSOLVER ?= 0
 HOST_OPT ?= -O2
 SOLVER_HOST_OPT ?= -O3 -march=native
 NVCC_EXTRA_FLAGS ?=
+CUDA_CPP_STD ?= c++17
+CUDA_HOST_COMPAT_FLAGS = -U_GNU_SOURCE -D_DEFAULT_SOURCE -D_XOPEN_SOURCE=700 \
+	-include $(abspath src/cuda_host_compat.h)
 CUDA_RPATH ?= 1
 FP32_STREAM_FLAGS ?= --default-stream per-thread
 FP32_PRECISION_FLAGS ?= -DBEM_DEFAULT_FMM_NEAR_FP32 -DBEM_PFFT_FP32 \
@@ -20,7 +23,7 @@ CUDA_LIB_DIRS = $(CUDA_TARGET)/lib $(CUDA_HOME)/lib/x86_64-linux-gnu $(CUDA_HOME
 HOST_CUDA_INCLUDE := $(if $(wildcard $(CUDA_TARGET)/include/cuda_runtime.h),-I$(CUDA_TARGET)/include,-Itests/host_cuda_stubs)
 
 VERSION_FLAGS = -DBEM_VERSION=\"$(VERSION)\"
-NVFLAGS = $(ARCH) -ccbin $(CXX) $(NVCC_EXTRA_FLAGS) $(VERSION_FLAGS) -O3 -I$(CUDA_TARGET)/include -Xcompiler "$(HOST_OPT) -Wall -Wno-unknown-pragmas -std=c++11" -std=c++11
+NVFLAGS = $(ARCH) -ccbin $(CXX) $(NVCC_EXTRA_FLAGS) $(CUDA_HOST_COMPAT_FLAGS) $(VERSION_FLAGS) -O3 -I$(CUDA_TARGET)/include -Xcompiler "$(HOST_OPT) -Wall -Wno-unknown-pragmas -std=$(CUDA_CPP_STD)" -std=$(CUDA_CPP_STD)
 CXXFLAGS = $(HOST_OPT) -Wall -std=c++11 $(VERSION_FLAGS) $(HOST_CUDA_INCLUDE)
 LDFLAGS = $(addprefix -L,$(CUDA_LIB_DIRS)) -lcudart -lcufft -lcusparse -lm -ldl -lstdc++
 HOST_TEST_DIR = tests
