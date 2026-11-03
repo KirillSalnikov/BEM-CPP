@@ -704,3 +704,10 @@ $(HOST_TEST_DIR)/prism_face_coarse_check: tests/prism_face_coarse_check.cpp $(SR
 
 $(BINDIR)/muller_solver_fft_probe: $(SRCDIR)/prism_face_coarse.h
 host-symmetry-check: $(HOST_TEST_DIR)/prism_face_coarse_check
+
+.PHONY: green-audit
+green-audit: $(HOST_TEST_DIR)/muller_nodal_check $(HOST_TEST_DIR)/muller_taylor_kernel_check $(HOST_TEST_DIR)/muller_kernel_bundle_check
+	python3 tests/test_green_function_independent.py
+	$(HOST_TEST_DIR)/muller_nodal_check
+	$(HOST_TEST_DIR)/muller_taylor_kernel_check
+	$(HOST_TEST_DIR)/muller_kernel_bundle_check

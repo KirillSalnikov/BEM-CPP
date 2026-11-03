@@ -54,4 +54,4 @@ for (ke,ki,xyz),line in zip(cases,rows):
         if not math.isfinite(value):raise AssertionError((key,value))
         worst[key]=max(worst[key],value)
     if max(errors.values())>5e-10:raise AssertionError(dict(ke=str(ke),ki=str(ki),point=list(map(str,point)),errors=errors))
-print(json.dumps(dict(passed=True,cases=len(cases),precision_decimal_digits=80,oracle='mpmath Cartesian differentiation of exp(+ikR)/(4*pi*R)',worst_errors=worst),indent=2))
+print(json.dumps(dict(passed=True,cases=len(cases),precision_decimal_digits=80,mpmath_version=mp.__version__,oracle='mpmath Cartesian differentiation of exp(+ikR)/(4*pi*R)',worst_errors=worst),indent=2))

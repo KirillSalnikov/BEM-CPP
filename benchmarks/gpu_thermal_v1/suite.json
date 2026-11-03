@@ -9,7 +9,7 @@
     "aspect": 1.4285714285714286,
     "system_dofs": 258048,
     "mesh_triangles": 43008,
-    "iterations_per_repeat": 4096,
+    "iterations_per_repeat": 1536,
     "quadrature_order": 7,
     "duffy_order": 4,
     "fmm_digits": 5,
