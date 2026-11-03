@@ -1,0 +1,3 @@
+case,profile,threads,median_wall_s,min_wall_s,max_wall_s,MAD_s,timing_stable,validated
+bem-prism-ka10-r3,mixed,8,4.333799291000105,4.198741606999647,6.352000935999968,0.08098100500046712,True,True
+bem-tmatrix-ka1p5-r1-L4,mixed,8,3.841421705999892,3.4262116350000724,3.9105693709998377,0.06914766499994585,True,True

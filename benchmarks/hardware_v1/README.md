@@ -117,10 +117,13 @@ RTX 5080 installation (CPU reference is identified separately). Regenerating
 references is a maintainer action, excluded from measured scores:
 
 ```bash
-python3 scripts/benchmark_hardware.py reference --profile gpu-fp32 --output /new/reference_folder
+python3 scripts/benchmark_hardware.py reference --profile mixed --output /new/reference_folder
 ```
 
 This command refuses to overwrite a reference. It does not produce a validated
 timing score. Keep the published references for subsequent hardware tests.
 Published machine results are under `results/`. Large operator caches, T-array
 checkpoints and intermediate run directories are intentionally not committed.
+
+
+[Measured RTX 5080 baseline (2026-11-03)](results/rtx5080_20261103/README.md)
