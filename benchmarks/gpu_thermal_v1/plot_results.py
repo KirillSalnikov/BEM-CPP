@@ -25,4 +25,7 @@ for ax,key,label in zip(axes,['utilization.gpu','temperature.gpu','power.draw'],
     ax.set_ylabel(label);ax.grid(alpha=.2)
 axes[0].set_ylim(0,105);axes[0].legend(loc='lower right');axes[0].set_title(title)
 axes[-1].set_xlabel('Elapsed time (minutes)')
-for suffix in ['png','svg']:fig.savefig(a.report.with_name('thermal.'+suffix),dpi=160)
+for suffix in ['png','svg']:
+    destination=a.report.with_name('thermal.'+suffix)
+    fig.savefig(destination,dpi=160)
+    if suffix=='svg':destination.write_text('\n'.join(line.rstrip() for line in destination.read_text().splitlines())+'\n')
