@@ -31,6 +31,7 @@ CUDA_HESSIAN_CHECK = $(HOST_TEST_DIR)/fmm_hessian_check
 CUDA_PFFT_HESSIAN_CHECK = $(HOST_TEST_DIR)/pfft_hessian_check
 CUDA_MULLER_FMM_CHECK = $(HOST_TEST_DIR)/muller_fmm_check
 HOST_CHECKS = \
+	$(HOST_TEST_DIR)/muller_kernel_bundle_check \
 	$(HOST_TEST_DIR)/bdm_mesh_transfer_check \
 	$(HOST_TEST_DIR)/bdm_mesh_transfer_points_check \
 	$(HOST_TEST_DIR)/prism_edge_phase_basis_check \
@@ -255,6 +256,9 @@ $(HOST_TEST_DIR)/p2p_shared_check: $(HOST_TEST_DIR)/p2p_shared_check.cu $(FP32_B
 
 $(HOST_TEST_DIR)/sphere_interpolation_check: $(HOST_TEST_DIR)/sphere_interpolation_check.cpp $(SRCDIR)/sphere_interpolation.h $(SRCDIR)/sphere_quad.h
 	$(CXX) $(HOST_CUDA_INCLUDE) -O2 -std=c++11 -I$(SRCDIR) $< -o $@
+
+$(HOST_TEST_DIR)/muller_kernel_bundle_check: tests/muller_kernel_bundle_check.cpp $(SRCDIR)/muller_kernel_bundle.h $(SRCDIR)/muller_nodal.cpp $(SRCDIR)/mesh.cpp
+	$(CXX) $(HOST_CUDA_INCLUDE) -O3 -std=c++11 -ffunction-sections -fdata-sections -I$(SRCDIR) $(filter-out %.h,$^) -Wl,--gc-sections -o $@
 
 $(HOST_TEST_DIR)/streaming_host_gmres_check: $(HOST_TEST_DIR)/streaming_host_gmres_check.cpp $(STREAMING_HOST_HEADERS)
 	$(CXX) $(HOST_CUDA_INCLUDE) -O2 -std=c++11 -I$(SRCDIR) $< -o $@

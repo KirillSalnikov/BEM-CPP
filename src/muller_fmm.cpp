@@ -2,6 +2,7 @@
 
 #include "muller_duffy.h"
 #include "quadrature.h"
+#include "muller_kernel_bundle.h"
 
 #include <algorithm>
 #include <array>
@@ -458,47 +459,8 @@ bool save_near_correction_cache(
     return true;
 }
 
-struct MullerKernelValues {
-    cdouble k1_scalar = 0.0;
-    MullerTensor3 hessian;
-    std::array<cdouble, 3> gradient_epsilon;
-    std::array<cdouble, 3> gradient_mu;
-};
-
-MullerKernelValues evaluate_kernel_values(
-    cdouble k_exterior,
-    cdouble k_interior,
-    cdouble epsilon_exterior,
-    cdouble epsilon_interior,
-    cdouble mu_exterior,
-    cdouble mu_interior,
-    const Vec3& displacement)
-{
-    const double radius = displacement.norm();
-    if (radius <= 0.0)
-        throw std::runtime_error(
-            "Muller kernel values at zero distance");
-    const cdouble imaginary(0.0, 1.0);
-    const cdouble phi_exterior =
-        std::exp(imaginary * k_exterior * radius) *
-        INV4PI / radius;
-    const cdouble phi_interior =
-        std::exp(imaginary * k_interior * radius) *
-        INV4PI / radius;
-    MullerKernelValues values;
-    values.k1_scalar =
-        k_exterior * k_exterior * phi_exterior -
-        k_interior * k_interior * phi_interior;
-    values.hessian = muller_hessian_difference(
-        k_exterior, k_interior, displacement);
-    values.gradient_epsilon = muller_composite_gradient(
-        epsilon_exterior, epsilon_interior,
-        k_exterior, k_interior, displacement);
-    values.gradient_mu = muller_composite_gradient(
-        mu_exterior, mu_interior,
-        k_exterior, k_interior, displacement);
-    return values;
-}
+using MullerKernelValues = bem_muller::KernelValues;
+using bem_muller::evaluate_kernel_values;
 
 cdouble contract_k1(
     const MullerKernelValues& values,
