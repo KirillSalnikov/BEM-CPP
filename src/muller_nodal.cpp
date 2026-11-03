@@ -520,8 +520,8 @@ MullerTensor3 muller_hessian_difference(
                 for (int col = 0; col < 3; col++) {
                     const double identity = row == col ? 1.0 : 0.0;
                     result[3 * row + col] += coefficient *
-                        ((n - 1.0) * identity +
-                         (n - 3.0) * unit[row] * unit[col]);
+                        (n - 1.0) *
+                        (identity + (n - 3.0) * unit[row] * unit[col]);
                 }
             }
         }

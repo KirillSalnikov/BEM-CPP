@@ -341,7 +341,7 @@ int main()
     const MullerTensor3 taylor =
         muller_hessian_difference(ka, ki, displacement, 1.0);
     const double hessian_error = tensor_relative_error(exact, taylor);
-    if (hessian_error > 2.0e-5) {
+    if (hessian_error > 1.0e-8) {
         std::fprintf(
             stderr, "Hessian Taylor mismatch: %.3e\n", hessian_error);
         return 1;

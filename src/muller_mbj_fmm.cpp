@@ -146,7 +146,7 @@ bool load_mbj_cache(
         !mbj_cache_read(input, stored_system_dofs) ||
         !mbj_cache_read(input, block_count) ||
         std::memcmp(magic, "MULMBJ1", 8) != 0 ||
-        version != 1 ||
+        version != 2 ||
         signature != mbj_cache_signature(
             op, scalar_nodes_per_block, overlap_nodes) ||
         stored_system_dofs !=
@@ -225,7 +225,7 @@ void save_mbj_cache(
         throw std::runtime_error(
             "cannot create Muller MBJ cache " + temporary);
     const char magic[8] = {'M', 'U', 'L', 'M', 'B', 'J', '1', '\0'};
-    const std::uint64_t version = 1;
+    const std::uint64_t version = 2;
     const std::uint64_t signature = mbj_cache_signature(
         op, preconditioner.scalar_nodes_per_block,
         preconditioner.overlap_nodes);

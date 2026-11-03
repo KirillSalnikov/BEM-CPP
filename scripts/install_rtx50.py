@@ -63,7 +63,7 @@ def commands(kind,cuda,cxx,jobs,arch=120,mpicxx='mpicxx'):
         gpu=['-j'+str(jobs),'GPU_ARCH=120','CUDA_PATH='+str(cuda),'CXX='+cxx,'CUDA_HOST_CXX='+cxx,'ARCH_FLAGS=-march=native','GPU_LTO=1','GPU_FAST_MATH=0','GPU_PHASE_TRIG=precise',f'LDFLAGS=-lm -lgomp -L{cuda}/lib64 {rpath} -lcufft -lcudart']
         return [('cpu',['make','-C','cpu','-j'+str(jobs),'CXX='+mpicxx,'ARCH_FLAGS=-march=native']),('gpu-fp64',['make','-C','gpu','fp64']+gpu),('gpu-fp32',['make','-C','gpu','fp32']+gpu)]
     flags=['CXX='+cxx,'CUDA_HOME='+str(cuda),'ARCH=-arch=sm_120','CUDA_CPP_STD=c++17']
-    return [('cpu-reference',['make','bin/muller_nodal_demo','-j'+str(jobs)]+flags),('so3-fp64',['make','bin/tmatrix_so3_mstm','-j1']+flags),('so3-fp32',['make','bin/tmatrix_so3_mstm_fp32','-j1']+flags),('gpu',['make','muller-fp32','-j'+str(jobs)]+flags),('tmatrix-server',['make','bin/muller_tmatrix_fmm_server','-j'+str(jobs)]+flags)]
+    return [('cpu-reference',['make','bin/muller_nodal_demo','-j'+str(jobs)]+flags),('so3-fp64',['make','bin/tmatrix_so3_mstm','-j1']+flags),('so3-fp32',['make','bin/tmatrix_so3_mstm_fp32','-j1']+flags),('gpu',['make','muller-fp32','-j'+str(jobs)]+flags),('tmatrix-server',['make','bin/muller_tmatrix_fmm_server','-j'+str(jobs)]+flags),('gpu-thermal',['make','bin/bem_gpu_thermal','-j'+str(jobs)]+flags)]
 
 def source_files(root):
     excluded={'.git','build','bin','.venv','venv','runs','__pycache__','.pytest_cache','.cuda-local'}
@@ -146,7 +146,7 @@ def main():
     if kind=='mbs-fast':
         bins={'mbs-po-cpu':'cpu/bin/mbs_po_mpi','mbs-po-gpu-fp64':'gpu/bin/mbs_po_gpu_double','mbs-po-gpu-fp32':'gpu/bin/mbs_po_gpu_float'}
     else:
-        bins={'bem-gpu':'bin/muller_nodal_fmm_demo_fp32','bem-tmatrix-server':'bin/muller_tmatrix_fmm_server','bem-so3-fp64':'bin/tmatrix_so3_mstm','bem-so3-fp32':'bin/tmatrix_so3_mstm_fp32','bem-cpu-reference':'bin/muller_nodal_demo'}
+        bins={'bem-gpu':'bin/muller_nodal_fmm_demo_fp32','bem-gpu-thermal':'bin/bem_gpu_thermal','bem-tmatrix-server':'bin/muller_tmatrix_fmm_server','bem-so3-fp64':'bin/tmatrix_so3_mstm','bem-so3-fp32':'bin/tmatrix_so3_mstm_fp32','bem-cpu-reference':'bin/muller_nodal_demo'}
         python=python_path(args.python);version=output([python,'-c','import sys;print(sys.version_info.major*100+sys.version_info.minor)'])
         if int(version)<310:raise RuntimeError('BEM Python launcher needs Python >=3.10')
         check=[python,'-c','import numpy, scipy, scipy.special; assert hasattr(scipy.special,"sph_harm_y")']
@@ -162,7 +162,7 @@ def main():
     for name in (['mbs-po-cpu','mbs-po-gpu-fp64','mbs-po-gpu-fp32'] if kind=='mbs-fast' else ['bem-gpu']):versions[name]=output([prefix/'bin'/name,'--version'],env=env)
     cubins={}
     if (cuda/'bin/cuobjdump').exists():
-        for name in (['mbs-po-gpu-fp64','mbs-po-gpu-fp32'] if kind=='mbs-fast' else ['bem-gpu','bem-tmatrix-server']):
+        for name in (['mbs-po-gpu-fp64','mbs-po-gpu-fp32'] if kind=='mbs-fast' else ['bem-gpu','bem-tmatrix-server','bem-gpu-thermal']):
             listing=output([cuda/'bin/cuobjdump','--list-elf',source/bins[name]],env=env)
             if 'sm_120' not in listing:raise RuntimeError('Native sm_120 cubin missing from '+name)
             cubins[name]=True

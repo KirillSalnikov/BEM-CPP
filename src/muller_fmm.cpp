@@ -127,7 +127,7 @@ const char correction_cache_magic[16] = {
 };
 const std::uint32_t correction_cache_endian =
     UINT32_C(0x01020304);
-const std::uint32_t correction_cache_algorithm_version = 2;
+const std::uint32_t correction_cache_algorithm_version = 3;
 
 int muller_fmm_digits_cap()
 {

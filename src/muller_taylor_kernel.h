@@ -57,7 +57,7 @@ template<size_t MaxOrder> Radial<MaxOrder> radial(double k,C m,double r,int orde
                 const C c=std::pow(I,n)*binomial(n,j)*std::pow(k,n-j)/factorial*INV4PI;
                 if(n>=2) {
                     const C h=c*(1.-std::pow(m,n))*std::pow(r,n-3);
-                    hdiag[j]+=h*double(n-1);huu[j]+=h*double(n-3);
+                    hdiag[j]+=h*double(n-1);huu[j]+=h*double((n-1)*(n-3));
                 }
                 if(n!=1) {
                     const C g=c*double(n-1)*std::pow(r,n-2);

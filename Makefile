@@ -197,6 +197,11 @@ $(BINDIR)/muller_fmm_action_probe: tools/muller_fmm_action_probe.cpp $(MULLER_FP
 	@mkdir -p $(BINDIR)
 	$(NVCC) $(NVFLAGS) $(FP32_PRECISION_FLAGS) -I$(SRCDIR) -o $@ $(filter-out %.h,$^) $(LDFLAGS) -lcublas
 
+$(BINDIR)/bem_gpu_thermal: HOST_OPT=-O3 -march=native
+$(BINDIR)/bem_gpu_thermal: tools/benchmark_gpu_thermal.cpp $(MULLER_FP32_OBJS)
+	@mkdir -p $(BINDIR)
+	$(NVCC) $(NVFLAGS) $(FP32_PRECISION_FLAGS) -I$(SRCDIR) -o $@ $^ $(LDFLAGS) -lcublas
+
 $(BINDIR)/muller_coarse_mesh_probe: HOST_OPT=-O3 -march=native
 $(BINDIR)/muller_coarse_mesh_probe: ARCH=-arch=sm_86
 $(BINDIR)/muller_coarse_mesh_probe: tools/muller_coarse_mesh_probe.cpp $(MULLER_FP32_OBJS) $(STREAMING_HOST_HEADERS) $(SRCDIR)/bdm_mesh_transfer.h $(SRCDIR)/prism_sector_solver.h $(SRCDIR)/streaming_sector_gmres.h $(SRCDIR)/tmatrix_symmetry_warm_start.h $(SRCDIR)/prism_symmetry_sectors.h $(SRCDIR)/prism_orbit_inverse.cpp $(SRCDIR)/prism_orbit_inverse.h $(SRCDIR)/prism_symmetric_circulant.h $(SRCDIR)/prism_circulant_inverse.cpp $(SRCDIR)/prism_circulant_inverse.h $(SRCDIR)/prism_circulant_layout.cpp $(SRCDIR)/prism_circulant_layout.h $(SRCDIR)/prism_circulant_symmetry.h $(SRCDIR)/block_circulant_symmetry.h $(SRCDIR)/block_circulant_fft.cu $(SRCDIR)/block_circulant_fft.h
