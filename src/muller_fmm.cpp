@@ -1170,8 +1170,8 @@ cdouble dot_real_complex(
 void add_block_sample(
     const MullerFmmOperator& op,
     const std::vector<int>& dof_to_local,
-    int test_element,
-    int trial_element,
+    const MullerBasisSample& test_basis,
+    const MullerBasisSample& trial_basis,
     const MullerFrameSample& test,
     const MullerFrameSample& trial,
     double weight,
@@ -1189,31 +1189,25 @@ void add_block_sample(
             op.epsilon_exterior, op.epsilon_interior,
             op.mu_exterior, op.mu_interior,
             displacement);
-    const MullerBasisSample test_basis =
-        evaluate_muller_basis(op.mesh, test_element, test);
-    const MullerBasisSample trial_basis =
-        evaluate_muller_basis(op.mesh, trial_element, trial);
     for (int alpha = 0; alpha < test_basis.count; alpha++) {
         const int row = dof_to_local[test_basis.dofs[alpha]];
         if (row < 0)
             continue;
         const Vec3& test_tangent = test_basis.values[alpha];
-        const Vec3 rotated_test =
-            test_tangent.cross(test.normal);
+        const auto contractions = bem_muller::contract_test(
+            kernels, test_tangent, test.normal);
         for (int beta = 0; beta < trial_basis.count; beta++) {
             const int column =
                 dof_to_local[trial_basis.dofs[beta]];
             if (column < 0)
                 continue;
             const Vec3& source_tangent = trial_basis.values[beta];
-            const cdouble value_k1 = contract_k1(
-                kernels, rotated_test, source_tangent);
-            const cdouble value_k2_epsilon = contract_k2(
-                kernels.gradient_epsilon,
-                test_tangent, test.normal, source_tangent);
-            const cdouble value_k2_mu = contract_k2(
-                kernels.gradient_mu,
-                test_tangent, test.normal, source_tangent);
+            const cdouble value_k1 = bem_muller::contract_source(
+                contractions.k1, source_tangent);
+            const cdouble value_k2_epsilon = bem_muller::contract_source(
+                contractions.k2_epsilon, source_tangent);
+            const cdouble value_k2_mu = bem_muller::contract_source(
+                contractions.k2_mu, source_tangent);
             const size_t index =
                 (size_t)row * current_dimension + column;
             k1[index] += physical_weight * value_k1;
@@ -3394,6 +3388,7 @@ std::vector<cdouble> assemble_muller_nodal_block(
         tri_quadrature(op.quadrature_order);
     std::vector<MullerFrameSample> regular_frames(
         (size_t)support_elements.size() * regular.npts);
+    std::vector<MullerBasisSample> regular_bases(regular_frames.size());
     for (int support_index = 0;
          support_index < (int)support_elements.size();
          support_index++) {
@@ -3405,6 +3400,9 @@ std::vector<cdouble> assemble_muller_nodal_block(
                     op.mesh, element_index,
                     regular.pts[q][0],
                     regular.pts[q][1]);
+            regular_bases[(size_t)support_index * regular.npts + q] =
+                evaluate_muller_basis(op.mesh, element_index,
+                    regular_frames[(size_t)support_index * regular.npts + q]);
         }
     }
     const std::vector<MullerDuffyPoint> coincident =
@@ -3451,7 +3449,8 @@ std::vector<cdouble> assemble_muller_nodal_block(
                             point.trial_xi, point.trial_eta);
                     add_block_sample(
                         op, dof_to_local,
-                        test_index, trial_index,
+                        evaluate_muller_basis(op.mesh, test_index, test),
+                        evaluate_muller_basis(op.mesh, trial_index, trial),
                         test, trial, point.weight,
                         current_dimension,
                         k1, k2_epsilon, k2_mu);
@@ -3469,7 +3468,8 @@ std::vector<cdouble> assemble_muller_nodal_block(
                                     regular.npts + qy];
                         add_block_sample(
                             op, dof_to_local,
-                            test_index, trial_index,
+                            regular_bases[(size_t)test_support * regular.npts + qx],
+                            regular_bases[(size_t)trial_support * regular.npts + qy],
                             test, trial,
                             0.25 * regular.wts[qx] *
                                 regular.wts[qy],

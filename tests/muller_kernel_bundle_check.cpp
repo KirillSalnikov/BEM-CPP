@@ -34,6 +34,14 @@ int main() try {
                 for(int i=0;i<3;++i)for(int j=0;j<3;++j)
                     contraction += x[i]*actual.hessian[3*i+j]*y[j];
                 check(contraction,muller_k1_kernel(k,k*n,r,test,source));
+                const Vec3 normal(0.1, 0.6, -0.2);
+                const auto prepared = bem_muller::contract_test(actual,test,normal);
+                check(bem_muller::contract_source(prepared.k1,source),
+                      muller_k1_kernel(k,k*n,r,test.cross(normal),source));
+                check(bem_muller::contract_source(prepared.k2_epsilon,source),
+                      muller_k2_kernel(e1,e2,k,k*n,r,test,normal,source));
+                check(bem_muller::contract_source(prepared.k2_mu,source),
+                      muller_k2_kernel(m1,m2,k,k*n,r,test,normal,source));
                 ++cases;
             }
         }
