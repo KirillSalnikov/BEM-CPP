@@ -11,7 +11,8 @@ def sha(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 def write(path,value):
     path=Path(path);path.parent.mkdir(parents=True,exist_ok=True);tmp=path.with_suffix(path.suffix+'.tmp');tmp.write_text(json.dumps(value,indent=2,allow_nan=False)+'\n');tmp.replace(path)
 def capture(command,env=None):
-    p=subprocess.run([str(v) for v in command],env=env,text=True,capture_output=True,timeout=30)
+    try:p=subprocess.run([str(v) for v in command],env=env,text=True,capture_output=True,timeout=30)
+    except (OSError,subprocess.TimeoutExpired):return None
     return p.stdout.strip() if p.returncode==0 else None
 
 def validate_matrix(matrix,angles):
@@ -117,7 +118,7 @@ def hardware(args,build):
     return dict(label=args.label or socket.gethostname(),cpu=cpu,gpu=gpu,os=platform.platform(),python=sys.version,meminfo=Path('/proc/meminfo').read_text(),loadavg=list(os.getloadavg()),before=gpu_sample(args.device),nvcc=capture([Path(build['installation'].get('cuda_home','/usr/local/cuda'))/'bin/nvcc','--version']))
 
 def environment(args,build):
-    env={k:v for k,v in os.environ.items() if not k.startswith(('MBS_','BEM_','OMP_','MKL_','OPENBLAS_','CUDA_'))}
+    env={k:v for k,v in os.environ.items() if not k.startswith(('MBS_','BEM_','OMP_','GOMP_','KMP_','MKL_','OPENBLAS_','CUDA_'))}
     env.update(build['exports'])
     env.update(OMP_NUM_THREADS=str(args.threads),OPENBLAS_NUM_THREADS='1',MKL_NUM_THREADS='1',OMP_DYNAMIC='FALSE',OMP_PROC_BIND='spread',OMP_PLACES='cores',CUDA_VISIBLE_DEVICES=str(args.device),CUDA_MODULE_LOADING='EAGER',CUDA_CACHE_PATH=str(args.output/'cuda_cache'),MBS_GPU_TIMING='1',BEM_MIXED_ITERATIVE_REFINEMENT='1')
     return env
@@ -202,7 +203,8 @@ def compare_reports(baseline,candidate):
         if min(b['statistics']['wall_s']['n'],c['statistics']['wall_s']['n'])<3:raise ValueError('At least three measured repeats required for ranking')
         same_source=baseline['build']['numerical_source_sha256']==candidate['build']['numerical_source_sha256']
         compilers=baseline['build'].get('host_compiler_build_ids');nvcc=baseline['build'].get('installation',{}).get('nvcc')
-        same_toolchain=bool(compilers and nvcc and compilers==candidate['build'].get('host_compiler_build_ids') and nvcc==candidate['build'].get('installation',{}).get('nvcc') and baseline['build'].get('analysis_environment',{})==candidate['build'].get('analysis_environment',{}))
+        same_cuda=baseline.get('profile')=='cpu' or bool(nvcc and nvcc==candidate['build'].get('installation',{}).get('nvcc'))
+        same_toolchain=bool(compilers and compilers==candidate['build'].get('host_compiler_build_ids') and same_cuda and baseline['build'].get('analysis_environment',{})==candidate['build'].get('analysis_environment',{}))
         rows.append(dict(case=b['id'],baseline_label=baseline['hardware']['label'],candidate_label=candidate['hardware']['label'],speedup_baseline_over_candidate=b['statistics']['wall_s']['median']/c['statistics']['wall_s']['median'],same_numerical_source=same_source,same_recorded_toolchain=same_toolchain,scope='hardware/platform comparison' if same_source and same_toolchain else 'software/toolchain and hardware comparison',baseline_relative_MAD=b['statistics']['wall_s']['relative_MAD'],candidate_relative_MAD=c['statistics']['wall_s']['relative_MAD']))
     return rows
 

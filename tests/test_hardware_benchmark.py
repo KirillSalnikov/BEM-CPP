@@ -59,4 +59,10 @@ class BenchmarkTests(unittest.TestCase):
         with patch.object(b,'smi_path',return_value='/smi'),patch.object(b,'capture',return_value='N/A, N/A, N/A, N/A, N/A, N/A'):
             sample=b.gpu_sample(0);self.assertIsNone(sample['power.draw']);self.assertIsNone(sample['memory.used'])
 
+    def test_missing_optional_cuda_tool_does_not_break_cpu_benchmark(self):
+        self.assertIsNone(b.capture(['/missing/nvcc','--version']))
+        baseline=report(8);candidate=report(4)
+        for r in [baseline,candidate]:r['profile']='cpu';r['build']['installation']={}
+        self.assertTrue(b.compare_reports(baseline,candidate)[0]['same_recorded_toolchain'])
+
 if __name__=='__main__':unittest.main()
