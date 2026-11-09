@@ -1,0 +1,10 @@
+{
+  "status": "complete",
+  "ref": 6,
+  "alias_sides_checked": 128,
+  "unique_layouts": 36,
+  "seconds": 3.4064903949984,
+  "max_mapping_error": 1.1381651725454886e-13,
+  "max_lattice_error": 5.115907697472721e-12,
+  "exactly_equal": true
+}

@@ -21,6 +21,31 @@ int main()try {
  if(r.iterations!=1 || r.strict_checks!=1 || r.residual<=1e-14)throw std::runtime_error("sector action limit");
  std::fill(b.begin(),b.end(),Complex(0));r=sector_gmres(strict,strict,b.data(),x.data(),offsets,3,1e-10,30,false);
  if(r.iterations || r.residual || norm(x.data(),n))throw std::runtime_error("zero RHS");
+ // One modal sector must not allocate a twelve-sector restart basis. A
+ // later strict residual can activate another sector despite an initially
+ // zero RHS there; lazy storage must not silently suppress that correction.
+ {
+  const int width=9,total=12*width,restart=16;
+  std::array<int,13> off;for(int s=0;s<=12;++s)off[s]=s*width;
+  std::vector<Complex> rhs(total),solution(total),image(total);
+  for(int i=0;i<width;++i)rhs[i]=Complex(1.+.1*i,.2*i);
+  const Action diagonal=[&](const Complex* a,Complex* out){
+   for(int i=0;i<total;++i)out[i]=(1.+.07*(i%width))*a[i];
+  };
+  const auto single=sector_gmres(diagonal,diagonal,rhs.data(),solution.data(),off,restart,1e-11,100,false);
+  const size_t one_basis=size_t(width)*(restart+1)*sizeof(Complex);
+  if(single.residual>1e-11 || single.basis_peak_bytes>one_basis || !single.basis_peak_bytes)
+   throw std::runtime_error("inactive sectors allocated Arnoldi storage");
+  const Action coupled=[&](const Complex* a,Complex* out){
+   diagonal(a,out);for(int i=0;i<width;++i)out[width+i]+=Complex(1e-4,2e-4)*a[i];
+  };
+  const auto correction=sector_gmres(diagonal,coupled,rhs.data(),solution.data(),off,restart,1e-11,100,false);
+  coupled(solution.data(),image.data());for(int i=0;i<total;++i)image[i]-=rhs[i];
+  if(norm(image.data(),total)/norm(rhs.data(),total)>1e-11 || correction.strict_checks<2 ||
+     !correction.sector_iterations[1] || correction.basis_peak_bytes>2*one_basis)
+   throw std::runtime_error("newly activated sector was not corrected");
+  for(int s=2;s<12;++s)if(correction.sector_iterations[s])throw std::runtime_error("unexpected active sector");
+ }
  // The loose first-pass target is not an acceptance tolerance. This
  // diagonal system stops its first inner pass after one inaccurate step.
  {

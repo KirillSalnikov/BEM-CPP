@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))
-from tmatrix_pipeline import IncidentPreparation
+from tmatrix_pipeline import IncidentPreparation,IncidentFieldBuffer
 from tmatrix_incident import regular_fields,RegularFieldCache
 from tmatrix_c6 import encode_fields
 from tmatrix_reference import modes
@@ -13,6 +13,22 @@ class PipelineTest(unittest.TestCase):
         self.points=np.vstack((np.random.default_rng(5).normal(size=(73,3)),[[0,0,0],[0,0,1],[0,0,-1]]))
         self.modal=modes(12)
         self.group=[self.modal.index((p,8,m)) for m in range(6) for p in (0,1)]
+
+    def test_discarded_payload_is_regenerated_for_both_polarizations_and_packing(self):
+        owner=IncidentFieldBuffer(len(self.points),releasable=True)
+        prep=IncidentPreparation(self.points,self.modal,7.3,owner.fields,cache=False)
+        reference=np.empty_like(owner.fields)
+        other=IncidentPreparation(self.points,self.modal,7.3,reference,cache=False)
+        tasks=[('packed',self.group,True),('single',[self.modal.index((0,9,3)),self.modal.index((1,9,3))],False),('packed',self.group[::2],False)]
+        for kind,group,reflection in tasks:
+            actual=prep.get(kind,group,reflection);expected=other.get(kind,group,reflection)
+            delivered=owner.fields.copy()
+            np.testing.assert_array_equal(delivered,reference)
+            np.testing.assert_array_equal(actual[0],expected[0])
+            owner.discard()
+            self.assertFalse(np.any(owner.fields))
+            np.testing.assert_array_equal(delivered,reference)
+        self.assertEqual(owner.releases,len(tasks))
 
     def test_prefetch_preserves_both_codes_scales_and_fallback(self):
         for cache in (False,True):
@@ -61,9 +77,9 @@ class PipelineTest(unittest.TestCase):
             outputs=[]
             env={k:v for k,v in os.environ.items() if not k.startswith('BEM_')}
             env.update(OMP_NUM_THREADS='1',OPENBLAS_NUM_THREADS='1')
-            for prefetch,fallback,hybrid in ((False,False,False),(True,False,False),(True,True,False),
-                                             (True,False,True),(True,True,True)):
-                out=Path(temp)/f'{prefetch}_{fallback}_{hybrid}'
+            for prefetch,fallback,hybrid,release in ((False,False,False,False),(True,False,False,False),(True,True,False,False),
+                                             (True,False,True,False),(True,True,True,False),(False,False,False,True)):
+                out=Path(temp)/f'{prefetch}_{fallback}_{hybrid}_{release}'
                 env.pop('BEM_TEST_FAKE_CROSS_TALK',None)
                 env['BEM_TEST_FAKE_HYBRID']='1' if hybrid else '0'
                 if fallback:env['BEM_TEST_FAKE_CROSS_TALK']='production'
@@ -71,6 +87,7 @@ class PipelineTest(unittest.TestCase):
                      '--ri','1.3','--ref','1','--order','7','--tol','1e-6','--no-average',
                      '--c2-reuse','--c6-pack','--mirror-pack','--worker-binary',str(ROOT/'tests/c6_fake_worker.py'),'--out',str(out)]
                 if prefetch:cmd+=['--incident-prefetch']
+                if release:cmd+=['--release-incident-buffer','--no-incident-cache']
                 result=subprocess.run(cmd,cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=60)
                 self.assertEqual(result.returncode,0,result.stdout)
                 outputs.append(np.load(out/'tmatrix.npy'))

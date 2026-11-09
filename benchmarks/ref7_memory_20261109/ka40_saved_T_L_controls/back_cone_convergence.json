@@ -1,0 +1,75 @@
+{
+  "source": "/home/kirill/neuro/BEM-CPP-analytic-alpha/runs/scice_ka40_checker_tuned_20261109/solution",
+  "ref": 6,
+  "reference_L": 65,
+  "ka": 40,
+  "orientation_average": "analytic SO3",
+  "back_cone_degrees": [
+    175,
+    180
+  ],
+  "angle_step_degrees": 0.025,
+  "criteria": "100*abs(M_L-M_65)/M11_65, using both modal rows and columns",
+  "limitations": [
+    "Reference is L=65, not infinite order",
+    "Does not measure ref=6 surface mesh error or the ref=7 T solution"
+  ],
+  "rows": [
+    {
+      "L": 55,
+      "M11_180_error_percent": 5.610877652781256,
+      "M11_cone_max_percent": 5.610877652781256,
+      "all16_cone_over_M11_max_percent": 6.831680508626377,
+      "all16_all_angles_over_M11_max_percent": 6.831680508626377
+    },
+    {
+      "L": 56,
+      "M11_180_error_percent": 3.057849740480119,
+      "M11_cone_max_percent": 3.229353932368989,
+      "all16_cone_over_M11_max_percent": 3.6529707949406243,
+      "all16_all_angles_over_M11_max_percent": 3.809978465193714
+    },
+    {
+      "L": 57,
+      "M11_180_error_percent": 1.4911367843828198,
+      "M11_cone_max_percent": 1.4911367843828198,
+      "all16_cone_over_M11_max_percent": 1.6338429954941676,
+      "all16_all_angles_over_M11_max_percent": 2.212050607907389
+    },
+    {
+      "L": 58,
+      "M11_180_error_percent": 0.768251729668751,
+      "M11_cone_max_percent": 0.768251729668751,
+      "all16_cone_over_M11_max_percent": 0.768251729668751,
+      "all16_all_angles_over_M11_max_percent": 1.285534975839987
+    },
+    {
+      "L": 59,
+      "M11_180_error_percent": 0.5525972391568762,
+      "M11_cone_max_percent": 0.5525972391568762,
+      "all16_cone_over_M11_max_percent": 0.5525972391568762,
+      "all16_all_angles_over_M11_max_percent": 0.7088950513297821
+    },
+    {
+      "L": 61,
+      "M11_180_error_percent": 0.21306844779465822,
+      "M11_cone_max_percent": 0.21306844779465822,
+      "all16_cone_over_M11_max_percent": 0.21306844779465822,
+      "all16_all_angles_over_M11_max_percent": 0.21306844779465822
+    },
+    {
+      "L": 63,
+      "M11_180_error_percent": 0.07659541207867596,
+      "M11_cone_max_percent": 0.07659541207867596,
+      "all16_cone_over_M11_max_percent": 0.07659541207867596,
+      "all16_all_angles_over_M11_max_percent": 0.07659541207867596
+    },
+    {
+      "L": 65,
+      "M11_180_error_percent": 0.0,
+      "M11_cone_max_percent": 0.0,
+      "all16_cone_over_M11_max_percent": 0.0,
+      "all16_all_angles_over_M11_max_percent": 0.0
+    }
+  ]
+}

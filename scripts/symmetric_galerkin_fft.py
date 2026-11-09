@@ -153,12 +153,46 @@ def torch_local_matrix(matrix, device, dtype, storage):
     return local, size
 
 
+def compact_alias_maps(cpu):
+    """Losslessly reduce serialized/host index and signed-permutation arrays."""
+    layouts=set();arrays={};before=after=0
+    def compact(value,sign=False):
+        nonlocal before,after
+        key=id(value)
+        if key in arrays:return arrays[key]
+        before+=value.nbytes
+        if sign:
+            if not np.all(np.isin(value,(-1,0,1))):raise ValueError('Expected a signed permutation')
+            dtype=np.int8
+        else:dtype=np.int32 if value.size==0 or (value.min()>=0 and value.max()<2**31) else np.int64
+        result=np.asarray(value,dtype=dtype);arrays[key]=result;after+=result.nbytes
+        return result
+    for _,alias in cpu.aliases:
+        for side in ('source','target'):
+            layout=alias[side]
+            if id(layout) not in layouts:
+                layouts.add(id(layout))
+                for name in ('local','global_','signs'):layout[name]=compact(layout[name],name=='signs')
+            alias[side+'_sign']=compact(alias[side+'_sign'],True)
+    return dict(before_bytes=before,after_bytes=after,unique_layouts=len(layouts))
+
+
 class TorchSymmetricAction:
     """One resident symbol per orbit, with face aliases as multiple RHS."""
-    def __init__(self,cpu,device,dtype,*,factors=None,factor_storage='full',local_storage='coo'):
+    def __init__(self,cpu,device,dtype,*,factors=None,factor_storage='full',local_storage='coo',
+                 spectral_budget_bytes=None,stream_cache=None,frequency_batch=16,compact_maps=False,
+                 symbol_storage='full'):
         import torch
         if factor_storage not in ('full','half'):raise ValueError('Invalid factor storage')
+        if symbol_storage not in ('full','half'):raise ValueError('Invalid symbol storage')
         if factor_storage=='half' and dtype!=torch.complex64:raise ValueError('Half factor storage uses FP32 arithmetic')
+        if symbol_storage=='half' and dtype!=torch.complex64:raise ValueError('Half symbol storage uses FP32 arithmetic')
+        if spectral_budget_bytes is not None:
+            if spectral_budget_bytes<0 or stream_cache is None or factor_storage!='half' or frequency_batch<1:
+                raise ValueError('Bounded storage requires nonnegative budget, cache, half factors and positive batch')
+            from bounded_spectral_storage import StreamedSpectralBlock,half_factors
+            from pathlib import Path
+        self.spectral_resident_bytes=0;self.stream_transfer_bytes=0;self.pinned_bytes=0;self.map_bytes=0
         def encode_half(values):
             encoded=torch.empty((*values.shape,2),device=device,dtype=torch.float16)
             scales=np.empty((len(values),1,1),np.float32)
@@ -172,42 +206,92 @@ class TorchSymmetricAction:
         for index,op in enumerate(cpu.canonical):
             aliases=[a for i,a in cpu.aliases if i==index];count=len(aliases)
             sc,sny=aliases[0]['source']['shape'];tc,tny=aliases[0]['target']['shape']
-            indices=np.zeros((count,sc*sny),np.int64);signs=np.zeros_like(indices,dtype=float)
+            index_dtype=np.int32 if compact_maps and max(cpu.geometry.N,count*tc*tny)<2**31 else np.int64
+            indices=np.zeros((count,sc*sny),index_dtype);signs=np.zeros_like(indices,dtype=np.int8 if compact_maps else float)
             target_local=[];target_global=[];target_sign=[]
             for j,a in enumerate(aliases):
+                if compact_maps and any(not np.all(np.isin(a[side+'_sign'],(-1,1))) for side in ('source','target')):
+                    raise ValueError('Compact FFT maps require exact signed permutations')
                 s,t=a['source'],a['target'];indices[j,s['local']]=s['global_'];signs[j,s['local']]=a['source_sign']
-                target_local.extend(j*tc*tny+t['local']);target_global.extend(t['global_']);target_sign.extend(a['target_sign'])
+                target_local.append(j*tc*tny+t['local']);target_global.append(t['global_']);target_sign.append(a['target_sign'])
+            sign_dtype=torch.int8 if compact_maps else dtype
             group=dict(op=op,count=count,sc=sc,sny=sny,tc=tc,tny=tny,
-                indices=torch.as_tensor(indices.reshape(count,sc,sny),device=device),signs=torch.as_tensor(signs.reshape(count,sc,sny),device=device,dtype=dtype),
-                target_local=torch.as_tensor(np.array(target_local),device=device),target_global=torch.as_tensor(np.array(target_global),device=device),
-                target_sign=torch.as_tensor(np.array(target_sign),device=device,dtype=dtype))
+                indices=torch.as_tensor(indices.reshape(count,sc,sny),device=device),signs=torch.as_tensor(signs.reshape(count,sc,sny),device=device,dtype=sign_dtype),
+                target_local=torch.as_tensor(np.concatenate(target_local).astype(index_dtype),device=device),target_global=torch.as_tensor(np.concatenate(target_global).astype(index_dtype),device=device),
+                target_sign=torch.as_tensor(np.concatenate(target_sign),device=device,dtype=sign_dtype))
+            self.map_bytes+=sum(v.numel()*v.element_size() for v in group.values() if torch.is_tensor(v))
             if factors is not None and index in factors:
                 if isinstance(op,ParallelGalerkinFFT):raise ValueError('Only cross-face symbols support low-rank factors')
                 u,v=factors[index]
                 if u.shape[0]!=op.nfft or v.shape[0]!=op.nfft or u.shape[1]!=2*op.tc or v.shape[2]!=2*op.sc or u.shape[2]!=v.shape[1]:raise ValueError('Invalid cross-symbol factors')
-                if factor_storage=='half':
+                spectral_bytes=(u.size+v.size)*(4 if factor_storage=='half' else torch.empty((),dtype=dtype).element_size())+(len(u)*4 if factor_storage=='half' else 0)
+                if spectral_budget_bytes is not None and self.spectral_resident_bytes+spectral_bytes>spectral_budget_bytes:
+                    left,ls=half_factors(u,Path(stream_cache)/str(index),'left')
+                    right,rs=half_factors(v,Path(stream_cache)/str(index),'right')
+                    group['streamed']=StreamedSpectralBlock((left,right,ls*rs),device=device,batch=frequency_batch,half=True)
+                elif factor_storage=='half':
                     left,ls=encode_half(u);right,rs=encode_half(v);group.update(left_half=left,right_half=right,factor_scale=ls*rs)
                 else:group.update(left=torch.as_tensor(u,device=device,dtype=dtype),right=torch.as_tensor(v,device=device,dtype=dtype))
-            else:group['symbol']=torch.as_tensor(op.symbol,device=device,dtype=dtype)
+            else:
+                symbol=op.symbol.reshape(-1,op.tc,op.sc) if isinstance(op,ParallelGalerkinFFT) else op.symbol
+                spectral_bytes=op.symbol.size*(4 if symbol_storage=='half' else torch.empty((),dtype=dtype).element_size())
+                if symbol_storage=='half':spectral_bytes+=len(symbol)*4
+                if spectral_budget_bytes is not None and self.spectral_resident_bytes+spectral_bytes>spectral_budget_bytes:
+                    if symbol.dtype!=np.complex64:raise ValueError('Streaming symbol requires complex64')
+                    if symbol_storage=='half':
+                        encoded,scale=half_factors(symbol,Path(stream_cache)/str(index),'symbol')
+                        group['streamed']=StreamedSpectralBlock((encoded,scale),device=device,batch=512,half_matrix=True)
+                    else:group['streamed']=StreamedSpectralBlock((symbol,),device=device,batch=512)
+                elif symbol_storage=='half':
+                    encoded,scale=encode_half(symbol);group.update(symbol_half=encoded,symbol_scale=scale)
+                else:group['symbol']=torch.as_tensor(op.symbol,device=device,dtype=dtype)
+            if 'streamed' in group:
+                self.bytes+=group['streamed'].bytes;self.pinned_bytes+=group['streamed'].host_bytes
+                self.stream_transfer_bytes+=group['streamed'].transfer_bytes
+            else:self.spectral_resident_bytes+=spectral_bytes
             self.bytes+=sum(v.numel()*v.element_size() for v in group.values() if torch.is_tensor(v));self.groups.append(group)
-        self.local,self.local_bytes=torch_local_matrix(cpu.local,device,dtype,local_storage)
+        if local_storage in ('packed','host_packed'):
+            if dtype!=torch.complex64:raise ValueError('Packed local storage uses complex64')
+            if local_storage=='host_packed':
+                from packed_current_host import PackedHostCurrentCSR
+                self.local=PackedHostCurrentCSR(cpu.packed_local_directory,device)
+            else:
+                from packed_current_csr import PackedCurrentCSR
+                self.local=PackedCurrentCSR(cpu.packed_local_directory,device)
+            self.local_bytes=self.local.bytes
+        else:self.local,self.local_bytes=torch_local_matrix(cpu.local,device,dtype,local_storage)
         self.local_storage=local_storage
         self.bytes+=self.local_bytes
 
+    @staticmethod
+    def symbol_product(group,spectrum,rows):
+        import torch
+        if 'streamed' in group:return group['streamed'](spectrum,rows)
+        if 'symbol_half' not in group:return torch.bmm(group['symbol'].reshape(len(spectrum),rows,-1),spectrum)
+        result=torch.empty((len(spectrum),rows,spectrum.shape[-1]),device=spectrum.device,dtype=spectrum.dtype)
+        for first in range(0,len(spectrum),512):
+            last=min(first+512,len(spectrum))
+            symbol=torch.view_as_complex(group['symbol_half'][first:last].float())
+            result[first:last]=torch.bmm(symbol,spectrum[first:last])*group['symbol_scale'][first:last]
+        return result
+
     def __call__(self,x):
         import torch
+        if self.local_storage=='host_packed':self.local.begin(x)
         y=torch.zeros(self.N,device=self.device,dtype=self.dtype)
         for g in self.groups:
             op=g['op'];count=g['count'];values=x[g['indices']]*g['signs']
             if isinstance(op,ParallelGalerkinFFT):
                 values=values.reshape(count,2,op.source.nx,op.sc//2,op.source.ny).permute(0,1,3,2,4).reshape(count,op.sc,op.source.nx,op.source.ny)
                 spectrum=torch.fft.fftn(values,s=(op.nfx,op.nfy),dim=(2,3)).permute(2,3,1,0).reshape(op.nfx*op.nfy,op.sc,count)
-                result=torch.bmm(g['symbol'].reshape(op.nfx*op.nfy,op.tc,op.sc),spectrum).reshape(op.nfx,op.nfy,op.tc,count)
+                result=self.symbol_product(g,spectrum,op.tc).reshape(op.nfx,op.nfy,op.tc,count)
                 values=torch.fft.ifftn(result,dim=(0,1))[:op.target.nx,:op.target.ny]
                 values=values.reshape(op.target.nx,op.target.ny,2,op.tc//2,count).permute(4,2,0,3,1).reshape(-1)
             else:
                 spectrum=torch.fft.fft(values,n=op.nfft,dim=2).permute(2,1,0)
-                if 'left_half' in g:
+                if 'streamed' in g:
+                    result=g['streamed'](spectrum,2*op.tc)
+                elif 'left_half' in g:
                     # Decode only 16 frequencies at a time; full-factor decoding
                     # would erase the memory saving on the production mesh.
                     result=torch.empty((op.nfft,2*op.tc,count),device=self.device,dtype=self.dtype)
@@ -216,10 +300,11 @@ class TorchSymmetricAction:
                         left=torch.view_as_complex(g['left_half'][first:last].float())
                         right=torch.view_as_complex(g['right_half'][first:last].float())
                         result[first:last]=torch.bmm(left,torch.bmm(right,spectrum[first:last]))*g['factor_scale'][first:last]
-                else:result=torch.bmm(g['left'],torch.bmm(g['right'],spectrum)) if 'left' in g else torch.bmm(g['symbol'],spectrum)
+                else:result=torch.bmm(g['left'],torch.bmm(g['right'],spectrum)) if 'left' in g else self.symbol_product(g,spectrum,2*op.tc)
                 values=torch.fft.ifft(result,dim=0)[:op.target.ny].permute(2,1,0).reshape(-1)
             y.index_add_(0,g['target_global'],g['target_sign']*values[g['target_local']])
-        return y+torch.sparse.mm(self.local,x[:,None])[:,0]
+        if self.local_storage=='host_packed':return y+self.local.finish()
+        return y+(self.local(x) if self.local_storage=='packed' else torch.sparse.mm(self.local,x[:,None])[:,0])
 
 class TorchCapturedAction:
     """Replay a fixed-shape operator with CUDA Graphs; coefficients unchanged.
@@ -230,6 +315,7 @@ class TorchCapturedAction:
     def __init__(self,operator):
         import torch
         if torch.device(operator.device).type!='cuda':raise ValueError('CUDA Graph requires CUDA')
+        if getattr(operator,'stream_transfer_bytes',0) or getattr(operator,'local_storage','')=='host_packed':raise ValueError('Host-streamed coefficients cannot use CUDA Graph capture')
         self.operator=operator;self.device=operator.device;self.dtype=operator.dtype;self.N=operator.N
         self.input=torch.zeros(self.N,device=self.device,dtype=self.dtype)
         stream=torch.cuda.Stream();stream.wait_stream(torch.cuda.current_stream())

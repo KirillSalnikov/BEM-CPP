@@ -28,6 +28,7 @@ CUDA_HESSIAN_CHECK = $(HOST_TEST_DIR)/fmm_hessian_check
 CUDA_PFFT_HESSIAN_CHECK = $(HOST_TEST_DIR)/pfft_hessian_check
 CUDA_MULLER_FMM_CHECK = $(HOST_TEST_DIR)/muller_fmm_check
 HOST_CHECKS = \
+	$(HOST_TEST_DIR)/octree_depth_check \
 	$(HOST_TEST_DIR)/host_muller_correction_check \
 	$(HOST_TEST_DIR)/p2p_radial_factors_check \
 	$(HOST_TEST_DIR)/host_cpu_checker_config_check \
@@ -307,6 +308,13 @@ $(HOST_TEST_DIR)/streaming_two_level_check: $(HOST_TEST_DIR)/streaming_two_level
 
 $(HOST_TEST_DIR)/streaming_deferred_strict_check: $(HOST_TEST_DIR)/streaming_deferred_strict_check.cpp $(STREAMING_HOST_HEADERS)
 	$(CXX) $(HOST_CUDA_INCLUDE) -O2 -std=c++11 -I$(SRCDIR) $< -o $@
+
+$(HOST_TEST_DIR)/octree_depth_check: $(HOST_TEST_DIR)/octree_depth_check.cpp $(SRCDIR)/octree.h $(SRCDIR)/types.h
+	$(CXX) $(HOST_CUDA_INCLUDE) -O2 -std=c++11 -I$(SRCDIR) $< -o $@
+
+$(BINDIR)/muller_fft_geometry_export: tools/muller_fft_geometry_export.cpp $(SRCDIR)/muller_nodal.cpp $(SRCDIR)/mesh.cpp $(SRCDIR)/muller_nodal.h $(SRCDIR)/quadrature.h
+	@mkdir -p $(BINDIR)
+	$(CXX) $(HOST_CUDA_INCLUDE) -O3 -march=native -fopenmp -std=c++11 -I$(SRCDIR) $(filter-out %.h,$^) -o $@
 
 $(BINDIR)/muller_recycle_cpu_probe: tools/muller_recycle_cpu_probe.cpp $(STREAMING_HOST_HEADERS) $(SRCDIR)/muller_dense.cpp $(SRCDIR)/muller_mbj.cpp $(SRCDIR)/muller_nodal.cpp $(SRCDIR)/muller_duffy.cpp $(SRCDIR)/mesh.cpp
 	@mkdir -p $(BINDIR)

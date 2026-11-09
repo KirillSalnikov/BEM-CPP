@@ -30,7 +30,10 @@ public:
     int rank()const{int r=0;for(const auto& s:spaces_)r+=s.rank();return r;}
     double storage_gib()const{double b=0;for(const auto& s:spaces_)b+=s.storage_gib();return b;}
 };
-struct SectorResult:HostResult {std::array<int,12> sector_iterations{};};
+struct SectorResult:HostResult {
+    std::array<int,12> sector_iterations{};
+    size_t basis_peak_bytes=0;
+};
 // All sectors share one batched operator call, but retain independent Arnoldi
 // coefficients and stopping tests. The action is already right-preconditioned
 // in unitary symmetry coordinates. Small symmetry defects are corrected by
@@ -49,8 +52,11 @@ inline SectorResult sector_gmres(const Action& action,const Action& strict,
     restart=std::min(restart,limit);SectorResult result;
     std::fill(x,x+n,Complex(0));const double bn=norm(b,n);
     if(bn==0){result.residual=0;return result;}
-    std::vector<Complex> basis(size_t(n)*(restart+1)),r(b,b+n),w(n),action_input(n);
-    struct State {std::vector<Complex> h,c,s,g,y,rc,raw_h,couplings;int used=0,rank=0;bool active=false;double projected=0;};
+    std::vector<Complex> r(b,b+n),w(n),action_input(n);
+    // A modal RHS need not excite every symmetry sector. Reserve only its
+    // active segments and materialize successive Arnoldi vectors on demand.
+    // Strict residual replacement can activate any sector in a later cycle.
+    struct State {std::vector<Complex> basis,h,c,s,g,y,rc,raw_h,couplings;int used=0,rank=0;bool active=false;double projected=0;};
     std::array<State,12> states;
     for(auto& q:states){q.h.resize(size_t(restart+1)*restart);q.c.resize(restart);q.s.resize(restart);q.g.resize(restart+1);q.y.resize(restart);q.rc.resize(restart+1);if(recycle)q.raw_h.resize(q.h.size());}
     const double target=tol*bn/std::sqrt(12.);int cycles=0;bool use_recycle=true;
@@ -89,12 +95,20 @@ inline SectorResult sector_gmres(const Action& action,const Action& strict,
             auto& q=states[s];const int lo=offsets[s],hi=offsets[s+1];
             const double rn=norm(r.data()+lo,hi-lo);q.used=0;q.active=rn>inner_factor*target;q.projected=rn;
             std::fill(q.h.begin(),q.h.end(),Complex(0));std::fill(q.g.begin(),q.g.end(),Complex(0));q.g[0]=rn;
-            for(int i=lo;i<hi;++i)basis[i]=q.active?r[i]/rn:Complex(0);
+            if(q.active) {
+                q.basis.reserve(size_t(hi-lo)*(restart+1));q.basis.resize(hi-lo);
+                for(int i=lo;i<hi;++i)q.basis[i-lo]=r[i]/rn;
+            } else std::vector<Complex>().swap(q.basis);
         }
+        size_t basis_bytes=0;int active_sectors=0;
+        for(const auto& q:states){basis_bytes+=q.basis.capacity()*sizeof(Complex);active_sectors+=q.active;}
+        result.basis_peak_bytes=std::max(result.basis_peak_bytes,basis_bytes);
+        if(verbose)std::printf("  [sector basis] active=%d reserved_MiB=%.3f full_MiB=%.3f\n",active_sectors,
+            basis_bytes/1048576.,double(n)*(restart+1)*sizeof(Complex)/1048576.);
         for(int col=0;col<restart && result.iterations<limit;++col) {
             bool any=false;for(const auto& q:states)any=any||q.active;if(!any)break;
             for(int s=0;s<12;++s)for(int i=offsets[s];i<offsets[s+1];++i)
-                action_input[i]=states[s].active?basis[size_t(col)*n+i]:Complex(0);
+                action_input[i]=states[s].active?states[s].basis[size_t(col)*(offsets[s+1]-offsets[s])+i-offsets[s]]:Complex(0);
             const auto before=std::chrono::steady_clock::now();action(action_input.data(),w.data());
             const auto after=std::chrono::steady_clock::now();result.action_seconds+=std::chrono::duration<double>(after-before).count();
             // Parallelize across sectors, not individual dot products; each
@@ -102,18 +116,19 @@ inline SectorResult sector_gmres(const Action& action,const Action& strict,
 #pragma omp parallel for schedule(static)
             for(int s=0;s<12;++s) {
                 auto& q=states[s];const int lo=offsets[s],hi=offsets[s+1];
-                Complex* next_basis=basis.data()+size_t(col+1)*n;
-                if(!q.active){std::fill(next_basis+lo,next_basis+hi,Complex(0));continue;}
+                if(!q.active)continue;
+                const int width=hi-lo;q.basis.resize(size_t(col+2)*width);
+                Complex* next_basis=q.basis.data()+size_t(col+1)*width;
                 if(q.rank)recycle->sector(s).project(w.data()+lo,col,restart,q.couplings);
                 for(int pass=0;pass<2;++pass)for(int row=0;row<=col;++row) {
-                    const Complex* v=basis.data()+size_t(row)*n;Complex a=0;
-                    for(int i=lo;i<hi;++i)a+=std::conj(v[i])*w[i];
-                    q.h[size_t(row)*restart+col]+=a;for(int i=lo;i<hi;++i)w[i]-=a*v[i];
+                    const Complex* v=q.basis.data()+size_t(row)*width;Complex a=0;
+                    for(int i=lo;i<hi;++i)a+=std::conj(v[i-lo])*w[i];
+                    q.h[size_t(row)*restart+col]+=a;for(int i=lo;i<hi;++i)w[i]-=a*v[i-lo];
                 }
                 double squared=0;for(int i=lo;i<hi;++i)squared+=std::norm(w[i]);const double next=std::sqrt(squared);
                 q.h[size_t(col+1)*restart+col]=next;
                 if(recycle)for(int row=0;row<=col+1;++row)q.raw_h[size_t(row)*restart+col]=q.h[size_t(row)*restart+col];
-                for(int i=lo;i<hi;++i)next_basis[i]=next>1e-300?w[i]/next:Complex(0);
+                for(int i=lo;i<hi;++i)next_basis[i-lo]=next>1e-300?w[i]/next:Complex(0);
                 for(int row=0;row<col;++row) {
                     const Complex a=q.h[size_t(row)*restart+col],bb=q.h[size_t(row+1)*restart+col];
                     q.h[size_t(row)*restart+col]=std::conj(q.c[row])*a+std::conj(q.s[row])*bb;
@@ -152,8 +167,9 @@ inline SectorResult sector_gmres(const Action& action,const Action& strict,
                 for(int row=used-1;row>=0;--row){const Complex a=q.rc[row],bb=q.rc[row+1];q.rc[row]=q.c[row]*a-std::conj(q.s[row])*bb;q.rc[row+1]=q.s[row]*a+std::conj(q.c[row])*bb;}
             }
             for(int i=offsets[s];i<offsets[s+1];++i) {
-                Complex update=0,residual=0;for(int col=0;col<used;++col){update+=basis[size_t(col)*n+i]*q.y[col];if(!verify)residual+=basis[size_t(col)*n+i]*q.rc[col];}
-                w[i]=update;if(!verify && used)r[i]=residual+basis[size_t(used)*n+i]*q.rc[used];
+                const int width=offsets[s+1]-offsets[s],local=i-offsets[s];
+                Complex update=0,residual=0;for(int col=0;col<used;++col){update+=q.basis[size_t(col)*width+local]*q.y[col];if(!verify)residual+=q.basis[size_t(col)*width+local]*q.rc[col];}
+                w[i]=update;if(!verify && used)r[i]=residual+q.basis[size_t(used)*width+local]*q.rc[used];
             }
             if(q.rank)recycle->sector(s).subtract_coupled_update(w.data()+offsets[s],q.y.data(),used,q.couplings,restart,q.rank);
             for(int i=offsets[s];i<offsets[s+1];++i)x[i]+=w[i];
@@ -164,7 +180,7 @@ inline SectorResult sector_gmres(const Action& action,const Action& strict,
             for(int s=0;s<12;++s) {
                 auto& q=states[s];const int lo=offsets[s],count=offsets[s+1]-lo;
                 const Action identity=[&](const Complex* a,Complex* out){std::copy(a,a+count,out);};
-                recycle->sector(s).learn_strided(basis.data()+lo,n,q.raw_h,restart,q.used,identity,q.couplings,q.rank);
+                recycle->sector(s).learn_strided(q.basis.data(),count,q.raw_h,restart,q.used,identity,q.couplings,q.rank);
             }
             result.recycle_seconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-before).count();
         }

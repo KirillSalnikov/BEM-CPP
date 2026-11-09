@@ -1,0 +1,33 @@
+{
+  "status": "complete",
+  "records": [
+    {
+      "index": 0,
+      "source_bytes": 3468165120,
+      "encoded_bytes": 1734835200,
+      "relative_symbol_error": 0.00020328869724983598,
+      "seconds": 28.38868360100605
+    },
+    {
+      "index": 3,
+      "source_bytes": 3468165120,
+      "encoded_bytes": 1734835200,
+      "relative_symbol_error": 0.00020021500909932595,
+      "seconds": 9.408591322004213
+    },
+    {
+      "index": 6,
+      "source_bytes": 1207959552,
+      "encoded_bytes": 605028352,
+      "relative_symbol_error": 0.00019781780433846986,
+      "seconds": 9.019544765993487
+    },
+    {
+      "index": 7,
+      "source_bytes": 1207959552,
+      "encoded_bytes": 605028352,
+      "relative_symbol_error": 0.0001987423875999724,
+      "seconds": 3.3978144970024005
+    }
+  ]
+}

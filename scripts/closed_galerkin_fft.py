@@ -27,14 +27,15 @@ class Geometry:
         self.directory=Path(directory);self.fixture=fixture
         self.meta=json.loads((self.directory/'geometry.json').read_text())
         self.n=self.meta['current_dofs'];self.N=2*self.n
-        def read(name,dtype,shape):return np.fromfile(self.directory/(name+'.bin'),dtype).reshape(shape)
+        def read(name,dtype,shape):return np.memmap(self.directory/(name+'.bin'),dtype=dtype,mode='r').reshape(shape)
         self.vertices=read('vertices',float,(-1,3,3));self.points=read('points',float,(-1,7,3))
         self.basis=read('basis',float,(-1,7,6,3));self.normals=read('normals',float,(-1,3))
         self.dofs=read('dofs',np.int32,(-1,6))
-        self.faces=[];remaining=set(range(len(self.vertices)))
-        while remaining:
-            t=min(remaining);indices=np.array(sorted(i for i in remaining if np.linalg.norm(self.normals[i]-self.normals[t])<1e-10))
-            self.faces.append(indices);remaining.difference_update(indices)
+        self.faces=[];remaining=np.ones(len(self.vertices),bool)
+        while remaining.any():
+            t=np.flatnonzero(remaining)[0]
+            indices=np.flatnonzero(remaining&(np.linalg.norm(self.normals-self.normals[t],axis=1)<1e-10))
+            self.faces.append(indices);remaining[indices]=False
         if len(self.faces)!=8:raise ValueError('Expected six sides and two caps')
         edges=(self.vertices-np.roll(self.vertices,1,axis=1)).reshape(-1,3)
         horizontal=edges[(abs(edges[:,2])<1e-12)&(np.linalg.norm(edges[:,:2],axis=1)>1e-12)]
@@ -71,34 +72,47 @@ class Geometry:
         if err>1e-8:raise ValueError(f'Nonlattice face {face_id}: {err}')
         self.max_lattice_error=max(self.max_lattice_error,err)
         lower=rounded.min(axis=(0,1));rounded-=lower;origin+=lower@axes
-        nx,ny=rounded.max(axis=(0,1));records=[];patterns=[]
-        for t,cv in zip(triangles,rounded):
-            cell=cv.min(axis=0);local=cv-cell;matched=[p for p,v in enumerate(TRIANGLES) if set(map(tuple,local))==set(v)]
-            if len(matched)!=1:raise ValueError(f'Invalid triangle {local}')
-            p=matched[0];patterns.append(p)
-            points=np.asarray(self.fixture['patterns'][p]['points'])@axes+origin+cell@axes
-            distance=np.linalg.norm(points[:,None,:]-self.points[t][None,:,:],axis=2)
-            perm=distance.argmin(axis=1)
-            if len(set(perm))!=7 or distance[np.arange(7),perm].max()>1e-9:raise ValueError('Quadrature permutation')
-            wc=(np.asarray(self.fixture['patterns'][p]['weighted_basis'])@axes).transpose(0,2,1).reshape(21,6)
-            wa=self.basis[t,perm].transpose(0,2,1).reshape(21,6)
-            matrix=np.linalg.lstsq(wc,wa,rcond=None)[0]
-            nearest=np.rint(matrix);error=float(max(np.linalg.norm(wc@nearest-wa)/np.linalg.norm(wa),np.max(abs(matrix-nearest))))
-            self.max_mapping_error=max(self.max_mapping_error,error)
-            if error>1e-10 or not np.all(abs(nearest).sum(axis=0)==1) or not np.all(abs(nearest).sum(axis=1)==1):
-                raise ValueError(f'BDM map is not a signed permutation: {error}')
-            columns=abs(nearest).argmax(axis=1);sign=nearest[np.arange(6),columns]
-            records.append((t,cell,p,self.dofs[t,columns],sign))
-        patterns=tuple(sorted(set(patterns)))
+        nx,ny=rounded.max(axis=(0,1));cells=rounded.min(axis=1)
+        local_vertices=rounded-cells[:,None,:]
+        if np.any((local_vertices<0)|(local_vertices>1)):raise ValueError('Nonunit lattice triangle')
+        codes=np.sum(1<<(local_vertices[:,:,0]+2*local_vertices[:,:,1]),axis=1)
+        lookup={sum(1<<(x+2*y) for x,y in pattern):p for p,pattern in enumerate(TRIANGLES)}
+        if not set(np.unique(codes)).issubset(lookup):raise ValueError('Invalid lattice triangle')
+        pattern_ids=np.array([lookup[int(code)] for code in codes],dtype=np.int8)
+        patterns=tuple(sorted(set(pattern_ids.tolist())));channels=np.empty((len(triangles),6),np.int64)
+        global_dofs=np.empty_like(channels);basis_sign=np.empty((len(triangles),6),float)
+        for pattern in patterns:
+            selected=np.flatnonzero(pattern_ids==pattern)
+            q=np.asarray(self.fixture['patterns'][pattern]['points'])@axes
+            wc=(np.asarray(self.fixture['patterns'][pattern]['weighted_basis'])@axes).transpose(0,2,1).reshape(21,6)
+            inverse=np.linalg.pinv(wc)
+            for first in range(0,len(selected),4096):
+                ix=selected[first:first+4096];ids=triangles[ix]
+                points=q[None,:,:]+origin+((cells[ix]@axes)[:,None,:])
+                distance=np.linalg.norm(points[:,:,None,:]-self.points[ids,None,:,:],axis=3)
+                perm=distance.argmin(axis=2)
+                chosen=np.take_along_axis(distance,perm[:,:,None],axis=2)[:,:,0]
+                if np.max(chosen)>1e-9 or np.any(np.diff(np.sort(perm,axis=1),axis=1)==0):
+                    raise ValueError('Quadrature permutation')
+                wa=self.basis[ids[:,None],perm].transpose(0,1,3,2).reshape(-1,21,6)
+                matrix=inverse@wa;nearest=np.rint(matrix)
+                error=max(float(np.max(np.linalg.norm(wc@nearest-wa,axis=(1,2))/np.linalg.norm(wa,axis=(1,2)))),
+                          float(np.max(abs(matrix-nearest))))
+                self.max_mapping_error=max(self.max_mapping_error,error)
+                if error>1e-10 or np.any(abs(nearest).sum(axis=1)!=1) or np.any(abs(nearest).sum(axis=2)!=1):
+                    raise ValueError(f'BDM map is not a signed permutation: {error}')
+                columns=abs(nearest).argmax(axis=2)
+                global_dofs[ix]=np.take_along_axis(self.dofs[ids],columns,axis=1)
+                basis_sign[ix]=np.take_along_axis(nearest,columns[:,:,None],axis=2)[:,:,0]
+                channels[ix]=(cells[ix,0,None]*len(patterns)+patterns.index(pattern))*6+np.arange(6)
+        tc=int(nx)*len(patterns)*6
+        # Preserve the established triangle/current/basis ordering exactly.
+        local=((channels[:,None,:]+np.arange(2)[None,:,None]*tc)*ny+cells[:,None,1,None]).reshape(-1)
+        global_=(global_dofs[:,None,:]+np.arange(2)[None,:,None]*self.n).reshape(-1)
+        signs=np.broadcast_to(basis_sign[:,None,:],(len(triangles),2,6)).reshape(-1).copy()
         face=OrientedFace(origin,transverse,common,int(nx),int(ny),patterns,self.normals[triangles[0]])
-        local=[];global_=[];signs=[];tc=int(nx)*len(patterns)*6
-        for t,(i,j),p,dofs,sign in records:
-            channels=(i*len(patterns)+patterns.index(p))*6+np.arange(6)
-            for current in range(2):
-                local.extend((channels+current*tc)*ny+j);global_.extend(dofs+current*self.n);signs.extend(sign)
-        layout=dict(face=face,local=np.array(local,dtype=np.int64),global_=np.array(global_,dtype=np.int64),
-                    signs=np.array(signs),records=records,shape=(2*tc,int(ny)))
-        if len(set(local))!=len(local):raise ValueError('Duplicate local triangle slot')
+        layout=dict(face=face,local=local,global_=global_,signs=signs,shape=(2*tc,int(ny)))
+        if len(np.unique(local))!=len(local):raise ValueError('Duplicate local triangle slot')
         self.layouts[key]=layout;return layout
 
 class ClosedGalerkinFFT:

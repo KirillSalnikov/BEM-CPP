@@ -1,0 +1,70 @@
+{
+  "status": "complete",
+  "load_s": 57.182917341000575,
+  "reference_bytes": 10812304828,
+  "bounded_bytes": 2723286020,
+  "pinned_bytes": 421527808,
+  "stream_transfer_bytes": 7358648760,
+  "map_bytes": 486801408,
+  "spectral_resident_bytes": 884736000,
+  "records": [
+    {
+      "probe": 0,
+      "repeat": 0,
+      "seconds": 0.994459966001159,
+      "error": 1.469775270379614e-07
+    },
+    {
+      "probe": 0,
+      "repeat": 1,
+      "seconds": 0.5954163930000504,
+      "error": 1.4726315100688225e-07
+    },
+    {
+      "probe": 0,
+      "repeat": 2,
+      "seconds": 0.5862963570034481,
+      "error": 1.4734033015884052e-07
+    },
+    {
+      "probe": 1,
+      "repeat": 0,
+      "seconds": 0.6129134949951549,
+      "error": 2.9459334882631083e-07
+    },
+    {
+      "probe": 1,
+      "repeat": 1,
+      "seconds": 0.6142481280039647,
+      "error": 2.943241099728766e-07
+    },
+    {
+      "probe": 1,
+      "repeat": 2,
+      "seconds": 0.6283984289984801,
+      "error": 2.942331605026993e-07
+    },
+    {
+      "probe": 2,
+      "repeat": 0,
+      "seconds": 0.6123290060058935,
+      "error": 8.703732845560808e-08
+    },
+    {
+      "probe": 2,
+      "repeat": 1,
+      "seconds": 0.6163212419996853,
+      "error": 8.70209504455488e-08
+    },
+    {
+      "probe": 2,
+      "repeat": 2,
+      "seconds": 0.6146898860024521,
+      "error": 8.70281908760262e-08
+    }
+  ],
+  "peak_allocated_bytes": 3486916096,
+  "peak_reserved_bytes": 3923771392,
+  "max_relative_error": 2.9459334882631083e-07,
+  "median_s": 0.6144690070032084
+}

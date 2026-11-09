@@ -71,6 +71,11 @@ def asset_files(case):
     files=[case/n for n in ('geometry.json','streamed_preparation.json','bound_operator.pkl',
                            'near_rows.bin','near_cols.bin','near_values.bin',
                            'mass_rows.bin','mass_cols.bin','mass_values.bin')]
+    if (case/'execution.json').exists():
+        files.append(case/'execution.json')
+        config=json.loads((case/'execution.json').read_text())
+        if config.get('local_storage','csr') in ('packed','host_packed'):
+            files.extend(case/'packed_local'/name for name in ('metadata.json','rows.npy','columns.npy','coefficients.npy'))
     preparation=json.loads((case/'streamed_preparation.json').read_text())
     if preparation['status']!='complete':raise ValueError('Incomplete FFT preparation')
     for row in preparation['records']:
@@ -104,6 +109,9 @@ def load_operator(case):
     import torch
     from symmetric_galerkin_fft import TorchSymmetricAction
     torch.set_num_threads(1)
+    config=json.loads((case/'execution.json').read_text()) if (case/'execution.json').exists() else {}
+    if set(config)-{'local_storage','spectral_budget_MiB','frequency_batch','compact_maps','symbol_storage'}:
+        raise ValueError('Unknown FFT execution setting')
     with (case/'bound_operator.pkl').open('rb') as stream:cpu=pickle.load(stream)
     # Runtime snapshots may live elsewhere than the construction directory.
     # Read their own hashed correction/mass files, never a mutable old path.
@@ -113,9 +121,20 @@ def load_operator(case):
         if row['kind']=='2D':cpu.canonical[row['index']].symbol=np.load(case/row['file'],mmap_mode='c')
         else:factors[row['index']]=tuple(np.load(case/row['directory']/name,mmap_mode='r')
                                        for name in ('left.npy','right.npy'))
-    cpu.load_correction()
+    local_storage=config.get('local_storage','csr')
+    if local_storage in ('packed','host_packed'):
+        cpu.packed_local_directory=case/'packed_local'
+        packed_meta=json.loads((cpu.packed_local_directory/'metadata.json').read_text())
+        if packed_meta['source_geometry']!=cpu.geometry.meta:raise ValueError('Packed correction geometry mismatch')
+    else:cpu.load_correction()
+    options={}
+    if 'spectral_budget_MiB' in config:
+        options.update(spectral_budget_bytes=int(config['spectral_budget_MiB']*1024**2),
+                       stream_cache=case/'.spectral-cache',frequency_batch=config.get('frequency_batch',16))
     result=TorchSymmetricAction(cpu,'cuda',torch.complex64,factors=factors,
-                               factor_storage='half',local_storage='csr')
+                               factor_storage='half',local_storage=local_storage,
+                               compact_maps=config.get('compact_maps',False),
+                               symbol_storage=config.get('symbol_storage','full'),**options)
     torch.cuda.empty_cache()
     return result
 

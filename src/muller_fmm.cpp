@@ -1571,7 +1571,7 @@ void MullerFmmOperator::init(
             const double fine_depth_ratio =
                 2.0 * point_count / std::max(1, max_leaf);
             const int predicted_fine_depth = fine_depth_ratio > 1.0
-                ? std::min(6, std::max(1, static_cast<int>(
+                ? std::min(Octree::configured_depth_limit(), std::max(1, static_cast<int>(
                     std::ceil(
                         std::log(fine_depth_ratio) /
                         std::log(8.0)))))
@@ -1709,20 +1709,6 @@ void MullerFmmOperator::init(
     curl_interior.resize((size_t)point_count * 3);
     hessian_action_exterior.resize((size_t)point_count * 3);
     hessian_action_interior.resize((size_t)point_count * 3);
-    if (banded_fmm) {
-        curl_exterior_coarse.resize((size_t)point_count * 3);
-        curl_interior_coarse.resize((size_t)point_count * 3);
-        hessian_action_exterior_coarse.resize((size_t)point_count * 3);
-        hessian_action_interior_coarse.resize((size_t)point_count * 3);
-        if (banded_fmm_middle) {
-            curl_exterior_middle.resize((size_t)point_count * 3);
-            curl_interior_middle.resize((size_t)point_count * 3);
-            hessian_action_exterior_middle.resize(
-                (size_t)point_count * 3);
-            hessian_action_interior_middle.resize(
-                (size_t)point_count * 3);
-        }
-    }
     mass_work.resize(current_dofs);
     k1_work.resize(current_dofs);
     k2_epsilon_work.resize(current_dofs);
@@ -2157,6 +2143,23 @@ void MullerFmmOperator::apply_current_operators(
     const bool profile = profile_setting && std::strcmp(profile_setting,"0")!=0;
     const auto profile_start = std::chrono::steady_clock::now();
     const int point_count = (int)quadrature.size();
+    // Multilevel translation does not use host coarse/middle fields.
+    // Allocate these only if the separate-band fallback is actually selected.
+    const char* multilevel_workspace=std::getenv("BEM_FMM_MULTILEVEL");
+    if (banded_fmm && (!multilevel_workspace || std::strcmp(multilevel_workspace,"0")==0)) {
+        curl_exterior_coarse.resize((size_t)point_count * 3);
+        curl_interior_coarse.resize((size_t)point_count * 3);
+        hessian_action_exterior_coarse.resize((size_t)point_count * 3);
+        hessian_action_interior_coarse.resize((size_t)point_count * 3);
+        if (banded_fmm_middle) {
+            curl_exterior_middle.resize((size_t)point_count * 3);
+            curl_interior_middle.resize((size_t)point_count * 3);
+            hessian_action_exterior_middle.resize(
+                (size_t)point_count * 3);
+            hessian_action_interior_middle.resize(
+                (size_t)point_count * 3);
+        }
+    }
     apply_mass(coefficients, mass);
     k1.assign(current_dofs, cdouble(0.0));
     k2_epsilon.assign(current_dofs, cdouble(0.0));
@@ -2871,7 +2874,7 @@ double MullerFmmOperator::switch_pfft_to_fmm(
         const double fine_depth_ratio =
             2.0 * point_count / std::max(1, max_leaf);
         const int predicted_fine_depth = fine_depth_ratio > 1.0
-            ? std::min(6, std::max(1, static_cast<int>(
+            ? std::min(Octree::configured_depth_limit(), std::max(1, static_cast<int>(
                 std::ceil(
                     std::log(fine_depth_ratio) /
                     std::log(8.0)))))
@@ -2988,15 +2991,7 @@ double MullerFmmOperator::switch_pfft_to_fmm(
                 "coarse tree whose depth equals "
                 "BEM_FMM_BANDED_SPLIT_DEPTH");
         }
-        curl_exterior_coarse.resize((size_t)point_count * 3);
-        curl_interior_coarse.resize((size_t)point_count * 3);
-        hessian_action_exterior_coarse.resize((size_t)point_count * 3);
-        hessian_action_interior_coarse.resize((size_t)point_count * 3);
         if (banded_fmm_middle) {
-            curl_exterior_middle.resize((size_t)point_count * 3);
-            curl_interior_middle.resize((size_t)point_count * 3);
-            hessian_action_exterior_middle.resize((size_t)point_count * 3);
-            hessian_action_interior_middle.resize((size_t)point_count * 3);
             std::printf(
                 "  [Muller] Banded FMM switch: fine M2L level %d, "
                 "middle level %d, coarse levels 1..%d; "

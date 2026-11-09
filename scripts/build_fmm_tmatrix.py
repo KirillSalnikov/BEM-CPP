@@ -110,6 +110,8 @@ def main():
     parser.add_argument('--hybrid-cpu',action='store_true',help='Overlap independent T packets with CPU FP64 gates; requires sector GMRES')
     parser.add_argument('--incident-prefetch',action='store_true',help='Prepare the next packet while the worker solves')
     parser.add_argument('--no-incident-cache',action='store_true',help='Disable shared geometry/radial incident-field cache')
+    parser.add_argument('--release-incident-buffer',action='store_true',
+                        help='Release the sent incident payload from RAM while the worker solves; use without prefetch')
     parser.add_argument('--seed-from',type=Path,
                         help='Copy compatible individual/C2 checkpoints into a new output directory')
     parser.add_argument('--solver-restart-from',type=Path,help='Audit and import accepted checkpoints after a solver-only change')
@@ -159,7 +161,7 @@ def main():
             if full:
                 args.c2_reuse=sym['c2_x'];args.c6_pack=sym['c6_z']
                 args.mirror_pack=sym['c6_z'] and sym['horizontal_mirror']
-            args.incident_prefetch=True
+            args.incident_prefetch=not args.release_incident_buffer
             # Small-ka higher multipoles radiate by cancellation. Keep the
             # radiation integral accurate; this does not replace covariance
             # checks of the complete discretized equation.
@@ -243,6 +245,8 @@ def main():
         parser.error('--max-pairs-this-run must be positive')
     if args.columns and args.column_indices:
         parser.error('choose --columns or --column-indices')
+    if args.release_incident_buffer and args.incident_prefetch:
+        parser.error('--release-incident-buffer cannot be combined with --incident-prefetch')
     if not 1<=args.incident_min_order<=args.order:
         parser.error('--incident-min-order must be between 1 and --order')
     if args.incident_min_order>1 and (args.columns or args.column_indices or args.plane_only or not args.no_average):
@@ -318,6 +322,7 @@ def main():
     fingerprint.pop('incident_prefetch')
     fingerprint['incident_schedule_digest']=hashlib.sha256((ROOT/'scripts/tmatrix_pipeline.py').read_bytes()).hexdigest()
     fingerprint.pop('no_incident_cache')
+    fingerprint.pop('release_incident_buffer')
     if not args.c2_reuse:
         # Preserve existing non-symmetry checkpoint identities.
         fingerprint.pop('c2_reuse'); fingerprint.pop('c2_audit_tol')
@@ -617,7 +622,8 @@ def main():
                     raise RuntimeError(f'modal solve rejected: strict residual {residual}; no column checkpoint written')
                 return status
 
-            fields=np.empty((2,len(positions),6),dtype=np.complex128)
+            field_buffer=tmatrix_pipeline.IncidentFieldBuffer(len(positions),args.release_incident_buffer)
+            fields=field_buffer.fields
             preparation=tmatrix_pipeline.IncidentPreparation(positions,modal_list,args.ka,fields,
                 cache=not args.no_incident_cache and not args.plane_only,prefetch=args.incident_prefetch)
             plane_control=None
@@ -666,6 +672,9 @@ def main():
                         connection.sendall(memoryview(fields).cast('B'))
                         inflight.append((kind,group,packing_reflection,scales,combined,
                                          field_seconds,field_wait,prefetched,limit))
+                    # The native streaming RHS assembler has consumed the bytes.
+                    # Each next preparation overwrites both fields completely.
+                    field_buffer.discard()
                     # Both payloads have been consumed; one shared field buffer
                     # can now prepare the next packet while this batch solves.
                     if tasks and (args.max_pairs_this_run is None or len(timings)+len(inflight)<args.max_pairs_this_run):
@@ -854,6 +863,7 @@ def main():
             'horizontal_reflection_parity':args.mirror_pack,
             'vertical_reflection_from_C2_and_horizontal':bool(args.mirror_pack and args.c2_reuse),
             'shared_incident_cache':not args.no_incident_cache,
+            'released_incident_buffer':args.release_incident_buffer,
             'independent_reference_audits_complete':len(audits)==len(c6_reference_groups) and all(a['passed'] for a in audits),
             'individual_fallback_after_failed_audit':c6_individual_fallback,
             'packed_columns':sum(item.get('derived_by')=='C6_packed_RHS' for item in all_status),

@@ -1,0 +1,49 @@
+{
+  "status": "storage_sizes_computed_not_a_runtime_measurement",
+  "resident_spectral_bytes": 2339863552,
+  "stream_bytes_per_action": 25574219512,
+  "old_stream_bytes_per_action": 31378645752,
+  "host_stream_reduction_GiB": 5.405793190002441,
+  "records": [
+    {
+      "index": 0,
+      "bytes": 1734835200,
+      "resident": true
+    },
+    {
+      "index": 1,
+      "bytes": 4624223100,
+      "resident": false
+    },
+    {
+      "index": 2,
+      "bytes": 4624223100,
+      "resident": false
+    },
+    {
+      "index": 3,
+      "bytes": 1734835200,
+      "resident": false
+    },
+    {
+      "index": 4,
+      "bytes": 6992954880,
+      "resident": false
+    },
+    {
+      "index": 5,
+      "bytes": 6992954880,
+      "resident": false
+    },
+    {
+      "index": 6,
+      "bytes": 605028352,
+      "resident": true
+    },
+    {
+      "index": 7,
+      "bytes": 605028352,
+      "resident": false
+    }
+  ]
+}

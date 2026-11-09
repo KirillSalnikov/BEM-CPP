@@ -1,0 +1,209 @@
+{
+  "status": "complete",
+  "metadata": {
+    "format": 1,
+    "current_dofs": 571392,
+    "system_dofs": 1142784,
+    "nnz": 33140544,
+    "max_row_entries": 66,
+    "dtype": "complex64",
+    "device_bytes": 930220804,
+    "source_geometry": {
+      "ref": 6,
+      "ka": 40,
+      "ri": [
+        1.3116,
+        0
+      ],
+      "aspect": 1.6495721976846451,
+      "triangles": 190464,
+      "current_dofs": 571392,
+      "system_dofs": 1142784,
+      "quadrature": 7,
+      "duffy": 6,
+      "rhs_count": 6
+    }
+  },
+  "preparation_s": 0.7467148580035428,
+  "old_local_bytes": 1595317252,
+  "new_local_bytes": 930220804,
+  "old_operator_bytes": 10812304828,
+  "new_operator_bytes": 10147208380,
+  "medians": {
+    "csr": 0.08021988250402501,
+    "packed": 0.07947190800405224
+  },
+  "speedup": 1.0094118100188891,
+  "records": [
+    {
+      "probe": 0,
+      "repeat": 0,
+      "storage": "csr",
+      "seconds": 0.08055961599893635,
+      "error": 1.4697710071231995e-07
+    },
+    {
+      "probe": 0,
+      "repeat": 1,
+      "storage": "packed",
+      "seconds": 0.07981351199850906,
+      "error": 1.4697710071231995e-07
+    },
+    {
+      "probe": 0,
+      "repeat": 2,
+      "storage": "packed",
+      "seconds": 0.07978453599935165,
+      "error": 1.4697710071231995e-07
+    },
+    {
+      "probe": 0,
+      "repeat": 3,
+      "storage": "csr",
+      "seconds": 0.08058345199970063,
+      "error": 1.4697710071231995e-07
+    },
+    {
+      "probe": 0,
+      "repeat": 4,
+      "storage": "csr",
+      "seconds": 0.080262853000022,
+      "error": 1.4697710071231995e-07
+    },
+    {
+      "probe": 0,
+      "repeat": 5,
+      "storage": "packed",
+      "seconds": 0.07947786400472978,
+      "error": 1.4697710071231995e-07
+    },
+    {
+      "probe": 0,
+      "repeat": 6,
+      "storage": "packed",
+      "seconds": 0.07943613499810454,
+      "error": 1.4697710071231995e-07
+    },
+    {
+      "probe": 0,
+      "repeat": 7,
+      "storage": "csr",
+      "seconds": 0.08021351000206778,
+      "error": 1.4697710071231995e-07
+    },
+    {
+      "probe": 1,
+      "repeat": 0,
+      "storage": "csr",
+      "seconds": 0.0801819609987433,
+      "error": 2.94422989099985e-07
+    },
+    {
+      "probe": 1,
+      "repeat": 1,
+      "storage": "packed",
+      "seconds": 0.0795092830012436,
+      "error": 2.94422989099985e-07
+    },
+    {
+      "probe": 1,
+      "repeat": 2,
+      "storage": "packed",
+      "seconds": 0.0794659520033747,
+      "error": 2.94422989099985e-07
+    },
+    {
+      "probe": 1,
+      "repeat": 3,
+      "storage": "csr",
+      "seconds": 0.08026215300196782,
+      "error": 2.94422989099985e-07
+    },
+    {
+      "probe": 1,
+      "repeat": 4,
+      "storage": "csr",
+      "seconds": 0.08025124199775746,
+      "error": 2.94422989099985e-07
+    },
+    {
+      "probe": 1,
+      "repeat": 5,
+      "storage": "packed",
+      "seconds": 0.07942169799935073,
+      "error": 2.94422989099985e-07
+    },
+    {
+      "probe": 1,
+      "repeat": 6,
+      "storage": "packed",
+      "seconds": 0.07944626399694243,
+      "error": 2.94422989099985e-07
+    },
+    {
+      "probe": 1,
+      "repeat": 7,
+      "storage": "csr",
+      "seconds": 0.08017232099518878,
+      "error": 2.94422989099985e-07
+    },
+    {
+      "probe": 2,
+      "repeat": 0,
+      "storage": "csr",
+      "seconds": 0.08011372000328265,
+      "error": 8.703923981556727e-08
+    },
+    {
+      "probe": 2,
+      "repeat": 1,
+      "storage": "packed",
+      "seconds": 0.0795204649984953,
+      "error": 8.703923981556727e-08
+    },
+    {
+      "probe": 2,
+      "repeat": 2,
+      "storage": "packed",
+      "seconds": 0.07945450999977766,
+      "error": 8.703923981556727e-08
+    },
+    {
+      "probe": 2,
+      "repeat": 3,
+      "storage": "csr",
+      "seconds": 0.08021425200422527,
+      "error": 8.703923981556727e-08
+    },
+    {
+      "probe": 2,
+      "repeat": 4,
+      "storage": "csr",
+      "seconds": 0.08020598599978257,
+      "error": 8.703923981556727e-08
+    },
+    {
+      "probe": 2,
+      "repeat": 5,
+      "storage": "packed",
+      "seconds": 0.079399795999052,
+      "error": 8.703923981556727e-08
+    },
+    {
+      "probe": 2,
+      "repeat": 6,
+      "storage": "packed",
+      "seconds": 0.07948159099760232,
+      "error": 8.703923981556727e-08
+    },
+    {
+      "probe": 2,
+      "repeat": 7,
+      "storage": "csr",
+      "seconds": 0.08022551300382474,
+      "error": 8.703923981556727e-08
+    }
+  ],
+  "max_relative_error": 2.94422989099985e-07,
+  "GPU_peak_bytes": 12702224896
+}

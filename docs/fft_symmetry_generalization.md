@@ -7,7 +7,7 @@ to 201.72 s (3.92×). The largest column-norm difference from saved results was
 6.72e-6. These measurements use the SciIce hexagonal column, ref=6, L=65,
 m=1.3116, wavelength 0.532 µm, H/Dflat=1.6495721976846451, tolerance 2e-6.
 They exclude one-time preparation and SO(3) averaging, and are not a measured
-speedup of the entire unfinished T matrix or of another shape.
+speedup of the entire T build or of another shape.
 
 ## What transfers to other shapes
 
@@ -128,3 +128,103 @@ original operator, then measure complete preparation/solve/radiation time.
 Reuse of T columns for general groups requires the corresponding vector-wave
 representations and independent phase/covariance audits; it is separate work
 from the face-pair reduction implemented here.
+
+## Bounded storage for the SciIce ref=7 mesh
+
+At ka=40 the same SciIce aspect gives 758,784 triangles and 4,552,704
+unknowns at ref=7. This mesh is not obtained by doubling the rounded ref=6
+axial cell count. `muller_fft_geometry_export` exports the actual native mesh;
+the face lattice and signed BDM maps are checked against those arrays.
+
+The geometry-only exporter can be built without allocating the FMM:
+
+```bash
+make bin/muller_fft_geometry_export
+mkdir -p exported_geometry
+bin/muller_fft_geometry_export 7 40 1.6495721976846451 exported_geometry
+```
+
+This diagnostic exports SciIce metadata with m=1.3116. The native near
+correction and the prepared spectral blocks are separate required assets.
+
+The optional `execution.json` in a prepared FFT case now selects bounded
+storage. Its contents and the packed local arrays are included in the asset
+hash manifest. The measured 24 GiB GPU configuration is:
+
+```json
+{
+  "local_storage": "host_packed",
+  "spectral_budget_MiB": 2242,
+  "frequency_batch": 8,
+  "compact_maps": true
+}
+```
+
+`spectral_budget_MiB` bounds resident coefficients, not the total CUDA
+allocation. Maps, double transfer buffers, FFT scratch, the native FMM and
+the preconditioner also consume VRAM. Cross factors retain the existing
+scaled FP16 storage and FP32 arithmetic. Two pinned buffers overlap host
+transfers with products; no rank, FFT grid, or symmetry is removed.
+The full operator need not fit on the GPU at once, but the frequently read
+host coefficients still need enough RAM to avoid disk paging.
+
+The local correction/mass stores three complex coefficients with shared CSR
+indices, representing `[[A,B],[C,-A]]`. `host_packed` applies this block on
+the CPU while the GPU evaluates the regular FFT blocks. On the actual ref=7
+arrays its CPU action takes 0.069–0.071 s and differs from an independently
+assembled SciPy CSR action by 1.47e-7 in relative vector norm. It releases
+about 3.45 GiB of GPU coefficient storage. The CPU code uses OpenMP and
+native vector instructions without `-ffast-math`.
+
+For the T driver, `--no-incident-cache --release-incident-buffer` releases
+the already transmitted incident payload during each solve. The next packet
+regenerates both fields. `--release-incident-buffer` is incompatible with
+`--incident-prefetch`; these flags propagate through `run_large_tmatrix.py`
+and its resume command. The independent strict residual gate is unchanged.
+
+Sector GMRES now keeps separate Arnoldi buffers and allocates them only for
+active sectors, materializing vectors as iterations advance. A later strict
+residual may activate any previously inactive sector. For restart=64, the
+old unconditional ref=7 basis was 4.41 GiB; an RHS exciting one of twelve
+equal sectors reserves only one twelfth of that storage. Fully populated
+packed RHSs can still need the full basis. CPU controls retain the original
+iteration counts and strict residual tolerances, including cross-sector
+perturbations, recycling, and activation after a residual replacement.
+
+An additional experimental `"symbol_storage": "half"` setting applies
+scaled FP16 storage to dense parallel-face symbols too, with FP32 products.
+It is separate from lossless compact maps and packed CSR: it changes the
+approximate inner operator and must pass the native startup and final
+residual checks. The default remains `"full"`.
+
+The coexistence audit (`benchmarks/ref7_memory_20261109/combined_ref7_report.json`)
+measured 20.75 GiB peak total GPU use, 2.08 s median warm FFT action, and
+0.0145% relative action error on a smooth input against the original FMM.
+Those are operator measurements, not a Mueller error or a complete T-build
+speedup. In particular, the bounded ref=6 action is slower than the fully
+resident action (0.614 s versus about 0.080 s); keep resident storage when it
+fits. A tested deeper FMM tree was rejected because it changed the control
+operator by 1.65e-5; the accepted ref=7 configuration retains depth six.
+
+### Modal cutoff of the completed ka=40 reference
+
+An analytic SO(3) check of the completed SciIce ref=6 T matrix (L=65)
+retains both rows and columns with degree at most L. The output angle grid
+has step 0.025 degrees. Relative M11 error at 180 degrees and the maximum
+absolute error of any Mueller entry divided by reference M11 are:
+
+| L | M11 at 180 degrees | All entries, all angles |
+|---:|---:|---:|
+| 55 | 5.611% | 6.832% |
+| 57 | 1.491% | 2.212% |
+| 58 | 0.768% | 1.286% |
+| 59 | 0.553% | 0.709% |
+| 61 | 0.213% | 0.213% |
+| 63 | 0.077% | 0.077% |
+
+In the tested range, L=58 passes 1% throughout the 175–180 degree cone,
+and L=59 passes the full-angle metric. L=61 provides two extra orders.
+The reference is L=65, not an infinite-order solution. These tests do not
+establish surface-mesh convergence or accuracy of a ref=7 T matrix. Results
+and individual analytic averages are in
+`benchmarks/ref7_memory_20261109/ka40_saved_T_L_controls/`.

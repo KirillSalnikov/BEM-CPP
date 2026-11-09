@@ -7,8 +7,26 @@ discards speculative work, never its key or normalization metadata.
 from concurrent.futures import ThreadPoolExecutor
 import time
 import numpy as np
+import mmap
 from tmatrix_incident import regular_fields, RegularFieldCache
 from tmatrix_c6 import encode_fields
+
+
+class IncidentFieldBuffer:
+    """A disposable payload: socket sendall has copied it before discard()."""
+    def __init__(self, points, releasable=False):
+        shape=(2,points,6);self.mapping=None;self.releases=0
+        if releasable:
+            if not hasattr(mmap.mmap,'madvise') or not hasattr(mmap,'MADV_DONTNEED'):
+                raise RuntimeError('Incident-buffer release requires mmap.madvise')
+            self.mapping=mmap.mmap(-1,int(np.prod(shape))*np.dtype(np.complex128).itemsize,
+                flags=mmap.MAP_PRIVATE|mmap.MAP_ANONYMOUS,prot=mmap.PROT_READ|mmap.PROT_WRITE)
+            self.fields=np.ndarray(shape,dtype=np.complex128,buffer=self.mapping)
+        else:self.fields=np.empty(shape,dtype=np.complex128)
+
+    def discard(self):
+        if self.mapping is not None:
+            self.mapping.madvise(mmap.MADV_DONTNEED);self.releases+=1
 
 
 class IncidentPreparation:

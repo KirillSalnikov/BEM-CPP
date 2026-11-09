@@ -33,6 +33,8 @@ SCRIPTS += ('compressed_fft_service.py','symmetric_galerkin_fft.py','closed_gale
             'galerkin_cross_fft.py','streamed_galerkin_fft.py','tiled_galerkin_fft.py',
             'compressed_galerkin_fft.py','surface_symmetry.py','regular_surface_geometry.py')
 SCRIPTS += ('mbs_particle_geometry.py',)
+SCRIPTS += ('packed_current_csr.py','packed_current_csr_kernel.py','bounded_spectral_storage.py')
+SCRIPTS += ('packed_current_host.py','packed_current_cpu.cpp')
 BINARIES = ('muller_tmatrix_fmm_server', 'tmatrix_so3_mstm', 'tmatrix_so3_mstm_fp32')
 GEOMETRY_DATA = ('mbs_fixed_aggregate.json',)
 PROFILE = {
@@ -199,6 +201,8 @@ def main():
     parser.add_argument('--restart', type=int, default=80)
     parser.add_argument('--strict-interval', type=int, default=4)
     parser.add_argument('--incident-prefetch', action='store_true')
+    parser.add_argument('--no-incident-cache', action='store_true')
+    parser.add_argument('--release-incident-buffer', action='store_true')
     parser.add_argument('--hybrid-cpu', action='store_true', help='Overlap two T packets with independent CPU FP64 gates')
     parser.add_argument('--gpu-assembly', action='store_true', help='Assemble operator actions on GPU, including with host sector GMRES')
     parser.add_argument('--gpu-host-correction', action='store_true', help='Keep local corrections in host RAM while using GPU assembly; requires a host solver')
@@ -316,6 +320,10 @@ def main():
                       worker_binary=str(args.worker_binary.resolve()) if args.worker_binary else None,
                       solver_restart_from=str(args.solver_restart_from.resolve()) if args.solver_restart_from else None,
                       solver_restart_proof=str(args.solver_restart_proof.resolve()) if args.solver_restart_proof else None)
+    if args.release_incident_buffer and args.incident_prefetch:
+        parser.error('--release-incident-buffer cannot be combined with --incident-prefetch')
+    if args.no_incident_cache:parameters['no_incident_cache']=True
+    if args.release_incident_buffer:parameters['release_incident_buffer']=True
     if args.sector_gmres:parameters.update(sector_gmres=True,orbit_nodes=args.orbit_nodes)
     if args.hybrid_cpu:parameters['hybrid_cpu']=True
     if args.opposite_face_weight:parameters.update(opposite_face_weight=args.opposite_face_weight,opposite_face_mask=args.opposite_face_mask)
@@ -335,6 +343,8 @@ def main():
     if args.wavelength is not None: command+=['--wavelength',str(args.wavelength)]
     if args.angular_band: command+=['--angular-band',str(args.angular_band)]
     if args.incident_prefetch:command+=['--incident-prefetch']
+    if args.no_incident_cache:command+=['--no-incident-cache']
+    if args.release_incident_buffer:command+=['--release-incident-buffer']
     if args.hybrid_cpu:command+=['--hybrid-cpu']
     if args.adaptive_tight_tol is not None:
         command+=['--adaptive-tight-tol',str(args.adaptive_tight_tol)]
@@ -364,6 +374,8 @@ def main():
     plan['resume_command']+=['--strict-interval',str(args.strict_interval)]
     if args.opposite_face_weight:plan['resume_command']+=['--opposite-face-weight',str(args.opposite_face_weight),'--opposite-face-mask',str(args.opposite_face_mask)]
     if args.incident_prefetch:plan['resume_command']+=['--incident-prefetch']
+    if args.no_incident_cache:plan['resume_command']+=['--no-incident-cache']
+    if args.release_incident_buffer:plan['resume_command']+=['--release-incident-buffer']
     if args.hybrid_cpu:plan['resume_command']+=['--hybrid-cpu']
     if args.adaptive_tight_tol is not None:plan['resume_command']+=['--adaptive-tight-tol',str(args.adaptive_tight_tol)]
     if args.angular_band:plan['resume_command']+=['--angular-band',str(args.angular_band)]

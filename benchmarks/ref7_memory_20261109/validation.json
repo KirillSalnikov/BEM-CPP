@@ -1,0 +1,77 @@
+{
+  "geometry": {
+    "ka": 40,
+    "ref": 7,
+    "ri": [
+      1.3116,
+      0
+    ],
+    "wavelength_um": 0.532,
+    "H_over_D_flats": 1.6495721976846451,
+    "triangles": 758784,
+    "system_dofs": 4552704
+  },
+  "source_sha256": {
+    "Makefile": "fdd55209b851ce43ea3c4ba049b13944de1f4f9f6eabf55971e44376d134db33",
+    "docs/fft_symmetry_generalization.md": "bd3212e1937e76c9b6e5dd93ef92bc8445bd8256d859ff5bf98c0d62fe61b86f",
+    "scripts/build_fmm_tmatrix.py": "9ab67fb12bf266910554382b6b576889fdd738c7fc2373dcd367d26d22efba18",
+    "scripts/closed_galerkin_fft.py": "5bfc99625d4468afc9ee3f2b2410a8740efc28c2f1f2f47eae19007a8593ba40",
+    "scripts/compressed_fft_service.py": "c88f729e2cc51082d0ce9d92854118ee1e723c387dacfc5905258cbbd0ceb621",
+    "scripts/run_large_tmatrix.py": "8bc4685083c7e98b2f57c9c39f9faddf9e57956582f876e719200f705b2b750e",
+    "scripts/symmetric_galerkin_fft.py": "b359fba33e2641acd21e2d8dd2858ea6b3821fe0d6a7f7d506ba7fe848027167",
+    "scripts/tmatrix_pipeline.py": "4b0e1c613dfe8fa6058ceb9958785389518e97775105a397aa52e5303093dbe2",
+    "scripts/packed_current_csr.py": "b14020d57b7f14593c800353b708b394948f71eb68ea323e0977d9cb1b868ce9",
+    "scripts/packed_current_csr_kernel.py": "a3c65580c58ee2307df76b4bf973044cee318ea44c178e37a779cacd4c646a37",
+    "scripts/packed_current_cpu.cpp": "458418ef3550c9eecacfbe7baa7fd8bbd14fc076802dc27578d5e57ea45ced98",
+    "scripts/packed_current_host.py": "dbdc580034b4dd832abe1234bbae3814f2c7411ad599e05264a91ede06cb5d34",
+    "scripts/bounded_spectral_storage.py": "d83ddcc968978b0b6e237975de1d07baeef52c9de4c67543e0f89643c4598342",
+    "src/fmm.cu": "2aaf22bb58e314f613e448f87767d9f47e9fae17dc49b9ca45e28c7d0c6a2211",
+    "src/muller_fmm.cpp": "e370a46f4870ac7c6c278c2e2c050ab0e0b7ff62c75c91314a0c629fa630c09d",
+    "src/octree.h": "2213a154d96b610099e90adcb7fcd1d5a0f14d927f5d72e871b17c6301e3038d",
+    "src/streaming_sector_gmres.h": "b4146b8eca26feef77a53590a42dbfc433dc14f3ef5174212b8f763df266d70d",
+    "tests/streaming_sector_gmres_check.cpp": "524004b2f7a5feb558960d6ebc07744968217bb46ab9aca9ec8b8d0463e92ea6",
+    "tests/test_tmatrix_pipeline.py": "848052049ed5856204243f3a9c29dd60624ddc4712a4eb160f26969bbd3cc6ef",
+    "tests/test_packed_current_csr.py": "d9431a0d4583c67c320343cd01444a0fbede18d9f1b5f2e30d3b2330db7a565c",
+    "tests/test_bounded_spectral_storage.py": "ccfb9da188b8d3f96314cc3efe2a9ef382f1df0fffb83005b8e3a34cebedfc03",
+    "tests/octree_depth_check.cpp": "2b23e75b86ded1323530c3c37499432f81b9dd42abf7b6446599719716296263",
+    "tools/muller_fft_geometry_export.cpp": "4a56901aafd2e0c600ff30386a8a64e0b628c3ae2bf1b4679fbf177e6a4c5bac"
+  },
+  "tests": {
+    "python": {
+      "passed": 29,
+      "skipped": 1,
+      "subtests_passed": 4,
+      "CUDA_visible_devices": "",
+      "files": [
+        "test_tmatrix_pipeline.py",
+        "test_large_tmatrix_runner.py",
+        "test_external_fft_action.py",
+        "test_surface_symmetry_fft.py",
+        "test_packed_current_csr.py",
+        "test_bounded_spectral_storage.py"
+      ]
+    },
+    "native": [
+      "octree_depth_check passed",
+      "streaming_sector_gmres_check passed",
+      "prism_symmetry_sectors_check passed",
+      "small geometry export dimensions passed"
+    ],
+    "sanitizers": "sector solver AddressSanitizer and UndefinedBehaviorSanitizer passed"
+  },
+  "results": {
+    "combined_native_and_FFT_GPU_peak_MiB": 21246,
+    "FFT_warm_median_s": 2.0787497389974305,
+    "FFT_smooth_relative_action_error": 0.00014491133028326106,
+    "single_active_sector_basis_MiB": 376.289,
+    "previous_unconditional_basis_MiB": 4515.469
+  },
+  "limitations": [
+    "Combined operator/action measurements do not constitute a completed ref7 T matrix.",
+    "Fully packed RHSs may activate all sectors and need the full Arnoldi basis.",
+    "FP16 parallel symbols remain opt-in: CPU encoding/product tests passed; GPU action and T-pilot validation were queued behind another project.",
+    "Depth-seven FMM experiment failed the unchanged-action tolerance; accepted configuration retains depth six.",
+    "L convergence uses the completed ref6 matrix at L=65 as reference, not an infinite-order solution or a mesh-convergence reference.",
+    "Large coefficients, binaries, T matrices and machine-specific launcher state are excluded from this commit."
+  ]
+}

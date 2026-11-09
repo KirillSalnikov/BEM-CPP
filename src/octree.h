@@ -9,6 +9,7 @@
 #include <cstring>
 #include <functional>
 #include <unordered_map>
+#include <stdexcept>
 
 struct OctreeNode {
     double center[3];
@@ -52,6 +53,18 @@ struct Octree {
 
     // Node indices at each level (for iteration)
     std::vector<std::vector<int>> level_nodes;
+
+    static int configured_depth_limit() {
+        // Default six; a deeper occupied surface tree is explicitly enabled.
+        int limit=6;
+        if (const char* value=std::getenv("BEM_FMM_MAX_DEPTH")) {
+            char* end=nullptr;const long parsed=std::strtol(value,&end,10);
+            if(end==value || *end!='\0' || parsed<1 || parsed>7)
+                throw std::invalid_argument("BEM_FMM_MAX_DEPTH must be in [1,7]");
+            limit=static_cast<int>(parsed);
+        }
+        return limit;
+    }
 
     void build(const double* targets, int n_tgt,
                const double* sources, int n_src,
@@ -98,7 +111,7 @@ struct Octree {
                 uniform_depth = std::max(
                     1, (int)std::ceil(
                         std::log(ratio) / std::log(8.0)));
-            if (uniform_depth > 6) uniform_depth = 6;
+            uniform_depth=std::min(uniform_depth,configured_depth_limit());
         }
 
         // Initialize index array
@@ -107,7 +120,7 @@ struct Octree {
 
         // Build root
         nodes.clear();
-        // Reserve enough for max depth 6: 1 + 8 + 64 + 512 + 4096 + 32768 + 262144
+        // Reserve an upper bound for the requested depth (empty boxes are pruned).
         int max_nodes = 1;
         for (int d = 0; d <= uniform_depth; d++) max_nodes += (1 << (3*d));
         nodes.reserve(max_nodes + 1);

@@ -2854,7 +2854,7 @@ void HelmholtzFMM::init(const double* targets, int n_tgt,
             ? order_reference_depth
             : bem_env_int("BEM_FMM_ORDER_REFERENCE_DEPTH", 0);
     if (configured_order_reference_depth > 0 &&
-        configured_order_reference_depth <= 6) {
+        configured_order_reference_depth <= Octree::configured_depth_limit()) {
         const double root_box_size =
             2.0 * tree.nodes.front().half_size;
         const double reference_box_size =
