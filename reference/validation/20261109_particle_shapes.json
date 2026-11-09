@@ -1,0 +1,286 @@
+{
+  "schema": 1,
+  "scope": "Algorithm-equivalence tests on identical meshes, full small T matrices and analytic SO(3). Not a mesh/L convergence certificate at large ka.",
+  "mbs_revision": "95cf4a9",
+  "hardware": "RTX 3090 Ti / Ryzen 7950X",
+  "python": "3.12.3",
+  "numpy": "2.4.2",
+  "scipy": "1.17.0",
+  "geometry": [
+    {
+      "particle": [
+        1,
+        2,
+        1
+      ],
+      "vertex_relative_error": 1.0352883086820629e-16,
+      "volume_relative_error": 5.551115123125783e-16,
+      "mbs_volume": 1.2990381056766584,
+      "bem_volume": 1.2990381056766578,
+      "symmetry": 24
+    },
+    {
+      "particle": [
+        2,
+        2,
+        1
+      ],
+      "vertex_relative_error": 7.982991953773599e-17,
+      "volume_relative_error": 2.220446049250313e-16,
+      "mbs_volume": 1.4753562118028767,
+      "bem_volume": 1.475356211802877,
+      "symmetry": 12
+    },
+    {
+      "particle": [
+        3,
+        2,
+        1
+      ],
+      "vertex_relative_error": 1.8788012006204165e-17,
+      "volume_relative_error": 1.5543122344752192e-15,
+      "mbs_volume": 8.852137270817247,
+      "bem_volume": 8.852137270817261,
+      "symmetry": 8
+    },
+    {
+      "particle": [
+        4,
+        1
+      ],
+      "vertex_relative_error": 2.7977744815271835e-16,
+      "volume_relative_error": 1.1102230246251565e-16,
+      "mbs_volume": 3.0297540230835924,
+      "bem_volume": 3.029754023083592,
+      "symmetry": 24
+    },
+    {
+      "particle": [
+        10,
+        2,
+        1,
+        20
+      ],
+      "vertex_relative_error": 1.0352883086820629e-16,
+      "volume_relative_error": 0.0,
+      "mbs_volume": 1.2202362384026817,
+      "bem_volume": 1.2202362384026817,
+      "symmetry": 24
+    },
+    {
+      "particle": [
+        12,
+        2,
+        1,
+        2
+      ],
+      "vertex_relative_error": 4.3928559659988507e-17,
+      "volume_relative_error": 6.661338147750939e-16,
+      "mbs_volume": 2.5980762113533173,
+      "bem_volume": 2.5980762113533156,
+      "symmetry": 4
+    },
+    {
+      "particle": [
+        999,
+        1
+      ],
+      "vertex_relative_error": 0.0,
+      "volume_relative_error": 2.220446049250313e-16,
+      "mbs_volume": 0.06918929862678974,
+      "bem_volume": 0.06918929862678976,
+      "symmetry": 1
+    }
+  ],
+  "native_T_and_SO3": [
+    {
+      "particle": [
+        10.0,
+        2.0,
+        1.0,
+        20.0
+      ],
+      "ka": 0.7,
+      "ref": 0,
+      "order": 3,
+      "ri": [
+        1.3116,
+        0.0
+      ],
+      "T_relative_difference": 1.7183811322543376e-06,
+      "mueller_max_error_over_reference_M11": 5.283732327766786e-07,
+      "maximum_strict_residual": 9.508396275988286e-09,
+      "packed_columns": 0,
+      "C6_individual_fallback": true,
+      "C2_reconstructed_columns": 6,
+      "sector_GMRES": true
+    },
+    {
+      "particle": [
+        12.0,
+        2.0,
+        1.0,
+        2.0
+      ],
+      "ka": 0.7,
+      "ref": 0,
+      "order": 3,
+      "ri": [
+        1.3116,
+        0.0
+      ],
+      "T_relative_difference": 4.2996093759603505e-09,
+      "mueller_max_error_over_reference_M11": 2.0446435661953564e-09,
+      "maximum_strict_residual": 1.9956376314825036e-09,
+      "packed_columns": 0,
+      "C6_individual_fallback": false,
+      "C2_reconstructed_columns": 0,
+      "sector_GMRES": false
+    },
+    {
+      "particle": [
+        1.0,
+        2.0,
+        1.0
+      ],
+      "ka": 0.7,
+      "ref": 0,
+      "order": 3,
+      "ri": [
+        1.3116,
+        0.0
+      ],
+      "T_relative_difference": 9.57368820857517e-09,
+      "mueller_max_error_over_reference_M11": 1.1547293737903729e-08,
+      "maximum_strict_residual": 9.701416771520045e-09,
+      "packed_columns": 0,
+      "C6_individual_fallback": true,
+      "C2_reconstructed_columns": 6,
+      "sector_GMRES": true
+    },
+    {
+      "particle": [
+        2.0,
+        2.0,
+        1.0
+      ],
+      "ka": 0.7,
+      "ref": 0,
+      "order": 3,
+      "ri": [
+        1.3116,
+        0.0
+      ],
+      "T_relative_difference": 3.6429469981072606e-09,
+      "mueller_max_error_over_reference_M11": 2.3556610333546615e-09,
+      "maximum_strict_residual": 1.995702777779497e-09,
+      "packed_columns": 16,
+      "C6_individual_fallback": false,
+      "C2_reconstructed_columns": 0,
+      "sector_GMRES": false
+    },
+    {
+      "particle": [
+        3.0,
+        2.0,
+        1.0
+      ],
+      "ka": 0.7,
+      "ref": 0,
+      "order": 3,
+      "ri": [
+        1.3116,
+        0.0
+      ],
+      "T_relative_difference": 4.862633218111275e-09,
+      "mueller_max_error_over_reference_M11": 2.870761541500488e-09,
+      "maximum_strict_residual": 3.0699724590291668e-09,
+      "packed_columns": 0,
+      "C6_individual_fallback": false,
+      "C2_reconstructed_columns": 6,
+      "sector_GMRES": false
+    },
+    {
+      "particle": [
+        4.0,
+        1.0
+      ],
+      "ka": 0.7,
+      "ref": 0,
+      "order": 3,
+      "ri": [
+        1.3116,
+        0.0
+      ],
+      "T_relative_difference": 8.73992580456038e-09,
+      "mueller_max_error_over_reference_M11": 4.494259273753751e-09,
+      "maximum_strict_residual": 9.873769311865395e-09,
+      "packed_columns": 0,
+      "C6_individual_fallback": true,
+      "C2_reconstructed_columns": 6,
+      "sector_GMRES": true
+    },
+    {
+      "particle": [
+        999.0,
+        1.0
+      ],
+      "ka": 0.7,
+      "ref": 0,
+      "order": 3,
+      "ri": [
+        1.3116,
+        0.0
+      ],
+      "T_relative_difference": 2.596738698449087e-09,
+      "mueller_max_error_over_reference_M11": 6.873560810688043e-10,
+      "maximum_strict_residual": 3.860451026248536e-09,
+      "packed_columns": 0,
+      "C6_individual_fallback": false,
+      "C2_reconstructed_columns": 0,
+      "sector_GMRES": false
+    },
+    {
+      "particle": [
+        10.0,
+        2.0,
+        1.0,
+        20.0
+      ],
+      "ka": 3.0,
+      "ref": 1,
+      "order": 4,
+      "ri": [
+        1.3116,
+        0.0
+      ],
+      "T_relative_difference": 1.039544768274214e-08,
+      "mueller_max_error_over_reference_M11": 1.9067802640208107e-08,
+      "maximum_strict_residual": 1.9301559896165293e-08,
+      "packed_columns": 0,
+      "C6_individual_fallback": true,
+      "C2_reconstructed_columns": 10,
+      "sector_GMRES": true
+    },
+    {
+      "particle": [
+        4.0,
+        1.0
+      ],
+      "ka": 3.0,
+      "ref": 1,
+      "order": 4,
+      "ri": [
+        1.3116,
+        0.2
+      ],
+      "T_relative_difference": 1.4920074980594122e-08,
+      "mueller_max_error_over_reference_M11": 2.270848054274668e-08,
+      "maximum_strict_residual": 9.933659839642802e-09,
+      "packed_columns": 10,
+      "C6_individual_fallback": false,
+      "C2_reconstructed_columns": 10,
+      "sector_GMRES": true
+    }
+  ]
+}

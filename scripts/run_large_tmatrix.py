@@ -32,7 +32,9 @@ SCRIPTS = ('run_large_tmatrix.py', 'bounded_bem_run.py', 'build_fmm_tmatrix.py',
 SCRIPTS += ('compressed_fft_service.py','symmetric_galerkin_fft.py','closed_galerkin_fft.py',
             'galerkin_cross_fft.py','streamed_galerkin_fft.py','tiled_galerkin_fft.py',
             'compressed_galerkin_fft.py','surface_symmetry.py','regular_surface_geometry.py')
+SCRIPTS += ('mbs_particle_geometry.py',)
 BINARIES = ('muller_tmatrix_fmm_server', 'tmatrix_so3_mstm', 'tmatrix_so3_mstm_fp32')
+GEOMETRY_DATA = ('mbs_fixed_aggregate.json',)
 PROFILE = {
     'OMP_NUM_THREADS': '16', 'OPENBLAS_NUM_THREADS': '1',
     'BEM_FMM_BANDED_SPLIT_DEPTH': '4', 'BEM_FMM_BANDED_COARSE_MAX_LEAF': '2048',
@@ -87,8 +89,8 @@ def frozen_runtime(destination, source=ROOT, worker_binary=None):
     if not destination.exists():
         temporary = destination.with_name(destination.name+'.preparing')
         temporary.mkdir(parents=True, exist_ok=True)
-        for directory, names in (('scripts', SCRIPTS), ('bin', BINARIES)):
-            (temporary/directory).mkdir(exist_ok=True)
+        for directory, names in (('scripts', SCRIPTS), ('bin', BINARIES),('reference/particles',GEOMETRY_DATA)):
+            (temporary/directory).mkdir(parents=True,exist_ok=True)
             for name in names:
                 src=worker_binary if worker_binary is not None and name=='muller_tmatrix_fmm_server' else source/directory/name
                 shutil.copy2(src, temporary/directory/name)

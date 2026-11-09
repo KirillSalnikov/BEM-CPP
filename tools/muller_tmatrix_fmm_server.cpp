@@ -127,6 +127,9 @@ int main(int argc,char** argv) try {
     Mesh mesh;
     const char* d6h_environment=std::getenv("BEM_TMATRIX_D6H_MESH");
     const bool d6h_mesh=d6h_environment && std::strcmp(d6h_environment,"0")!=0;
+    const char* generic_d6h_setting=std::getenv("BEM_TMATRIX_GEOMETRY_D6H");
+    const bool generic_d6h=generic_d6h_setting && std::strcmp(generic_d6h_setting,"0")!=0;
+    const bool d6h_geometry=(shape=="prism" && d6h_mesh)||generic_d6h;
     double prism_aspect=1.;
     if(const char* value=std::getenv("BEM_TMATRIX_PRISM_ASPECT")) {
         size_t used=0;prism_aspect=std::stod(value,&used);
@@ -242,8 +245,8 @@ int main(int argc,char** argv) try {
     if(sector_recycle_capacity && !sector_solver)throw std::runtime_error("sector recycling requires sector GMRES");
     if(vertical_preconditioner && !sector_solver)throw std::runtime_error("vertical inverse requires sector GMRES");
     const int orbit_nodes=std::getenv("BEM_TMATRIX_ORBIT_NODES")?std::stoi(std::getenv("BEM_TMATRIX_ORBIT_NODES")):50;
-    if(sector_solver && (device_solver || shape!="prism" || !d6h_mesh || fft_inner || recycle_capacity || mbj_overlap || orbit_nodes<1 || orbit_nodes>512))
-        throw std::runtime_error("sector GMRES requires the host D6h prism, orbit blocks 1..512, and no overlap/inner FFT/recycling");
+    if(sector_solver && (device_solver || !d6h_geometry || fft_inner || recycle_capacity || mbj_overlap || orbit_nodes<1 || orbit_nodes>512))
+        throw std::runtime_error("sector GMRES requires a verified D6h mesh, orbit blocks 1..512, and no overlap/inner FFT/recycling");
     bem_tmatrix::D6hOrbit symmetry_orbit;
     bem_tmatrix::PrismSymmetrySectors symmetry_sectors;
     PrismOrbitInverse orbit_inverse;
@@ -252,7 +255,14 @@ int main(int argc,char** argv) try {
         symmetry_sectors.build(maps);orbit_inverse.build(op,maps,orbit_nodes);
         std::printf("[sector solver] orbit_nodes=%d local_MiB=%.3f transform_MiB=%.3f\n",orbit_nodes,
             orbit_inverse.storage_bytes()/1048576.,symmetry_sectors.storage_bytes()/1048576.);
-    }else mbj.build_cached(op,mbj_nodes,mbj_overlap,cache+".mbj");
+    }else {
+        if(generic_d6h)symmetry_orbit.build(op.mesh);
+        mbj.build_cached(op,mbj_nodes,mbj_overlap,cache+".mbj");
+    }
+    if(generic_d6h){
+        std::vector<int> image,sign;
+        bem_tmatrix::D6hOrbit::vertical_image_map(op.mesh,image,sign);
+    }
     // This optional accelerator stays in RAM between production packets.
     // Column checkpoints are independent; a restarted worker relearns it.
     bem_streaming::SectorRecycleSpace sector_recycle(symmetry_sectors.offsets,sector_recycle_capacity,sector_recycle_mask);
@@ -359,7 +369,7 @@ int main(int argc,char** argv) try {
     };
     if(device_solver) mbj.upload_device();
     const char* warm_setting=std::getenv("BEM_TMATRIX_SYMMETRY_WARM_START");
-    const bool symmetry_warm_start=!device_solver && shape=="prism" && d6h_mesh &&
+    const bool symmetry_warm_start=!device_solver && d6h_geometry &&
         warm_setting && std::strcmp(warm_setting,"0")!=0;
     if(symmetry_warm_start && !sector_solver) symmetry_orbit.build(op.mesh);
     std::unique_ptr<ResidentPrismInverse> resident_inverse;
@@ -573,6 +583,8 @@ int main(int argc,char** argv) try {
     const double mbj_seconds=seconds(mbj_start);
     std::unique_ptr<ExternalFFTAction> external_fft;
     double external_fft_error=0,external_fft_setup_s=0;
+    double checker_baseline_s=0,checker_candidate_s=0,checker_difference=0;
+    double external_fft_wire_error=0;
     if(const char* path=std::getenv("BEM_TMATRIX_COMPRESSED_FFT_SOCKET")) {
         if(shape!="prism" || !d6h_mesh || !sector_solver || hybrid_requested ||
            device_solver || resident_requested || gpu_batch2 || fft_inner)
@@ -581,7 +593,32 @@ int main(int argc,char** argv) try {
         std::vector<Complex> probe(count),reference(count),actual(count);
         for(int i=0;i<count;++i)probe[i]=Complex(std::sin(.021*i),std::cos(.031*i));
         // Materialize accurate FMM scratch before the large FFT upload.
-        op.matvec_strict(probe.data(),reference.data());
+        const bool compare_checker=std::getenv("BEM_TMATRIX_CHECKER_COMPARE") &&
+            std::strcmp(std::getenv("BEM_TMATRIX_CHECKER_COMPARE"),"0")!=0;
+        if(compare_checker) {
+            const char* keys[]={"BEM_FMM_P2P_DS_THREADS","BEM_FMM_P2P_DS_LEAF_SPLIT","BEM_FMM_P2P_DS_FACTORED"};
+            std::array<std::string,3> saved;std::array<bool,3> present;
+            for(int i=0;i<3;++i){const char* value=std::getenv(keys[i]);present[i]=value;saved[i]=value?value:"";}
+            const auto restore=[&](){for(int i=0;i<3;++i){if(present[i])setenv(keys[i],saved[i].c_str(),1);else unsetenv(keys[i]);}};
+            // ABBA on this exact operator; the first call materializes scratch.
+            for(int trial=0;trial<4;++trial) {
+                const bool candidate=trial==1 || trial==2;
+                restore();if(!candidate){setenv(keys[0],"128",1);setenv(keys[1],"32",1);setenv(keys[2],"0",1);}
+                const auto before=Clock::now();op.matvec_strict(probe.data(),actual.data());const double elapsed=seconds(before);
+                if(trial==0)reference=actual;
+                else {
+                    long double num=0,den=0;for(int i=0;i<count;++i){num+=std::norm(actual[i]-reference[i]);den+=std::norm(reference[i]);}
+                    const double difference=std::sqrt(double(num/std::max(den,1e-300L)));
+                    if(!std::isfinite(difference))throw std::runtime_error("nonfinite checker comparison");
+                    checker_difference=std::max(checker_difference,difference);
+                }
+                if(candidate)checker_candidate_s+=elapsed*.5;else if(trial==3)checker_baseline_s=elapsed;
+                std::printf("[checker comparison] trial=%d candidate=%d seconds=%.6f error=%.3e\n",trial,candidate,elapsed,checker_difference);std::fflush(stdout);
+            }
+            restore();
+            if(!std::isfinite(checker_difference) || checker_difference>1e-10)
+                throw std::runtime_error("checker optimization changed accurate action");
+        }else op.matvec_strict(probe.data(),reference.data());
         external_fft.reset(new ExternalFFTAction(path,count,ref,ka,ri,prism_aspect,7,duffy_order));
         external_fft->apply(probe.data(),actual.data());
         long double numerator=0,denominator=0;
@@ -589,6 +626,18 @@ int main(int argc,char** argv) try {
         external_fft_error=std::sqrt(double(numerator/std::max(denominator,1e-300L)));
         if(!std::isfinite(external_fft_error) || external_fft_error>5e-4)
             throw std::runtime_error("compressed FFT startup action audit failed");
+        const char* compact_setting=std::getenv("BEM_TMATRIX_COMPRESSED_FFT_WIRE_FP32");
+        if(compact_setting && std::strcmp(compact_setting,"0")!=0) {
+            const std::string saved=compact_setting;
+            setenv("BEM_TMATRIX_COMPRESSED_FFT_WIRE_FP32","0",1);
+            external_fft->apply(probe.data(),reference.data());
+            setenv("BEM_TMATRIX_COMPRESSED_FFT_WIRE_FP32",saved.c_str(),1);
+            numerator=denominator=0;
+            for(int i=0;i<count;++i){numerator+=std::norm(actual[i]-reference[i]);denominator+=std::norm(reference[i]);}
+            external_fft_wire_error=std::sqrt(double(numerator/std::max(denominator,1e-300L)));
+            if(!std::isfinite(external_fft_wire_error) || external_fft_wire_error>1e-7)
+                throw std::runtime_error("compact FFT transport action audit failed");
+        }
         external_fft_setup_s=seconds(begin);
         std::printf("[compressed FFT] original-checker error=%.3e setup/audit=%.3fs\n",external_fft_error,external_fft_setup_s);
     }
@@ -608,6 +657,7 @@ int main(int argc,char** argv) try {
     std::ostringstream hello;
     hello<<std::setprecision(17)<<"{\"system_dofs\":"<<op.system_dofs<<",\"rhs_points\":"<<sample_count
          <<",\"prism_dihedral_mesh\":"<<(shape=="prism" && d6h_mesh ? "true":"false")
+         <<",\"geometry_d6h_verified\":"<<(generic_d6h?"true":"false")
          <<",\"prism_height_to_width_across_flats\":"<<prism_aspect
          <<",\"duffy_order\":"<<duffy_order
          <<",\"rhs_assembly\":\"cached_element_chunks\""
@@ -661,6 +711,10 @@ int main(int argc,char** argv) try {
          <<",\"compressed_fft\":"<<(external_fft?"true":"false")
          <<",\"compressed_fft_setup_s\":"<<external_fft_setup_s
          <<",\"compressed_fft_action_error\":"<<external_fft_error
+         <<",\"compressed_fft_wire_error\":"<<external_fft_wire_error
+         <<",\"checker_baseline_s\":"<<checker_baseline_s
+         <<",\"checker_candidate_s\":"<<checker_candidate_s
+         <<",\"checker_relative_difference\":"<<checker_difference
          <<",\"double_single_near_check\":"<<(std::getenv("BEM_FMM_P2P_DOUBLE_SINGLE") && std::strcmp(std::getenv("BEM_FMM_P2P_DOUBLE_SINGLE"),"0")?"true":"false")
          <<",\"resident_explicit_bytes\":"<<resident_bytes<<",\"resident_sector_bytes\":"<<resident_sector_bytes
          <<",\"resident_setup_s\":"<<resident_setup_s<<",\"resident_audit_s\":"<<resident_audit_s

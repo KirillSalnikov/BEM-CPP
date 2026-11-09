@@ -87,7 +87,7 @@ class LargeRunTest(unittest.TestCase):
     def test_freeze_keeps_explicit_validated_worker_and_detects_changes(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);source=root/'source';target=root/'runtime';worker=root/'old_worker'
-            for folder,names in (('scripts',runner.SCRIPTS),('bin',runner.BINARIES)):
+            for folder,names in (('scripts',runner.SCRIPTS),('bin',runner.BINARIES),('reference/particles',runner.GEOMETRY_DATA)):
                 (source/folder).mkdir(parents=True)
                 for name in names:(source/folder/name).write_text('current '+name)
             worker.write_bytes(b'validated old worker')

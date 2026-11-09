@@ -54,6 +54,10 @@ T-matrix modes require Python 3.10+ and SciPy 1.15+ with
 The legacy `sph_harm` fallback is rejected because it loses near-pole accuracy.
 CI uses the validated NumPy 2.4.2 / SciPy 1.17.0 combination.
 
+All seven MBS-fast particle types are available through `--particle TYPE ...`
+or `--particle-file FILE`, with measured mesh symmetries and compatible solver
+accelerations. See [particle parameters, symmetry and validation](docs/mbs_particle_shapes.md).
+
 This is a demonstration, not a mesh-convergence certificate. Check
 `summary.json` for completion and validation before using the result.
 `ntheta` samples scattering angle; analytic averaging uses zero Euler

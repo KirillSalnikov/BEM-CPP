@@ -1623,7 +1623,7 @@ __global__ void p2p_vector_actions_batch3_leaf_kernel(
 // Shared source tile, using the established arithmetic by default. The
 // optional real-wave mixed variant may select fast FP32 trigonometry;
 // strict FP64 actions never select that variant.
-template <typename ComputeReal, bool FastTrig = false>
+template <typename ComputeReal, bool FastTrig = false, bool FactorRadial = false>
 __device__ __forceinline__ void p2p_shared_source_action(
     ComputeReal dx, ComputeReal dy, ComputeReal dz,
     ComputeReal real_k, ComputeReal imaginary_k, ComputeReal inv4pi,
@@ -1661,6 +1661,13 @@ __device__ __forceinline__ void p2p_shared_source_action(
     const ComputeReal gradient_green_im =
         green_re * gradient_factor_im +
         green_im * gradient_factor_re;
+    ComputeReal ga_re,ga_im,gb_re,gb_im;
+    if(FactorRadial) {
+        // For real k, bG=-gradG and aG=-3*gradG-k^2*G. Reuse the
+        // accurate gradient; do not recompute the same complex products.
+        bem_p2p::radial_from_gradient_real(gradient_green_re,gradient_green_im,
+            green_re,green_im,k2_re,ga_re,ga_im,gb_re,gb_im);
+    } else {
     const ComputeReal a_re =
         static_cast<ComputeReal>(3.0) * inv_r2 +
         static_cast<ComputeReal>(3.0) *
@@ -1671,14 +1678,15 @@ __device__ __forceinline__ void p2p_shared_source_action(
     const ComputeReal b_re =
         inv_r2 + imaginary_k * inv_r;
     const ComputeReal b_im = -real_k * inv_r;
-    const ComputeReal ga_re =
+    ga_re =
         green_re * a_re - green_im * a_im;
-    const ComputeReal ga_im =
+    ga_im =
         green_re * a_im + green_im * a_re;
-    const ComputeReal gb_re =
+    gb_re =
         green_re * b_re - green_im * b_im;
-    const ComputeReal gb_im =
+    gb_im =
         green_re * b_im + green_im * b_re;
+    }
     const ComputeReal unit[3] = {
         dx * inv_r, dy * inv_r, dz * inv_r
     };
@@ -1692,7 +1700,7 @@ __device__ __forceinline__ void p2p_shared_source_action(
 }
 
 template <typename Real, int Tile = 128, bool RealWaveNumber = false, bool FastTrig = false,
-          bool LocalCoordinates = false>
+          bool LocalCoordinates = false, bool FactorRadial = false>
 __global__ void p2p_vector_actions_shared_sources(
     const double* __restrict__ tgt_xyz, const double* __restrict__ src_xyz,
     const double* __restrict__ qx_re, const double* __restrict__ qx_im,
@@ -1744,7 +1752,7 @@ __global__ void p2p_vector_actions_shared_sources(
             if(active) for(int j=0;j<count;++j) {
                 const Real qr[3]={source[3][j],source[5][j],source[7][j]};
                 const Real qi[3]={source[4][j],source[6][j],source[8][j]};
-                p2p_shared_source_action<Real,FastTrig>(tx-source[0][j],ty-source[1][j],tz-source[2][j],
+                p2p_shared_source_action<Real,FastTrig,FactorRadial>(tx-source[0][j],ty-source[1][j],tz-source[2][j],
                                         kr,ki,inv4pi,k2r,k2i,qr,qi,cr,ci,ar,ai);
             }
             __syncthreads();
@@ -2150,17 +2158,27 @@ void launch_p2p_vector_actions_batch3_leaf(
         d_near_source_ids && bem_env_flag_enabled("BEM_FMM_P2P_DOUBLE_SINGLE")) {
         // DS needs substantially more registers than FP32; a 1024-thread
         // launch can exceed the per-block register budget.
-        const int ds_threads = threads > 256 ? 256 : threads;
+        int ds_threads=bem_env_int("BEM_FMM_P2P_DS_THREADS",threads);
+        if(ds_threads!=64 && ds_threads!=128 && ds_threads!=256 && ds_threads!=512 && ds_threads!=1024)
+            ds_threads=threads;
+        if(ds_threads>256)ds_threads=256;
+        int ds_split=bem_env_int("BEM_FMM_P2P_DS_LEAF_SPLIT",leaf_split);
+        if(ds_split!=1 && ds_split!=2 && ds_split!=4 && ds_split!=8 && ds_split!=16 && ds_split!=32 && ds_split!=64 && ds_split!=128)
+            ds_split=leaf_split;
         static std::atomic<bool> announced(false);
         if (!announced.exchange(true, std::memory_order_relaxed)) {
             std::fprintf(stderr, "  [P2P] double-single near action enabled; FP64 far action retained\n");
         }
-        p2p_vector_actions_shared_sources<P2PDoubleSingle,128,true,false,true>
-            <<<n_leaves*leaf_split,ds_threads>>>(
-                d_tgt,d_src,d_qx_re,d_qx_im,d_qy_re,d_qy_im,d_qz_re,d_qz_im,
-                d_tgt_offsets,d_tgt_ids,d_near_source_offsets,d_near_source_ids,
-                n_leaves,leaf_split,k_re,k_im,d_curl_re,d_curl_im,
-                d_hessian_action_re,d_hessian_action_im);
+#define LAUNCH_DS_SHARED(FACTORED) \
+        p2p_vector_actions_shared_sources<P2PDoubleSingle,128,true,false,true,FACTORED> \
+            <<<n_leaves*ds_split,ds_threads>>>( \
+                d_tgt,d_src,d_qx_re,d_qx_im,d_qy_re,d_qy_im,d_qz_re,d_qz_im, \
+                d_tgt_offsets,d_tgt_ids,d_near_source_offsets,d_near_source_ids, \
+                n_leaves,ds_split,k_re,k_im,d_curl_re,d_curl_im, \
+                d_hessian_action_re,d_hessian_action_im)
+        if(bem_env_flag_enabled("BEM_FMM_P2P_DS_FACTORED")){LAUNCH_DS_SHARED(true);}
+        else{LAUNCH_DS_SHARED(false);}
+#undef LAUNCH_DS_SHARED
         return;
     }
     // Shared tiles improve the bandwidth-limited mixed action. FP64 is

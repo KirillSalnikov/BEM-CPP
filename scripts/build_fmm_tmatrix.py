@@ -71,6 +71,11 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--shape',choices=['sphere','prism','tetra'],default='sphere')
     parser.add_argument('--obj',type=Path)
+    parser.add_argument('--particle','-p',nargs='+',type=float,
+                        help='MBS-fast geometry: TYPE parameters; types 1,2,3,4,10,12,999')
+    parser.add_argument('--particle-file','--pf',type=Path,help='Native MBS-fast polygon file')
+    parser.add_argument('--particle-symmetry',choices=['auto','off'],default='auto',
+                        help='Automatically use measured compatible particle symmetries; off is an independent reference path')
     parser.add_argument('--ref',type=int,default=3)
     parser.add_argument('--ka',type=float,default=1.)
     parser.add_argument('--ri',type=float,default=1.5)
@@ -121,6 +126,59 @@ def main():
                         help='Checked T-specific physical current prior; one shared D6h correction for all modal RHS')
     parser.add_argument('--operator-cache-prefix',type=Path,help='Reuse validated near/MBJ caches from an existing operator')
     args=parser.parse_args()
+    particle_info=None
+    if args.particle is not None or args.particle_file is not None:
+        if args.obj is not None or (args.particle is not None and args.particle_file is not None):
+            parser.error('Choose exactly one of --obj, --particle or --particle-file')
+        from mbs_particle_geometry import prepare,write_obj
+        try:
+            vertices,triangles,particle_info=prepare(args.particle,args.particle_file)
+        except (ValueError,OSError) as error:parser.error(str(error))
+        # Content-address the generated surface; a rejected resume must never
+        # overwrite geometry belonging to an existing checkpoint.
+        geometry_hash=hashlib.sha256(vertices.tobytes()+triangles.tobytes()).hexdigest()
+        geometry_directory=args.out/'geometry';geometry_directory.mkdir(parents=True,exist_ok=True)
+        generated=geometry_directory/(geometry_hash+'.obj')
+        if not generated.exists():write_obj(generated,vertices,triangles)
+        atomic_json(generated.with_suffix('.json'),particle_info)
+        if args.particle is not None and args.particle[0]==1:
+            # Preserve the established full D6h prism implementation, including
+            # its quality-controlled mesh and specialized preconditioner.
+            args.shape='prism'
+            args.prism_aspect=args.particle[1]/(np.sqrt(3)*args.particle[2]/2)
+            os.environ.setdefault('BEM_TMATRIX_D6H_MESH','1')
+        else:
+            args.shape='particle';args.obj=generated
+        sym=particle_info['solver_symmetries']
+        if args.c2_reuse and not sym['c2_x']:parser.error('--c2-reuse requires verified C2x symmetry')
+        if args.c6_pack and not sym['c6_z']:parser.error('--c6-pack requires verified C6z symmetry')
+        if args.mirror_pack and not (sym['c6_z'] and sym['horizontal_mirror']):
+            parser.error('--mirror-pack requires verified C6z and horizontal reflection symmetry')
+        if args.particle_symmetry=='auto':
+            full=not (args.columns or args.column_indices or args.plane_only)
+            if full:
+                args.c2_reuse=sym['c2_x'];args.c6_pack=sym['c6_z']
+                args.mirror_pack=sym['c6_z'] and sym['horizontal_mirror']
+            args.incident_prefetch=True
+            # Small-ka higher multipoles radiate by cancellation. Keep the
+            # radiation integral accurate; this does not replace covariance
+            # checks of the complete discretized equation.
+            if args.ka<=1:
+                os.environ.setdefault('BEM_FARFIELD_FAST_PHASE','0')
+                os.environ.setdefault('BEM_FARFIELD_FP32_ACCUM','0')
+            for key,value in {'BEM_FMM_P2P_DOUBLE_SINGLE':'1','BEM_FMM_P2P_DS_FACTORED':'1',
+                'BEM_FMM_P2P_DS_THREADS':'64','BEM_FMM_P2P_DS_LEAF_SPLIT':'32'}.items():
+                os.environ.setdefault(key,value)
+            if sym['d6h_z']:
+                if args.obj is not None:os.environ['BEM_TMATRIX_GEOMETRY_D6H']='1'
+                for key,value in {'BEM_TMATRIX_SECTOR_GMRES':'1','BEM_TMATRIX_ORBIT_NODES':'50',
+                    'BEM_TMATRIX_SECTOR_RECYCLE_RANK':'8','BEM_TMATRIX_VERTICAL_PRECONDITIONER':'1',
+                    'BEM_TMATRIX_SYMMETRY_WARM_START':'1'}.items():os.environ.setdefault(key,value)
+            else:
+                os.environ.setdefault('BEM_MULLER_GPU_ASSEMBLY','0')
+                if os.environ['BEM_MULLER_GPU_ASSEMBLY']=='0':os.environ.setdefault('BEM_TMATRIX_RECYCLE_RANK','8')
+    builtin_prism=args.shape=='prism' and args.obj is None
+    symmetry_allowed=particle_info['solver_symmetries'] if particle_info else {}
     compressed_case=os.environ.get('BEM_TMATRIX_COMPRESSED_FFT_CASE')
     if compressed_case:
         compressed_case=Path(compressed_case).resolve()
@@ -156,7 +214,10 @@ def main():
     if args.mirror_pack:
         if not args.c6_pack:
             parser.error('--mirror-pack requires --c6-pack')
+        if not builtin_prism and not (symmetry_allowed.get('c6_z') and symmetry_allowed.get('horizontal_mirror')):
+            parser.error('--mirror-pack requires measured C6 and horizontal reflection symmetry')
         os.environ['BEM_TMATRIX_D6H_MESH']='1'
+        if not builtin_prism and symmetry_allowed.get('d6h_z'):os.environ['BEM_TMATRIX_GEOMETRY_D6H']='1'
     if args.fast_mlfma:
         if int(os.environ.get('BEM_FMM_BANDED_SPLIT_DEPTH','0'))<=0:
             parser.error('--fast-mlfma requires BEM_FMM_BANDED_SPLIT_DEPTH>0; choose a band layout for the mesh')
@@ -186,12 +247,12 @@ def main():
         parser.error('--incident-min-order must be between 1 and --order')
     if args.incident_min_order>1 and (args.columns or args.column_indices or args.plane_only or not args.no_average):
         parser.error('an incident-order shell requires --no-average and cannot be combined with other column selectors or --plane-only')
-    if args.c2_reuse and (args.shape!='prism' or args.obj is not None or args.columns or args.column_indices or args.plane_only):
-        parser.error('--c2-reuse currently supports complete builds of the built-in prism only')
+    if args.c2_reuse and (not (builtin_prism or symmetry_allowed.get('c2_x')) or args.columns or args.column_indices or args.plane_only):
+        parser.error('--c2-reuse requires a complete build with verified C2x symmetry')
     if not np.isfinite(args.c2_audit_tol) or args.c2_audit_tol<=0:
         parser.error('--c2-audit-tol must be finite and positive')
-    if args.c6_pack and (args.shape!='prism' or args.obj is not None or args.columns or args.column_indices or args.plane_only):
-        parser.error('--c6-pack currently supports complete builds of the built-in prism only')
+    if args.c6_pack and (not (builtin_prism or symmetry_allowed.get('c6_z')) or args.columns or args.column_indices or args.plane_only):
+        parser.error('--c6-pack requires a complete build with verified C6z symmetry')
     if not np.isfinite(args.c6_audit_tol) or args.c6_audit_tol<=0:
         parser.error('--c6-audit-tol must be finite and positive')
     if args.so3_threads<1 or args.order<1 or args.order>256 or args.ref<0 or args.ka<=0 or args.tol<=0 or args.ntheta<2:
@@ -233,6 +294,10 @@ def main():
     geometry=str(args.obj.resolve()) if args.obj else args.shape
     binary=args.worker_binary.resolve() if args.worker_binary else ROOT/'bin/muller_tmatrix_fmm_server'
     fingerprint={k:v for k,v in vars(args).items() if k not in ('out','columns','column_indices','max_pairs_this_run','fast_mlfma','ntheta','no_average','obj','plane_only','operator_cache_prefix','average_backend','so3_threads','so3_precision','worker_binary','seed_from','solver_restart_from','solver_restart_proof')}
+    fingerprint.pop('particle');fingerprint.pop('particle_file');fingerprint.pop('particle_symmetry')
+    if particle_info is not None:
+        fingerprint['particle_geometry']=particle_info
+        fingerprint['particle_generator_digest']=hashlib.sha256((ROOT/'scripts/mbs_particle_geometry.py').read_bytes()).hexdigest()
     fingerprint.pop('neural_prior',None)
     if neural_prior_info is not None:
         fingerprint['neural_tmatrix_prior']=neural_prior_info
@@ -258,6 +323,8 @@ def main():
         fingerprint.pop('c2_reuse'); fingerprint.pop('c2_audit_tol')
     fingerprint['geometry']=geometry
     fingerprint['geometry_digest']=hashlib.sha256(args.obj.read_bytes()).hexdigest() if args.obj else None
+    if particle_info is not None and args.obj is not None:
+        fingerprint['geometry']='particle_obj_sha256:'+fingerprint['geometry_digest']
     fingerprint['binary_digest']=hashlib.sha256(binary.read_bytes()).hexdigest()
     if compressed_case:
         fingerprint['compressed_fft_assets_digest']=hashlib.sha256((compressed_case/'service_assets.json').read_bytes()).hexdigest()
@@ -443,10 +510,15 @@ def main():
     def single_tasks(indices):
         return [('single',indices[i:i+2]) for i in range(0,len(indices),2)]
     c6_reference_groups=[]
+    c6_fallback_path=out/'c6_individual_fallback.json'
+    c6_individual_fallback=False
+    if particle_info is not None and args.particle_symmetry=='auto' and c6_fallback_path.exists():
+        c6_individual_fallback=json.loads(c6_fallback_path.read_text()).get('signature')==signature
     if args.c6_pack:
         for name in ('c6_audits','c6_batches','c6_rejections'):
             (out/name).mkdir(exist_ok=True)
         c6_reference_groups=schedule['c6_groups']
+    if args.c6_pack and not c6_individual_fallback:
         controls=list(dict.fromkeys((audit_work if args.c2_reuse else [])+
                       [index for group in c6_reference_groups for index in group]))
         missing_controls=[i for i in controls if not valid_column(i)]
@@ -521,8 +593,8 @@ def main():
                 hello['recycle_checkpoint_peak_gib']=recycle_disk_peak/2**30
                 if estimated_disk>0.8*shutil.disk_usage(out).free:
                     raise RuntimeError('insufficient free disk for T/projection and atomic recycle checkpoints')
-            if args.mirror_pack and not hello.get('prism_dihedral_mesh'):
-                raise RuntimeError('mirror packing requires a worker with a D6h-invariant prism mesh')
+            if args.mirror_pack and not (hello.get('prism_dihedral_mesh') or hello.get('geometry_d6h_verified')):
+                raise RuntimeError('mirror packing requires a worker with a verified D6h-invariant mesh')
             positions=np.empty((hello['rhs_points'],3),dtype=np.float64)
             receive_into(connection,positions)
             atomic_json(out/'operator_metadata.json',hello)
@@ -645,7 +717,19 @@ def main():
                     elif kind=='audit':
                         atomic_json(out/'c6_audits'/f'{batch}.json',check)
                         if not check['passed']:
-                            raise RuntimeError('C6 packed RHS audit failed; no packed checkpoints accepted')
+                            if particle_info is None or args.particle_symmetry!='auto' or inflight:
+                                raise RuntimeError('C6 packed RHS audit failed; no packed checkpoints accepted')
+                            # Geometry can have exact C6 while a coarse quadrature
+                            # or weak multipole fails the numerical packing gate.
+                            # Keep independently solved columns, discard this
+                            # decoded packet and persist a direct-solve fallback.
+                            c6_individual_fallback=True
+                            atomic_json(c6_fallback_path,dict(signature=signature,
+                                reason='packed audit failed',audit_packet=batch,
+                                packed_columns_accepted=False))
+                            tasks.clear()
+                            tasks.extend(single_tasks([i for i in work_order if not valid_column(i)]))
+                            print('C6 numerical audit rejected packing; continuing with individual columns',flush=True)
                     elif not check['passed']:
                         # Remember the rejection across interruption. Never retry
                         # the same failed symmetry level on restart.
@@ -738,6 +822,13 @@ def main():
     physical_scale={'wavelength_um':args.wavelength,
                     'volume_equivalent_radius_um':args.ka*args.wavelength/(2*np.pi) if args.wavelength else None,
                     'prism_height_to_width_across_flats':args.prism_aspect}
+    if particle_info is not None:
+        if not builtin_prism:physical_scale.pop('prism_height_to_width_across_flats')
+        physical_scale.update(particle_name=particle_info['name'],
+            particle_input_equivalent_radius=particle_info['equivalent_radius'],
+            particle_input_to_um=(physical_scale['volume_equivalent_radius_um']/particle_info['equivalent_radius']
+                                  if args.wavelength else None),
+            body_origin_in_particle_input=particle_info['symmetry']['center'])
     report['physical_scale']=physical_scale
     if args.incident_min_order>1:
         requested_set=set(requested)
@@ -764,6 +855,7 @@ def main():
             'vertical_reflection_from_C2_and_horizontal':bool(args.mirror_pack and args.c2_reuse),
             'shared_incident_cache':not args.no_incident_cache,
             'independent_reference_audits_complete':len(audits)==len(c6_reference_groups) and all(a['passed'] for a in audits),
+            'individual_fallback_after_failed_audit':c6_individual_fallback,
             'packed_columns':sum(item.get('derived_by')=='C6_packed_RHS' for item in all_status),
             'individual_columns':sum('derived_by' not in item for item in all_status),
             'rejected_packets':len(list((out/'c6_rejections').glob('*.json'))),
@@ -796,7 +888,8 @@ def main():
                 import mmap
                 kernel._mmap.madvise(mmap.MADV_DONTNEED)
                 mean,post=analytic_mueller_tmatrix(t,args.order,theta,threads=args.so3_threads,
-                    precision=args.so3_precision,cyclic_order=6 if args.shape=='prism' and args.obj is None else 1)
+                    precision=args.so3_precision,cyclic_order=6 if (builtin_prism or symmetry_allowed.get('c6_z'))
+                    and not c6_individual_fallback and (particle_info is None or args.particle_symmetry=='auto') else 1)
             else:
                 mean=args.ka**2*analytic_mueller(kernel,args.order,theta)
                 post={'method':'analytic_full_SO3_reference','Euler_quadrature_nodes':0}

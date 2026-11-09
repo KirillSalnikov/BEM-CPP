@@ -58,7 +58,9 @@ class MigrationTest(unittest.TestCase):
             extra=['--worker-binary',str(worker),'--solver-restart-from',str(old),'--solver-restart-proof',str(proof_path)]
             candidate=dict(env,BEM_TMATRIX_SECTOR_GMRES='1',BEM_TMATRIX_ORBIT_NODES='50',BEM_TMATRIX_SECTOR_RECYCLE_RANK='8',
                 BEM_TMATRIX_VERTICAL_PRECONDITIONER='1',BEM_SECTOR_PROJECTED_FACTOR='.25',BEM_FMM_P2P_LOCAL_COORDINATES='1',
-                BEM_CIRCULANT_OPPOSITE_WEIGHT='.5',BEM_CIRCULANT_OPPOSITE_MASK='3',BEM_SECTOR_FIRST_PASS_FACTOR='8')
+                BEM_CIRCULANT_OPPOSITE_WEIGHT='.5',BEM_CIRCULANT_OPPOSITE_MASK='3',BEM_SECTOR_FIRST_PASS_FACTOR='8',
+                BEM_FMM_P2P_DS_THREADS='64',BEM_FMM_P2P_DS_LEAF_SPLIT='32',BEM_FMM_P2P_DS_FACTORED='1',
+                BEM_TMATRIX_CHECKER_COMPARE='1',BEM_TMATRIX_COMPRESSED_FFT_WIRE_FP32='1')
             extra+=['--restart','48']
             run(new,extra,candidate)
             report=json.loads((new/'solver_migration.json').read_text())

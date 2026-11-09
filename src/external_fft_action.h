@@ -7,8 +7,10 @@
 #include <complex>
 #include <cstdint>
 #include <cstring>
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 // Optional host-vector action supplied by the validated compressed FFT service.
 // The worker retains its own physical FMM residual and its existing C6 solver.
@@ -17,6 +19,7 @@ class ExternalFFTAction {
     int fd_=-1;
     size_t n_=0;
     uint64_t sequence_=0;
+    std::vector<std::complex<float>> wire_;
     static const uint64_t magic_=0x42454d4646543031ULL;
     static void transfer(int fd,void* data,size_t size,bool sending) {
         char* p=static_cast<char*>(data);
@@ -54,12 +57,24 @@ public:
     ExternalFFTAction(const ExternalFFTAction&)=delete;
     ExternalFFTAction& operator=(const ExternalFFTAction&)=delete;
     void apply(const std::complex<double>* input,std::complex<double>* output) {
-        uint64_t request[2]={1,++sequence_};
+        const char* setting=std::getenv("BEM_TMATRIX_COMPRESSED_FFT_WIRE_FP32");
+        const bool compact=setting && std::strcmp(setting,"0")!=0;
+        // The service already casts every input to complex64 before the FFT.
+        // Sending that representation avoids double-width transfers/casts.
+        if(compact) {
+            wire_.resize(n_);
+            for(size_t i=0;i<n_;++i)wire_[i]=std::complex<float>(input[i]);
+        }
+        uint64_t request[2]={compact?2ULL:1ULL,++sequence_};
         transfer(fd_,request,sizeof(request),true);
-        transfer(fd_,const_cast<std::complex<double>*>(input),n_*sizeof(*input),true);
+        if(compact)transfer(fd_,wire_.data(),n_*sizeof(wire_[0]),true);
+        else transfer(fd_,const_cast<std::complex<double>*>(input),n_*sizeof(*input),true);
         uint64_t response[2];transfer(fd_,response,sizeof(response),false);
         if(response[0]!=sequence_ || response[1]!=0)throw std::runtime_error("compressed FFT response mismatch");
-        transfer(fd_,output,n_*sizeof(*output),false);
+        if(compact) {
+            transfer(fd_,wire_.data(),n_*sizeof(wire_[0]),false);
+            for(size_t i=0;i<n_;++i)output[i]=std::complex<double>(wire_[i]);
+        }else transfer(fd_,output,n_*sizeof(*output),false);
     }
     uint64_t calls()const{return sequence_;}
 };

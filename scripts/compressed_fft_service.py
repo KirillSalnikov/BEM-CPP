@@ -138,6 +138,7 @@ def serve(case, socket_path, report_path):
             validate_manifest(case)
             gpu=load_operator(case);n=meta['system_dofs']
             current=np.empty(n,np.complex128)
+            compact_input=compact_output=device_input=None
             # Allocate Torch scratch now, before declaring the service ready.
             with torch.inference_mode():gpu(torch.zeros(n,device='cuda',dtype=torch.complex64))
             torch.cuda.synchronize()
@@ -148,15 +149,28 @@ def serve(case, socket_path, report_path):
                 header=bytearray(16);receive_into(connection,header)
                 operation,sequence=struct.unpack('=QQ',header)
                 if operation==0:break
-                if operation!=1 or sequence!=previous+1:raise ValueError('Invalid FFT request sequence')
-                previous=sequence;receive_into(connection,current)
-                if not np.all(np.isfinite(current)):raise ValueError('Nonfinite FFT input')
+                if operation not in (1,2) or sequence!=previous+1:raise ValueError('Invalid FFT request sequence')
+                previous=sequence
+                if operation==2 and compact_input is None:
+                    compact_input=torch.empty(n,dtype=torch.complex64,pin_memory=True)
+                    compact_output=torch.empty_like(compact_input,pin_memory=True)
+                    device_input=torch.empty(n,dtype=torch.complex64,device='cuda')
+                incoming=current if operation==1 else compact_input.numpy()
+                receive_into(connection,incoming)
+                if not np.all(np.isfinite(incoming)):raise ValueError('Nonfinite FFT input')
                 begin=time.perf_counter()
                 with torch.inference_mode():
-                    value=gpu(torch.as_tensor(current,device='cuda',dtype=torch.complex64)).to(
-                        'cpu',dtype=torch.complex128).numpy()
+                    if operation==1:
+                        value=gpu(torch.as_tensor(current,device='cuda',dtype=torch.complex64)).to(
+                            'cpu',dtype=torch.complex128).numpy()
+                    else:
+                        device_input.copy_(compact_input,non_blocking=True)
+                        compact_output.copy_(gpu(device_input),non_blocking=True)
+                        torch.cuda.current_stream().synchronize()
+                        value=compact_output.numpy()
                 if not np.all(np.isfinite(value)):raise ValueError('Nonfinite FFT result')
                 report['action_s']+=time.perf_counter()-begin;report['calls']+=1
+                report['compact_calls']=report.get('compact_calls',0)+(operation==2)
                 connection.sendall(struct.pack('=QQ',sequence,0));connection.sendall(memoryview(value).cast('B'))
                 if report['calls']%32==0:save()
         report.update(status='complete',elapsed_s=time.perf_counter()-start);save()

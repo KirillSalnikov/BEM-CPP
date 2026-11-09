@@ -27,6 +27,8 @@ int main() try {
     setenv("BEM_FMM_P2P_STRICT_REAL","1",1);
     setenv("BEM_FMM_P2P_STRICT_FACTORED","0",1);
     setenv("BEM_FMM_P2P_SHARED_SOURCES","1",1);
+    unsetenv("BEM_FMM_P2P_DS_THREADS");
+    unsetenv("BEM_FMM_P2P_DS_LEAF_SPLIT");
     auto run=[&](bool pair,bool ds,bool flat_lists,bool mixed,double kr,double ki) {
         setenv("BEM_FMM_P2P_DOUBLE_SINGLE",ds?"1":"0",1); O.zero();
         double* q[12]; for(int j=0;j<12;++j) q[j]=Q.p+j*ns;
@@ -45,7 +47,8 @@ int main() try {
         return values;
     };
     double worst=0, fallback_worst=0; int cases=0;
-    for(int threads:{64,128,256}) for(int split:{1,4,32}) {
+    for(int factored:{0,1}) for(int threads:{64,128,256}) for(int split:{1,4,32}) {
+        setenv("BEM_FMM_P2P_DS_FACTORED",factored?"1":"0",1);
         setenv("BEM_FMM_P2P_THREADS",std::to_string(threads).c_str(),1);
         setenv("BEM_FMM_P2P_PAIR_THREADS",std::to_string(threads).c_str(),1);
         setenv("BEM_FMM_P2P_LEAF_SPLIT",std::to_string(split).c_str(),1);
@@ -68,6 +71,21 @@ int main() try {
             ++cases;
         }
     }
+    // Independent DS settings must not change the ordinary FP64/mixed path;
+    // invalid settings fall back and oversized blocks are capped.
+    for(int threads:{64,128,256,512,1024,17}) for(int split:{1,32,128,17}) {
+        setenv("BEM_FMM_P2P_THREADS","128",1);
+        setenv("BEM_FMM_P2P_LEAF_SPLIT","4",1);
+        setenv("BEM_FMM_P2P_DS_THREADS",std::to_string(threads).c_str(),1);
+        setenv("BEM_FMM_P2P_DS_LEAF_SPLIT",std::to_string(split).c_str(),1);
+        auto reference=run(false,false,true,false,40.,0.);
+        auto candidate=run(false,true,true,false,40.,0.);
+        double error=difference(candidate,reference);worst=std::max(worst,error);
+        if(error>2e-9)throw std::runtime_error("DS independent launch setting mismatch");
+        ++cases;
+    }
+    unsetenv("BEM_FMM_P2P_DS_THREADS");
+    unsetenv("BEM_FMM_P2P_DS_LEAF_SPLIT");
     // Oversized mixed-kernel launch settings must be capped for DS. Compare
     // against a valid FP64 launch, independently of its register requirements.
     for(int threads:{512,1024}) for(bool pair:{false,true}) {

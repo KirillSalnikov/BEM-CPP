@@ -8,6 +8,65 @@ from scipy.spatial import cKDTree
 
 
 class PointGroup:
+    @classmethod
+    def detect(cls, vertices, triangles=None, tolerance=1e-9):
+        """Find all finite orthogonal symmetries of a 3-D vertex/triangle set.
+
+        Three independent anchor images determine an isometry. Gram-matrix
+        filtering avoids assuming an axis, particle name or rotation order.
+        Triangle connectivity is checked when supplied, not just the envelope.
+        """
+        points=np.asarray(vertices,float)
+        if points.ndim!=2 or points.shape[1]!=3 or not np.isfinite(points).all():
+            raise ValueError('Expected finite 3-D vertices')
+        if len(points)<4:raise ValueError('A closed 3-D surface needs four vertices')
+        center=points.mean(axis=0);x=points-center
+        scale=np.max(np.linalg.norm(x,axis=1))
+        if not scale>0:raise ValueError('Degenerate point set')
+        x=x/scale;r2=np.sum(x*x,axis=1);tree=cKDTree(x)
+        a=int(np.argmax(r2));b=int(np.argmax(np.linalg.norm(np.cross(x[a],x),axis=1)))
+        c=int(np.argmax(abs(x@np.cross(x[a],x[b]))))
+        anchors=x[[a,b,c]].T
+        if abs(np.linalg.det(anchors))<1e-12:raise ValueError('Symmetry detection requires a 3-D surface')
+        inv=np.linalg.inv(anchors);gram=anchors.T@anchors
+        candidates=[np.flatnonzero(abs(r2-gram[j,j])<4*tolerance) for j in range(3)]
+        faces=None if triangles is None else np.asarray(triangles,int)
+        if faces is not None and (faces.ndim!=2 or faces.shape[1]!=3 or faces.min()<0 or faces.max()>=len(x)):
+            raise ValueError('Invalid symmetry triangle indices')
+        keys=None if faces is None else {tuple(sorted(t)) for t in faces}
+        result=[]
+        for i in candidates[0]:
+            for j in candidates[1][abs(x[candidates[1]]@x[i]-gram[0,1])<4*tolerance]:
+                possible=candidates[2]
+                possible=possible[(abs(x[possible]@x[i]-gram[0,2])<4*tolerance)&
+                                  (abs(x[possible]@x[j]-gram[1,2])<4*tolerance)]
+                for k in possible:
+                    R=x[[i,j,k]].T@inv
+                    if np.max(abs(R.T@R-np.eye(3)))>8*tolerance:continue
+                    u,_,vh=np.linalg.svd(R);R=u@vh
+                    distance,permutation=tree.query(x@R.T)
+                    if distance.max()>tolerance or len(np.unique(permutation))!=len(x):continue
+                    if keys is not None and {tuple(sorted(t)) for t in permutation[faces]}!=keys:continue
+                    if all(np.max(abs(R-old))>tolerance for old in result):result.append(R)
+        if not result:raise ValueError('No identity symmetry found')
+        # Identity first; stable ordering makes metadata/checkpoints reproducible.
+        result.sort(key=lambda R:(np.max(abs(R-np.eye(3)))>tolerance,tuple(np.round(R,10).ravel())))
+        return cls(result,center,tolerance=min(1e-6,16*tolerance))
+
+    def summary(self):
+        proper=self.matrices[self.determinants==1]
+        orders=[]
+        for R in proper:
+            angle=np.arccos(np.clip((np.trace(R)-1)/2,-1.,1.))
+            orders.append(1 if angle<1e-7 else int(round(2*np.pi/angle)))
+        mirrors=sum(int(det==-1 and abs(np.trace(R)-1)<1e-7)
+                    for R,det in zip(self.matrices,self.determinants))
+        return dict(order=len(self.matrices),proper_rotations=len(proper),
+                    improper_operations=int(np.sum(self.determinants<0)),mirror_planes=mirrors,
+                    inversion=bool(np.any(np.max(abs(self.matrices+np.eye(3)),axis=(1,2))<self.tolerance)),
+                    maximum_rotation_order=max(orders),center=self.center.tolist(),
+                    matrices=self.matrices.tolist(),tolerance=self.tolerance)
+
     def __init__(self, matrices, center=(0., 0., 0.), tolerance=1e-10):
         self.matrices=np.asarray(matrices,dtype=float)
         self.center=np.asarray(center,dtype=float)

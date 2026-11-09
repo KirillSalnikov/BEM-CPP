@@ -19,7 +19,9 @@ SOLVER_ENV = {'BEM_TMATRIX_WAVE_RANK','BEM_TMATRIX_MBJ_OVERLAP','BEM_TMATRIX_MBJ
               # The compressed inner operator retains the accurate native
               # residual gate; DS accuracy must be covered by the migration
               # proof. Neither option permits reusing identical-solver audits.
-              'BEM_TMATRIX_COMPRESSED_FFT_CASE','BEM_FMM_P2P_DOUBLE_SINGLE'}
+              'BEM_TMATRIX_COMPRESSED_FFT_CASE','BEM_FMM_P2P_DOUBLE_SINGLE',
+              'BEM_FMM_P2P_DS_THREADS','BEM_FMM_P2P_DS_LEAF_SPLIT','BEM_FMM_P2P_DS_FACTORED',
+              'BEM_TMATRIX_CHECKER_COMPARE','BEM_TMATRIX_COMPRESSED_FFT_WIRE_FP32'}
 LOCATION_ENV = {'BEM_SO3_TMPDIR','BEM_SO3_BINARY_FP32','BEM_SO3_BINARY_FP64'}
 
 def digest(path):

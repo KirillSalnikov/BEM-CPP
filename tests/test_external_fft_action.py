@@ -30,13 +30,15 @@ class ExternalFFTTests(unittest.TestCase):
                             connection.settimeout(10)
                             header=bytearray(80);receive_into(connection,header);check_handshake(header,META)
                             connection.sendall(struct.pack('=QQ',MAGIC,9))
-                            for seq in range(1,4):
+                            for seq in range(1,6):
                                 header=bytearray(16);receive_into(connection,header)
-                                self.assertEqual(struct.unpack('=QQ',header),(1,seq))
-                                value=np.empty(9,complex);receive_into(connection,value);value*=3+2j
+                                operation=1 if seq<=2 else 2
+                                self.assertEqual(struct.unpack('=QQ',header),(operation,seq))
+                                value=np.empty(9,np.complex128 if operation==1 else np.complex64)
+                                receive_into(connection,value);value*=3+2j
                                 connection.sendall(struct.pack('=QQ',seq,0));connection.sendall(value.tobytes())
                             header=bytearray(16);receive_into(connection,header)
-                            self.assertEqual(struct.unpack('=QQ',header),(0,4))
+                            self.assertEqual(struct.unpack('=QQ',header),(0,6))
                     except BaseException as error:failures.append(error)
                 thread=threading.Thread(target=service,daemon=True);thread.start()
                 result=subprocess.run([str(binary),str(sockpath)],capture_output=True,text=True,timeout=15)
