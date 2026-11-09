@@ -347,6 +347,34 @@ int main()
         return 1;
     }
 
+    // Away from its source, the Green function obeys the Helmholtz PDE.
+    // This checks the Taylor Hessian independently of its component formula.
+    for (const auto& pair : {
+             std::array<std::complex<double>, 2>{{{3.0, 0.0}, {4.5, 0.0}}},
+             std::array<std::complex<double>, 2>{{{40.0, 0.0}, {52.464, 0.8}}}}) {
+        for (double scaled_radius : {1.0e-5, 1.0e-3, 9.0e-3}) {
+            const double radius = scaled_radius /
+                std::max(std::abs(pair[0]), std::abs(pair[1]));
+            const Vec3 point(2.0 * radius / 3.0, -radius / 3.0,
+                             2.0 * radius / 3.0);
+            const MullerTensor3 hessian =
+                muller_hessian_difference(pair[0], pair[1], point);
+            const std::complex<double> imaginary(0.0, 1.0);
+            const std::complex<double> expected_trace =
+                (pair[1] * pair[1] * std::exp(imaginary * pair[1] * radius) -
+                 pair[0] * pair[0] * std::exp(imaginary * pair[0] * radius)) /
+                (4.0 * std::acos(-1.0) * radius);
+            const double trace_error = std::abs(
+                hessian[0] + hessian[4] + hessian[8] - expected_trace) /
+                std::abs(expected_trace);
+            if (trace_error > 5.0e-11) {
+                std::fprintf(stderr, "Hessian Helmholtz trace mismatch: %.3e\n",
+                             trace_error);
+                return 1;
+            }
+        }
+    }
+
     const Vec3 near_displacement(1.0e-10, -2.0e-10, 1.5e-10);
     const MullerTensor3 near =
         muller_hessian_difference(ka, ki, near_displacement);

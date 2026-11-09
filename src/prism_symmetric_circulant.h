@@ -21,6 +21,10 @@ public:
     using Complex=std::complex<double>;
     bool fast_patch_orbits()const{return fast_;}
     bool full_fft_symmetry()const{return full_fast_;}
+    template<class Visitor> void visit_full_symmetry_layout(Visitor visitor)const {
+        if(!full_fast_)throw std::logic_error("full FFT symmetry not prepared");
+        visitor(coverage_,vertical_image_,vertical_sign_);
+    }
     bool prepare_full_fft_symmetry(const MullerP2Mesh& mesh) {
         full_fast_=false;if(!fast_)return false;
         bem_tmatrix::D6hOrbit::vertical_image_map(mesh,vertical_image_,vertical_sign_);
@@ -61,6 +65,24 @@ public:
 #pragma omp parallel for schedule(static)
         for(int i=0;i<n;++i)result[vertical_image_[i]]+=.5*double(vertical_sign_[i])*(1-blend*coverage_[i])*output_[i];
         fft_->apply_fft_part(rhs,output_.data(),-1,true);
+#pragma omp parallel for schedule(static)
+        for(int i=0;i<n;++i)result[i]+=blend*output_[i];
+    }
+    void apply_full_fft_symmetry_adjoint(const Complex* rhs,Complex* result,double blend=.25) {
+        if(!full_fast_ || rhs==result || !std::isfinite(blend) || blend<0 || blend>1)
+            throw std::invalid_argument("adjoint full FFT symmetry arguments");
+        const int n=input_.size();
+        // Reverse both local branches, including the coverage mask and the
+        // opposite equation/current signs of the vertical reflection.
+#pragma omp parallel for schedule(static)
+        for(int i=0;i<n;++i)input_[i]=.5*(1-blend*coverage_[i])*rhs[i];
+        local_->apply_adjoint(input_.data(),result);
+#pragma omp parallel for schedule(static)
+        for(int i=0;i<n;++i)input_[i]=.5*double(vertical_sign_[i])*(1-blend*coverage_[i])*rhs[vertical_image_[i]];
+        local_->apply_adjoint(input_.data(),output_.data());
+#pragma omp parallel for schedule(static)
+        for(int i=0;i<n;++i)result[i]-=double(vertical_sign_[i])*output_[vertical_image_[i]];
+        fft_->apply_fft_part_adjoint(rhs,output_.data(),-1,true);
 #pragma omp parallel for schedule(static)
         for(int i=0;i<n;++i)result[i]+=blend*output_[i];
     }

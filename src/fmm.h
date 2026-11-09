@@ -439,7 +439,8 @@ struct HelmholtzFMM {
     void evaluate_vector_actions_transpose(
         const cdouble* curl_seed, const cdouble* hessian_seed,
         cdouble* result_x, cdouble* result_y, cdouble* result_z,
-        HelmholtzFMM* middle = nullptr, HelmholtzFMM* coarse = nullptr);
+        HelmholtzFMM* middle = nullptr, HelmholtzFMM* coarse = nullptr,
+        bool include_near = true);
     void evaluate_batch4_far_uploaded(bool evaluate_potential = true);
     void evaluate_gradient_batch4_l2p_uploaded();
     void evaluate_pot_grad_batch4_uploaded();

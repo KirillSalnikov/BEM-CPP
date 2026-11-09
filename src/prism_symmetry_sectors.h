@@ -36,6 +36,10 @@ class PrismSymmetrySectors {
 public:
     std::array<int,13> offsets{};
     int size()const{return n_;}
+    template<class Visitor> void visit_orbit_transforms(Visitor visitor)const {
+        if(n_<1)throw std::logic_error("sector transforms not built");
+        for(const auto& o:orbits_)visitor(o.dofs,o.solution_coordinate,o.rhs_coordinate,o.weights);
+    }
     size_t storage_bytes()const {
         size_t bytes=0;for(const auto& o:orbits_)bytes+=sizeof(Orbit)+
             sizeof(int)*(o.dofs.size()+o.sector.size()+o.solution_coordinate.size()+o.rhs_coordinate.size())+

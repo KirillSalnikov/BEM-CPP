@@ -1,6 +1,7 @@
 #ifndef BEM_HOST_REGULAR_FACE_FFT_H
 #define BEM_HOST_REGULAR_FACE_FFT_H
 #include "host_spectral_inverse.h"
+#include "host_memory_estimate.h"
 #include <array>
 #include <cmath>
 #include <limits>
@@ -31,6 +32,15 @@ class RegularFaceAction {
         if(ohat_)api_.release(ohat_);
     }
 public:
+    // Explicit FFT arrays only. Plan/library allocations are reported outside
+    // this estimate; this query does not load FFTW or allocate an FFT array.
+    static size_t estimated_workspace_bytes(int nx,int ny,int channels,int degree=0){
+        if(channels<1||channels>64||degree<0||degree>16)throw std::invalid_argument("CPU FFT estimate dimensions");
+        const size_t grid=memory::mul(padded(nx),padded(ny));
+        const size_t symbols=memory::mul(size_t(degree+1)*channels*(channels+1)/2*6,grid);
+        const size_t vectors=memory::mul(size_t(channels)*(6*(degree+1)+12),grid);
+        return memory::mul(memory::add(symbols,vectors),sizeof(C));
+    }
     // All vectors are in a local planar frame. Offsets are channel-major xy.
     RegularFaceAction(int nx,int ny,std::array<double,2> u,std::array<double,2> v,
                       const std::vector<std::array<double,2>>& offsets,C k,
@@ -103,6 +113,13 @@ public:
     void evaluate(const C* input,C* output){
         evaluate_coefficient(0,input,output);
     }
+    // Reverse the complete finite-lattice action, including the zero-padding
+    // and crop. Input has twelve target components, output six source
+    // components. The same workspace is reused; in-place use is supported.
+    void evaluate_transpose(const C* input,C* output){evaluate_reverse(0,input,output,false);}
+    void evaluate_adjoint(const C* input,C* output){evaluate_reverse(0,input,output,true);}
+    void evaluate_coefficient_transpose(int order,const C* input,C* output){evaluate_reverse(order,input,output,false);}
+    void evaluate_coefficient_adjoint(int order,const C* input,C* output){evaluate_reverse(order,input,output,true);}
     // A_order input, where A_order=(d/delta)^order A / order!.
     void evaluate_coefficient(int order,const C* input,C* output){
         if(!input)throw std::invalid_argument("CPU face FFT input");
@@ -118,12 +135,64 @@ public:
     // its spectrum, and accumulate every AWE convolution before inverse FFT.
     // All inputs are read before any output is written (cross-order alias OK).
     void evaluate_history(const C* const* input,C* const* output){
+        evaluate_history_prefix(input,output,degree_,degree_);
+    }
+    // Only the supplied input prefix contributes. Higher derivatives of the
+    // kernel are retained through output_degree, without transforming zeros
+    // or computing output coefficients that the recurrence will not use.
+    void evaluate_history_prefix(const C* const* input,C* const* output,int input_degree,int output_degree){
         if(!input||!output)throw std::invalid_argument("CPU face FFT history buffers");
-        for(int j=0;j<=degree_;++j)if(!output[j])throw std::invalid_argument("CPU face FFT history output");
-        transform_inputs(degree_+1,input);
-        for(int j=0;j<=degree_;++j)evaluate_transformed(j,j+1,input,output[j]);
+        if(input_degree<0||input_degree>output_degree||output_degree>degree_)
+            throw std::invalid_argument("CPU face FFT history prefix");
+        for(int j=0;j<=output_degree;++j)if(!output[j])throw std::invalid_argument("CPU face FFT history output");
+        transform_inputs(input_degree+1,input);
+        for(int j=0;j<=output_degree;++j)evaluate_transformed(j,std::min(j,input_degree)+1,input,output[j]);
     }
 private:
+    void evaluate_reverse(int order,const C* input,C* output,bool adjoint){
+        if(order<0||order>degree_||!input||!output)
+            throw std::invalid_argument("CPU face FFT reverse order/buffers");
+        const int cells=nx_*ny_;
+        std::fill(ohat_,ohat_+size_t(channels_)*12*grid_,C(0));
+#pragma omp parallel for schedule(static)
+        for(int lane=0;lane<channels_*12;++lane){
+            C* p=ohat_+size_t(lane)*grid_;
+            for(int i=0;i<nx_;++i)for(int j=0;j<ny_;++j){
+                const C z=input[size_t(lane)*cells+i*ny_+j];
+                p[i*fy_+j]=adjoint?std::conj(z):z;
+            }
+            api_.execute(forward_,raw(p),raw(p));
+        }
+#pragma omp parallel for schedule(static)
+        for(int task=0;task<channels_*grid_;++task){
+            const int s=task/grid_,f=task%grid_;
+            const int negative=((fx_-f/fy_)%fx_)*fy_+(fy_-f%fy_)%fy_;
+            C sum[6]{};
+            for(int t=0;t<channels_;++t){
+                const bool reverse=s>t;const int hi=std::max(t,s),lo=std::min(t,s);
+                const size_t pair=size_t(hi)*(hi+1)/2+lo;
+                C g[6];for(int a=0;a<6;++a)
+                    g[a]=symbols_[size_t(order)*symbol_stride_+(pair*6+a)*grid_+(reverse?f:negative)];
+                if(reverse){g[0]=-g[0];g[1]=-g[1];}
+                for(int current=0;current<2;++current){
+                    C v[6];for(int a=0;a<6;++a)v[a]=ohat_[size_t(t*12+6*current+a)*grid_+f];
+                    C* r=sum+3*current;
+                    r[0]+=g[1]*v[0]-(g[4]+g[5])*v[3]+g[3]*v[4];
+                    r[1]+=-g[0]*v[0]+g[3]*v[3]-(g[2]+g[5])*v[4];
+                    r[2]+=-g[0]*v[1]-g[1]*v[2]-(g[2]+g[4])*v[5];
+                }
+            }
+            for(int a=0;a<6;++a)qhat_[size_t(s*6+a)*grid_+f]=sum[a];
+        }
+#pragma omp parallel for schedule(static)
+        for(int lane=0;lane<channels_*6;++lane){
+            C* p=qhat_+size_t(lane)*grid_;api_.execute(backward_,raw(p),raw(p));
+            for(int i=0;i<nx_;++i)for(int j=0;j<ny_;++j){
+                const C z=p[i*fy_+j]/double(grid_);
+                output[size_t(lane)*cells+i*ny_+j]=adjoint?std::conj(z):z;
+            }
+        }
+    }
     void evaluate_sum(int order,int count,const C* const* input,C* output){
         if(order<0||order>degree_||count<1||count>order+1||!input||!output)
             throw std::invalid_argument("CPU face FFT Taylor order/buffers");

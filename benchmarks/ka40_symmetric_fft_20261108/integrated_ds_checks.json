@@ -1,0 +1,14 @@
+{
+  "double_single_cuda": {
+    "cases": 130,
+    "max_per_target_relative_error": 1.3843e-10,
+    "fallback_error": 7.7818e-16,
+    "zero_exact": true
+  },
+  "unchanged_strict_cuda": {
+    "cases": 288,
+    "max_relative_error": 7.961e-16
+  },
+  "checked_solver_python": "3 tests passed",
+  "local_storage_python": "2 tests passed"
+}

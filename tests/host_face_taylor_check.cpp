@@ -21,7 +21,7 @@ int main()try{
     std::fill(x[2].begin(),x[2].end(),C(0));
     const C slopes[]={C(1),C(1.3116),C(1.3116,10),C(1)};
     const C centers[]={C(10),C(20*1.3116),C(3*1.3116,30),C(0)};
-    double worst=0,convolution_worst=0,polynomial_worst=0;
+    double worst=0,convolution_worst=0,polynomial_worst=0,prefix_worst=0;int prefix_cases=0;
     for(int c=0;c<4;++c){
         bem_cpu::RegularFaceAction action(nx,ny,u,v,offsets,centers[c],degree,slopes[c]);
         std::vector<V> coefficient(degree+1,V(no)),convolution(degree+1,V(no));
@@ -35,6 +35,18 @@ int main()try{
         action.evaluate_history(ptr,outputs);
         for(int j=0;j<=degree;++j)if(relative(history[j],convolution[j])>1e-13)
             throw std::runtime_error("single-transform spectral history differs from individual convolution");
+        for(int input_degree=0;input_degree<=degree;++input_degree)for(int output_degree=input_degree;output_degree<=degree;++output_degree){
+            const C* prefix[degree+1]{};for(int j=0;j<=input_degree;++j)prefix[j]=ptr[j];
+            for(auto& row:history)std::fill(row.begin(),row.end(),C(2,-3));
+            action.evaluate_history_prefix(prefix,outputs,input_degree,output_degree);
+            for(int j=0;j<=output_degree;++j){V expected(no);action.evaluate_convolution(j,prefix,expected.data());
+                prefix_worst=std::max(prefix_worst,relative(history[j],expected));}
+            for(int j=output_degree+1;j<=degree;++j)for(C z:history[j])if(z!=C(2,-3))throw std::runtime_error("FFT prefix touched later output");
+            ++prefix_cases;
+        }
+        for(auto bounds:{std::array<int,2>{{-1,0}},std::array<int,2>{{1,0}},std::array<int,2>{{0,degree+1}}}){
+            bool rejected=false;try{action.evaluate_history_prefix(ptr,outputs,bounds[0],bounds[1]);}catch(const std::invalid_argument&){rejected=true;}
+            if(!rejected)throw std::runtime_error("FFT history prefix guard");}
         // Writing coefficient zero can overwrite a later input coefficient;
         // all forward transforms must already have completed before then.
         std::vector<V> aliased(degree+1,V(no));const C* alias_inputs[degree+1];C* alias_outputs[degree+1];
@@ -101,4 +113,6 @@ int main()try{
         if(!rejected)throw std::runtime_error("Taylor FFT degree guard");
     }
     std::printf("PASS FFT Taylor degree 0..6: independent Cauchy %.3e, spectral convolution %.3e, shifted operator %.3e; complex material, two currents, zero and alias\n",worst,convolution_worst,polynomial_worst);
+    if(prefix_worst>1e-13)throw std::runtime_error("FFT history prefix mismatch");
+    std::printf("PASS FFT prefixes: %d ranges, guards, max %.3e; later outputs unchanged\n",prefix_cases,prefix_worst);
 }catch(const std::exception& e){std::fprintf(stderr,"%s\n",e.what());return 1;}

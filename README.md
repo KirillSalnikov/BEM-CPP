@@ -6,7 +6,8 @@ Current release: `1.0.0`
 
 [Русское руководство с графиками](MANUAL.md) · [PDF](MANUAL.pdf) ·
 [Release notes](CHANGELOG.md) · [Research data](reference/v1.0.0/research) ·
-[Acceleration plan](docs/acceleration_plan.md)
+[Acceleration plan](docs/acceleration_plan.md) ·
+[Checked FFT acceleration and general surface symmetries](docs/fft_symmetry_generalization.md)
 
 BEM-CPP solves the Muller surface integral equation, builds a vector spherical
 wave T matrix, and analytically averages all particle orientations over SO(3).

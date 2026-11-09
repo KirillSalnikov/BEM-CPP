@@ -39,10 +39,15 @@ int main()try{
         }else{
             f.h_leaf_indices={0};f.h_src_id_offsets={0,8};f.h_tgt_id_offsets={0,8};f.h_src_ids_flat=source;f.h_tgt_ids_flat=target;
         }
-        for(size_t budget:{size_t(0),size_t(1<<20)})for(int batches:{1,2,6,8})for(int tile:{1,7,32,64}){
+        for(size_t budget:{size_t(0),size_t(1<<20)})for(int batches:{1,2,6,8})for(int tile:{1,7,32,64})for(bool shared_near:{false,true}){
             bem_cpu::FmmBand serial(f,points,budget,nullptr,&source,&target);
             bem_cpu::FmmBand metadata(f,points,budget,nullptr,&source,&target,true);
-            bem_cpu::FmmBandBatch batch(metadata,batches,tile);
+            bem_cpu::FmmBandBatch batch(metadata,batches,tile,shared_near);
+            const size_t estimate=bem_cpu::FmmBand::estimated_workspace_bytes(f,points.size(),budget,batches,tile);
+            if(estimate<metadata.workspace_bytes()+batch.workspace_bytes())
+                throw std::runtime_error("FMM batch preallocation estimate below allocated arrays");
+            if(batch.shared_avx512_near()!=(shared_near&&!far&&metadata.uses_avx512_near()))
+                throw std::runtime_error("shared near dispatch");
             std::vector<std::vector<Six>> charges(batches,std::vector<Six>(points.size()));
             std::vector<std::vector<Twelve>> actual(batches,std::vector<Twelve>(points.size())),expected=actual,oracle=actual;
             for(int b=0;b<batches;++b)for(size_t p=0;p<points.size();++p)for(int c=0;c<6;++c)

@@ -22,13 +22,16 @@ class MigrationTest(unittest.TestCase):
             env.update(OMP_NUM_THREADS='1',OPENBLAS_NUM_THREADS='1',PYTHONPATH=str(ROOT/'scripts'))
             base=[sys.executable,str(ROOT/'scripts/build_fmm_tmatrix.py'),'--shape','prism','--ka','1',
                   '--ri','1.3','--ref','1','--order','7','--tol','1e-6','--no-average',
-                  '--c2-reuse','--c6-pack','--mirror-pack']
+                  '--c2-reuse','--c6-pack','--mirror-pack','--adaptive-tight-tol','5e-7']
             def run(out,extra=(),environment=env,success=True):
                 r=subprocess.run(base+['--out',str(out)]+list(extra),cwd=ROOT,env=environment,text=True,
                                  stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=60)
                 self.assertEqual(r.returncode==0,success,r.stdout);return r
             run(old,['--worker-binary',str(ROOT/'tests/c6_fake_worker.py')])
             m=json.loads((old/'manifest.json').read_text());params=m['parameters']
+            adaptive=old/'adaptive_tolerance'
+            (adaptive/'prior.json').write_text(json.dumps(dict(signature=m['signature'],tight_from_degree=3)))
+            (adaptive/'stale.json').write_text(json.dumps(dict(signature='different',tight_from_degree=1)))
             proof={'source_binary_digest':params['binary_digest'],
                    'target_binary_digest':hashlib.sha256(worker.read_bytes()).hexdigest(),
                    'physical_parameters_sha256':hashlib.sha256(json.dumps(physical_parameters(params),sort_keys=True).encode()+(old/'directions.bin').read_bytes()).hexdigest(),
@@ -60,6 +63,11 @@ class MigrationTest(unittest.TestCase):
             run(new,extra,candidate)
             report=json.loads((new/'solver_migration.json').read_text())
             self.assertGreater(report['copied_packets'],0)
+            self.assertEqual(report['inherited_tight_from_degree'],3)
+            policy=json.loads((new/'adaptive_tolerance/solver_migration_policy.json').read_text())
+            self.assertTrue(policy['policy_only'])
+            self.assertFalse(policy['remeasured'])
+            self.assertNotIn('passed',policy)
             self.assertEqual(report['copied_columns'],len(m['modes']))
             np.testing.assert_array_equal(np.load(new/'tmatrix.npy'),np.load(old/'tmatrix.npy'))
             summary=json.loads((new/'summary.json').read_text())

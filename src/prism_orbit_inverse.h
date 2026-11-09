@@ -34,6 +34,12 @@ private:
         for(int k=0;k<n;++k)for(int i=k+1;i<n;++i)v[i]-=b.lu[i*n+k]*v[k];
         for(int k=n-1;k>=0;--k){for(int j=k+1;j<n;++j)v[k]-=b.lu[k*n+j]*v[j];v[k]/=b.lu[k*n+k];}
     }
+    static void solve_adjoint(const Block& b,Complex* v,int n) {
+        // PA=LU, so A^-H=P^T L^-H U^-H. Reverse the pivot sequence last.
+        for(int k=0;k<n;++k){for(int j=0;j<k;++j)v[k]-=std::conj(b.lu[j*n+k])*v[j];v[k]/=std::conj(b.lu[k*n+k]);}
+        for(int k=n-1;k>=0;--k)for(int j=k+1;j<n;++j)v[k]-=std::conj(b.lu[j*n+k])*v[j];
+        for(int k=n-1;k>=0;--k)if(b.pivots[k]!=k)std::swap(v[k],v[b.pivots[k]]);
+    }
 public:
     double setup_seconds=0;
     static size_t estimated_storage_bytes(const bem_tmatrix::PrismGroupMaps& group,int system_dofs,int nodes){
@@ -125,6 +131,27 @@ public:
                 for(int i=0;i<d;++i)result[b.images[g*d+i]]+=b.weight[i]*double(b.signs[g*d+i])*v[i];
             }
         }
+    }
+    void apply_adjoint(const Complex* rhs,Complex* result)const {
+        if(!n_)throw std::logic_error("orbit inverse is not initialized");
+        std::vector<Complex> seed;if(rhs==result){seed.assign(rhs,rhs+n_);rhs=seed.data();}
+        std::fill(result,result+n_,Complex(0));
+#pragma omp parallel for schedule(static)
+        for(size_t k=0;k<blocks_.size();++k){
+            const auto& b=blocks_[k];const int d=b.pivots.size();std::vector<Complex> v(d);
+            for(int g=0;g<12;++g){
+                for(int i=0;i<d;++i)v[i]=b.weight[i]*double(b.signs[g*d+i])*rhs[b.images[g*d+i]];
+                solve_adjoint(b,v.data(),d);
+                for(int i=0;i<d;++i)result[b.images[g*d+i]]+=double((g<6?1:-1)*b.signs[g*d+i])*v[i];
+            }
+        }
+    }
+    // Read-only export for a separately validated device implementation.
+    // Preserve seed-block order, LU pivots, image signs and stabilizer weights.
+    template<class Visitor> void visit_factorized_blocks(Visitor visitor)const {
+        if(!n_)throw std::logic_error("orbit inverse is not initialized");
+        for(const auto& block:blocks_)
+            visitor(n_,block.lu,block.pivots,block.images,block.signs,block.weight);
     }
 };
 #endif

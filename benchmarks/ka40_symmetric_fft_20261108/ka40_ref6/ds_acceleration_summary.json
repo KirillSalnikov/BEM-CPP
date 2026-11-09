@@ -1,0 +1,81 @@
+{
+  "scope": "Six cold modal solves at ka40/ref6. Timing comparison uses the two RHS also solved previously. No complete T, SO3 average, or production restart.",
+  "completed_columns": 6,
+  "tolerance": 2e-06,
+  "maximum_independent_FP64_residual": 3.2305999805846044e-07,
+  "timing_comparison": {
+    "old_solver_s": 134.9399684270029,
+    "old_checks_s": 87.29388521701912,
+    "new_solver_s": 111.78077969697188,
+    "new_checks_s": 33.35339721001219,
+    "old_total_s": 222.23385364402202,
+    "new_total_s": 145.13417690698407,
+    "observed_speedup": 1.531230330306354,
+    "check_speedup": 2.6172411963724884,
+    "iterations_before": [
+      131,
+      143
+    ],
+    "iterations_after": [
+      131,
+      143
+    ],
+    "same_session_reconstructed_FP64_check_s": 86.60859875800088,
+    "same_session_reconstructed_speedup": 1.3669377033234547,
+    "caveat": "Setup and independent FP64 audits excluded. CPU/solver time also changed between sessions; do not attribute the entire observed gain to DS. The same-session comparison is reconstructed from final FP64 audit timings."
+  },
+  "preparation_wall_s": 211.63409793601022,
+  "total_experiment_wall_s": 967.8117174120271,
+  "csr_storage": {
+    "local_coo_bytes": 3181492224,
+    "local_csr_bytes": 1595317252,
+    "operator_coo_bytes": 12398479800,
+    "operator_csr_bytes": 10812304828,
+    "bytes_saved": 1586174972,
+    "median_s": {
+      "coo": 0.08593326099799015,
+      "csr": 0.08183784049469978
+    },
+    "speedup": 1.0500431154895347,
+    "max_relative_change": 7.907410339505267e-08
+  },
+  "projection": {
+    "scope": "6 incident modal columns, all 8710 outgoing rows (L=65), 1 reference columns. Not a full T or orientation average.",
+    "setup_s": 0.41785989701747894,
+    "radiation_check_s": 0.1917509649938438,
+    "radiation_vs_native": [
+      4.016935097286946e-06,
+      4.2117307367201e-06,
+      3.5424667763335677e-06,
+      3.61853011397436e-06,
+      5.12608626130217e-06,
+      4.500040964399101e-06,
+      4.0333803977494346e-06
+    ],
+    "bands": {
+      "102": {
+        "projection_and_radiation_s": 6.732838977972278,
+        "native_reference_error": [
+          1.2707675124456144e-06
+        ]
+      },
+      "134": {
+        "projection_and_radiation_s": 11.460236294020433,
+        "native_reference_error": [
+          1.2311789727220786e-06
+        ],
+        "quadrature_change": [
+          2.5251181516507996e-06,
+          2.611749835716419e-06,
+          2.7193711933384627e-06,
+          2.734779658136033e-06,
+          4.416839096570538e-06,
+          4.144995448886146e-06,
+          2.524736956624635e-06
+        ]
+      }
+    },
+    "status": "complete"
+  },
+  "production_restarted": false
+}

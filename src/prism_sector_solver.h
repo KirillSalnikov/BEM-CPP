@@ -11,7 +11,8 @@ inline bem_streaming::HostResult solve_prism_sectors(
         const bem_streaming::Action& inverse,const PrismSymmetrySectors& sectors,
         const Complex* b,Complex* x,int restart,double tolerance,int limit,
         bool use_initial_guess=false,bool verbose=true,bem_streaming::SectorRecycleSpace* recycle=nullptr,
-        std::array<int,12>* sector_iterations=nullptr) {
+        std::array<int,12>* sector_iterations=nullptr,
+        const bem_streaming::Action& encoded_action=bem_streaming::Action()) {
     const int n=sectors.size();
     if(sector_iterations)sector_iterations->fill(0);
     const auto start=std::chrono::steady_clock::now();
@@ -53,7 +54,7 @@ inline bem_streaming::HostResult solve_prism_sectors(
             std::array<int,12> part_iterations{};
             const auto part=solve_prism_sectors(action,correction_strict,inverse,sectors,residual.data(),correction.data(),
                 restart,relative_tolerance,limit-result.iterations,false,verbose,recycle,
-                sector_iterations?&part_iterations:nullptr);
+                sector_iterations?&part_iterations:nullptr,encoded_action);
             if(sector_iterations)for(int s=0;s<12;++s)(*sector_iterations)[s]+=part_iterations[s];
             for(int i=0;i<n;++i)x[i]+=correction[i];
             result.iterations+=part.iterations;result.strict_checks+=part.strict_checks;
@@ -76,6 +77,10 @@ inline bem_streaming::HostResult solve_prism_sectors(
     Vector encoded(n),coordinates(n),physical_rhs(n),physical_x(n),physical_y(n);
     sectors.encode(b,encoded.data(),true);
     const auto composite=[&](const Complex* a,Complex* out,bool full) {
+        // Optional fused E_rhs A B D_rhs action. Strict acceptance still
+        // constructs and checks the actual physical current below, including
+        // the original-current correction gate for every warm start.
+        if(!full && encoded_action){encoded_action(a,out);return;}
         sectors.decode(a,physical_rhs.data(),true);inverse(physical_rhs.data(),physical_x.data());
         (full?strict:action)(physical_x.data(),physical_y.data());sectors.encode(physical_y.data(),out,true);
     };

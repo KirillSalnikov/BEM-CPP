@@ -327,6 +327,46 @@ bool NearCache::init(HelmholtzFMM& f,size_t budget,std::shared_ptr<const NearCac
     std::printf("  [Prism FFT near cache] %zu pairs -> %zu radii, %.3f GiB, exact FP64 coefficients\n",pairs,radials,bytes/std::pow(2.,30));
     return true;
 }
+// Reverse the *cached* radial operator, rather than recomputing a potentially
+// different near approximation. Each warp sums targets for one source; the
+// atomic accumulation combines the original near blocks sharing that source.
+template<class Real>
+__global__ void apply_near_cache_transpose(const NearBlock* blocks,const int* target_ids,const int* source_ids,
+    const double* target,const double* source,const double2* coefficients,const unsigned int* ids,
+    Outputs seed,double* out,int ns) {
+    const NearBlock b=blocks[blockIdx.x];const int lane=threadIdx.x%32;
+    const int warp=blockIdx.y*(blockDim.x/32)+threadIdx.x/32,stride=gridDim.y*(blockDim.x/32);
+    for(int si0=warp;si0<b.source_count;si0+=stride) {
+        const int si=source_ids[b.source_begin+si0];Real qr[3]={},qi[3]={};
+        for(int j=lane;j<b.target_count;j+=32) {
+            const int ti=target_ids[b.target_begin+j];
+            const size_t pair=b.pair_begin+size_t(j)*b.source_count+si0,index=ids?ids[pair]:pair;
+            const double2 aa=coefficients[2*index],bb=coefficients[2*index+1];
+            const Real ar=Real(aa.x),ai=Real(aa.y),br=Real(bb.x),bi=Real(bb.y);
+            Real r[3],cr[3],ci[3],hr[3],hi[3],dotr=0,doti=0,r2=0;
+            for(int d=0;d<3;++d) {
+                r[d]=Real(target[3*ti+d]-source[3*si+d]);
+                cr[d]=Real(seed.cr[3*ti+d]);ci[d]=Real(seed.ci[3*ti+d]);
+                hr[d]=Real(seed.hr[3*ti+d]);hi[d]=Real(seed.hi[3*ti+d]);
+                dotr+=r[d]*hr[d];doti+=r[d]*hi[d];r2+=r[d]*r[d];
+            }
+            const Real vr[3]={r[1]*cr[0]+r[2]*cr[1],-r[0]*cr[0]+r[2]*cr[2],-r[0]*cr[1]-r[1]*cr[2]};
+            const Real vi[3]={r[1]*ci[0]+r[2]*ci[1],-r[0]*ci[0]+r[2]*ci[2],-r[0]*ci[1]-r[1]*ci[2]};
+            for(int d=0;d<3;++d) {
+                const Real wr=r[d]*dotr-r2*hr[d],wi=r[d]*doti-r2*hi[d];
+                qr[d]+=ar*(vr[d]-2*hr[d])-ai*(vi[d]-2*hi[d])+br*wr-bi*wi;
+                qi[d]+=ar*(vi[d]-2*hi[d])+ai*(vr[d]-2*hr[d])+br*wi+bi*wr;
+            }
+        }
+        for(int offset=16;offset;offset/=2)for(int d=0;d<3;++d) {
+            qr[d]+=__shfl_down_sync(0xffffffff,qr[d],offset);qi[d]+=__shfl_down_sync(0xffffffff,qi[d],offset);
+        }
+        if(lane==0)for(int d=0;d<3;++d) {
+            atomicAdd(out+size_t(2*d)*ns+si,double(qr[d]));
+            atomicAdd(out+size_t(2*d+1)*ns+si,double(qi[d]));
+        }
+    }
+}
 __global__ void scatter_face(int n,const int* ids,const int* slots,int cells,
                             Frame frame,Inputs q,double2* out) {
     const int j=blockIdx.x*blockDim.x+threadIdx.x;if(j>=n)return;
@@ -397,6 +437,8 @@ struct PrismFaceFFT::Impl {
 PrismFaceFFT::PrismFaceFFT():p(new Impl){}
 PrismFaceFFT::~PrismFaceFFT()=default;
 size_t PrismFaceFFT::fft_storage_bytes()const{return p->side_fft.storage_bytes()+p->cap_fft.storage_bytes();}
+size_t PrismFaceFFT::cached_near_pairs()const{size_t n=0;for(const auto& f:p->faces)if(f.fine)n+=f.near->pairs;return n;}
+size_t PrismFaceFFT::cached_near_radials()const{size_t n=0;for(const auto& f:p->faces)if(f.fine)n+=f.near->radials;return n;}
 const HelmholtzFMM& PrismFaceFFT::result_view()const{return p->view;}
 PrismFaceFFT::HostView PrismFaceFFT::host_view()const {
     if(!p->faces[0].fine)throw std::runtime_error("prism FFT host view needs prepared geometry");
@@ -612,4 +654,73 @@ void PrismFaceFFT::evaluate_device(const double* const real[3],const double* con
     }
     cuda_ok(cudaStreamSynchronize(0));
     timeline.finish(p->faces[0].fine->k.real(),mixed);
+}
+
+void PrismFaceFFT::evaluate_transpose(const cdouble* curl_seed,const cdouble* hessian_seed,
+    cdouble* qx,cdouble* qy,cdouble* qz,bool mixed) {
+    if(!p->faces[0].fine || !curl_seed || !hessian_seed || !qx || !qy || !qz)
+        throw std::runtime_error("prism FFT transpose needs initialized buffers");
+    const std::vector<cdouble> cs(curl_seed,curl_seed+3ULL*p->count),hs(hessian_seed,hessian_seed+3ULL*p->count);
+    cdouble* out[3]={qx,qy,qz};for(auto q:out)std::fill(q,q+p->count,cdouble(0));
+    for(int f=0;f<8;++f) {
+        const Face& face=p->faces[f];const Layout& l=f<6?p->side:p->cap;
+        const int cells=l.nx*l.ny,n=int(face.global.size());
+        const V axes[3]={face.e1,face.e2,face.e3};
+        p->fft_output.assign(size_t(l.channels)*6*cells,cdouble(0));
+        p->fft_input.resize(size_t(l.channels)*3*cells);
+        // Reverse gather_face: signed curl permutation, then the transpose
+        // of its local-to-global rotation. Zero inactive lattice slots.
+        for(int j=0;j<n;++j) {
+            const int i=face.global[j],slot=face.slot[j];
+            for(int k=0;k<3;++k) {
+                cdouble c=0,h=0;
+                for(int d=0;d<3;++d) {
+                    const double sign=(d==1?1.:-1.)*(k==1?1.:-1.);
+                    c+=sign*axes[2-k][2-d]*cs[3*i+d];h+=axes[k][d]*hs[3*i+d];
+                }
+                p->fft_output[size_t(slot/cells*6+k)*cells+slot%cells]=c;
+                p->fft_output[size_t(slot/cells*6+k+3)*cells+slot%cells]=h;
+            }
+        }
+        auto& fft=f<6?p->side_fft:p->cap_fft;
+        fft.evaluate_transpose(p->fft_output.data(),p->fft_input.data());
+        for(int j=0;j<n;++j) {
+            const int i=face.global[j],slot=face.slot[j];
+            for(int d=0;d<3;++d)for(int k=0;k<3;++k)
+                out[d][i]+=axes[k][d]*p->fft_input[size_t(slot/cells*3+k)*cells+slot%cells];
+        }
+        Face& engine=p->faces[face.engine_face];
+        engine.fine->near_field_fp32=engine.middle->near_field_fp32=engine.coarse->near_field_fp32=mixed;
+        const auto& source=p->target_faces?face.other:face.cross_global;
+        const auto& target=p->target_faces?face.cross_global:face.other;
+        const int ns=int(source.size()),nt=int(target.size());
+        p->curl.assign(size_t(nt)*3,cdouble(0));p->hessian.assign(size_t(nt)*3,cdouble(0));
+        for(int j=0;j<nt;++j)for(int k=0;k<3;++k)for(int d=0;d<3;++d) {
+            const double sign=(d==1?1.:-1.)*(k==1?1.:-1.);
+            p->curl[3*j+k]+=sign*face.rotation[3*(2-d)+(2-k)]*cs[3*target[j]+d];
+            p->hessian[3*j+k]+=face.rotation[3*d+k]*hs[3*target[j]+d];
+        }
+        for(auto& q:p->charges)q.resize(ns);
+        engine.fine->evaluate_vector_actions_transpose(p->curl.data(),p->hessian.data(),
+            p->charges[0].data(),p->charges[1].data(),p->charges[2].data(),
+            engine.middle.get(),engine.coarse.get(),engine.near->count==0);
+        if(engine.near->count) {
+            cuda_ok(cudaMemset(p->d_packed,0,size_t(ns)*6*sizeof(double)));
+            Outputs seed={engine.fine->d_grad_re,engine.fine->d_grad_im,engine.fine->d_hess_re,engine.fine->d_hess_im};
+            if(mixed)apply_near_cache_transpose<float><<<dim3(engine.near->count,4),128>>>(
+                engine.near->blocks,engine.fine->d_tgt_ids_cached,engine.near->source_ids,
+                engine.fine->d_tgt_pts,engine.fine->d_src_pts,engine.near->coefficients,engine.near->radial_ids,seed,p->d_packed,ns);
+            else apply_near_cache_transpose<double><<<dim3(engine.near->count,4),128>>>(
+                engine.near->blocks,engine.fine->d_tgt_ids_cached,engine.near->source_ids,
+                engine.fine->d_tgt_pts,engine.fine->d_src_pts,engine.near->coefficients,engine.near->radial_ids,seed,p->d_packed,ns);
+            cuda_ok(cudaGetLastError());
+            for(int d=0;d<3;++d) {
+                cuda_ok(cudaMemcpy(p->real.data(),p->d_packed+size_t(2*d)*ns,size_t(ns)*sizeof(double),cudaMemcpyDeviceToHost));
+                cuda_ok(cudaMemcpy(p->imag.data(),p->d_packed+size_t(2*d+1)*ns,size_t(ns)*sizeof(double),cudaMemcpyDeviceToHost));
+                for(int j=0;j<ns;++j)p->charges[d][j]+=cdouble(p->real[j],p->imag[j]);
+            }
+        }
+        for(int j=0;j<ns;++j)for(int d=0;d<3;++d)for(int k=0;k<3;++k)
+            out[d][source[j]]+=face.rotation[3*d+k]*p->charges[k][j];
+    }
 }

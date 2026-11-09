@@ -76,13 +76,25 @@ public:
     }
     void apply(const std::vector<std::vector<C>>& inputs,std::vector<std::vector<C>>& output){
         if(inputs.size()!=N+1)throw std::invalid_argument("Muller Taylor moment count");
+        apply_prefix(inputs,output,N);
+    }
+    // A_q x for q=0..maximum_degree. One new current supplies all future
+    // moment RHS updates; no absent input coefficients are propagated.
+    void apply_current(const std::vector<C>& input,size_t maximum_degree,std::vector<std::vector<C>>& output){
+        if(maximum_degree>N)throw std::invalid_argument("Muller Taylor current degree");
+        apply_prefix(std::vector<std::vector<C>>{input},output,maximum_degree);
+    }
+private:
+    void apply_prefix(const std::vector<std::vector<C>>& inputs,std::vector<std::vector<C>>& output,size_t output_degree){
+        if(inputs.empty()||inputs.size()>output_degree+1||output_degree>N)throw std::invalid_argument("Muller Taylor history prefix");
+        const size_t input_degree=inputs.size()-1;
         for(const auto& v:inputs)if(int(v.size())!=op.system_dofs)throw std::invalid_argument("Muller Taylor vector dimensions");
         const int n=op.current_dofs;const auto input=inputs;
         auto project=[&](const std::vector<MullerBasisSample>& bs,const std::vector<MullerFmmQuadraturePoint>& qs,std::vector<Charge>& values){
 #pragma omp parallel for schedule(static)
             for(size_t p=0;p<bs.size();++p){Charge current{};
                 for(int a=0;a<bs[p].count;++a){const Vec3& v=bs[p].values[a];const int dof=bs[p].dofs[a];
-                    for(size_t j=0;j<=N;++j)for(int c=0;c<2;++c){const C q=input[j][dof+c*n]*qs[p].weight;
+                    for(size_t j=0;j<=input_degree;++j)for(int c=0;c<2;++c){const C q=input[j][dof+c*n]*qs[p].weight;
                         current[j][3*c]+=v.x*q;current[j][3*c+1]+=v.y*q;current[j][3*c+2]+=v.z*q;}}
                 values[p]=current;
             }
@@ -91,31 +103,31 @@ public:
         std::fill(exterior_fields.begin(),exterior_fields.end(),Field{});std::fill(interior_fields.begin(),interior_fields.end(),Field{});
         face_fft_seconds=face_cross_seconds=face_packing_seconds=0;
         if(face_exterior){
-            face_exterior->add(charges,exterior_fields);face_interior->add(charges,interior_fields);
+            face_exterior->add(charges,exterior_fields,input_degree,output_degree);face_interior->add(charges,interior_fields,input_degree,output_degree);
             for(const auto* face:{face_exterior.get(),face_interior.get()}){
                 face_fft_seconds+=face->self_seconds;face_cross_seconds+=face->cross_seconds;face_packing_seconds+=face->packing_seconds;}
         }else{
-            for(auto& band:exterior)band->add(charges,exterior_fields);
-            for(auto& band:interior)band->add(charges,interior_fields);
+            for(auto& band:exterior)band->add(charges,exterior_fields,input_degree,output_degree);
+            for(auto& band:interior)band->add(charges,interior_fields,input_degree,output_degree);
         }
-        output.assign(N+1,std::vector<C>(op.system_dofs));
+        output.assign(output_degree+1,std::vector<C>(op.system_dofs));
 #pragma omp parallel for schedule(static)
         for(int row=0;row<n;++row){
             C mass[N+1][2]{},k1[N+1][2]{},k2e[N+1][2]{},k2m[N+1][2]{};
             for(auto s:mass_rows[row]){const Vec3& v=mass_basis[s.point].values[s.local];
-                for(size_t j=0;j<=N;++j)for(int c=0;c<2;++c){const auto& q=mass_current[s.point][j];mass[j][c]+=v.x*q[3*c]+v.y*q[3*c+1]+v.z*q[3*c+2];}}
+                for(size_t j=0;j<=input_degree;++j)for(int c=0;c<2;++c){const auto& q=mass_current[s.point][j];mass[j][c]+=v.x*q[3*c]+v.y*q[3*c+1]+v.z*q[3*c+2];}}
             for(auto s:rows[row]){const auto& point=op.quadrature[s.point];const Vec3 v=basis[s.point].values[s.local],normal=point.sample.normal,rotated=v.cross(normal);
                 const double rot[3]={rotated.x,rotated.y,rotated.z},curl[3]={v.x*normal.y-normal.x*v.y,v.x*normal.z-normal.x*v.z,v.y*normal.z-normal.y*v.z};
-                for(size_t j=0;j<=N;++j){const auto& e=exterior_fields[s.point][j];const auto& i=interior_fields[s.point][j];
+                for(size_t j=0;j<=output_degree;++j){const auto& e=exterior_fields[s.point][j];const auto& i=interior_fields[s.point][j];
                     for(int c=0;c<2;++c)for(int a=0;a<3;++a){k1[j][c]+=point.weight*rot[a]*(e[6*c+3+a]-i[6*c+3+a]);
                         k2e[j][c]+=point.weight*curl[a]*(e[6*c+a]-op.epsilon_interior*i[6*c+a]);k2m[j][c]+=point.weight*curl[a]*(e[6*c+a]-i[6*c+a]);}}
             }
             C diagonal[N+1][2]{};
-            for(size_t j=0;j<=N;++j){for(int c=0;c<2;++c)diagonal[j][c]=(C(0,1)*k1[j][c]-(j?diagonal[j-1][c]:C(0)))/k;
+            for(size_t j=0;j<=output_degree;++j){for(int c=0;c<2;++c)diagonal[j][c]=(C(0,1)*k1[j][c]-(j?diagonal[j-1][c]:C(0)))/k;
                 output[j][row]=diagonal[j][0]+.5*(C(1)+op.epsilon_interior)*mass[j][1]+k2e[j][1];
                 output[j][n+row]=mass[j][0]+k2m[j][0]-diagonal[j][1];}
             for(int e=correction.offsets[row];e<correction.offsets[row+1];++e){const auto& entry=correction.entries[e];const auto& v=entry.value;
-                for(size_t j=0;j<=N;++j)for(size_t q=0;q<=j;++q){const C x=input[j-q][entry.column],y=input[j-q][n+entry.column];
+                for(size_t j=0;j<=output_degree;++j)for(size_t q=j>input_degree?j-input_degree:0;q<=j;++q){const C x=input[j-q][entry.column],y=input[j-q][n+entry.column];
                     output[j][row]+=v.diagonal[q]*x+v.epsilon[q]*y;output[j][n+row]+=v.mu[q]*x-v.diagonal[q]*y;}}
         }
     }

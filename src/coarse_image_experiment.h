@@ -14,11 +14,12 @@ class CoarseImageExperiment {
     bem_streaming::ImageSpace space_;
     std::vector<int> vertical_,sign_;
     Vector encoded_,guess_,removed_,physical_guess_,physical_removed_,residual_;
+    double sector_floor_=0;
 public:
     CoarseImageExperiment(const MullerP2Mesh& mesh,const bem_tmatrix::PrismSymmetrySectors& sectors,
-                          const bem_streaming::Action& local)
-        :sectors_(sectors),local_(local),space_(std::vector<int>(sectors.offsets.begin(),sectors.offsets.end())),
-         encoded_(sectors.size()),physical_guess_(sectors.size()),physical_removed_(sectors.size()),residual_(sectors.size()) {
+                          const bem_streaming::Action& local,double sector_floor=0)
+        :sectors_(sectors),local_(local),space_(std::vector<int>(sectors.offsets.begin(),sectors.offsets.end()),sector_floor),
+         encoded_(sectors.size()),physical_guess_(sectors.size()),physical_removed_(sectors.size()),residual_(sectors.size()),sector_floor_(sector_floor) {
         bem_tmatrix::D6hOrbit::vertical_image_map(mesh,vertical_,sign_);
         if(mesh.system_dofs()!=sectors.size())throw std::invalid_argument("coarse image dimensions");
     }
@@ -29,7 +30,14 @@ public:
         if(int(u.size())!=n || int(image.size())!=n)throw std::invalid_argument("coarse image column size");
         Vector current(n),rhs(n),ec(n),er(n);
         for(int mirrored=0;mirrored<2;++mirrored) {
-            if(!mirrored){current=u;rhs=image;}
+            if(sector_floor_>0){
+                // Split into exact vertical parities BEFORE sectorwise QR.
+                // Separate insertion of u and Ru can retain different nearly
+                // dependent directions in the paired m/-m sectors.
+                current=u;rhs=image;const double parity=mirrored?-1.:1.;
+                for(int i=0;i<n;++i){current[vertical_[i]]+=parity*double(sign_[i])*u[i];rhs[vertical_[i]]-=parity*double(sign_[i])*image[i];}
+                if(bem_streaming::norm(rhs.data(),n)<=sector_floor_*bem_streaming::norm(image.data(),n))continue;
+            }else if(!mirrored){current=u;rhs=image;}
             else for(int i=0;i<n;++i){current[vertical_[i]]=double(sign_[i])*u[i];rhs[vertical_[i]]=-double(sign_[i])*image[i];}
             sectors_.encode(current.data(),ec.data(),false);sectors_.encode(rhs.data(),er.data(),true);
             space_.add(ec,er);

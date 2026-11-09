@@ -6,6 +6,7 @@ atomic checkpoints. --columns START COUNT permits bounded/chunked builds.
 The full kernel is written as a disk-backed array only after completion.
 """
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -23,6 +24,7 @@ from tmatrix_so3_mstm import analytic_mueller_tmatrix
 from tmatrix_symmetry import c2x_plan, c2x_partner_column
 import tmatrix_c6
 import tmatrix_pipeline
+from tmatrix_order_shell import shell_schedule
 from tmatrix_reference import (modes, tangent_frame, transverse_harmonics, transverse_harmonic_block,
                                analytic_mueller)
 
@@ -76,6 +78,8 @@ def main():
     parser.add_argument('--prism-aspect',type=float,default=1.,help='Height / width across opposite faces')
     parser.add_argument('--wavelength',type=float,help='Physical vacuum wavelength in micrometres (scale metadata)')
     parser.add_argument('--order',type=int,default=5)
+    parser.add_argument('--incident-min-order',type=int,default=1,
+                        help='Experimental: compute only this incident degree and above, plus independent symmetry controls; keep all outgoing rows')
     parser.add_argument('--angular-band',type=int,default=0)
     parser.add_argument('--projection-method',choices=['fft','dense'],default='fft')
     parser.add_argument('--tol',type=float,default=1e-5)
@@ -113,8 +117,21 @@ def main():
     parser.add_argument('--plane-only',action='store_true',help='Measure one direct plane-wave pair with the same resident operator')
     parser.add_argument('--out',type=Path,required=True)
     parser.add_argument('--worker-binary',type=Path,help='Pin a worker executable for long builds')
+    parser.add_argument('--neural-prior',type=Path,
+                        help='Checked T-specific physical current prior; one shared D6h correction for all modal RHS')
     parser.add_argument('--operator-cache-prefix',type=Path,help='Reuse validated near/MBJ caches from an existing operator')
     args=parser.parse_args()
+    compressed_case=os.environ.get('BEM_TMATRIX_COMPRESSED_FFT_CASE')
+    if compressed_case:
+        compressed_case=Path(compressed_case).resolve()
+        asset_path=compressed_case/'service_assets.json'
+        if args.shape!='prism' or args.obj is not None or not asset_path.is_file():
+            parser.error('compressed FFT requires a built-in prism and a prepared service_assets.json')
+    neural_prior_info=None
+    if args.neural_prior is not None:
+        from tmatrix_neural_prior import configure
+        neural_prior_info=configure(args.neural_prior,shape=args.shape,obj=args.obj,ref=args.ref,
+            ka=args.ka,ri=args.ri,ri_imag=args.ri_imag,aspect=args.prism_aspect)
     if args.adaptive_tight_tol is not None and (
             not np.isfinite(args.adaptive_tight_tol) or not 0<args.adaptive_tight_tol<=args.tol
             or not args.c6_pack or args.plane_only):
@@ -165,6 +182,10 @@ def main():
         parser.error('--max-pairs-this-run must be positive')
     if args.columns and args.column_indices:
         parser.error('choose --columns or --column-indices')
+    if not 1<=args.incident_min_order<=args.order:
+        parser.error('--incident-min-order must be between 1 and --order')
+    if args.incident_min_order>1 and (args.columns or args.column_indices or args.plane_only or not args.no_average):
+        parser.error('an incident-order shell requires --no-average and cannot be combined with other column selectors or --plane-only')
     if args.c2_reuse and (args.shape!='prism' or args.obj is not None or args.columns or args.column_indices or args.plane_only):
         parser.error('--c2-reuse currently supports complete builds of the built-in prism only')
     if not np.isfinite(args.c2_audit_tol) or args.c2_audit_tol<=0:
@@ -212,6 +233,13 @@ def main():
     geometry=str(args.obj.resolve()) if args.obj else args.shape
     binary=args.worker_binary.resolve() if args.worker_binary else ROOT/'bin/muller_tmatrix_fmm_server'
     fingerprint={k:v for k,v in vars(args).items() if k not in ('out','columns','column_indices','max_pairs_this_run','fast_mlfma','ntheta','no_average','obj','plane_only','operator_cache_prefix','average_backend','so3_threads','so3_precision','worker_binary','seed_from','solver_restart_from','solver_restart_proof')}
+    fingerprint.pop('neural_prior',None)
+    if neural_prior_info is not None:
+        fingerprint['neural_tmatrix_prior']=neural_prior_info
+    if args.incident_min_order==1:
+        fingerprint.pop('incident_min_order')
+    else:
+        fingerprint['order_shell_digest']=hashlib.sha256((ROOT/'scripts/tmatrix_order_shell.py').read_bytes()).hexdigest()
     if args.adaptive_tight_tol is None:
         fingerprint.pop('adaptive_tight_tol')
     if args.c6_pack:
@@ -231,6 +259,19 @@ def main():
     fingerprint['geometry']=geometry
     fingerprint['geometry_digest']=hashlib.sha256(args.obj.read_bytes()).hexdigest() if args.obj else None
     fingerprint['binary_digest']=hashlib.sha256(binary.read_bytes()).hexdigest()
+    if compressed_case:
+        fingerprint['compressed_fft_assets_digest']=hashlib.sha256((compressed_case/'service_assets.json').read_bytes()).hexdigest()
+        code=hashlib.sha256()
+        for name in ('compressed_fft_service.py','symmetric_galerkin_fft.py','closed_galerkin_fft.py','galerkin_cross_fft.py','streamed_galerkin_fft.py','tiled_galerkin_fft.py','surface_symmetry.py','regular_surface_geometry.py'):
+            code.update((ROOT/'scripts'/name).read_bytes())
+        fingerprint['compressed_fft_code_digest']=code.hexdigest()
+    if os.environ.get('BEM_TMATRIX_RITZ_PRIOR'):
+        prior=Path(os.environ['BEM_TMATRIX_RITZ_PRIOR']).resolve()
+        digest=hashlib.sha256()
+        with prior.open('rb') as stream:
+            for chunk in iter(lambda:stream.read(1024*1024),b''):digest.update(chunk)
+        fingerprint['physical_ritz_prior_digest']=digest.hexdigest()
+        os.environ['BEM_TMATRIX_RITZ_PRIOR']=str(prior)
     fingerprint['incident_digest']=hashlib.sha256((ROOT/'scripts/tmatrix_incident.py').read_bytes()).hexdigest()
     fingerprint['projection_digest']=hashlib.sha256((ROOT/'scripts/tmatrix_projection.py').read_bytes()).hexdigest()
     fingerprint['harmonics_digest']=hashlib.sha256((ROOT/'scripts/tmatrix_reference.py').read_bytes()).hexdigest()
@@ -271,8 +312,9 @@ def main():
     print(f'Preparing {args.projection_method} projection for {count} T modes',flush=True)
     weighted_projection=(np.load(projection_path,mmap_mode='r') if args.projection_method=='dense'
                          else SphericalProjector(args.order,z,w))
-    requested=(list(dict.fromkeys(args.column_indices)) if args.column_indices
-               else list(range(first,first+number)))
+    schedule=shell_schedule(args.order,args.incident_min_order,c2=args.c2_reuse,c6=args.c6_pack,mirror=args.mirror_pack)
+    requested=(schedule['requested'] if args.incident_min_order>1 else
+               list(dict.fromkeys(args.column_indices)) if args.column_indices else list(range(first,first+number)))
     def valid_column(index):
         metadata=column_dir/f'{index:06d}.json'
         data=column_dir/f'{index:06d}.npy'
@@ -324,11 +366,12 @@ def main():
     symmetry_report=None
     c2_verified=False
     if args.c2_reuse:
-        c2_permutation,c2_signs,c2_representatives,c2_audits=c2x_plan(args.order)
+        c2_permutation,c2_signs=schedule['permutation'],schedule['signs']
+        c2_representatives,c2_audits=schedule['representatives'],schedule['c2_audits']
         # Audits come first, so an incompatible numerical operator is rejected
         # before spending time on the remaining representative columns.
-        audit_work=[i for negative in c2_audits for i in (int(c2_permutation[negative]),negative)]
-        work_order=list(dict.fromkeys(audit_work+c2_representatives))
+        audit_work=schedule['audit_work']
+        work_order=schedule['work']
     else:
         work_order=requested
     def update_c2_columns(new_sources=None):
@@ -403,7 +446,7 @@ def main():
     if args.c6_pack:
         for name in ('c6_audits','c6_batches','c6_rejections'):
             (out/name).mkdir(exist_ok=True)
-        c6_reference_groups=tmatrix_c6.audit_packets(modal_list,args.order,args.mirror_pack)
+        c6_reference_groups=schedule['c6_groups']
         controls=list(dict.fromkeys((audit_work if args.c2_reuse else [])+
                       [index for group in c6_reference_groups for index in group]))
         missing_controls=[i for i in controls if not valid_column(i)]
@@ -431,7 +474,7 @@ def main():
     timings=[]
     atomic_json(out/'progress.json',{'state':'starting','pid':os.getpid(),'mode_count':count,'requested_columns':len(requested),'pending_columns':len(pending),'planned_worker_pairs':len(tasks),'disk_estimate_gib':estimated_disk/2**30})
     startup=time.monotonic()
-    with tempfile.TemporaryDirectory(prefix='bem-tm-') as temporary, (out/'worker.log').open('a') as log:
+    with tempfile.TemporaryDirectory(prefix='bem-tm-') as temporary, (out/'worker.log').open('a') as log, contextlib.ExitStack() as companions:
         socket_path=str(Path(temporary)/'worker.sock')
         command=[str(binary),socket_path,geometry,str(args.ref),str(args.ka),str(args.ri),str(args.ri_imag),
                  str(out/'directions.bin'),str(args.operator_cache_prefix.resolve() if args.operator_cache_prefix else out/'operator'),str(args.tol),str(args.restart),str(args.max_iters)]
@@ -440,6 +483,13 @@ def main():
         # signature itself. Never share a recycle space across operators/runs.
         env['BEM_TMATRIX_RECYCLE_SIGNATURE']=signature
         env['BEM_TMATRIX_RECYCLE_PATH']=str(out/'krylov_recycle.bin')
+        if compressed_case:
+            from compressed_fft_service import Companion
+            fft_socket=Path(temporary)/'compressed_fft.sock'
+            companions.enter_context(Companion(compressed_case,fft_socket,out))
+            # A temporary transport path is worker-only, never part of the
+            # persistent physical/checkpoint fingerprint.
+            env['BEM_TMATRIX_COMPRESSED_FFT_SOCKET']=str(fft_socket)
         process=subprocess.Popen(command,cwd=ROOT,stdout=log,stderr=subprocess.STDOUT,env=env)
         connection=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
         preparation=None
@@ -456,6 +506,9 @@ def main():
             hello=receive_message(connection)
             if args.adaptive_tight_tol is not None and not hello.get('per_packet_tolerance'):
                 raise RuntimeError('adaptive tolerance requires a worker with per-packet tolerance support')
+            if neural_prior_info is not None:
+                from tmatrix_neural_prior import validate_worker
+                validate_worker(neural_prior_info,hello)
             if args.shape=='prism' and args.obj is None:
                 actual_aspect=hello.get('prism_height_to_width_across_flats',1.)
                 if not np.isfinite(actual_aspect) or not np.isclose(actual_aspect,args.prism_aspect,rtol=1e-13,atol=0):
@@ -677,6 +730,7 @@ def main():
         column_physics.append(check)
     report={'signature':signature,'parameters':fingerprint,'operator':hello,'mode_count':count,
             'completed_columns':len(all_status),'complete':complete,'elapsed_this_run_s':total_seconds,
+            'requested_columns':len(requested),'requested_columns_complete':all(valid_column(i) for i in requested),
             'new_direction_field_error':validation,'pairs_this_run':timings,
             'maximum_strict_residual':max((max(d['status']['strict_residual_x'],d['status']['strict_residual_y']) for d in all_status),default=None),
             'dense_matrix_formed':False,'resident_solution_columns':hello.get('resident_solution_columns',2),
@@ -685,6 +739,14 @@ def main():
                     'volume_equivalent_radius_um':args.ka*args.wavelength/(2*np.pi) if args.wavelength else None,
                     'prism_height_to_width_across_flats':args.prism_aspect}
     report['physical_scale']=physical_scale
+    if args.incident_min_order>1:
+        requested_set=set(requested)
+        report['incident_order_shell']={
+            'minimum':args.incident_min_order,'maximum':args.order,'outgoing_order':args.order,
+            'requested_columns':requested,
+            'additional_control_columns':sorted(int(p.stem) for p in column_dir.glob('*.json')
+                if int(p.stem) not in requested_set and valid_column(int(p.stem))),
+            'is_complete_T_matrix':complete,'reciprocity_inferred_entries':0}
     if args.c2_reuse:
         report['symmetry_reuse']=symmetry_report
         report['independently_solved_columns']=sum('derived_by' not in item for item in all_status)

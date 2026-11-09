@@ -1,0 +1,53 @@
+{
+  "source_binary_digest": "015a099ddcc308a788de891e082f45fe89aaaa710a427ad9ca56c8b8c2df57da",
+  "target_binary_digest": "2edac2c228b5ce9431fbc4a15ce20b168f550b13bc0f902551d4f4c0dadbb4fd",
+  "physical_parameters_sha256": "7d5ddc130a671bae803ec27329325c75483348183dcc1d63b98e35b68ced701d",
+  "validated": true,
+  "physical_source_hashes_before": {
+    "src/muller_fmm.cpp": "c6d6a8a09dfae72cbb7df6cc418f2b8a708eb19af0991d5b595d81f3436137df",
+    "src/muller_fmm.h": "abb1a2363db859b7b7272974bf57161cec3ed84793b5669fa6124cc5694eaee1",
+    "src/muller_dense.cpp": "06a26e5f8c9db6d8355c223225ea5fe33654d60420cad7cf8051e68fb8a0e06d",
+    "src/muller_nodal.cpp": "bdc1dc5f9cd7bb93a357214fe26a78e0d8947e2d5906219277698ed7c16a389f",
+    "src/muller_duffy.cpp": "2263d663c1426481740421368c614a2949edc6dec9354e1fbb482bcd2521e8bd",
+    "src/mesh.cpp": "2ea550c2f98bfc186cdf2e6e2b3d97c02e0b9795f3dd87f45ddf085cf1583b3b",
+    "src/p2p.cu": "7eee08b13e4e92e17223938b6f40db25624cd45bea91561a929e57664c830bd8",
+    "src/p2p_double_single.cuh": "e725b3b3d388d84ed8bbc2ba2b2960ce3effe239f22e4e160ef6de920d83e952",
+    "src/fmm.cu": "00a470bfe1fc3d17fc973c535bc302e273408da329199b9a2a8063505e65bd7c",
+    "src/fmm.h": "1ac468c3cb18998a04e8cce71633c63ed6bc4e537d8db27e45f73533cd9cfbcc",
+    "src/muller_fmm_gpu.cu": "eaaf8050b99e70d7866130d85426c45a48d48b494905576ac211b42f11f0b049"
+  },
+  "physical_source_hashes_after": {
+    "src/muller_fmm.cpp": "c6d6a8a09dfae72cbb7df6cc418f2b8a708eb19af0991d5b595d81f3436137df",
+    "src/muller_fmm.h": "abb1a2363db859b7b7272974bf57161cec3ed84793b5669fa6124cc5694eaee1",
+    "src/muller_dense.cpp": "06a26e5f8c9db6d8355c223225ea5fe33654d60420cad7cf8051e68fb8a0e06d",
+    "src/muller_nodal.cpp": "bdc1dc5f9cd7bb93a357214fe26a78e0d8947e2d5906219277698ed7c16a389f",
+    "src/muller_duffy.cpp": "2263d663c1426481740421368c614a2949edc6dec9354e1fbb482bcd2521e8bd",
+    "src/mesh.cpp": "2ea550c2f98bfc186cdf2e6e2b3d97c02e0b9795f3dd87f45ddf085cf1583b3b",
+    "src/p2p.cu": "7eee08b13e4e92e17223938b6f40db25624cd45bea91561a929e57664c830bd8",
+    "src/p2p_double_single.cuh": "e725b3b3d388d84ed8bbc2ba2b2960ce3effe239f22e4e160ef6de920d83e952",
+    "src/fmm.cu": "00a470bfe1fc3d17fc973c535bc302e273408da329199b9a2a8063505e65bd7c",
+    "src/fmm.h": "1ac468c3cb18998a04e8cce71633c63ed6bc4e537d8db27e45f73533cd9cfbcc",
+    "src/muller_fmm_gpu.cu": "eaaf8050b99e70d7866130d85426c45a48d48b494905576ac211b42f11f0b049"
+  },
+  "maximum_field_relative_difference": 3.1518748958499873e-06,
+  "maximum_strict_residual": 9.869010706748592e-07,
+  "equivalence_kind": "measured_native_sector_T_columns_and_reconstructed_fields",
+  "sample_directions": 437,
+  "fields": [
+    {
+      "column": 817,
+      "relative_l2": 3.1518748958499873e-06,
+      "maximum_point_difference_over_peak": 5.303198971322544e-06
+    },
+    {
+      "column": 5172,
+      "relative_l2": 2.4822168225996447e-06,
+      "maximum_point_difference_over_peak": 3.0431456001670188e-06
+    }
+  ],
+  "sampling_is_not_an_operator_norm_bound": true,
+  "physical_hash_scope": "Before and after native FFT integration; DS implementation was independently audited earlier.",
+  "independent_DS_audit": "/home/kirill/neuro/BEM-CPP-analytic-alpha/benchmarks/ka40_symmetric_fft_20261108/integrated_ds_checks.json",
+  "pilot_comparison_sha256": "a6adfcc89e373fc995a7d9464f7c151a6e7e55d4b363ab84418696939709d063",
+  "reuse_identical_solver_audits": false
+}

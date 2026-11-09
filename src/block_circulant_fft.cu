@@ -5,6 +5,7 @@
 #include <cufft.h>
 #include <stdexcept>
 #include <string>
+#include <cstdint>
 
 namespace {
 void check(cudaError_t e) {if(e!=cudaSuccess)throw std::runtime_error(std::string("circulant CUDA: ")+cudaGetErrorString(e));}
@@ -204,6 +205,16 @@ void BlockCirculantFFT::enqueue_device(bool adjoint) {
     check(cudaGetLastError());
     fftcheck(cufftExecZ2Z(p.plan,p.out,p.out,CUFFT_INVERSE));
 }
+void BlockCirculantFFT::enqueue_device_per_thread(bool adjoint) {
+    auto& p=*impl;
+    if(!p.plan || p.use_cpu)throw std::logic_error("circulant device action requires GPU bank");
+    fftcheck(cufftSetStream(p.plan,cudaStreamPerThread));
+    struct Restore {cufftHandle plan;~Restore(){cufftSetStream(plan,0);}} restore{p.plan};
+    fftcheck(cufftExecZ2Z(p.plan,p.in,p.in,CUFFT_FORWARD));
+    contract<<<dim3((p.grid+127)/128,p.b),128,0,cudaStreamPerThread>>>(p.inverse,p.in,p.out,p.grid,p.c,p.b,adjoint);
+    check(cudaGetLastError());
+    fftcheck(cufftExecZ2Z(p.plan,p.out,p.out,CUFFT_INVERSE));
+}
 
 namespace {
 __global__ void mapped_gather(const double2* input,double2* bank,const MappedBlockCirculantFFT::Slot* slots,
@@ -285,3 +296,18 @@ void MappedBlockCirculantFFT::apply(const Complex* input,Complex* output) {
     check(cudaMemcpy(output,p.output,bytes,cudaMemcpyDeviceToHost));
 }
 size_t MappedBlockCirculantFFT::storage_bytes()const{return impl->bytes;}
+void MappedBlockCirculantFFT::enqueue_device(const Complex* input,Complex* output) {
+    auto& p=*impl;
+    if(!p.dofs || !input || !output || input==output)throw std::invalid_argument("mapped device arguments/alias");
+    const auto a=reinterpret_cast<std::uintptr_t>(input),b=reinterpret_cast<std::uintptr_t>(output);
+    if((a>b?a-b:b-a)<size_t(p.dofs)*sizeof(Complex))throw std::invalid_argument("mapped device overlapping arrays");
+    const auto* in=reinterpret_cast<const double2*>(input);auto* out=reinterpret_cast<double2*>(output);
+    check(cudaMemsetAsync(out,0,size_t(p.dofs)*sizeof(double2),cudaStreamPerThread));
+    for(const auto& entry:p.entries){
+        const auto& e=*entry;const int blocks=int((e.count+255)/256);const double scale=e.parity?1/std::sqrt(2.):1.;
+        mapped_gather<<<blocks,256,0,cudaStreamPerThread>>>(in,reinterpret_cast<double2*>(e.bank->device_input()),e.slots,e.count,e.parity,scale);
+        check(cudaGetLastError());e.bank->enqueue_device_per_thread();
+        mapped_scatter<<<blocks,256,0,cudaStreamPerThread>>>(reinterpret_cast<const double2*>(e.bank->device_output()),out,e.slots,e.count,e.parity,scale);
+        check(cudaGetLastError());
+    }
+}

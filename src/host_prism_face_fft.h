@@ -22,12 +22,34 @@ class PrismFaceAction {
     std::vector<Six> charges_;
     std::vector<Twelve> fields_;
 public:
+    static size_t estimated_workspace_bytes(const PrismFaceFFT::HostView& view,size_t points,
+                                            size_t phase_budget,bool batched=false,int tile=32){
+        if(!view.target_faces||tile<1||tile>256)throw std::invalid_argument("CPU face estimate configuration");
+        size_t bytes=memory::mul(points,(batched?size_t(8):size_t(1))*(sizeof(Six)+sizeof(Twelve)));
+        for(int kind=0;kind<2;++kind){
+            const auto& lattice=kind?view.cap:view.side;
+            if(!lattice.offsets||lattice.offsets->size()%3)throw std::invalid_argument("CPU face estimate offsets");
+            const size_t channels=lattice.offsets->size()/3;
+            if(channels<1||channels>64)throw std::invalid_argument("CPU face estimate channels");
+            bytes=memory::add(bytes,RegularFaceAction::estimated_workspace_bytes(lattice.nx,lattice.ny,int(channels)));
+            bytes=memory::add(bytes,memory::mul(memory::mul(size_t(lattice.nx),size_t(lattice.ny)),channels*18*sizeof(C)));
+        }
+        for(int i=0;i<8;++i){const auto& face=view.faces[i];
+            if(batched && face.engine!=(i<6?0:6))throw std::invalid_argument("CPU face estimate canonical trees");
+            if(face.engine!=i)continue;
+            for(const auto* band:{face.fine,face.middle,face.coarse}){
+                if(!band)throw std::invalid_argument("CPU face estimate missing band");
+                bytes=memory::add(bytes,FmmBand::estimated_workspace_bytes(*band,points,phase_budget,batched?(i<6?6:2):0,tile));
+            }
+        }
+        return bytes;
+    }
     double self_seconds=0,cross_seconds=0,packing_seconds=0;
     double phase_seconds=0;
     size_t phase_evaluations=0;
     std::array<double,6> fmm_times{};
     PrismFaceAction(const PrismFaceFFT& prepared,const std::vector<Vec3>& points,size_t phase_budget,
-                    bool batch_faces=false,int tile=32)
+                    bool batch_faces=false,int tile=32,bool shared_near=false)
         :geometry_(prepared.host_view()),points_(points),batched_(batch_faces),
          charges_(batch_faces?0:points.size()),fields_(batch_faces?0:points.size()) {
         if(!geometry_.target_faces)throw std::invalid_argument("CPU face FFT requires target-face cross hierarchies");
@@ -48,7 +70,7 @@ public:
             const auto& face=geometry_.faces[f];if(face.engine!=f)continue;
             for(const auto* band:{face.fine,face.middle,face.coarse}){
                 cross_[f].emplace_back(new FmmBand(*band,points_,phase_budget,nullptr,face.other,face.cross_global,batched_));
-                if(batched_)batches_[f].emplace_back(new FmmBandBatch(*cross_[f].back(),f<6?6:2,tile));
+                if(batched_)batches_[f].emplace_back(new FmmBandBatch(*cross_[f].back(),f<6?6:2,tile,shared_near));
             }
         }
         if(batched_)for(int kind=0;kind<2;++kind){
@@ -66,6 +88,9 @@ public:
             for(const auto& v:batch_fields_[kind])bytes+=v.size()*sizeof(Twelve);
         }
         return bytes;
+    }
+    int shared_avx512_near_bands()const {
+        int n=0;for(const auto& bands:batches_)for(const auto& band:bands)n+=band->shared_avx512_near();return n;
     }
     void add(const std::vector<Six>& charges,std::vector<Twelve>& output){
         if(charges.size()!=points_.size()||output.size()!=points_.size())throw std::invalid_argument("CPU prism field sizes");

@@ -227,7 +227,7 @@ template<class R> __global__ void fmm_t_near(const double* tgt,const double* src
 }
 }
 void HelmholtzFMM::evaluate_vector_actions_transpose(const cdouble* curl_seed,const cdouble* hessian_seed,
-    cdouble* rx,cdouble* ry,cdouble* rz,HelmholtzFMM* middle,HelmholtzFMM* coarse) {
+    cdouble* rx,cdouble* ry,cdouble* rz,HelmholtzFMM* middle,HelmholtzFMM* coarse,bool include_near) {
     if(!initialized || !batch3_device_allocated || !d_src_pts || !d_complex_tmp1)
         throw std::runtime_error("FMM transpose requires the batch3 point workspace");
     if(middle && !coarse)throw std::invalid_argument("transpose middle band requires coarse band");
@@ -256,7 +256,7 @@ void HelmholtzFMM::evaluate_vector_actions_transpose(const cdouble* curl_seed,co
     d_src_id_offsets_cached,d_src_ids_cached,L,multilevel_arrays(*this,false),result,R(k.real()),R(k.imag()))
     if(near_field_fp32 && bem_env_flag_enabled("BEM_FMM_MULTILEVEL_P2M_FP32")){TRANSPOSE_P2M(float);}else{TRANSPOSE_P2M(double);}
 #undef TRANSPOSE_P2M
-    if(p2p_enabled) {
+    if(p2p_enabled && include_near) {
         if(!transpose_workspace)transpose_workspace=new FmmTransposeWorkspace(*this);
         auto& w=*static_cast<FmmTransposeWorkspace*>(transpose_workspace);
         const int splits=32;

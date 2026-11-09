@@ -6,10 +6,12 @@
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <cuda_runtime.h>
 
 using C=std::complex<double>;
 using V=std::vector<C>;
 using Map=MappedBlockCirculantFFT;
+static void cuda_check(cudaError_t s){if(s!=cudaSuccess)throw std::runtime_error(cudaGetErrorString(s));}
 static int host_checks() {
     // validate() only examines topology, never dereferences the bank pointer.
     int token=0;Map::Term t;t.bank=reinterpret_cast<BlockCirculantFFT*>(&token);t.slots.resize(2);
@@ -77,6 +79,17 @@ int main(int argc,char** argv)try {
             }
         }
         inverse.apply(x.data(),actual.data());maximum=std::max(maximum,error(actual,expected));
+        struct Device {C *in=nullptr,*out=nullptr;~Device(){cudaFree(in);cudaFree(out);}} device;
+        cuda_check(cudaMalloc(&device.in,n*sizeof(C)));cuda_check(cudaMalloc(&device.out,n*sizeof(C)));
+        cuda_check(cudaMemcpyAsync(device.in,x.data(),n*sizeof(C),cudaMemcpyHostToDevice,cudaStreamPerThread));
+        inverse.enqueue_device(device.in,device.out);
+        cuda_check(cudaMemcpyAsync(actual.data(),device.out,n*sizeof(C),cudaMemcpyDeviceToHost,cudaStreamPerThread));
+        cuda_check(cudaStreamSynchronize(cudaStreamPerThread));maximum=std::max(maximum,error(actual,expected));
+        bool alias_rejected=false;try{inverse.enqueue_device(device.in,device.in);}catch(const std::invalid_argument&){alias_rejected=true;}
+        if(!alias_rejected)throw std::runtime_error("resident FFT alias accepted");
+        alias_rejected=false;try{inverse.enqueue_device(device.in,device.in+1);}catch(const std::invalid_argument&){alias_rejected=true;}
+        if(!alias_rejected)throw std::runtime_error("resident FFT overlapping ranges accepted");
+        // Alternating device/host entry points exercises cuFFT stream restore.
         actual=x;inverse.apply(actual.data(),actual.data());maximum=std::max(maximum,error(actual,expected));
         std::fill(x.begin(),x.end(),C(0));inverse.apply(x.data(),actual.data());
         for(auto z:actual)if(z!=C(0))throw std::runtime_error("zero RHS leakage");

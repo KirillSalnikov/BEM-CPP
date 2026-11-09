@@ -1,7 +1,10 @@
 #include "fmm.h"
 #include "gpu_select.h"
+#include "p2p_radial_factors.h"
+#include "p2p_double_single.cuh"
 #include <cuda_runtime.h>
 #include <cstdio>
+#include <atomic>
 
 // ============================================================
 // P2P near-field CUDA kernels (CSR format)
@@ -1413,7 +1416,7 @@ __device__ __forceinline__ void accumulate_vector_source_action(
         action_acc_re, action_acc_im);
 }
 
-template <typename ComputeReal>
+template <typename ComputeReal, bool RealWaveNumber = false, bool FactorRadial = false>
 __global__ void p2p_vector_actions_batch3_leaf_kernel(
     const double* __restrict__ tgt_xyz,
     const double* __restrict__ src_xyz,
@@ -1442,7 +1445,8 @@ __global__ void p2p_vector_actions_batch3_leaf_kernel(
     if (leaf >= n_leaves)
         return;
     const ComputeReal real_k = static_cast<ComputeReal>(k_re);
-    const ComputeReal imaginary_k = static_cast<ComputeReal>(k_im);
+    const ComputeReal imaginary_k = RealWaveNumber
+        ? static_cast<ComputeReal>(0) : static_cast<ComputeReal>(k_im);
     const ComputeReal inv4pi =
         static_cast<ComputeReal>(0.07957747154594767);
     const ComputeReal k2_re =
@@ -1549,24 +1553,34 @@ __global__ void p2p_vector_actions_batch3_leaf_kernel(
                 const ComputeReal gradient_green_im =
                     green_re * gradient_factor_im +
                     green_im * gradient_factor_re;
-                const ComputeReal a_re =
-                    static_cast<ComputeReal>(3.0) * inv_r2 +
-                    static_cast<ComputeReal>(3.0) *
-                        imaginary_k * inv_r - k2_re;
-                const ComputeReal a_im =
-                    -static_cast<ComputeReal>(3.0) *
-                        real_k * inv_r - k2_im;
-                const ComputeReal b_re =
-                    inv_r2 + imaginary_k * inv_r;
-                const ComputeReal b_im = -real_k * inv_r;
-                const ComputeReal ga_re =
-                    green_re * a_re - green_im * a_im;
-                const ComputeReal ga_im =
-                    green_re * a_im + green_im * a_re;
-                const ComputeReal gb_re =
-                    green_re * b_re - green_im * b_im;
-                const ComputeReal gb_im =
-                    green_re * b_im + green_im * b_re;
+                ComputeReal ga_re, ga_im, gb_re, gb_im;
+                if (FactorRadial) {
+                    static_assert(!FactorRadial ||
+                        (RealWaveNumber && sizeof(ComputeReal)==sizeof(double)),
+                        "factored radial coefficients require strict real-k FP64");
+                    bem_p2p::radial_from_gradient_real(
+                        gradient_green_re, gradient_green_im, green_re, green_im,
+                        k2_re, ga_re, ga_im, gb_re, gb_im);
+                } else {
+                    const ComputeReal a_re =
+                        static_cast<ComputeReal>(3.0) * inv_r2 +
+                        static_cast<ComputeReal>(3.0) *
+                            imaginary_k * inv_r - k2_re;
+                    const ComputeReal a_im =
+                        -static_cast<ComputeReal>(3.0) *
+                            real_k * inv_r - k2_im;
+                    const ComputeReal b_re =
+                        inv_r2 + imaginary_k * inv_r;
+                    const ComputeReal b_im = -real_k * inv_r;
+                    ga_re =
+                        green_re * a_re - green_im * a_im;
+                    ga_im =
+                        green_re * a_im + green_im * a_re;
+                    gb_re =
+                        green_re * b_re - green_im * b_im;
+                    gb_im =
+                        green_re * b_im + green_im * b_re;
+                }
                 const ComputeReal unit[3] = {
                     dx * inv_r, dy * inv_r, dz * inv_r
                 };
@@ -1738,8 +1752,8 @@ __global__ void p2p_vector_actions_shared_sources(
         if(active) for(int d=0;d<3;++d) {
             const int dst=3*tid+d;
             if(leaf_split==1) {
-                curl_re[dst]+=cr[d]; curl_im[dst]+=ci[d];
-                action_re[dst]+=ar[d]; action_im[dst]+=ai[d];
+                curl_re[dst]+=double(cr[d]); curl_im[dst]+=double(ci[d]);
+                action_re[dst]+=double(ar[d]); action_im[dst]+=double(ai[d]);
             } else {
                 atomicAdd(curl_re+dst,double(cr[d])); atomicAdd(curl_im+dst,double(ci[d]));
                 atomicAdd(action_re+dst,double(ar[d])); atomicAdd(action_im+dst,double(ai[d]));
@@ -1753,7 +1767,8 @@ template <
     typename CoordinateReal,
     typename ChargeReal,
     bool RealWaveNumber,
-    bool FastTrig>
+    bool FastTrig,
+    bool FactorRadial = false>
 __global__ void p2p_vector_actions_pair_batch3_leaf_kernel(
     const CoordinateReal* __restrict__ tgt_xyz,
     const CoordinateReal* __restrict__ src_xyz,
@@ -1792,7 +1807,10 @@ __global__ void p2p_vector_actions_pair_batch3_leaf_kernel(
     if (leaf >= n_leaves)
         return;
     const ComputeReal real_k = static_cast<ComputeReal>(k_re);
-    const ComputeReal imaginary_k = static_cast<ComputeReal>(k_im);
+    // Leave existing mixed instantiations unchanged; specialize only the
+    // new strict real-wave path.
+    const ComputeReal imaginary_k = RealWaveNumber && sizeof(ComputeReal)==sizeof(double)
+        ? static_cast<ComputeReal>(0) : static_cast<ComputeReal>(k_im);
     const ComputeReal inv4pi =
         static_cast<ComputeReal>(0.07957747154594767);
     const ComputeReal k2_re =
@@ -1904,26 +1922,36 @@ __global__ void p2p_vector_actions_pair_batch3_leaf_kernel(
                 const ComputeReal gradient_green_im =
                     green_re * gradient_factor_im +
                     green_im * gradient_factor_re;
-                const ComputeReal a_re = RealWaveNumber
-                    ? static_cast<ComputeReal>(3.0) * inv_r2 - k2_re
-                    : static_cast<ComputeReal>(3.0) * inv_r2 +
-                        static_cast<ComputeReal>(3.0) *
-                            imaginary_k * inv_r - k2_re;
-                const ComputeReal a_im =
-                    -static_cast<ComputeReal>(3.0) *
-                        real_k * inv_r - k2_im;
-                const ComputeReal b_re = RealWaveNumber
-                    ? inv_r2
-                    : inv_r2 + imaginary_k * inv_r;
-                const ComputeReal b_im = -real_k * inv_r;
-                const ComputeReal ga_re =
-                    green_re * a_re - green_im * a_im;
-                const ComputeReal ga_im =
-                    green_re * a_im + green_im * a_re;
-                const ComputeReal gb_re =
-                    green_re * b_re - green_im * b_im;
-                const ComputeReal gb_im =
-                    green_re * b_im + green_im * b_re;
+                ComputeReal ga_re, ga_im, gb_re, gb_im;
+                if (FactorRadial) {
+                    static_assert(!FactorRadial ||
+                        (RealWaveNumber && sizeof(ComputeReal)==sizeof(double)),
+                        "factored radial coefficients require strict real-k FP64");
+                    bem_p2p::radial_from_gradient_real(
+                        gradient_green_re, gradient_green_im, green_re, green_im,
+                        k2_re, ga_re, ga_im, gb_re, gb_im);
+                } else {
+                    const ComputeReal a_re = RealWaveNumber
+                        ? static_cast<ComputeReal>(3.0) * inv_r2 - k2_re
+                        : static_cast<ComputeReal>(3.0) * inv_r2 +
+                            static_cast<ComputeReal>(3.0) *
+                                imaginary_k * inv_r - k2_re;
+                    const ComputeReal a_im =
+                        -static_cast<ComputeReal>(3.0) *
+                            real_k * inv_r - k2_im;
+                    const ComputeReal b_re = RealWaveNumber
+                        ? inv_r2
+                        : inv_r2 + imaginary_k * inv_r;
+                    const ComputeReal b_im = -real_k * inv_r;
+                    ga_re =
+                        green_re * a_re - green_im * a_im;
+                    ga_im =
+                        green_re * a_im + green_im * a_re;
+                    gb_re =
+                        green_re * b_re - green_im * b_im;
+                    gb_im =
+                        green_re * b_im + green_im * b_re;
+                }
                 const ComputeReal unit[3] = {
                     dx * inv_r, dy * inv_r, dz * inv_r
                 };
@@ -2115,6 +2143,26 @@ void launch_p2p_vector_actions_batch3_leaf(
         leaf_split != 16 && leaf_split != 32 &&
         leaf_split != 64 && leaf_split != 128)
         leaf_split = 1;
+    // Opt-in accurate near action for FP64-poor GPUs. The far operator and
+    // output accumulation retain FP64. Absorbing and non-flat lists fall back
+    // to the existing path. Leave the flag off for an independent FP64 oracle.
+    if (!fp32_compute && k_im == 0.0 && d_near_source_offsets &&
+        d_near_source_ids && bem_env_flag_enabled("BEM_FMM_P2P_DOUBLE_SINGLE")) {
+        // DS needs substantially more registers than FP32; a 1024-thread
+        // launch can exceed the per-block register budget.
+        const int ds_threads = threads > 256 ? 256 : threads;
+        static std::atomic<bool> announced(false);
+        if (!announced.exchange(true, std::memory_order_relaxed)) {
+            std::fprintf(stderr, "  [P2P] double-single near action enabled; FP64 far action retained\n");
+        }
+        p2p_vector_actions_shared_sources<P2PDoubleSingle,128,true,false,true>
+            <<<n_leaves*leaf_split,ds_threads>>>(
+                d_tgt,d_src,d_qx_re,d_qx_im,d_qy_re,d_qy_im,d_qz_re,d_qz_im,
+                d_tgt_offsets,d_tgt_ids,d_near_source_offsets,d_near_source_ids,
+                n_leaves,leaf_split,k_re,k_im,d_curl_re,d_curl_im,
+                d_hessian_action_re,d_hessian_action_im);
+        return;
+    }
     // Shared tiles improve the bandwidth-limited mixed action. FP64 is
     // arithmetic-limited on consumer GPUs; keep its established kernel.
     if(fp32_compute && d_near_source_offsets && d_near_source_ids &&
@@ -2161,18 +2209,25 @@ void launch_p2p_vector_actions_batch3_leaf(
             d_hessian_action_re, d_hessian_action_im);
         return;
     }
-    p2p_vector_actions_batch3_leaf_kernel<double>
-        <<<n_leaves * leaf_split, threads>>>(
-        d_tgt, d_src,
-        d_qx_re, d_qx_im,
-        d_qy_re, d_qy_im,
-        d_qz_re, d_qz_im,
-        d_tgt_offsets, d_tgt_ids, d_src_offsets, d_src_ids,
-        d_near_offsets, d_near_leaf_ids,
-        d_near_source_offsets, d_near_source_ids,
-        n_leaves, leaf_split, k_re, k_im,
-        d_curl_re, d_curl_im,
-        d_hessian_action_re, d_hessian_action_im);
+    // Compile away exactly zero absorption terms, retaining FP64 coordinates,
+    // charges, accumulation and the original double-precision trigonometry.
+    // The exact k_im guard keeps absorbing media on the established path.
+#define LAUNCH_STRICT_SINGLE(REAL_K, FACTOR_RADIAL) \
+    p2p_vector_actions_batch3_leaf_kernel<double,REAL_K,FACTOR_RADIAL> \
+        <<<n_leaves * leaf_split, threads>>>( \
+        d_tgt, d_src, d_qx_re, d_qx_im, d_qy_re, d_qy_im, d_qz_re, d_qz_im, \
+        d_tgt_offsets, d_tgt_ids, d_src_offsets, d_src_ids, \
+        d_near_offsets, d_near_leaf_ids, d_near_source_offsets, d_near_source_ids, \
+        n_leaves, leaf_split, k_re, k_im, d_curl_re, d_curl_im, \
+        d_hessian_action_re, d_hessian_action_im)
+    if(k_im==0.0 && bem_env_flag_enabled("BEM_FMM_P2P_STRICT_FACTORED")) {
+        LAUNCH_STRICT_SINGLE(true,true);
+    } else if(k_im==0.0 && bem_env_flag_enabled("BEM_FMM_P2P_STRICT_REAL")) {
+        LAUNCH_STRICT_SINGLE(true,false);
+    } else {
+        LAUNCH_STRICT_SINGLE(false,false);
+    }
+#undef LAUNCH_STRICT_SINGLE
 }
 
 void launch_p2p_vector_actions_pair_batch3_leaf(
@@ -2199,6 +2254,25 @@ void launch_p2p_vector_actions_pair_batch3_leaf(
     const float* d_packed_charges_fp32, int source_count,
     bool fp32_compute)
 {
+    // Reuse the validated single-current DS kernel for both currents. Pair
+    // fusion is a separate optimization; the mode must also work when the
+    // caller selects the paired API.
+    if (!fp32_compute && k_im == 0.0 && d_near_source_offsets &&
+        d_near_source_ids && bem_env_flag_enabled("BEM_FMM_P2P_DOUBLE_SINGLE")) {
+        launch_p2p_vector_actions_batch3_leaf(
+            d_tgt,d_src,d_first_x_re,d_first_x_im,d_first_y_re,d_first_y_im,
+            d_first_z_re,d_first_z_im,d_tgt_offsets,d_tgt_ids,d_src_offsets,
+            d_src_ids,d_near_offsets,d_near_leaf_ids,d_near_source_offsets,
+            d_near_source_ids,n_leaves,k_re,k_im,d_first_curl_re,d_first_curl_im,
+            d_first_hessian_action_re,d_first_hessian_action_im,false);
+        launch_p2p_vector_actions_batch3_leaf(
+            d_tgt,d_src,d_second_x_re,d_second_x_im,d_second_y_re,d_second_y_im,
+            d_second_z_re,d_second_z_im,d_tgt_offsets,d_tgt_ids,d_src_offsets,
+            d_src_ids,d_near_offsets,d_near_leaf_ids,d_near_source_offsets,
+            d_near_source_ids,n_leaves,k_re,k_im,d_second_curl_re,d_second_curl_im,
+            d_second_hessian_action_re,d_second_hessian_action_im,false);
+        return;
+    }
 #ifdef BEM_DEFAULT_FMM_NEAR_FP32
     const int default_threads = 512;
 #else
@@ -2223,12 +2297,12 @@ void launch_p2p_vector_actions_pair_batch3_leaf(
         leaf_split != 64 && leaf_split != 128)
         leaf_split = 1;
 #define LAUNCH_PAIR_KERNEL( \
-    TYPE, COORD_TYPE, CHARGE_TYPE, REAL_K, FAST_TRIG, TARGETS, SOURCES, \
+    TYPE, COORD_TYPE, CHARGE_TYPE, REAL_K, FAST_TRIG, FACTOR_RADIAL, TARGETS, SOURCES, \
     FIRST_X_RE, FIRST_X_IM, FIRST_Y_RE, FIRST_Y_IM, \
     FIRST_Z_RE, FIRST_Z_IM, SECOND_X_RE, SECOND_X_IM, \
     SECOND_Y_RE, SECOND_Y_IM, SECOND_Z_RE, SECOND_Z_IM) \
     p2p_vector_actions_pair_batch3_leaf_kernel< \
-        TYPE, COORD_TYPE, CHARGE_TYPE, REAL_K, FAST_TRIG> \
+        TYPE, COORD_TYPE, CHARGE_TYPE, REAL_K, FAST_TRIG, FACTOR_RADIAL> \
         <<<n_leaves * leaf_split, threads>>>( \
             TARGETS, SOURCES, \
             FIRST_X_RE, FIRST_X_IM, \
@@ -2258,7 +2332,7 @@ void launch_p2p_vector_actions_pair_batch3_leaf(
         source_count > 0) {
         if (real_wave_number && fast_trig) {
             LAUNCH_PAIR_KERNEL(
-                float, float, float, true, true,
+                float, float, float, true, true, false,
                 d_tgt_fp32, d_src_fp32,
                 d_packed_charges_fp32,
                 d_packed_charges_fp32 + source_count,
@@ -2274,7 +2348,7 @@ void launch_p2p_vector_actions_pair_batch3_leaf(
                 d_packed_charges_fp32 + 11 * source_count);
         } else if (real_wave_number) {
             LAUNCH_PAIR_KERNEL(
-                float, float, float, true, false,
+                float, float, float, true, false, false,
                 d_tgt_fp32, d_src_fp32,
                 d_packed_charges_fp32,
                 d_packed_charges_fp32 + source_count,
@@ -2290,7 +2364,7 @@ void launch_p2p_vector_actions_pair_batch3_leaf(
                 d_packed_charges_fp32 + 11 * source_count);
         } else {
             LAUNCH_PAIR_KERNEL(
-                float, float, float, false, false,
+                float, float, float, false, false, false,
                 d_tgt_fp32, d_src_fp32,
                 d_packed_charges_fp32,
                 d_packed_charges_fp32 + source_count,
@@ -2307,7 +2381,27 @@ void launch_p2p_vector_actions_pair_batch3_leaf(
         }
     } else if (fp32_compute) {
         LAUNCH_PAIR_KERNEL(
-            float, double, double, false, false, d_tgt, d_src,
+            float, double, double, false, false, false, d_tgt, d_src,
+            d_first_x_re, d_first_x_im,
+            d_first_y_re, d_first_y_im,
+            d_first_z_re, d_first_z_im,
+            d_second_x_re, d_second_x_im,
+            d_second_y_re, d_second_y_im,
+            d_second_z_re, d_second_z_im);
+    } else if (real_wave_number &&
+               bem_env_flag_enabled("BEM_FMM_P2P_STRICT_FACTORED")) {
+        LAUNCH_PAIR_KERNEL(
+            double, double, double, true, false, true, d_tgt, d_src,
+            d_first_x_re, d_first_x_im,
+            d_first_y_re, d_first_y_im,
+            d_first_z_re, d_first_z_im,
+            d_second_x_re, d_second_x_im,
+            d_second_y_re, d_second_y_im,
+            d_second_z_re, d_second_z_im);
+    } else if (real_wave_number &&
+               bem_env_flag_enabled("BEM_FMM_P2P_STRICT_REAL")) {
+        LAUNCH_PAIR_KERNEL(
+            double, double, double, true, false, false, d_tgt, d_src,
             d_first_x_re, d_first_x_im,
             d_first_y_re, d_first_y_im,
             d_first_z_re, d_first_z_im,
@@ -2316,7 +2410,7 @@ void launch_p2p_vector_actions_pair_batch3_leaf(
             d_second_z_re, d_second_z_im);
     } else {
         LAUNCH_PAIR_KERNEL(
-            double, double, double, false, false, d_tgt, d_src,
+            double, double, double, false, false, false, d_tgt, d_src,
             d_first_x_re, d_first_x_im,
             d_first_y_re, d_first_y_im,
             d_first_z_re, d_first_z_im,

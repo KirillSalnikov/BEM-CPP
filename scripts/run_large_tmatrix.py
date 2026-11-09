@@ -26,9 +26,12 @@ from tmatrix_symmetry import c2x_plan
 from tmatrix_c6 import audit_packets, packets, production_tasks
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPTS = ('run_large_tmatrix.py', 'bounded_bem_run.py', 'build_fmm_tmatrix.py',
+SCRIPTS = ('run_large_tmatrix.py', 'bounded_bem_run.py', 'build_fmm_tmatrix.py', 'tmatrix_neural_prior.py',
            'tmatrix_reference.py', 'tmatrix_incident.py', 'tmatrix_projection.py',
-           'tmatrix_so3_mstm.py', 'tmatrix_symmetry.py', 'tmatrix_c6.py', 'study_tmatrix_cutoff.py', 'select_tmatrix_order.py', 'tmatrix_checkpoint_migration.py','tmatrix_pipeline.py')
+           'tmatrix_so3_mstm.py', 'tmatrix_symmetry.py', 'tmatrix_c6.py', 'study_tmatrix_cutoff.py', 'select_tmatrix_order.py', 'tmatrix_checkpoint_migration.py','tmatrix_pipeline.py', 'tmatrix_order_shell.py', 'tmatrix_reciprocal_extension.py', 'complete_tmatrix_order_shell.py')
+SCRIPTS += ('compressed_fft_service.py','symmetric_galerkin_fft.py','closed_galerkin_fft.py',
+            'galerkin_cross_fft.py','streamed_galerkin_fft.py','tiled_galerkin_fft.py',
+            'compressed_galerkin_fft.py','surface_symmetry.py','regular_surface_geometry.py')
 BINARIES = ('muller_tmatrix_fmm_server', 'tmatrix_so3_mstm', 'tmatrix_so3_mstm_fp32')
 PROFILE = {
     'OMP_NUM_THREADS': '16', 'OPENBLAS_NUM_THREADS': '1',

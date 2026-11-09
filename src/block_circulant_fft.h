@@ -28,6 +28,9 @@ public:
     Complex* device_input();
     const Complex* device_output() const;
     void enqueue_device(bool adjoint=false);
+    // Explicit per-thread stream, including cuFFT. Restores the plan's default
+    // stream afterwards so alternating legacy host calls remain valid.
+    void enqueue_device_per_thread(bool adjoint=false);
     bool prepare_cpu();
     void enable_cpu(bool enabled);
     size_t cpu_storage_bytes() const;
@@ -60,6 +63,9 @@ public:
     static void validate(int dofs,const std::vector<Term>& terms);
     void init(int dofs,const std::vector<Term>& terms);
     void apply(const Complex* input,Complex* output);
+    // Device arrays must be disjoint and must not overlap any bank workspace.
+    // Uses cudaStreamPerThread throughout; no copies or synchronization.
+    void enqueue_device(const Complex* input,Complex* output);
     size_t storage_bytes() const;
 private:
     struct Impl;

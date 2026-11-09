@@ -80,8 +80,9 @@ public:
         for(const auto& bands:cross_)for(const auto& band:bands)bytes+=band->workspace_bytes();
         return bytes;
     }
-    void add(const std::vector<Charge>& charges,std::vector<Field>& output){
+    void add(const std::vector<Charge>& charges,std::vector<Field>& output,size_t input_degree=N,size_t output_degree=N){
         if(charges.size()!=points_.size()||output.size()!=points_.size())throw std::invalid_argument("Taylor prism field sizes");
+        if(input_degree>output_degree||output_degree>N)throw std::invalid_argument("Taylor prism history prefix");
         self_seconds=cross_seconds=packing_seconds=0;
         for(int f=0;f<8;++f){
             const auto& face=geometry_.faces[f];const auto& engine=geometry_.faces[face.engine];
@@ -91,7 +92,7 @@ public:
 #pragma omp parallel for schedule(static)
             for(size_t p=0;p<face.global->size();++p){
                 const int global=(*face.global)[p],slot=(*face.slot)[p],channel=slot/cells,cell=slot%cells;
-                for(size_t j=0;j<=N;++j)for(int current=0;current<2;++current)for(int d=0;d<3;++d){C value=0;
+                for(size_t j=0;j<=input_degree;++j)for(int current=0;current<2;++current)for(int d=0;d<3;++d){C value=0;
                     for(int k=0;k<3;++k)value+=frame[3*d+k]*charges[global][j][3*current+k];
                     input_[kind][j][size_t(channel*6+3*current+d)*cells+cell]=value;
                 }
@@ -99,11 +100,11 @@ public:
             packing_seconds+=elapsed(start);start=Clock::now();
             const C* inputs[N+1];C* outputs[N+1];
             for(size_t j=0;j<=N;++j){inputs[j]=input_[kind][j].data();outputs[j]=output_[kind][j].data();}
-            self_[kind]->evaluate_history(inputs,outputs);self_seconds+=elapsed(start);start=Clock::now();
+            self_[kind]->evaluate_history_prefix(inputs,outputs,input_degree,output_degree);self_seconds+=elapsed(start);start=Clock::now();
 #pragma omp parallel for schedule(static)
             for(size_t p=0;p<face.global->size();++p){
                 const int global=(*face.global)[p],slot=(*face.slot)[p],channel=slot/cells,cell=slot%cells;
-                for(size_t j=0;j<=N;++j)for(int current=0;current<2;++current)for(int d=0;d<3;++d)for(int k=0;k<3;++k){
+                for(size_t j=0;j<=output_degree;++j)for(int current=0;current<2;++current)for(int d=0;d<3;++d)for(int k=0;k<3;++k){
                     const double curl=(d==1?1.:-1.)*(k==1?1.:-1.)*frame[3*(2-k)+(2-d)];
                     output[global][j][6*current+d]+=curl*output_[kind][j][size_t(channel*12+6*current+k)*cells+cell];
                     output[global][j][6*current+3+d]+=frame[3*k+d]*output_[kind][j][size_t(channel*12+6*current+3+k)*cells+cell];
@@ -112,17 +113,17 @@ public:
             std::fill(charges_.begin(),charges_.end(),Charge{});std::fill(fields_.begin(),fields_.end(),Field{});
 #pragma omp parallel for schedule(static)
             for(size_t p=0;p<face.other->size();++p){const int source=(*face.other)[p],canonical=(*engine.other)[p];
-                for(size_t j=0;j<=N;++j)for(int current=0;current<2;++current)for(int d=0;d<3;++d){C value=0;
+                for(size_t j=0;j<=input_degree;++j)for(int current=0;current<2;++current)for(int d=0;d<3;++d){C value=0;
                     for(int k=0;k<3;++k)value+=face.rotation[3*k+d]*charges[source][j][3*current+k];
                     charges_[canonical][j][3*current+d]=value;
                 }
             }
             packing_seconds+=elapsed(start);start=Clock::now();
-            for(auto& band:cross_[face.engine])band->add(charges_,fields_);
+            for(auto& band:cross_[face.engine])band->add(charges_,fields_,input_degree,output_degree);
             cross_seconds+=elapsed(start);start=Clock::now();
 #pragma omp parallel for schedule(static)
             for(size_t p=0;p<face.cross_global->size();++p){const int target=(*face.cross_global)[p],canonical=(*engine.cross_global)[p];
-                for(size_t j=0;j<=N;++j)for(int current=0;current<2;++current)for(int d=0;d<3;++d)for(int k=0;k<3;++k){
+                for(size_t j=0;j<=output_degree;++j)for(int current=0;current<2;++current)for(int d=0;d<3;++d)for(int k=0;k<3;++k){
                     const double curl=(d==1?1.:-1.)*(k==1?1.:-1.)*face.rotation[3*(2-d)+(2-k)];
                     output[target][j][6*current+d]+=curl*fields_[canonical][j][6*current+k];
                     output[target][j][6*current+3+d]+=face.rotation[3*d+k]*fields_[canonical][j][6*current+3+k];

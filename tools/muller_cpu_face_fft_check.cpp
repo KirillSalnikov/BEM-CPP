@@ -10,6 +10,15 @@ using C=std::complex<double>;using V=std::vector<C>;using Clock=std::chrono::ste
 static double error(const V& a,const V& b){double n=0,d=0;for(size_t i=0;i<a.size();++i){n+=std::norm(a[i]-b[i]);d+=std::norm(b[i]);}
     double e=std::sqrt(n/std::max(1.,d));if(!std::isfinite(e))throw std::runtime_error("nonfinite action");return e;}
 int main(int argc,char** argv)try {
+    if(argc==2 && std::string(argv[1])=="--cpu-capabilities"){
+#ifdef BEM_CPU_HAS_AVX512_P2P
+        std::printf("{\"compiled_AVX512\":true,\"runtime_AVX512\":%s,\"GPU_used\":false}\n",
+            __builtin_cpu_supports("avx512f")&&__builtin_cpu_supports("avx512vl")?"true":"false");
+#else
+        std::puts("{\"compiled_AVX512\":false,\"runtime_AVX512\":false,\"GPU_used\":false}");
+#endif
+        return 0;
+    }
     if(argc!=4)throw std::invalid_argument("usage: REF KA REPORT");
     setvbuf(stdout,nullptr,_IOLBF,0);
     const int ref=std::stoi(argv[1]);const double ka=std::stod(argv[2]),aspect=10./7;
@@ -18,6 +27,8 @@ int main(int argc,char** argv)try {
     const size_t budget=size_t(std::getenv("BEM_CPU_PHASE_MB")?std::atoi(std::getenv("BEM_CPU_PHASE_MB")):64)*1024*1024;
     const bool batch_faces=std::getenv("BEM_CPU_FACE_FFT_BATCH") && std::atoi(std::getenv("BEM_CPU_FACE_FFT_BATCH"))!=0;
     const int face_tile=std::getenv("BEM_CPU_FACE_FFT_TILE")?std::atoi(std::getenv("BEM_CPU_FACE_FFT_TILE")):32;
+    const bool shared_near=std::getenv("BEM_CPU_FACE_FFT_SHARED_NEAR") && std::atoi(std::getenv("BEM_CPU_FACE_FFT_SHARED_NEAR"))!=0;
+    if(shared_near&&!batch_faces)throw std::invalid_argument("shared near requires batched face FFT");
     bem_cpu::configure_threads(4,"BEM_CPU_GPU_AFFINITY");
     setenv("BEM_MULLER_GPU_ASSEMBLY","1",1);setenv("BEM_FMM_MULTILEVEL_GPU_ASSEMBLY","1",1);
     setenv("BEM_FACE_FFT_STRICT_ONLY","1",1);setenv("BEM_FACE_FFT_TARGET_FACES","1",1);setenv("BEM_FACE_FFT_REUSE_CROSS","1",1);
@@ -50,7 +61,8 @@ int main(int argc,char** argv)try {
         for(int j=0;j<3;++j){begin=Clock::now();cpu->apply(x.data(),actual.data());serial_face_seconds.push_back(bem_cpu::elapsed(begin));}
         serial_fmm_times=cpu->fmm_times;cpu.reset();begin=Clock::now();
     }
-    cpu.reset(new bem_cpu::MullerAction(op,budget,true,true,batch_faces,face_tile));const double face_setup=bem_cpu::elapsed(begin);
+    cpu.reset(new bem_cpu::MullerAction(op,budget,true,true,batch_faces,face_tile,shared_near));const double face_setup=bem_cpu::elapsed(begin);
+    if(shared_near && cpu->shared_avx512_near_bands!=4)throw std::runtime_error("shared AVX512 near not active in both media and face kinds");
     cpu->apply(x.data(),actual.data());double face_error=error(actual,gpu_face),mlfma_error=error(actual,reference);
     if(face_error>2e-9||mlfma_error>2e-5)throw std::runtime_error("full CPU face FFT action mismatch");
     double self_s=cpu->face_fft_s,cross_s=cpu->face_cross_s,pack_s=cpu->face_packing_s;
@@ -82,6 +94,7 @@ int main(int argc,char** argv)try {
         <<",\"D6h_defect\":"<<symmetry_error<<",\"second_vector_error\":"<<second_error<<",\"concurrent_error\":"<<concurrent_error
         <<",\"inplace_error\":"<<inplace_error<<",\"self_FFT_s\":"<<self_s<<",\"cross_FMM_s\":"<<cross_s<<",\"packing_s\":"<<pack_s;
     out<<",\"batch_faces\":"<<(batch_faces?"true":"false")<<",\"face_tile\":"<<face_tile<<",\"phase_s\":"<<phase_s
+       <<",\"shared_near_requested\":"<<(shared_near?"true":"false")<<",\"shared_AVX512_near_bands\":"<<cpu->shared_avx512_near_bands
        <<",\"phase_evaluations\":"<<phase_evaluations<<",\"serial_face_CPU_setup_s\":"<<serial_face_setup<<",\"serial_face_CPU_workspace_bytes\":"<<serial_face_bytes;
     auto array=[&](const char* key,const std::vector<double>& v){out<<",\""<<key<<"\":[";for(size_t i=0;i<v.size();++i)out<<(i?",":"")<<v[i];out<<"]";};
     array("classic_CPU_s",classic_seconds);array("face_CPU_s",face_seconds);array("serial_GPU_s",serial_seconds);array("overlap_s",overlap_seconds);

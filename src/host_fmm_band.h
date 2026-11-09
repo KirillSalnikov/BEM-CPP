@@ -3,6 +3,7 @@
 
 #include "muller_fmm.h"
 #include "muller_fmm_cpu_avx512.h"
+#include "host_memory_estimate.h"
 #include <chrono>
 #include <cstdlib>
 #include <map>
@@ -55,6 +56,47 @@ class FmmBand {
     }
 
 public:
+    // Predict explicit arrays and allow for owned index-vector capacities.
+    // Immutable GPU-prepared geometry is borrowed and excluded. A positive
+    // batch count selects the tiled FmmBandBatch workspace instead of a
+    // single full-angle multipole/local array. No numerical arrays allocated.
+    static size_t estimated_workspace_bytes(const HelmholtzFMM& f,size_t points,size_t phase_budget,
+                                             int batches=0,int tile=32){
+        if(!f.initialized||f.n_nodes<0||f.Ns<0||f.Nt<0||f.L<0||batches<0||batches>8||tile<1||tile>256)
+            throw std::invalid_argument("CPU FMM estimate dimensions");
+        bool far=false;size_t transfers=0,edges=0;
+        for(const auto& level:f.m2l_batches){if(level.n_pairs<0)throw std::invalid_argument("CPU FMM estimate transfers");
+            far=far||level.n_pairs;transfers=memory::add(transfers,size_t(level.n_pairs));}
+        for(const auto& level:f.m2m_data)edges=memory::add(edges,level.pairs.size());
+        size_t bytes=0;
+        if(far){
+            bytes=memory::mul(memory::mul(size_t(f.n_nodes),batches?size_t(tile)*batches:size_t(f.L)),2*sizeof(Six));
+            const size_t phases=memory::mul(memory::mul(points,size_t(f.L)),sizeof(C));
+            if(phases<=phase_budget)bytes=memory::add(bytes,phases);
+            else if(batches)bytes=memory::add(bytes,memory::mul(memory::mul(points,size_t(tile)),sizeof(C)));
+        }
+        if(f.p2p_enabled)bytes=memory::add(bytes,memory::mul(points,15*sizeof(double)));
+        // Leaf/source/target maps, vector headers and constructor ordinal map.
+        bytes=memory::add(bytes,memory::mul(memory::add(points,memory::add(size_t(f.Ns),size_t(f.Nt))),2*sizeof(int)));
+        bytes=memory::add(bytes,memory::mul(size_t(f.n_nodes),3*sizeof(std::vector<int>)+2*sizeof(int)));
+        bytes=memory::add(bytes,memory::mul(memory::add(edges,transfers),2*sizeof(Edge)));
+        if(f.p2p_enabled){
+            std::vector<size_t> counts(size_t(f.n_nodes),0);size_t entries=0;
+            for(size_t i=0;i<f.h_leaf_indices.size();++i){
+                const int lo=f.h_src_id_offsets.at(i),hi=f.h_src_id_offsets.at(i+1);
+                if(lo<0||hi<lo)throw std::invalid_argument("CPU FMM estimate source offsets");
+                counts.at(f.h_leaf_indices[i])=size_t(hi-lo);
+            }
+            for(int leaf:f.h_leaf_indices){
+                entries=memory::add(entries,counts.at(leaf));const auto& node=f.tree.nodes.at(leaf);
+                if(node.near_start<0||node.near_count<0)throw std::invalid_argument("CPU FMM estimate near list");
+                for(int j=0;j<node.near_count;++j)entries=memory::add(entries,counts.at(f.tree.near_list.at(size_t(node.near_start)+j)));
+            }
+            bytes=memory::add(bytes,memory::mul(entries,2*sizeof(int)));
+            bytes=memory::add(bytes,memory::mul(size_t(f.n_nodes),sizeof(size_t)));
+        }
+        return bytes;
+    }
     // P2M, M2M, M2L, L2L, L2P, P2P, in seconds for the last action.
     std::array<double,6> times{};
     bool uses_avx512_near() const {return vector_near;}

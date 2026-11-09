@@ -129,6 +129,12 @@ void PrismCirculantInverse::apply_fft_part(const Complex* rhs,Complex* out,int s
     std::fill(out,out+layout.system_dofs,Complex(0));
     for(int kind=0;kind<2;++kind)if(selected_kind<0 || selected_kind==kind)add_fft(rhs,out,kind,1.,false,use_symmetric_caps);
 }
+void PrismCirculantInverse::apply_fft_part_adjoint(const Complex* rhs,Complex* out,int selected_kind,bool use_symmetric_caps) {
+    if(selected_kind<-1 || selected_kind>1 || rhs==out)throw std::invalid_argument("adjoint FFT part arguments");
+    if(use_symmetric_caps && !symmetric_caps_ready)throw std::logic_error("cap FFT symmetry not prepared");
+    std::fill(out,out+layout.system_dofs,Complex(0));
+    for(int kind=0;kind<2;++kind)if(selected_kind<0 || selected_kind==kind)add_fft(rhs,out,kind,1.,true,use_symmetric_caps);
+}
 void PrismCirculantInverse::prepare_device_mapping(bool symmetric) {
     if(cpu_enabled_)throw std::logic_error("device mapping requires GPU inverse");
     if(symmetric && !symmetric_caps_ready)throw std::logic_error("cap FFT symmetry not prepared");

@@ -2,6 +2,7 @@
 
 #include "muller_duffy.h"
 #include "quadrature.h"
+#include "host_muller_correction.h"
 
 #include <algorithm>
 #include <array>
@@ -2149,7 +2150,8 @@ void MullerFmmOperator::apply_current_operators(
     std::vector<cdouble>& mass,
     std::vector<cdouble>& k1,
     std::vector<cdouble>& k2_epsilon,
-    std::vector<cdouble>& k2_mu)
+    std::vector<cdouble>& k2_mu,
+    bool include_correction)
 {
     const char* profile_setting = std::getenv("BEM_MULLER_PROFILE_HOST");
     const bool profile = profile_setting && std::strcmp(profile_setting,"0")!=0;
@@ -2499,16 +2501,18 @@ void MullerFmmOperator::apply_current_operators(
     }
 
     const auto profile_assembled = std::chrono::steady_clock::now();
+    if (include_correction) {
 #pragma omp parallel for schedule(static)
-    for (int row = 0; row < current_dofs; row++) {
-        for (int index = correction.row_offsets[row];
-             index < correction.row_offsets[row + 1]; index++) {
-            const MullerNearCorrectionEntry& entry =
-                correction.entries[index];
-            const cdouble value = coefficients[entry.column];
-            k1[row] += entry.k1 * value;
-            k2_epsilon[row] += entry.k2_epsilon * value;
-            k2_mu[row] += entry.k2_mu * value;
+        for (int row = 0; row < current_dofs; row++) {
+            for (int index = correction.row_offsets[row];
+                 index < correction.row_offsets[row + 1]; index++) {
+                const MullerNearCorrectionEntry& entry =
+                    correction.entries[index];
+                const cdouble value = coefficients[entry.column];
+                k1[row] += entry.k1 * value;
+                k2_epsilon[row] += entry.k2_epsilon * value;
+                k2_mu[row] += entry.k2_mu * value;
+            }
         }
     }
     if (profile) {
@@ -2780,13 +2784,18 @@ void MullerFmmOperator::matvec(
         if(gpu_host_correction)add_host_correction(input,output);
         return;
     }
+    const char* fused_setting = std::getenv("BEM_MULLER_HOST_FUSED_CORRECTION");
+    const bool fused_correction = fused_setting && std::strcmp(fused_setting,"0")!=0;
     std::vector<cdouble> mass_j, k1_j, k2e_j, k2m_j;
     std::vector<cdouble> mass_m, k1_m, k2e_m, k2m_m;
     apply_current_operators(
-        input, mass_j, k1_j, k2e_j, k2m_j);
+        input, mass_j, k1_j, k2e_j, k2m_j, !fused_correction);
     apply_current_operators(
         input + current_dofs,
-        mass_m, k1_m, k2e_m, k2m_m);
+        mass_m, k1_m, k2e_m, k2m_m, !fused_correction);
+    if (fused_correction)
+        bem_host::correct_current_pair(current_dofs,correction.row_offsets.data(),
+            correction.entries.data(),input,k1_j.data(),k1_m.data(),k2e_m.data(),k2m_j.data());
 
     const cdouble imaginary(0.0, 1.0);
 #pragma omp parallel for schedule(static)

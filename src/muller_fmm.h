@@ -159,6 +159,7 @@ struct MullerFmmOperator {
         void* device_output_x,
         void* device_output_y);
     bool device_matvec_available() const;
+    void* device_matvec_stream()const{return gpu_assembly.device_stream();}
 
     void farfield(
         const std::complex<double>* solution,
@@ -227,7 +228,8 @@ private:
         std::vector<std::complex<double>>& mass,
         std::vector<std::complex<double>>& k1,
         std::vector<std::complex<double>>& k2_epsilon,
-        std::vector<std::complex<double>>& k2_mu);
+        std::vector<std::complex<double>>& k2_mu,
+        bool include_correction = true);
 
     void apply_current_operators_direct(
         const std::complex<double>* coefficients,

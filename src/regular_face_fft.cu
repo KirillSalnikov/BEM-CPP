@@ -80,9 +80,9 @@ __global__ void kernels(double2* out,int nx,int ny,int fx,int fy,
     for(int a=0;a<components;++a) out[size_t(a)*n+i]=g[components==6?planar[a]:a];
 }
 
-__global__ void scatter(const double2* input,double2* spectrum,int nx,int ny,int fy,int grid,int channels) {
+__global__ void scatter(const double2* input,double2* spectrum,int nx,int ny,int fy,int grid,int channels,int components=3) {
     const int i=blockIdx.x*blockDim.x+threadIdx.x;
-    const int cells=nx*ny;if(i>=channels*3*cells) return;
+    const int cells=nx*ny;if(i>=channels*components*cells) return;
     const int lane=i/cells,cell=i%cells;
     spectrum[size_t(lane)*grid+(cell/ny)*fy+cell%ny]=input[i];
 }
@@ -119,9 +119,41 @@ __global__ void contract(const double2* kernels,const double2* charges,double2* 
     for(int a=0;a<6;++a) output[size_t(t*6+a)*grid+i]=result[a];
 }
 
-__global__ void gather(const double2* spectrum,double2* output,int nx,int ny,int fy,int grid,int channels) {
+// For a linear convolution K(t-s), transposition exchanges channel indices
+// and reverses frequency. Parity/dedup reversal is an additional reversal;
+// only that storage reversal changes the sign of first derivatives.
+__global__ void contract_transpose(const double2* kernels,const double2* seed,double2* output,
+    int grid,int channels,int fx,int fy,int components,bool parity,const int* pairmap) {
+    const int i=blockIdx.x*blockDim.x+threadIdx.x,s=blockIdx.y;if(i>=grid)return;
+    const int negative=((fx-i/fy)%fx)*fy+(fy-i%fy)%fy;
+    double2 result[3];for(int a=0;a<3;++a)result[a]=make_double2(0,0);
+    for(int t=0;t<channels;++t) {
+        double2 g[9];for(int a=0;a<9;++a)g[a]=make_double2(0,0);
+        const int mapping=pairmap?pairmap[t*channels+s]:0;
+        const bool reversed=pairmap?mapping<0:parity && s>t;
+        const int hi=t>s?t:s,lo=t<s?t:s;
+        const size_t pair=pairmap?size_t(abs(mapping)-1):parity?size_t(hi)*(hi+1)/2+lo:size_t(t)*channels+s;
+        const size_t base=pair*components*grid+(reversed?i:negative);
+        const int planar[6]={0,1,3,4,6,8};
+        for(int a=0;a<components;++a) {
+            const int c=components==6?planar[a]:a;
+            g[c]=kernels[base+size_t(a)*grid];
+            if(reversed && c<3)g[c]=scale(g[c],-1.);
+        }
+        double2 v[6];for(int a=0;a<6;++a)v[a]=seed[size_t(6*t+a)*grid+i];
+        result[0]=add(result[0],add(add(mul(g[1],v[0]),mul(g[2],v[1])),
+            sub(add(mul(g[4],v[4]),mul(g[5],v[5])),mul(add(g[6],g[8]),v[3]))));
+        result[1]=add(result[1],add(sub(mul(g[2],v[2]),mul(g[0],v[0])),
+            sub(add(mul(g[4],v[3]),mul(g[7],v[5])),mul(add(g[3],g[8]),v[4]))));
+        result[2]=add(result[2],sub(sub(add(mul(g[5],v[3]),mul(g[7],v[4])),
+            add(mul(g[0],v[1]),mul(g[1],v[2]))),mul(add(g[3],g[6]),v[5])));
+    }
+    for(int a=0;a<3;++a)output[size_t(s*3+a)*grid+i]=result[a];
+}
+
+__global__ void gather(const double2* spectrum,double2* output,int nx,int ny,int fy,int grid,int channels,int components=6) {
     const int i=blockIdx.x*blockDim.x+threadIdx.x;
-    const int cells=nx*ny;if(i>=channels*6*cells) return;
+    const int cells=nx*ny;if(i>=channels*components*cells) return;
     const int lane=i/cells,cell=i%cells;
     output[i]=scale(spectrum[size_t(lane)*grid+(cell/ny)*fy+cell%ny],1./grid);
 }
@@ -237,6 +269,26 @@ void RegularFaceFFT::evaluate(const Complex* charges,Complex* result) {
     check(cudaMemcpy(p->input,charges,3*count*sizeof(double2),cudaMemcpyHostToDevice));
     evaluate_device();
     check(cudaMemcpy(result,p->output,6*count*sizeof(double2),cudaMemcpyDeviceToHost));
+}
+void RegularFaceFFT::evaluate_transpose(const Complex* seed,Complex* result) {
+    if(!p->ready || !seed || !result)throw std::runtime_error("face FFT transpose needs initialized buffers");
+    const size_t count=size_t(p->nx)*p->ny*p->channels;
+    // Reuse the forward buffers/plans with exchanged roles; no additional
+    // spectrum or kernel allocation, and all seeds are read before output.
+    check(cudaMemcpy(p->output,seed,6*count*sizeof(double2),cudaMemcpyHostToDevice));
+#ifdef CUDA_API_PER_THREAD_DEFAULT_STREAM
+    fftcheck(cufftSetStream(p->qplan,cudaStreamPerThread));
+    fftcheck(cufftSetStream(p->oplan,cudaStreamPerThread));
+#endif
+    check(cudaMemset(p->ohat,0,size_t(p->grid)*p->channels*6*sizeof(double2)));
+    scatter<<<(6*count+255)/256,256>>>(p->output,p->ohat,p->nx,p->ny,p->fy,p->grid,p->channels,6);
+    check(cudaGetLastError());fftcheck(cufftExecZ2Z(p->oplan,p->ohat,p->ohat,CUFFT_FORWARD));
+    contract_transpose<<<dim3((p->grid+127)/128,p->channels),128>>>(p->kernel,p->ohat,p->qhat,
+        p->grid,p->channels,p->fx,p->fy,p->components,p->parity,p->pairmap);
+    check(cudaGetLastError());fftcheck(cufftExecZ2Z(p->qplan,p->qhat,p->qhat,CUFFT_INVERSE));
+    gather<<<(3*count+255)/256,256>>>(p->qhat,p->input,p->nx,p->ny,p->fy,p->grid,p->channels,3);
+    check(cudaGetLastError());
+    check(cudaMemcpy(result,p->input,3*count*sizeof(double2),cudaMemcpyDeviceToHost));
 }
 RegularFaceFFT::Complex* RegularFaceFFT::device_input() {
     if(!p->ready)throw std::runtime_error("face FFT is not initialized");

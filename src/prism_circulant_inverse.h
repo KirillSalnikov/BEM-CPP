@@ -23,6 +23,7 @@ public:
     void apply(const Complex* rhs,Complex* out,double blend=1);
     // Pure FFT contribution S C R, without the local inverse or row blend.
     void apply_fft_part(const Complex* rhs,Complex* out,int kind=-1,bool symmetric_caps=false);
+    void apply_fft_part_adjoint(const Complex* rhs,Complex* out,int kind=-1,bool symmetric_caps=false);
     void prepare_batch2(bool symmetric_caps=false);
     void apply_fft_part_batch2(const Complex* first,const Complex* second,Complex* first_result,Complex* second_result,
                               bool symmetric_caps=false);
@@ -35,6 +36,13 @@ public:
         device_mapping_enabled_=enabled;
     }
     bool device_mapping_ready()const{return bool(device_mapping_);}
+    bool device_mapping_matches(bool symmetric)const {
+        return device_mapping_ && !cpu_enabled_ && device_mapping_symmetric_==symmetric;
+    }
+    void enqueue_fft_part_device(const Complex* rhs,Complex* out,bool symmetric=true) {
+        if(!device_mapping_matches(symmetric))throw std::logic_error("matching GPU mapping not prepared");
+        device_mapping_->enqueue_device(rhs,out);
+    }
     size_t device_mapping_storage_bytes()const{return device_mapping_?device_mapping_->storage_bytes():0;}
     void apply_adjoint(const Complex* rhs,Complex* out,const Action& local_adjoint,double blend=1);
     void apply_transpose(const Complex* rhs,Complex* out,const Action& local_adjoint,double blend=1);

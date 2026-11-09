@@ -11,6 +11,8 @@ int main()try {
         const std::array<double,2> u{{.3,0}},v{{.11,.23}};
         std::vector<std::array<double,2>> offsets{{{0,0}},{{.07,.05}},{{.13,.11}}};
         bem_cpu::RegularFaceAction fft(nx,ny,u,v,offsets,k);
+        if(fft.workspace_bytes()!=bem_cpu::RegularFaceAction::estimated_workspace_bytes(nx,ny,channels))
+            throw std::runtime_error("FFT preallocation estimate differs from explicit arrays");
         std::vector<C> input(size_t(channels)*6*cells),result(size_t(channels)*12*cells),expected(result.size());
         for(auto& q:input)q=C(normal(rng),normal(rng));
         // Keep one of the two independent currents zero in the first channel.

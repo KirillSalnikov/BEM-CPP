@@ -519,9 +519,10 @@ MullerTensor3 muller_hessian_difference(
             for (int row = 0; row < 3; row++) {
                 for (int col = 0; col < 3; col++) {
                     const double identity = row == col ? 1.0 : 0.0;
-                    result[3 * row + col] += coefficient *
-                        ((n - 1.0) * identity +
-                         (n - 3.0) * unit[row] * unit[col]);
+                    // Hessian of r^(n-1): (n-1) r^(n-3)
+                    // times [I + (n-3) u u^T].
+                    result[3 * row + col] += coefficient * (n - 1.0) *
+                        (identity + (n - 3.0) * unit[row] * unit[col]);
                 }
             }
         }

@@ -1,0 +1,72 @@
+{
+  "backend": "CPU native C++ oracle and Python/Torch CPU",
+  "full_GPU_T_run_for_other_shapes": false,
+  "cases": [
+    {
+      "canonical_blocks": 16,
+      "case": "C1_skew_tetra",
+      "faces": 4,
+      "full_blocks": 16,
+      "group_order": 1,
+      "native_regular_action_error": 9.378052657498535e-15
+    },
+    {
+      "canonical_blocks": 3,
+      "case": "Oh",
+      "faces": 6,
+      "full_blocks": 36,
+      "group_order": 48,
+      "native_regular_action_error": 2.3905007368164973e-15
+    },
+    {
+      "canonical_blocks": 26,
+      "case": "Cs",
+      "faces": 6,
+      "full_blocks": 36,
+      "group_order": 2,
+      "native_regular_action_error": 2.22862946281312e-15
+    },
+    {
+      "canonical_blocks": 12,
+      "case": "C4",
+      "faces": 6,
+      "full_blocks": 36,
+      "group_order": 4,
+      "native_regular_action_error": 2.3648557030898277e-15
+    },
+    {
+      "canonical_blocks": 36,
+      "case": "C1",
+      "faces": 6,
+      "full_blocks": 36,
+      "group_order": 1,
+      "native_regular_action_error": 2.019677155469277e-15
+    },
+    {
+      "canonical_blocks": 26,
+      "case": "C2v_nonconvex_column",
+      "faces": 8,
+      "full_blocks": 64,
+      "group_order": 4,
+      "native_regular_action_error": 4.0043147400197354e-15
+    },
+    {
+      "canonical_blocks": 3,
+      "case": "Oh_rotated_translated",
+      "faces": 6,
+      "full_blocks": 36,
+      "group_order": 48,
+      "native_regular_action_error": 2.7652421033270023e-15
+    },
+    {
+      "canonical_blocks": 2,
+      "case": "Td_absorbing_translated",
+      "faces": 4,
+      "full_blocks": 16,
+      "full_native_residual": 1.3958223411860348e-14,
+      "full_native_solution_error": 2.4079650374144954e-14,
+      "group_order": 24,
+      "native_regular_action_error": 9.950483566254354e-15
+    }
+  ]
+}

@@ -21,9 +21,24 @@ public:
     size_t face_phase_evaluations=0;
     int merged_angular_bands=0;
     int avx512_near_bands=0;
+    int shared_avx512_near_bands=0;
     static size_t estimated_workspace_bytes(const MullerFmmOperator& op,size_t phase_budget,
-                                            bool merge_equal_angles=true) {
+                                            bool merge_equal_angles=true,bool use_face_fft=false,
+                                            bool batch_face_fft=false,int face_tile=32) {
         const size_t points=op.quadrature.size(),mass=op.mass_quadrature.size();
+        if(batch_face_fft && !use_face_fft)throw std::invalid_argument("CPU batch estimate requires face FFT");
+        if(use_face_fft){
+            if(!op.prism_fft_exterior||!op.prism_fft_interior)throw std::invalid_argument("CPU face estimate needs prepared geometry");
+            size_t bytes=memory::mul(memory::add(points,mass),sizeof(Six)+sizeof(MullerBasisSample));
+            bytes=memory::add(bytes,memory::mul(points,2*sizeof(Twelve)+2*sizeof(Vec3)));
+            // Up to twelve supports/sample, allowing vector capacity growth.
+            bytes=memory::add(bytes,memory::mul(memory::add(points,mass),24*sizeof(Support)));
+            bytes=memory::add(bytes,memory::mul(size_t(op.current_dofs),2*sizeof(std::vector<Support>)));
+            bytes=memory::add(bytes,memory::mul(size_t(op.system_dofs),sizeof(C)));
+            for(const auto* face:{op.prism_fft_exterior.get(),op.prism_fft_interior.get()})
+                bytes=memory::add(bytes,PrismFaceAction::estimated_workspace_bytes(face->host_view(),points,phase_budget,batch_face_fft,face_tile));
+            return bytes;
+        }
         size_t bytes=(points+mass)*(sizeof(Six)+sizeof(MullerBasisSample))+2*points*sizeof(Twelve);
         const bool merge=merge_equal_angles && op.banded_fmm_middle &&
             op.fmm_exterior.L==op.fmm_exterior_middle.L && op.fmm_interior.L==op.fmm_interior_middle.L;
@@ -54,8 +69,9 @@ public:
     // Phase budget is PER active band. Total cache use is reported by workspace_bytes().
     explicit MullerAction(const MullerFmmOperator& prepared,size_t phase_budget=64*1024*1024,
                           bool merge_equal_angles=true,bool use_face_fft=false,
-                          bool batch_face_fft=false,int face_tile=32):op(prepared) {
+                          bool batch_face_fft=false,int face_tile=32,bool shared_near=false):op(prepared) {
         if(batch_face_fft && !use_face_fft)throw std::invalid_argument("CPU batched faces require face FFT");
+        if(shared_near && !batch_face_fft)throw std::invalid_argument("CPU shared near requires batched faces");
         if(op.use_pfft || !op.fmm_exterior.initialized || !op.fmm_interior.initialized)
             throw std::runtime_error("CPU action needs retained FMM trees (use strict-only face FFT)");
         rows.resize(op.current_dofs);mass_rows.resize(op.current_dofs);
@@ -73,8 +89,9 @@ public:
         exterior_fields.resize(points.size());interior_fields.resize(points.size());
         if(use_face_fft){
             if(!op.prism_fft_exterior||!op.prism_fft_interior)throw std::invalid_argument("CPU face FFT needs prepared cross-face geometry");
-            face_exterior.reset(new PrismFaceAction(*op.prism_fft_exterior,points,phase_budget,batch_face_fft,face_tile));
-            face_interior.reset(new PrismFaceAction(*op.prism_fft_interior,points,phase_budget,batch_face_fft,face_tile));
+            face_exterior.reset(new PrismFaceAction(*op.prism_fft_exterior,points,phase_budget,batch_face_fft,face_tile,shared_near));
+            face_interior.reset(new PrismFaceAction(*op.prism_fft_interior,points,phase_budget,batch_face_fft,face_tile,shared_near));
+            shared_avx512_near_bands=face_exterior->shared_avx512_near_bands()+face_interior->shared_avx512_near_bands();
             return;
         }
         auto append=[&](std::vector<std::unique_ptr<FmmBand>>& bands,const HelmholtzFMM& f,const HelmholtzFMM* upper=nullptr) {

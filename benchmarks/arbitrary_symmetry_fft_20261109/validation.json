@@ -1,0 +1,42 @@
+{
+  "tests_run_from_isolated_staged_checkout": true,
+  "GPU_production_run_was_not_interrupted": true,
+  "source_sha256": {
+    "scripts/surface_symmetry.py": "250016f29c987c79ce175f6bd0392fd81b58bfa27b9f140eedb3870bbbf616b3",
+    "scripts/regular_surface_geometry.py": "3d54e0ace5bf53a5d2ce912323df759eb0d1cefca642c5033ce250c56d886ba6",
+    "scripts/symmetric_galerkin_fft.py": "03038a9e7d08b24c4fba5b2f52569fdfe39015bb3da114f2c3ad4715a141c0e6",
+    "scripts/compressed_fft_service.py": "b65b991a7312f8c9bd34cf00833b54d6a7573b82879c653619713e735bdf988c",
+    "scripts/build_fmm_tmatrix.py": "c3d74fb5de57228e5bae2abca8a8afa394469624580e984586af6430eed85829",
+    "scripts/tmatrix_checkpoint_migration.py": "5361f896ea981eb363fcbbe988e4af943ced978c31b557e33b97e388840cfa5a",
+    "tools/export_regular_surface_fixture.cpp": "7cb627591736a1e7dbe9445ad0537a27d8abe30a7948789a1ea80f51d81e6e4e",
+    "tools/export_bdm_fft_patterns.cpp": "3aca3242dbf5e77569bc54fed311810db2c011963635a2cfe041fcdb43588fc5",
+    "tests/test_surface_symmetry_fft.py": "6f7aa7c3acaed23700256fac42cd343bffd49c8ffd05a651411fd5f25d74f127"
+  },
+  "checks": {
+    "host_checks": {
+      "command": "OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 make -j2 host-checks",
+      "passed": true,
+      "log_sha256": "3656f5aead15f398b70639e294b35ced13ce19c03c0d8f2b5a23a9ad1af3ab74",
+      "test_executables": 45
+    },
+    "extended_host_checks": {
+      "command": "OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 make -j2 host-face-fft-checks host-taylor-checks host-osrc-checks host-symmetry-check",
+      "passed": true,
+      "log_sha256": "89a761e53c4097e240c6cf8c42149a6ec67c651347d6dda4f69fa11f2ea5dd2e"
+    },
+    "python_core": {
+      "passed": true,
+      "result": "46 passed, 12 subtests passed",
+      "log_sha256": "fbffd50a97c5a027e67ccaa28db99b06ff9f6e1348f7e6a7eb001c7e584b1a76"
+    },
+    "optional_torch_followup": {
+      "passed": true,
+      "result": "9 passed, 4 subtests passed",
+      "log_sha256": "3bc0b2eae5e685ea8602e139b02bd2b7010a638afd4abd1baf77a7406113b461"
+    },
+    "torch_absent": {
+      "passed": true,
+      "result": "2 Torch-only tests skipped; no import failure"
+    }
+  }
+}

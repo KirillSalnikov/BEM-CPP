@@ -1,0 +1,186 @@
+{
+  "scope": "Same compressed ka40/ref6 full operator, only near/mass sparse storage and SpMV change. No solver rerun.",
+  "setup_s": 63.64076110901078,
+  "local_coo_bytes": 3181492224,
+  "local_csr_bytes": 1595317252,
+  "operator_coo_bytes": 12398479800,
+  "operator_csr_bytes": 10812304828,
+  "records": [
+    {
+      "probe": 0,
+      "repeat": 0,
+      "storage": "coo",
+      "seconds": 0.0888279409846291,
+      "error_vs_coo": 5.172336730913166e-08
+    },
+    {
+      "probe": 0,
+      "repeat": 1,
+      "storage": "csr",
+      "seconds": 0.08712457897490822,
+      "error_vs_coo": 5.172336730913166e-08
+    },
+    {
+      "probe": 0,
+      "repeat": 2,
+      "storage": "csr",
+      "seconds": 0.08159411101951264,
+      "error_vs_coo": 5.172336730913166e-08
+    },
+    {
+      "probe": 0,
+      "repeat": 3,
+      "storage": "coo",
+      "seconds": 0.08582063700305298,
+      "error_vs_coo": 5.172336730913166e-08
+    },
+    {
+      "probe": 0,
+      "repeat": 4,
+      "storage": "coo",
+      "seconds": 0.0886146110133268,
+      "error_vs_coo": 5.172336730913166e-08
+    },
+    {
+      "probe": 0,
+      "repeat": 5,
+      "storage": "csr",
+      "seconds": 0.08719497299171053,
+      "error_vs_coo": 5.172336730913166e-08
+    },
+    {
+      "probe": 0,
+      "repeat": 6,
+      "storage": "csr",
+      "seconds": 0.08162265198188834,
+      "error_vs_coo": 5.172336730913166e-08
+    },
+    {
+      "probe": 0,
+      "repeat": 7,
+      "storage": "coo",
+      "seconds": 0.08572574899881147,
+      "error_vs_coo": 5.172336730913166e-08
+    },
+    {
+      "probe": 1,
+      "repeat": 0,
+      "storage": "coo",
+      "seconds": 0.08576558600179851,
+      "error_vs_coo": 7.907410339505267e-08
+    },
+    {
+      "probe": 1,
+      "repeat": 1,
+      "storage": "csr",
+      "seconds": 0.08189181101624854,
+      "error_vs_coo": 7.907410339505267e-08
+    },
+    {
+      "probe": 1,
+      "repeat": 2,
+      "storage": "csr",
+      "seconds": 0.08165427300264128,
+      "error_vs_coo": 7.907410339505267e-08
+    },
+    {
+      "probe": 1,
+      "repeat": 3,
+      "storage": "coo",
+      "seconds": 0.08578239899361506,
+      "error_vs_coo": 7.907410339505267e-08
+    },
+    {
+      "probe": 1,
+      "repeat": 4,
+      "storage": "coo",
+      "seconds": 0.08582617298816331,
+      "error_vs_coo": 7.907410339505267e-08
+    },
+    {
+      "probe": 1,
+      "repeat": 5,
+      "storage": "csr",
+      "seconds": 0.08170015198993497,
+      "error_vs_coo": 7.907410339505267e-08
+    },
+    {
+      "probe": 1,
+      "repeat": 6,
+      "storage": "csr",
+      "seconds": 0.08184511100989766,
+      "error_vs_coo": 7.907410339505267e-08
+    },
+    {
+      "probe": 1,
+      "repeat": 7,
+      "storage": "coo",
+      "seconds": 0.08589814900187775,
+      "error_vs_coo": 7.907410339505267e-08
+    },
+    {
+      "probe": 2,
+      "repeat": 0,
+      "storage": "coo",
+      "seconds": 0.0861177199985832,
+      "error_vs_coo": 5.546292674787961e-09
+    },
+    {
+      "probe": 2,
+      "repeat": 1,
+      "storage": "csr",
+      "seconds": 0.08743073101504706,
+      "error_vs_coo": 5.546292674787961e-09
+    },
+    {
+      "probe": 2,
+      "repeat": 2,
+      "storage": "csr",
+      "seconds": 0.08179359798668884,
+      "error_vs_coo": 5.546292674787961e-09
+    },
+    {
+      "probe": 2,
+      "repeat": 3,
+      "storage": "coo",
+      "seconds": 0.08608925502630882,
+      "error_vs_coo": 5.546292674787961e-09
+    },
+    {
+      "probe": 2,
+      "repeat": 4,
+      "storage": "coo",
+      "seconds": 0.08596837299410254,
+      "error_vs_coo": 5.546292674787961e-09
+    },
+    {
+      "probe": 2,
+      "repeat": 5,
+      "storage": "csr",
+      "seconds": 0.08183056997950189,
+      "error_vs_coo": 5.546292674787961e-09
+    },
+    {
+      "probe": 2,
+      "repeat": 6,
+      "storage": "csr",
+      "seconds": 0.08198274200549349,
+      "error_vs_coo": 5.546292674787961e-09
+    },
+    {
+      "probe": 2,
+      "repeat": 7,
+      "storage": "coo",
+      "seconds": 0.08613995401537977,
+      "error_vs_coo": 5.546292674787961e-09
+    }
+  ],
+  "status": "complete",
+  "median_s": {
+    "coo": 0.08593326099799015,
+    "csr": 0.08183784049469978
+  },
+  "speedup": 1.0500431154895347,
+  "bytes_saved": 1586174972,
+  "max_relative_change": 7.907410339505267e-08
+}

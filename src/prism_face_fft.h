@@ -18,9 +18,15 @@ public:
               const PrismFaceFFT* shared_geometry=nullptr,double aspect=1.);
     void evaluate(const cdouble* qx,const cdouble* qy,const cdouble* qz,
                   cdouble* curl,cdouble* hessian,bool mixed);
+    // Transpose of this same backend, including rotated cross hierarchies and
+    // cached near coefficients. Host-staged seeds/results; no dense matrix.
+    void evaluate_transpose(const cdouble* curl_seed,const cdouble* hessian_seed,
+                            cdouble* qx,cdouble* qy,cdouble* qz,bool mixed);
     void evaluate_device(const double* const real[3],const double* const imag[3],bool mixed);
     const HelmholtzFMM& result_view() const;
     size_t fft_storage_bytes() const;
+    size_t cached_near_pairs() const;
+    size_t cached_near_radials() const;
     // Immutable, borrowed CPU geometry. The prepared GPU backend must outlive
     // a consumer; no CUDA calls or shared work buffers are exposed here.
     struct HostView {

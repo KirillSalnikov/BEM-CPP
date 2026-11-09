@@ -1,6 +1,8 @@
 #ifndef BEM_HOST_FMM_BATCH_H
 #define BEM_HOST_FMM_BATCH_H
 #include "host_fmm_band.h"
+#include "host_shared_near_avx512.h"
+#include <limits>
 
 namespace bem_cpu {
 // Same prepared FMM action for several independent currents. Exact angular
@@ -10,6 +12,7 @@ namespace bem_cpu {
 class FmmBandBatch {
     FmmBand& band_;
     const int batches_,tile_;
+    const bool shared_near_;
     std::vector<Six> multi_,local_;
     std::vector<C> phase_;
     size_t index(int node,int l,int batch)const{return (size_t(node)*tile_+l)*batches_+batch;}
@@ -20,13 +23,17 @@ public:
     std::array<double,6> times{};
     double phase_seconds=0;
     size_t phase_evaluations=0;
-    FmmBandBatch(FmmBand& band,int batches,int tile=32):band_(band),batches_(batches),tile_(tile) {
+    FmmBandBatch(FmmBand& band,int batches,int tile=32,bool shared_near=false)
+        :band_(band),batches_(batches),tile_(tile),shared_near_(shared_near) {
         if(batches<1||batches>8||tile<1||tile>256)throw std::invalid_argument("CPU FMM batch dimensions");
+        if(shared_near_ && band_.points.size()>size_t(std::numeric_limits<int>::max()/12))
+            throw std::invalid_argument("CPU shared near current gather index overflow");
         if(band_.far){
             multi_.resize(size_t(band_.f.n_nodes)*tile_*batches_);local_.resize(multi_.size());
             if(band_.phase.empty())phase_.resize(band_.points.size()*tile_);
         }
     }
+    bool shared_avx512_near()const{return shared_near_ && band_.near && band_.vector_near;}
     size_t workspace_bytes()const{return (multi_.size()+local_.size())*sizeof(Six)+phase_.size()*sizeof(C);}
     void add(const std::vector<std::vector<Six>>& charges,std::vector<std::vector<Twelve>>& fields) {
         auto& b=band_;const auto& f=b.f;
@@ -110,8 +117,16 @@ public:
         auto start=Clock::now();
 #ifdef BEM_CPU_HAS_AVX512_P2P
         if(b.vector_near){
-            // Retain the independently checked AVX512 near kernel. Shared
-            // near-kernel evaluation is a separate future optimization.
+            if(shared_near_){
+                const Six* inputs[8];for(int j=0;j<batches_;++j)inputs[j]=charges[j].data();
+#pragma omp parallel for schedule(dynamic,16)
+                for(size_t t=0;t<b.target_ids.size();++t){const int p=b.target_ids[t];Twelve* outputs[8];
+                    for(int j=0;j<batches_;++j)outputs[j]=&fields[j][p];
+                    avx512::near_field_batch(b.near_soa,b.near_sources[b.point_leaf[p]],b.points[p],f.k,inputs,outputs,batches_);
+                }
+                times[5]=elapsed(start);return;
+            }
+            // Original separately evaluated AVX512 path remains the default.
             for(int batch=0;batch<batches_;++batch){
 #pragma omp parallel for schedule(static)
                 for(size_t p=0;p<b.points.size();++p)for(int c=0;c<6;++c){

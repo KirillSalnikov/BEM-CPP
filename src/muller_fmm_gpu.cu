@@ -1062,6 +1062,14 @@ void MullerGpuAssembly::upload_system_input_device(
     }
 }
 
+void* MullerGpuAssembly::device_stream()const {
+#ifdef __CUDART_API_PER_THREAD_DEFAULT_STREAM
+    return reinterpret_cast<void*>(cudaStreamPerThread);
+#else
+    return reinterpret_cast<void*>(cudaStreamLegacy);
+#endif
+}
+
 void MullerGpuAssembly::project_charges_and_mass(
     int input_offset, int slot)
 {

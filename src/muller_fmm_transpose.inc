@@ -1,7 +1,7 @@
 // Reverse Galerkin projection/assembly around the transposed FMM traversal.
 void MullerFmmOperator::matvec_transpose(const cdouble* input,cdouble* output) {
-    if(system_dofs<=0 || use_pfft || prism_fft_active())
-        throw std::runtime_error("Muller transpose currently requires the FMM backend");
+    if(system_dofs<=0 || use_pfft)
+        throw std::runtime_error("Muller transpose requires the FMM or prism FFT backend");
     const std::vector<cdouble> seed(input,input+system_dofs); // permits in-place use
     const int points=int(quadrature.size());
     const cdouble a=cdouble(0,1)/k_exterior;
@@ -43,6 +43,12 @@ void MullerFmmOperator::matvec_transpose(const cdouble* input,cdouble* output) {
         std::exception_ptr errors[2];
 #pragma omp parallel for num_threads(2) if(concurrent)
         for(int medium=0;medium<2;++medium)try {
+            if(prism_fft_active()) {
+                auto& fft=medium?prism_fft_interior:prism_fft_exterior;
+                fft->evaluate_transpose(curl[medium]->data(),hess[medium]->data(),
+                    reverse[medium][0].data(),reverse[medium][1].data(),reverse[medium][2].data(),fmm_near_fp32);
+                continue;
+            }
             auto& engine=medium?fmm_interior:fmm_exterior;
             auto& middle=medium?fmm_interior_middle:fmm_exterior_middle;
             auto& coarse=medium?fmm_interior_coarse:fmm_exterior_coarse;

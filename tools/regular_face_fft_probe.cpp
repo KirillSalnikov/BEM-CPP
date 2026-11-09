@@ -115,6 +115,42 @@ Case prism_face(int ref,Complex k,double aspect=1.,bool cap=false) {
     return a;
 }
 
+double validate_transpose(const Case& a,RegularFaceFFT& fft) {
+    const int cells=a.nx*a.ny,n=cells*a.c;
+    std::vector<Complex> seed(size_t(n)*6),expected(size_t(n)*3),actual(expected.size());
+    for(size_t i=0;i<seed.size();++i)seed[i]=Complex(std::sin(.173*(i+1)),std::cos(.127*(i+1)));
+    #pragma omp parallel for schedule(static)
+    for(int s=0;s<n;++s)for(int t=0;t<n;++t) {
+        const auto sp=position(a,s,false),tp=position(a,t,true);
+        double r[3];double r2=0;for(int d=0;d<3;++d){r[d]=tp[d]-sp[d];r2+=r[d]*r[d];}
+        if(r2<=1e-28)continue;
+        const double radius=std::sqrt(r2),ir=1./radius;
+        const Complex ik=Complex(0,1)*a.k,g=std::exp(ik*radius)*(ir/(4*std::acos(-1.)));
+        const Complex first=g*(ik-ir),second=g*(-a.k*a.k-2.*ik*ir+2.*ir*ir);
+        Complex grad[3],h[3][3],trace=0,m[6][3]{};
+        for(int d=0;d<3;++d){
+            grad[d]=first*r[d]*ir;
+            for(int j=0;j<3;++j)h[d][j]=(second-first*ir)*r[d]*r[j]/r2+(d==j?first*ir:Complex(0));
+            trace+=h[d][d];
+        }
+        m[0][0]=grad[1];m[0][1]=-grad[0];m[1][0]=grad[2];m[1][2]=-grad[0];m[2][1]=grad[2];m[2][2]=-grad[1];
+        for(int d=0;d<3;++d)for(int j=0;j<3;++j)m[3+d][j]=h[d][j]-(d==j?trace:Complex(0));
+        for(int d=0;d<3;++d)for(int j=0;j<6;++j)
+            expected[size_t(s/cells*3+d)*cells+s%cells]+=m[j][d]*seed[size_t(t/cells*6+j)*cells+t%cells];
+    }
+    const auto bytes=fft.storage_bytes();fft.evaluate_transpose(seed.data(),actual.data());
+    double nrm=0,diff=0;for(size_t i=0;i<actual.size();++i){nrm+=std::norm(expected[i]);diff+=std::norm(actual[i]-expected[i]);}
+    const double error=std::sqrt(diff/std::max(nrm,1e-300));
+    if(!std::isfinite(error)||error>2e-11)throw std::runtime_error("regular face transpose versus direct Green derivatives");
+    auto alias=seed;fft.evaluate_transpose(alias.data(),alias.data());
+    diff=0;nrm=0;for(size_t i=0;i<actual.size();++i){diff+=std::norm(alias[i]-actual[i]);nrm+=std::norm(actual[i]);}
+    if(std::sqrt(diff/std::max(nrm,1e-300))>1e-14)throw std::runtime_error("regular face transpose alias mismatch");
+    std::fill(seed.begin(),seed.end(),Complex(0));fft.evaluate_transpose(seed.data(),actual.data());
+    for(auto x:actual)if(std::abs(x)>1e-14)throw std::runtime_error("regular face transpose stale buffer");
+    if(bytes!=fft.storage_bytes())throw std::runtime_error("transpose grew GPU workspace");
+    return error;
+}
+
 void unit_checks() {
     for(int test=0;test<6;++test) {
         Case a=prism_face(1,Complex(2.3,.08),1.,test==5);
@@ -137,6 +173,10 @@ void unit_checks() {
         std::printf("case=%d relative=%.8e kernels=%d grid=%dx%d bytes=%zu\n",test,error,
                     fft.stored_kernel_count(),dimensions[0],dimensions[1],fft.storage_bytes());
         if(!std::isfinite(error)||error>2e-11)throw std::runtime_error("regular face FFT disagrees with direct FP64");
+        const double transpose_error=validate_transpose(a,fft);
+        fft.evaluate(a.q.data(),result.data());
+        if(validate(a,result,int(a.active.size()))>2e-11)throw std::runtime_error("forward FFT after transpose changed");
+        std::printf("case=%d transpose_direct_relative=%.17g alias_zero_workspace=PASS\n",test,transpose_error);
     }
     bool rejected=false;try {RegularFaceFFT::estimated_array_bytes(0,1,1);}catch(const std::exception&){rejected=true;}
     if(!rejected)throw std::runtime_error("invalid dimensions accepted");

@@ -16,8 +16,19 @@
 #include "prism_vertical_inverse.h"
 #include "prism_symmetric_circulant.h"
 #include "muller_fmm_cpu.h"
+#include "host_cpu_checker_config.h"
+#include "planar_preconditioner_config.h"
+#include "planar_prism_kernels.h"
 #include "host_hybrid_scheduler.h"
 #include "host_thread_affinity.h"
+#include "coarse_image_experiment.h"
+#include "physical_ritz_prior.h"
+#include "physical_ritz_images.h"
+#include "ritz_sector_solver.h"
+#include "resident_prism_inverse.h"
+#include "resident_sector_operator.h"
+#include "external_fft_action.h"
+#include <cuda_profiler_api.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/resource.h>
@@ -75,10 +86,27 @@ int main(int argc,char** argv) try {
     const double ka=std::stod(argv[4]),tol=std::stod(argv[9]);
     const Complex ri(std::stod(argv[5]),std::stod(argv[6]));
     if(ka<=0||tol<=0||ref<0||restart<2||maxiter<1) throw std::runtime_error("invalid worker parameters");
+    const auto cpu_backend=bem_cpu::CpuCheckerConfig::from_environment(shape,ref);
+    const auto planar_config=bem_osrc::PreconditionerConfig::from_environment(shape,ref,ka,ri);
+    const auto ritz_image_config=bem_ritz::ImageConfig::from_environment();
     const char* gpu_batch_setting=std::getenv("BEM_TMATRIX_GPU_BATCH2");
     if(gpu_batch_setting && std::strcmp(gpu_batch_setting,"0") && std::strcmp(gpu_batch_setting,"1"))
         throw std::runtime_error("BEM_TMATRIX_GPU_BATCH2 must be 0 or 1");
     const bool gpu_batch2=gpu_batch_setting && std::strcmp(gpu_batch_setting,"0")!=0;
+    const char* resident_setting=std::getenv("BEM_TMATRIX_RESIDENT_COMPOSITE");
+    if(resident_setting && std::strcmp(resident_setting,"0") && std::strcmp(resident_setting,"1"))
+        throw std::invalid_argument("BEM_TMATRIX_RESIDENT_COMPOSITE must be0 or1");
+    const bool resident_requested=resident_setting && std::strcmp(resident_setting,"0")!=0;
+    if(resident_requested){
+        const char* prior=std::getenv("BEM_TMATRIX_RITZ_PRIOR");
+        if(gpu_batch2 || (prior && *prior))throw std::invalid_argument("resident composite is not combined with GPU batch2 or Ritz yet");
+        for(const auto& flag:std::vector<std::pair<const char*,const char*>>{
+                {"BEM_MULLER_GPU_ASSEMBLY","1"},{"BEM_MULLER_GPU_HOST_CORRECTION","0"},
+                {"BEM_FMM_MULTILEVEL_GPU_ASSEMBLY","1"},{"BEM_CIRCULANT_CPU_FFT","0"}}){
+            const char* value=std::getenv(flag.first);
+            if(!value || std::strcmp(value,flag.second))throw std::invalid_argument(std::string("resident composite requires explicit ")+flag.first+"="+flag.second);
+        }
+    }
     if(gpu_batch2)setenv("BEM_MULLER_BATCH2_HOST","1",1);
     int recycle_capacity=0;
     if(const char* setting=std::getenv("BEM_TMATRIX_RECYCLE_RANK")) {
@@ -191,6 +219,10 @@ int main(int argc,char** argv) try {
     };
     const int sector_recycle_capacity=sector_integer("BEM_TMATRIX_SECTOR_RECYCLE_RANK",0,64);
     const int gpu_pair_wait=sector_integer("BEM_TMATRIX_BATCH2_WAIT_US",2000,1000000);
+    // Zero retains the previous unlimited offload policy. Exhausting the
+    // budget routes the same strict action to GPU; no residual gate is skipped.
+    const int cpu_check_budget=sector_integer("BEM_TMATRIX_CPU_CHECK_BUDGET",0,65536);
+    const bool profile_first_batch=sector_integer("BEM_TMATRIX_PROFILE_FIRST_BATCH",0,1)!=0;
     if(gpu_batch2 && !hybrid_requested)throw std::runtime_error("GPU batching requires hybrid solver lanes");
     const bool merge_lane_recycle=sector_integer("BEM_TMATRIX_MERGE_RECYCLE",0,1)!=0;
     if(merge_lane_recycle && (!hybrid_requested || !sector_recycle_capacity))
@@ -233,6 +265,8 @@ int main(int argc,char** argv) try {
         throw std::runtime_error("circulant blend must be in [0,1]");
     PrismCirculantInverse circulant;
     double circulant_seconds=0;
+    double planar_condition=0,planar_defect=0,planar_D6h_defect=0,planar_audit_s=0;
+    size_t planar_kernel_bytes=0;
     if(circ_blend>0) {
         if(device_solver || shape!="prism" || !d6h_mesh)
             throw std::runtime_error("circulant requires host GMRES and a regular D6h prism");
@@ -240,8 +274,15 @@ int main(int argc,char** argv) try {
         const double shift=std::getenv("BEM_CIRCULANT_SHIFT")?std::stod(std::getenv("BEM_CIRCULANT_SHIFT")):0;
         const double opposite=std::getenv("BEM_CIRCULANT_OPPOSITE_WEIGHT")?std::stod(std::getenv("BEM_CIRCULANT_OPPOSITE_WEIGHT")):0;
         const int opposite_mask=sector_integer("BEM_CIRCULANT_OPPOSITE_MASK",3,3);
-        circulant.build(op.mesh,ref,[&](const Complex* a,Complex* b){op.matvec(a,b);},
-            [&](const Complex* a,Complex* b){if(sector_solver)orbit_inverse.apply(a,b);else mbj.apply(a,b);},shift,opposite,opposite_mask);
+        const PrismCirculantInverse::Action local_action=[&](const Complex* a,Complex* b){
+            if(sector_solver)orbit_inverse.apply(a,b);else mbj.apply(a,b);};
+        if(planar_config.analytic) {
+            const auto kernels=bem_osrc::make_prism_kernels(op.mesh,ref,ka,ri,planar_config.damping);
+            planar_condition=kernels.maximum_condition();planar_defect=kernels.maximum_defect();
+            planar_kernel_bytes=kernels.kernel_bytes();
+            circulant.build_from_inverse_kernels(op.mesh,ref,local_action,kernels.side.values,kernels.cap.values);
+        }else circulant.build(op.mesh,ref,[&](const Complex* a,Complex* b){op.matvec(a,b);},
+            local_action,shift,opposite,opposite_mask);
         circulant_seconds=seconds(before);
     }
     PrismSymmetricCirculant symmetric_circulant;
@@ -251,6 +292,30 @@ int main(int argc,char** argv) try {
         const bool prepared=symmetric_circulant.prepare_full_fft_symmetry(op.mesh);
         circulant_seconds+=seconds(before);
         std::printf("[circulant] native_full_D6h=%d setup_s=%.3f GPU_MiB=%.3f\n",int(prepared),seconds(before),circulant.storage_bytes()/1048576.);
+    }
+    if(planar_config.analytic) {
+        if(!symmetric_circulant.full_fft_symmetry())throw std::runtime_error("planar inverse requires full native D6h FFT");
+        const auto before=Clock::now();const int n=op.system_dofs;
+        std::vector<Complex> probe(n),image(n),transformed(n),actual(n),expected(n);
+        for(int i=0;i<n;++i)probe[i]=Complex(std::sin(.021*i),std::cos(.031*i));
+        const auto compare=[&]{double numerator=0,denominator=0;
+            for(int i=0;i<n;++i){numerator+=std::norm(actual[i]-expected[i]);denominator+=std::norm(expected[i]);}
+            const double error=std::sqrt(numerator/std::max(denominator,1e-300));
+            if(!std::isfinite(error))throw std::runtime_error("nonfinite planar inverse symmetry audit");
+            planar_D6h_defect=std::max(planar_D6h_defect,error);};
+        symmetric_circulant.apply_full_fft_symmetry(probe.data(),image.data(),circ_blend);
+        for(bool mirror:{false,true}) {
+            symmetry_orbit.transform(probe,transformed,mirror,true);
+            symmetric_circulant.apply_full_fft_symmetry(transformed.data(),actual.data(),circ_blend);
+            symmetry_orbit.transform(image,expected,mirror,false);compare();
+        }
+        std::vector<int> vertical,sign;bem_tmatrix::D6hOrbit::vertical_image_map(op.mesh,vertical,sign);
+        for(int i=0;i<n;++i){transformed[vertical[i]]=-double(sign[i])*probe[i];expected[vertical[i]]=double(sign[i])*image[i];}
+        symmetric_circulant.apply_full_fft_symmetry(transformed.data(),actual.data(),circ_blend);compare();
+        planar_audit_s=seconds(before);
+        if(planar_D6h_defect>1e-8)throw std::runtime_error("planar inverse D6h audit failed");
+        std::printf("[planar BDM inverse] damping=%.6g condition_F=%.6g inverse_defect=%.3e D6h=%.3e audit_s=%.6f\n",
+            planar_config.damping,planar_condition,planar_defect,planar_D6h_defect,planar_audit_s);
     }
     PrismVerticalInverse vertical_inverse;
     if(vertical_preconditioner)vertical_inverse.build(op.mesh,[&](const Complex* x,Complex* y){
@@ -297,9 +362,117 @@ int main(int argc,char** argv) try {
     const bool symmetry_warm_start=!device_solver && shape=="prism" && d6h_mesh &&
         warm_setting && std::strcmp(warm_setting,"0")!=0;
     if(symmetry_warm_start && !sector_solver) symmetry_orbit.build(op.mesh);
-    const bem_streaming::Action perform_inverse=[&](const Complex* x,Complex* y){
-                if(sector_solver){if(symmetric_circulant.full_fft_symmetry())symmetric_circulant.apply_full_fft_symmetry(x,y,circ_blend);else if(vertical_preconditioner)vertical_inverse.apply(x,y);else if(circ_blend>0)symmetric_circulant.apply(x,y,circ_blend);else orbit_inverse.apply(x,y);}
+    std::unique_ptr<ResidentPrismInverse> resident_inverse;
+    std::unique_ptr<ResidentSectorOperator> resident_composite;
+    double resident_setup_s=0,resident_audit_s=0,resident_inverse_error=0,resident_action_error=0,resident_D6h_defect=0;
+    size_t resident_bytes=0,resident_sector_bytes=0;
+    if(resident_requested){
+        if(!sector_solver || !symmetric_circulant.full_fft_symmetry() || !op.device_matvec_available())
+            throw std::invalid_argument("resident composite needs full D6h sector inverse and complete GPU operator");
+        auto before=Clock::now();const size_t budget=size_t(sector_integer("BEM_TMATRIX_RESIDENT_MEMORY_MB",2048,65536))*1024*1024;
+        circulant.prepare_device_mapping(true);circulant.enable_device_mapping(false);
+        {
+            const auto transform=bem_sector_device::Layout::capture(symmetry_sectors);
+            const size_t chain_budget=transform.storage_bytes()+2*size_t(op.system_dofs)*sizeof(Complex);
+            const size_t mapping_bytes=circulant.device_mapping_storage_bytes();
+            if(budget<=chain_budget+mapping_bytes)throw std::runtime_error("resident composite memory budget exhausted by transforms");
+            resident_inverse.reset(new ResidentPrismInverse);
+            resident_inverse->init(bem_orbit_device::Layout::capture(orbit_inverse),
+                bem_orbit_device::SymmetricLayout::capture(symmetric_circulant),circulant,budget-chain_budget-mapping_bytes);
+            resident_composite.reset(new ResidentSectorOperator);
+            resident_composite->init(op,*resident_inverse,transform,chain_budget);
+            resident_sector_bytes=resident_composite->storage_bytes();resident_bytes=resident_inverse->storage_bytes()+resident_sector_bytes+mapping_bytes;
+        }
+        resident_setup_s=seconds(before);before=Clock::now();const int count=op.system_dofs;
+        std::vector<Complex> probe(count),reference(count),actual(count),rotated(count),expected(count),encoded(count),physical(count);
+        const auto difference=[&](const std::vector<Complex>& a,const std::vector<Complex>& b){
+            long double num=0,den=0;for(int i=0;i<count;++i){num+=std::norm(a[i]-b[i]);den+=std::norm(b[i]);}
+            const double error=std::sqrt(double(num/std::max(den,1e-300L)));
+            if(!std::isfinite(error))throw std::runtime_error("nonfinite resident startup audit");
+            return error;
+        };
+        for(int i=0;i<count;++i)probe[i]=Complex(std::sin(.031*i),std::cos(.043*i));
+        symmetric_circulant.apply_full_fft_symmetry(probe.data(),reference.data(),circ_blend);
+        resident_inverse->apply(probe.data(),actual.data(),circ_blend);resident_inverse_error=difference(actual,reference);
+        std::vector<int> vertical,sign;bem_tmatrix::D6hOrbit::vertical_image_map(op.mesh,vertical,sign);
+        for(int g=0;g<3;++g){
+            if(g<2){symmetry_orbit.transform(probe,rotated,g==1,true);symmetry_orbit.transform(actual,expected,g==1,false);}
+            else for(int i=0;i<count;++i){rotated[vertical[i]]=-double(sign[i])*probe[i];expected[vertical[i]]=double(sign[i])*actual[i];}
+            resident_inverse->apply(rotated.data(),physical.data(),circ_blend);
+            resident_D6h_defect=std::max(resident_D6h_defect,difference(physical,expected));
+        }
+        // Compare the same mixed mathematical action before any solve. The
+        // unchanged original physical FP64 gate remains the final authority.
+        op.matvec(reference.data(),physical.data());symmetry_sectors.encode(physical.data(),expected.data(),true);
+        symmetry_sectors.encode(probe.data(),encoded.data(),true);
+        resident_composite->apply(encoded.data(),actual.data(),circ_blend);resident_action_error=difference(actual,expected);
+        resident_audit_s=seconds(before);
+        std::printf("[resident composite] explicit_MiB=%.3f sector_MiB=%.3f setup=%.6f audit=%.6f inverse=%.3e action=%.3e D6h=%.3e\n",
+            resident_bytes/1048576.,resident_sector_bytes/1048576.,resident_setup_s,resident_audit_s,resident_inverse_error,resident_action_error,resident_D6h_defect);
+        if(resident_inverse_error>2e-12 || resident_D6h_defect>1e-8 || resident_action_error>2e-6)
+            throw std::runtime_error("resident startup inverse/D6h/operator audit failed");
+    }
+    const bem_streaming::Action perform_local_inverse=[&](const Complex* x,Complex* y){
+                if(resident_inverse)resident_inverse->apply(x,y,circ_blend);
+                else if(sector_solver){if(symmetric_circulant.full_fft_symmetry())symmetric_circulant.apply_full_fft_symmetry(x,y,circ_blend);else if(vertical_preconditioner)vertical_inverse.apply(x,y);else if(circ_blend>0)symmetric_circulant.apply(x,y,circ_blend);else orbit_inverse.apply(x,y);}
                 else if(fft_inner)fft_inverse->solve(x,y,.1);else if(wave_rank)wave.apply(x,y);else if(circ_blend>0)circulant.apply(x,y,circ_blend);else mbj.apply(x,y);};
+    std::unique_ptr<CoarseImageExperiment> ritz_correction;
+    double ritz_setup_s=0,ritz_D6h_defect=0;
+    double ritz_sector_floor=0;
+    if(const char* value=std::getenv("BEM_TMATRIX_RITZ_SECTOR_FLOOR")){
+        char* end=nullptr;ritz_sector_floor=std::strtod(value,&end);
+        if(end==value||*end||!std::isfinite(ritz_sector_floor)||ritz_sector_floor<0||ritz_sector_floor>.01)
+            throw std::invalid_argument("BEM_TMATRIX_RITZ_SECTOR_FLOOR must be in 0..0.01");
+    }
+    size_t ritz_columns=0,ritz_estimated_peak_bytes=0;
+    size_t ritz_image_mixed_actions=0,ritz_image_strict_actions=0,ritz_image_model_bytes=0;
+    const char* ritz_path=std::getenv("BEM_TMATRIX_RITZ_PRIOR");
+    if(ritz_path && *ritz_path){
+        if(!sector_solver || !symmetric_circulant.full_fft_symmetry() || gpu_batch2)
+            throw std::runtime_error("Ritz correction needs full D6h FFT sector inverse; GPU batch2 is not supported yet");
+        const auto before=Clock::now();const size_t n=op.system_dofs;
+        bem_ritz::Parameters wanted;wanted.dofs=n;wanted.ref=ref;wanted.ka=ka;wanted.ri_real=ri.real();
+        wanted.ri_imag=ri.imag();wanted.aspect=prism_aspect;wanted.duffy=duffy_order;
+        bem_ritz::Reader prior(ritz_path,wanted);ritz_columns=prior.parameters().columns;
+        // Two vertical images, current/image vectors, permanent scratch and
+        // insertion/audit temporaries. Excludes the pre-existing operator.
+        ritz_estimated_peak_bytes=(4*ritz_columns+14)*n*sizeof(Complex)+4*n*sizeof(int)+1024*1024;
+        ritz_estimated_peak_bytes=bem_cpu::memory::add(ritz_estimated_peak_bytes,ritz_image_config.estimated_additional_bytes(n));
+        const size_t budget=size_t(sector_integer("BEM_TMATRIX_RITZ_MEMORY_MB",1024,65536))*1024*1024;
+        if(ritz_estimated_peak_bytes>budget)throw std::runtime_error("Ritz correction exceeds its host-memory budget");
+        ritz_correction.reset(new CoarseImageExperiment(op.mesh,symmetry_sectors,perform_local_inverse,ritz_sector_floor));
+        bem_ritz::Vector column(n),image(n);
+        {
+            bem_ritz::PhysicalImages images(op.mesh,symmetry_orbit,ritz_image_config,
+                [&](const Complex* a,Complex* b){op.matvec(a,b);},
+                [&](const Complex* a,Complex* b){op.matvec_strict(a,b);});
+            ritz_image_model_bytes=images.storage_bytes();
+            if(ritz_image_model_bytes>ritz_image_config.estimated_additional_bytes(n))
+                throw std::runtime_error("Ritz image workspace exceeds its estimate");
+            for(size_t j=0;j<ritz_columns;++j){prior.read(j,column);images.apply(column.data(),image.data());ritz_correction->add_d6h(column,image);}
+            ritz_image_mixed_actions=images.mixed_actions();ritz_image_strict_actions=images.strict_actions();
+        }
+        if(ritz_correction->rank()==0)throw std::runtime_error("Ritz correction retained no current directions");
+        bem_ritz::Vector probe(n),value(n),rotated(n),actual(n),expected(n);
+        for(size_t i=0;i<n;++i)probe[i]=Complex(std::sin(.031*i),std::cos(.043*i));
+        ritz_correction->apply(probe.data(),value.data());
+        std::vector<int> vertical,sign;bem_tmatrix::D6hOrbit::vertical_image_map(op.mesh,vertical,sign);
+        for(int g=0;g<3;++g){
+            if(g<2){symmetry_orbit.transform(probe,rotated,g==1,true);symmetry_orbit.transform(value,expected,g==1,false);}
+            else for(size_t i=0;i<n;++i){rotated[vertical[i]]=-double(sign[i])*probe[i];expected[vertical[i]]=double(sign[i])*value[i];}
+            ritz_correction->apply(rotated.data(),actual.data());
+            for(size_t i=0;i<n;++i)actual[i]-=expected[i];
+            const double defect=bem_streaming::norm(actual.data(),n)/std::max(bem_streaming::norm(expected.data(),n),1e-300);
+            if(!std::isfinite(defect)||defect>1e-8)throw std::runtime_error("Ritz correction full D6h gate failed");
+            ritz_D6h_defect=std::max(ritz_D6h_defect,defect);
+        }
+        ritz_setup_s=seconds(before);
+        std::printf("[Ritz inverse] columns=%zu rank=%d setup_s=%.6f basis_MiB=%.3f D6h=%.3e\n",
+            ritz_columns,ritz_correction->rank(),ritz_setup_s,ritz_correction->bytes()/1048576.,ritz_D6h_defect);
+    }
+    const bem_streaming::Action perform_inverse=[&](const Complex* x,Complex* y){
+        if(ritz_correction)ritz_correction->apply(x,y);else perform_local_inverse(x,y);
+    };
     const int cpu_threads=sector_integer("BEM_CPU_THREADS",16,256);
     const int gpu_threads=sector_integer("BEM_CPU_GPU_THREADS",4,256);
     const int solver_threads=sector_integer("BEM_CPU_SOLVER_THREADS",4,256);
@@ -339,17 +512,35 @@ int main(int argc,char** argv) try {
             throw std::runtime_error("GPU batching requires mixed GPU assembly, multilevel FMM and native full D6h FFT inverse");
         symmetric_circulant.prepare_batch2();
     }
-    double cpu_setup_seconds=0,cpu_validation_error=0;
+    double cpu_setup_seconds=0,cpu_validation_error=0,cpu_D6h_error=0;
+    size_t cpu_estimated_peak_bytes=0,cpu_memory_budget=0;
     size_t cpu_phase_budget=size_t(sector_integer("BEM_CPU_PHASE_MB",8192,65536))*1024*1024;
     if(cpu_requested) {
         const auto before=Clock::now();
         const size_t budget=size_t(sector_integer("BEM_CPU_MEMORY_MB",24576,262144))*1024*1024;
-        while(cpu_phase_budget && bem_cpu::MullerAction::estimated_workspace_bytes(op,cpu_phase_budget)>budget)cpu_phase_budget/=2;
-        if(bem_cpu::MullerAction::estimated_workspace_bytes(op,cpu_phase_budget)>budget)
+        cpu_memory_budget=budget;
+        const auto estimate=[&]{
+            size_t value=bem_cpu::MullerAction::estimated_workspace_bytes(op,cpu_phase_budget,true,cpu_backend.face,cpu_backend.batch,cpu_backend.tile);
+            if(cpu_backend.face){
+                // Startup symmetry probes, map vectors and an allowance for
+                // FFTW plan/internal allocations and per-thread kernel tiles.
+                // This is an estimate, not an OS-level memory reservation.
+                value=bem_cpu::memory::add(value,bem_cpu::memory::mul(size_t(op.system_dofs),6*sizeof(Complex)+2*sizeof(int)));
+                value=bem_cpu::memory::add(value,64ULL*1024*1024+size_t(cpu_threads)*64*1024);
+            }
+            return value;
+        };
+        while(cpu_phase_budget && estimate()>budget)cpu_phase_budget/=2;
+        cpu_estimated_peak_bytes=estimate();
+        if(cpu_estimated_peak_bytes>budget)
             throw std::runtime_error("CPU checker exceeds BEM_CPU_MEMORY_MB before allocating its workspace");
         setenv("BEM_CPU_AVX512","1",0);
         bem_cpu::configure_threads(cpu_threads,"BEM_CPU_AFFINITY");
-        cpu_checker.reset(new bem_cpu::MullerAction(op,cpu_phase_budget));
+        cpu_checker.reset(new bem_cpu::MullerAction(op,cpu_phase_budget,true,cpu_backend.face,cpu_backend.batch,cpu_backend.tile,cpu_backend.shared_near));
+        if(cpu_backend.shared_near && cpu_checker->shared_avx512_near_bands!=4)
+            throw std::runtime_error("CPU shared checker requires AVX512 in both media and face kinds");
+        if(cpu_checker->workspace_bytes()>cpu_memory_budget)
+            throw std::runtime_error("CPU checker explicit arrays exceed memory budget");
         std::vector<Complex> probe(op.system_dofs),host(probe.size()),device(probe.size());
         for(size_t j=0;j<probe.size();++j)probe[j]=Complex(std::sin(.173*j),std::cos(.137*j));
         cpu_checker->apply(probe.data(),host.data());
@@ -358,13 +549,49 @@ int main(int argc,char** argv) try {
         long double num=0,den=0;
         for(size_t j=0;j<probe.size();++j){num+=std::norm(host[j]-device[j]);den+=std::norm(device[j]);}
         cpu_validation_error=std::sqrt(double(num/std::max(den,1e-300L)));
-        if(!std::isfinite(cpu_validation_error)||cpu_validation_error>2e-7)
+        if(!std::isfinite(cpu_validation_error)||cpu_validation_error>(cpu_backend.face?2e-9:2e-7))
             throw std::runtime_error("CPU checker failed startup GPU FP64 operator comparison");
+        if(cpu_backend.face){
+            std::vector<Complex> rotated(probe.size()),actual(probe.size()),expected(probe.size());
+            std::vector<int> vertical,sign;bem_tmatrix::D6hOrbit::vertical_image_map(op.mesh,vertical,sign);
+            bem_cpu::configure_threads(cpu_threads,"BEM_CPU_AFFINITY");
+            for(int g=0;g<3;++g){
+                if(g<2){symmetry_orbit.transform(probe,rotated,g==1,false);symmetry_orbit.transform(host,expected,g==1,true);}
+                else for(size_t i=0;i<probe.size();++i){rotated[vertical[i]]=double(sign[i])*probe[i];expected[vertical[i]]=-double(sign[i])*host[i];}
+                cpu_checker->apply(rotated.data(),actual.data());num=0;den=0;
+                for(size_t i=0;i<actual.size();++i){num+=std::norm(actual[i]-expected[i]);den+=std::norm(expected[i]);}
+                const double defect=std::sqrt(double(num/std::max(den,1e-300L)));
+                if(!std::isfinite(defect)||defect>2e-5)throw std::runtime_error("CPU face checker failed original D6h gate");
+                cpu_D6h_error=std::max(cpu_D6h_error,defect);
+            }
+            bem_cpu::configure_threads(gpu_threads,"BEM_CPU_GPU_AFFINITY");
+        }
         cpu_setup_seconds=seconds(before);
-        std::printf("[hybrid] independent CPU FP64 checker ready: %.3f GiB, error %.3e, setup %.3fs\n",
-            cpu_checker->workspace_bytes()/1073741824.,cpu_validation_error,cpu_setup_seconds);
+        std::printf("[hybrid] independent CPU FP64 checker %s: %.3f GiB, estimated_peak %.3f GiB, error %.3e, D6h %.3e, setup %.3fs\n",
+            cpu_backend.backend.c_str(),cpu_checker->workspace_bytes()/1073741824.,cpu_estimated_peak_bytes/1073741824.,cpu_validation_error,cpu_D6h_error,cpu_setup_seconds);
     }
     const double mbj_seconds=seconds(mbj_start);
+    std::unique_ptr<ExternalFFTAction> external_fft;
+    double external_fft_error=0,external_fft_setup_s=0;
+    if(const char* path=std::getenv("BEM_TMATRIX_COMPRESSED_FFT_SOCKET")) {
+        if(shape!="prism" || !d6h_mesh || !sector_solver || hybrid_requested ||
+           device_solver || resident_requested || gpu_batch2 || fft_inner)
+            throw std::invalid_argument("compressed FFT requires the host D6h sector solver without hybrid/device/nested modes");
+        const auto begin=Clock::now();const int count=op.system_dofs;
+        std::vector<Complex> probe(count),reference(count),actual(count);
+        for(int i=0;i<count;++i)probe[i]=Complex(std::sin(.021*i),std::cos(.031*i));
+        // Materialize accurate FMM scratch before the large FFT upload.
+        op.matvec_strict(probe.data(),reference.data());
+        external_fft.reset(new ExternalFFTAction(path,count,ref,ka,ri,prism_aspect,7,duffy_order));
+        external_fft->apply(probe.data(),actual.data());
+        long double numerator=0,denominator=0;
+        for(int i=0;i<count;++i){numerator+=std::norm(actual[i]-reference[i]);denominator+=std::norm(reference[i]);}
+        external_fft_error=std::sqrt(double(numerator/std::max(denominator,1e-300L)));
+        if(!std::isfinite(external_fft_error) || external_fft_error>5e-4)
+            throw std::runtime_error("compressed FFT startup action audit failed");
+        external_fft_setup_s=seconds(begin);
+        std::printf("[compressed FFT] original-checker error=%.3e setup/audit=%.3fs\n",external_fft_error,external_fft_setup_s);
+    }
     const TriQuad quad=tri_quadrature(13);
     bem_tmatrix::StreamingRhsAssembler rhs_assembler(quad.npts);
     const size_t sample_count=op.mass_quadrature.size();
@@ -394,12 +621,20 @@ int main(int argc,char** argv) try {
          <<",\"hybrid_merge_recycle\":"<<(merge_lane_recycle?"true":"false")
          <<",\"hybrid_gpu_batch2\":"<<(gpu_batch2?"true":"false")
          <<",\"hybrid_gpu_batch_wait_us\":"<<(gpu_batch2?gpu_pair_wait:0)
+         <<",\"hybrid_cpu_check_budget\":"<<cpu_check_budget
+         <<",\"profile_first_batch\":"<<(profile_first_batch?"true":"false")
          <<",\"per_packet_tolerance\":true"
          <<",\"hybrid_cpu_strict\":"<<(cpu_checker?"true":"false")
          <<",\"hybrid_cpu_threads\":"<<(cpu_requested?cpu_threads:0)
          <<",\"hybrid_gpu_host_threads\":"<<(hybrid_requested?gpu_threads:0)
          <<",\"hybrid_solver_threads_per_lane\":"<<(hybrid_requested?solver_threads:0)
          <<",\"hybrid_cpu_avx512_near_bands\":"<<(cpu_checker?cpu_checker->avx512_near_bands:0)
+         <<",\"hybrid_cpu_checker_backend\":\""<<cpu_backend.backend<<"\""
+         <<",\"hybrid_cpu_shared_near_bands\":"<<(cpu_checker?cpu_checker->shared_avx512_near_bands:0)
+         <<",\"hybrid_cpu_face_tile\":"<<(cpu_backend.face?cpu_backend.tile:0)
+         <<",\"hybrid_cpu_D6h_error\":"<<cpu_D6h_error
+         <<",\"hybrid_cpu_estimated_peak_bytes\":"<<cpu_estimated_peak_bytes
+         <<",\"hybrid_cpu_memory_budget_bytes\":"<<cpu_memory_budget
          <<",\"hybrid_cpu_setup_s\":"<<cpu_setup_seconds<<",\"hybrid_cpu_validation_error\":"<<cpu_validation_error
          <<",\"hybrid_cpu_workspace_bytes\":"<<(cpu_checker?cpu_checker->workspace_bytes():0)
          <<",\"hybrid_cpu_phase_budget_bytes_per_band\":"<<cpu_phase_budget
@@ -411,6 +646,26 @@ int main(int argc,char** argv) try {
          <<",\"sector_recycle_capacity\":"<<sector_recycle_capacity<<",\"sector_recycle_mask\":"<<sector_recycle_mask
          <<",\"sector_budget_training_packets\":"<<sector_budget_packets
          <<",\"sector_recycle_disk_checkpoint\":false"
+         <<",\"physical_ritz_columns\":"<<ritz_columns
+         <<",\"physical_ritz_sector_floor\":"<<ritz_sector_floor
+         <<",\"physical_ritz_encoded_cold_start\":"<<(ritz_correction?"true":"false")
+         <<",\"physical_ritz_rank\":"<<(ritz_correction?ritz_correction->rank():0)
+         <<",\"physical_ritz_basis_bytes\":"<<(ritz_correction?ritz_correction->bytes():0)
+         <<",\"physical_ritz_estimated_peak_bytes\":"<<ritz_estimated_peak_bytes
+         <<",\"physical_ritz_setup_s\":"<<ritz_setup_s<<",\"physical_ritz_D6h_defect\":"<<ritz_D6h_defect
+         <<",\"physical_ritz_image_model\":\""<<ritz_image_config.model<<"\""
+         <<",\"physical_ritz_image_mixed_actions\":"<<ritz_image_mixed_actions
+         <<",\"physical_ritz_image_strict_actions\":"<<ritz_image_strict_actions
+         <<",\"physical_ritz_image_model_bytes\":"<<ritz_image_model_bytes
+         <<",\"resident_composite\":"<<(resident_composite?"true":"false")
+         <<",\"compressed_fft\":"<<(external_fft?"true":"false")
+         <<",\"compressed_fft_setup_s\":"<<external_fft_setup_s
+         <<",\"compressed_fft_action_error\":"<<external_fft_error
+         <<",\"double_single_near_check\":"<<(std::getenv("BEM_FMM_P2P_DOUBLE_SINGLE") && std::strcmp(std::getenv("BEM_FMM_P2P_DOUBLE_SINGLE"),"0")?"true":"false")
+         <<",\"resident_explicit_bytes\":"<<resident_bytes<<",\"resident_sector_bytes\":"<<resident_sector_bytes
+         <<",\"resident_setup_s\":"<<resident_setup_s<<",\"resident_audit_s\":"<<resident_audit_s
+         <<",\"resident_inverse_error\":"<<resident_inverse_error<<",\"resident_action_error\":"<<resident_action_error
+         <<",\"resident_D6h_defect\":"<<resident_D6h_defect
          <<",\"sector_first_pass_factor\":"<<sector_first_pass_factor
          <<",\"vertical_preconditioner\":"<<(vertical_preconditioner?"true":"false")
          <<",\"orbit_storage_mib\":"<<orbit_inverse.storage_bytes()/1048576.
@@ -418,6 +673,11 @@ int main(int argc,char** argv) try {
          <<",\"native_full_fft_symmetry\":"<<(symmetric_circulant.full_fft_symmetry()?"true":"false")
          <<",\"circulant_blend\":"<<circ_blend<<",\"circulant_setup_s\":"<<circulant_seconds
          <<",\"circulant_storage_mib\":"<<circulant.storage_bytes()/1048576.
+         <<",\"circulant_symbol\":\""<<planar_config.symbol<<"\",\"planar_damping\":"<<planar_config.damping
+         <<",\"planar_condition_F\":"<<planar_condition<<",\"planar_inverse_defect\":"<<planar_defect
+         <<",\"planar_D6h_defect\":"<<planar_D6h_defect<<",\"planar_audit_s\":"<<planar_audit_s
+         <<",\"planar_kernel_bytes\":"<<planar_kernel_bytes<<",\"planar_aliases\":"<<(planar_config.analytic?1:0)
+         <<",\"planar_gauss_order\":"<<(planar_config.analytic?16:0)
          <<",\"opposite_face_weight\":"<<circulant.opposite_weight()<<",\"opposite_face_mask\":"<<circulant.opposite_mask()
          <<",\"wave_coarse_rank\":"<<wave.rank()<<",\"wave_coarse_setup_s\":"<<wave_seconds
          <<",\"wave_coarse_storage_mib\":"<<wave.storage_bytes()/1048576.
@@ -447,6 +707,10 @@ int main(int argc,char** argv) try {
         double recycle_update_seconds=0,host_action_seconds=0,host_strict_seconds=0,host_orthogonalization_seconds=0;
         int32_t operation=0;double rhs_seconds=0,batch_seconds=0,tolerance=0;bool hybrid=false;
         double merge_seconds=0,rebudget_seconds=0;int merge_candidates=0;
+        double accounted_owner_wait=0,accounted_cpu_wait=0,accounted_cpu_tail=0;
+        size_t ritz_physical_calls=0,ritz_encoded_calls=0;
+        size_t resident_action_calls=0;
+        uint64_t external_fft_calls=0;
         std::array<int,12> sector_iterations_x{},sector_iterations_y{},sector_capacities_used{};
         Clock::time_point started;
         bem_streaming::HybridScheduler::Statistics hybrid_stats;
@@ -486,6 +750,7 @@ int main(int argc,char** argv) try {
     };
     const auto solve_packet=[&](Packet& packet,int lane,bem_streaming::HybridScheduler* scheduler,
                                bem_streaming::SectorRecycleSpace* active_recycle) {
+        const uint64_t external_before=external_fft?external_fft->calls():0;
         const double tol=packet.tolerance;
         auto& rhs=packet.rhs;auto& solution=packet.solution;auto& result=packet.result;auto& warm=packet.warm;
         const int32_t operation=packet.operation;
@@ -508,6 +773,7 @@ int main(int argc,char** argv) try {
                 solution[0].data(),solution[1].data(),restart,tol,maxiter,true);
         } else {
             const bem_streaming::Action action=[&](const Complex* x,Complex* y){
+                if(external_fft){external_fft->apply(x,y);return;}
                 if(scheduler && gpu_batch2)scheduler->gpu_pairable(lane,1,x,y,[&]{op.matvec(x,y);},
                     [&](const void* a,void* b,const void* c,void* d){
                         op.matvec_batch2(static_cast<const Complex*>(a),static_cast<const Complex*>(c),
@@ -524,15 +790,28 @@ int main(int argc,char** argv) try {
                 scheduler->strict(lane,[&]{op.matvec_strict(snapshot.data(),y);},host);
             };
             const bem_streaming::Action inverse=[&](const Complex* x,Complex* y){
+                if(ritz_correction)++packet.ritz_physical_calls;
                 if(scheduler && gpu_batch2)scheduler->gpu_pairable(lane,2,x,y,[&]{perform_inverse(x,y);},
                     [&](const void* a,void* b,const void* c,void* d){
                         symmetric_circulant.apply_full_fft_symmetry_batch2(static_cast<const Complex*>(a),static_cast<const Complex*>(c),
                             static_cast<Complex*>(b),static_cast<Complex*>(d),circ_blend);});
                 else if(scheduler)scheduler->gpu(lane,[&]{perform_inverse(x,y);});else perform_inverse(x,y);
             };
-            const auto x=sector_solver?bem_tmatrix::solve_prism_sectors(action,strict,inverse,symmetry_sectors,
+            bem_streaming::Action encoded_inverse;
+            if(ritz_correction)encoded_inverse=[&](const Complex* a,Complex* b){
+                ++packet.ritz_encoded_calls;
+                if(scheduler)scheduler->gpu(lane,[&]{ritz_correction->apply_encoded(a,b);});
+                else ritz_correction->apply_encoded(a,b);
+            };
+            bem_streaming::Action encoded_action;
+            if(resident_composite)encoded_action=[&](const Complex* a,Complex* b){
+                ++packet.resident_action_calls;
+                if(scheduler)scheduler->gpu(lane,[&]{resident_composite->apply(a,b,circ_blend);});
+                else resident_composite->apply(a,b,circ_blend);
+            };
+            const auto x=sector_solver?bem_tmatrix::solve_prism_sectors_with_ritz(action,strict,inverse,encoded_inverse,symmetry_sectors,
                 rhs[0].data(),solution[0].data(),restart,tol,maxiter,false,true,
-                operation==3 && sector_recycle_capacity?active_recycle:nullptr,&packet.sector_iterations_x):
+                operation==3 && sector_recycle_capacity?active_recycle:nullptr,&packet.sector_iterations_x,encoded_action):
                 bem_streaming::gmres(action,strict,inverse,rhs[0].data(),solution[0].data(),n,restart,tol,maxiter,
                 true,false,fft_inner?nullptr:&recycle,operation==3,fft_inner>0);
             // Operation 3 is reserved for production packets. Independent
@@ -543,9 +822,9 @@ int main(int argc,char** argv) try {
                     warm.rank,warm.relative_rhs_error,warm.amplification,warm.fitted,warm.seconds);
                 std::fflush(stdout);
             }
-            const auto y=sector_solver?bem_tmatrix::solve_prism_sectors(action,strict,inverse,symmetry_sectors,
+            const auto y=sector_solver?bem_tmatrix::solve_prism_sectors_with_ritz(action,strict,inverse,encoded_inverse,symmetry_sectors,
                 rhs[1].data(),solution[1].data(),restart,tol,maxiter,warm.fitted,true,
-                operation==3 && sector_recycle_capacity?active_recycle:nullptr,&packet.sector_iterations_y):
+                operation==3 && sector_recycle_capacity?active_recycle:nullptr,&packet.sector_iterations_y,encoded_action):
                 bem_streaming::gmres(action,strict,inverse,rhs[1].data(),solution[1].data(),n,restart,tol,maxiter,
                 true,warm.fitted,fft_inner?nullptr:&recycle,operation==3,fft_inner>0);
             recycle_update_seconds=x.recycle_seconds+y.recycle_seconds;
@@ -560,6 +839,7 @@ int main(int argc,char** argv) try {
             result.final_residual_x=x.residual;result.final_residual_y=y.residual;
             result.converged_x=x.residual<=tol;result.converged_y=y.residual<=tol;
         }
+        packet.external_fft_calls=external_fft?external_fft->calls()-external_before:0;
     };
     const auto record_budget=[&](const Packet& packet){
         if(sector_budget && packet.operation==3)
@@ -636,10 +916,17 @@ int main(int argc,char** argv) try {
               <<",\"hybrid_gpu_paired_inverses\":"<<packet.hybrid_stats.paired_kinds[2]
               <<",\"hybrid_gpu_actions\":"<<packet.hybrid_stats.gpu_actions
               <<",\"hybrid_gpu_pair_wait_s\":"<<packet.hybrid_stats.pair_wait_seconds
+              <<",\"hybrid_accounted_owner_queue_wait_s\":"<<packet.accounted_owner_wait
+              <<",\"hybrid_accounted_cpu_check_wait_s\":"<<packet.accounted_cpu_wait
+              <<",\"hybrid_accounted_cpu_tail_wait_s\":"<<packet.accounted_cpu_tail
               <<",\"sector_gmres\":"<<(sector_solver?"true":"false")
               <<",\"host_timings_available\":"<<(!device_solver?"true":"false")
               <<",\"host_krylov_action_s\":"<<host_action_seconds
               <<",\"host_strict_s\":"<<host_strict_seconds
+              <<",\"physical_ritz_inverse_calls\":"<<packet.ritz_physical_calls
+              <<",\"physical_ritz_encoded_calls\":"<<packet.ritz_encoded_calls
+              <<",\"resident_action_calls\":"<<packet.resident_action_calls
+              <<",\"compressed_fft_action_calls\":"<<packet.external_fft_calls
               <<",\"host_orthogonalization_s\":"<<host_orthogonalization_seconds
               <<",\"host_iterations_x\":"<<iterations_x<<",\"host_iterations_y\":"<<iterations_y
               <<",\"host_strict_checks_x\":"<<strict_checks_x<<",\"host_strict_checks_y\":"<<strict_checks_y
@@ -662,6 +949,7 @@ int main(int argc,char** argv) try {
         transfer(client,far_x.data(),far_x.size()*sizeof(Complex),true);
         transfer(client,far_y.data(),far_y.size()*sizeof(Complex),true);
     };
+    bool profile_batch_finished=false;
     while(true) {
         int32_t operation=0;transfer(client,&operation,sizeof(operation),false);
         if(operation==0)break;
@@ -676,7 +964,9 @@ int main(int argc,char** argv) try {
             }
             bem_cpu::configure_threads(gpu_threads,"BEM_CPU_GPU_AFFINITY");
             *lane_recycle[0]=sector_recycle;
-            bem_streaming::HybridScheduler scheduler(gpu_batch2?gpu_pair_wait:0);const auto before=Clock::now();
+            const bool capture=profile_first_batch && !profile_batch_finished;
+            if(capture && cudaProfilerStart()!=cudaSuccess)throw std::runtime_error("cannot start CUDA batch capture");
+            bem_streaming::HybridScheduler scheduler(gpu_batch2?gpu_pair_wait:0,cpu_check_budget);const auto before=Clock::now();
             scheduler.run([&]{solve_packet(first,0,&scheduler,lane_recycle[0].get());},
                           [&]{solve_packet(second,1,&scheduler,lane_recycle[1].get());},true,
                           [&]{*lane_recycle[1]=*lane_recycle[0];});
@@ -690,8 +980,17 @@ int main(int argc,char** argv) try {
             record_budget(first);record_budget(second);
             first.rebudget_seconds=second.rebudget_seconds=.5*freeze_budget();
             first.batch_seconds=second.batch_seconds=seconds(before);
+            // Split batch-wide times equally: summing packet records counts
+            // each actual wait once, unlike per-lane paired-call participation.
+            first.accounted_owner_wait=second.accounted_owner_wait=.5*scheduler.idle_statistics().empty_queue_seconds;
+            first.accounted_cpu_wait=second.accounted_cpu_wait=.5*scheduler.idle_statistics().cpu_check_seconds;
+            first.accounted_cpu_tail=second.accounted_cpu_tail=.5*scheduler.idle_statistics().cpu_tail_seconds;
             first.hybrid_stats=scheduler.statistics(0);second.hybrid_stats=scheduler.statistics(1);
             finish_packet(first);finish_packet(second);
+            if(capture) {
+                if(cudaProfilerStop()!=cudaSuccess)throw std::runtime_error("cannot stop CUDA batch capture");
+                profile_batch_finished=true;
+            }
         }else {
             Packet packet(n);receive_packet(packet,operation);
             solve_packet(packet,0,nullptr,&sector_recycle);

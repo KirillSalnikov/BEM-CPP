@@ -21,6 +21,9 @@ public:
     using Work=std::function<void()>;
     using PairWork=std::function<void(const void*,void*,const void*,void*)>;
     struct Statistics {int cpu_checks=0,gpu_checks=0,gpu_actions=0,gpu_paired_actions=0;std::array<int,3> paired_kinds{{0,0,0}};double cpu_seconds=0,pair_wait_seconds=0;};
+    // Host-owner waits for runnable work, not GPU kernel utilization. These
+    // intervals do not overlap owner actions or paired-rendezvous waits.
+    struct IdleStatistics {double empty_queue_seconds=0,cpu_check_seconds=0,cpu_tail_seconds=0;};
 private:
     struct Task {
         int lane;Work gpu,cpu;bool strict;
@@ -36,6 +39,8 @@ private:
     std::future<void> cpu_work_;
     bool ran_=false;
     int pair_wait_us_=0;
+    int cpu_check_budget_=0,cpu_checks_started_=0,cpu_lane_=-1;
+    IdleStatistics idle_;
     void submit(int lane,Work gpu,Work cpu,bool strict,int pair_kind=0,
                 const void* input=nullptr,void* output=nullptr,PairWork pair=PairWork()) {
         if(lane<0||lane>1)throw std::invalid_argument("hybrid lane");
@@ -53,8 +58,10 @@ private:
         catch(...) {task->completion.set_exception(std::current_exception());}
     }
 public:
-    explicit HybridScheduler(int pair_wait_us=0):pair_wait_us_(pair_wait_us) {
+    explicit HybridScheduler(int pair_wait_us=0,int cpu_check_budget=0)
+        :pair_wait_us_(pair_wait_us),cpu_check_budget_(cpu_check_budget) {
         if(pair_wait_us<0 || pair_wait_us>1000000)throw std::invalid_argument("hybrid pair wait");
+        if(cpu_check_budget<0 || cpu_check_budget>65536)throw std::invalid_argument("hybrid CPU check budget");
         for(int j=0;j<2;++j){done_[j].store(false);checking_[j].store(false);}
     }
     void gpu(int lane,Work work) {submit(lane,std::move(work),Work(),false);}
@@ -66,6 +73,7 @@ public:
     }
     void strict(int lane,Work gpu,Work cpu) {submit(lane,std::move(gpu),std::move(cpu),true);}
     const Statistics& statistics(int lane) const {return statistics_.at(lane);}
+    const IdleStatistics& idle_statistics() const {return idle_;}
     void run(const Work& first,const Work& second,bool stagger=true,const Work& before_second=Work()) {
         if(ran_)throw std::logic_error("hybrid scheduler is single use");
         if(before_second&&!stagger)throw std::invalid_argument("recycle handoff requires staggered lanes");
@@ -91,12 +99,22 @@ public:
         };
         launch(0);if(!stagger)launch(1);
         while(!done_[0].load()||!started[1]||!done_[1].load()) {
-            if(cpu_work_.valid() && cpu_work_.wait_for(std::chrono::seconds(0))==std::future_status::ready)
-                cpu_work_.get();
+            if(cpu_work_.valid() && cpu_work_.wait_for(std::chrono::seconds(0))==std::future_status::ready) {
+                cpu_work_.get();cpu_lane_=-1;
+            }
             if(!started[1]&&done_[0].load())launch(1);
             std::shared_ptr<Task> task;
             {std::unique_lock<std::mutex> lock(mutex_);
-                if(tasks_.empty())changed_.wait_for(lock,std::chrono::milliseconds(2));
+                if(tasks_.empty()) {
+                    const bool cpu_active=cpu_work_.valid() && cpu_lane_>=0;
+                    const bool tail=cpu_active && done_[1-cpu_lane_].load();
+                    const auto before=std::chrono::steady_clock::now();
+                    changed_.wait_for(lock,std::chrono::milliseconds(2));
+                    const double elapsed=std::chrono::duration<double>(std::chrono::steady_clock::now()-before).count();
+                    idle_.empty_queue_seconds+=elapsed;
+                    if(cpu_active)idle_.cpu_check_seconds+=elapsed;
+                    if(tail)idle_.cpu_tail_seconds+=elapsed;
+                }
                 if(!tasks_.empty()){task=tasks_.front();tasks_.pop_front();}
             }
             if(!task)continue;
@@ -137,7 +155,8 @@ public:
                 }
             }
             const bool overlap=task->strict && bool(task->cpu) && !cpu_work_.valid()
-                && started[other] && !done_[other].load() && !checking_[other].load();
+                && started[other] && !done_[other].load() && !checking_[other].load()
+                && (!cpu_check_budget_ || cpu_checks_started_<cpu_check_budget_);
             if(overlap) {
                 try {
                     cpu_work_=std::async(std::launch::async,[this,task] {
@@ -145,6 +164,7 @@ public:
                         statistics_[task->lane].cpu_seconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-before).count();
                         changed_.notify_one();
                     });
+                    cpu_lane_=task->lane;++cpu_checks_started_;
                     ++statistics_[task->lane].cpu_checks;
                 }catch(...) {
                     // Resource exhaustion while starting a host thread must

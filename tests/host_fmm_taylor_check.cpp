@@ -63,7 +63,24 @@ int main()try{
     double n=0,d=0;for(size_t i=0;i<points.size();++i)for(int c=0;c<12;++c){n+=std::norm(actual[i][0][c]-expected[i][c]);d+=std::norm(expected[i][c]);}
     const double central_error=std::sqrt(n/d);
     if(!std::isfinite(error+central_error)||error>2e-10||central_error>2e-10)throw std::runtime_error("full FMM Taylor versus independent retuned action");
+    double prefix_error=0;int prefix_cases=0;
+    for(size_t input_degree=0;input_degree<=degree;++input_degree)for(size_t output_degree=input_degree;output_degree<=degree;++output_degree){
+        auto truncated=charge;for(auto& p:truncated)for(size_t j=input_degree+1;j<=degree;++j)p[j]={};
+        std::vector<Band::Field> full(points.size()),prefix(points.size());action.add(truncated,full);
+        for(auto& p:prefix)for(auto& row:p)row.fill(C(2,-3));
+        action.add(charge,prefix,input_degree,output_degree);double e=0,n=0;
+        for(size_t p=0;p<points.size();++p)for(size_t j=0;j<=degree;++j)for(int c=0;c<12;++c){
+            const C expected=C(2,-3)+(j<=output_degree?full[p][j][c]:C(0));
+            e+=std::norm(prefix[p][j][c]-expected);n+=std::norm(expected);
+            if(j>output_degree&&prefix[p][j][c]!=C(2,-3))throw std::runtime_error("FMM prefix touched later output");}
+        prefix_error=std::max(prefix_error,std::sqrt(e/n));++prefix_cases;
+    }
+    if(prefix_error>2e-12)throw std::runtime_error("bounded FMM history mismatch");
+    for(auto bounds:{std::array<size_t,2>{{1,0}},std::array<size_t,2>{{0,degree+1}}}){
+        bool rejected=false;try{action.add(charge,actual,bounds[0],bounds[1]);}catch(const std::invalid_argument&){rejected=true;}
+        if(!rejected)throw std::runtime_error("FMM history bounds accepted");}
     std::fill(charge.begin(),charge.end(),Band::Charge{});std::fill(actual.begin(),actual.end(),Band::Field{});action.add(charge,actual);
     for(const auto& row:actual)for(const auto& moment:row)for(C z:moment)if(z!=C(0))throw std::runtime_error("FMM Taylor stale buffer");
     std::printf("PASS matrix-free FMM moments 0..4: central %.3e, independent contour %.3Le; P2M/M2M/M2L/L2L/L2P/P2P, two currents and zero buffers; workspace %zu bytes\n",central_error,error,action.workspace_bytes());
+    std::printf("PASS FMM prefixes: %d ranges, two guards, max %.3e; later outputs unchanged\n",prefix_cases,prefix_error);
 }catch(const std::exception& e){std::fprintf(stderr,"%s\n",e.what());return 1;}

@@ -34,6 +34,9 @@ public:
     // Zero charges mask unused triangle types/cells. Output includes all
     // target cells; the caller selects its active quadrature points.
     void evaluate(const Complex* charges, Complex* result);
+    // Algebraic transpose of the finite, cropped convolution: six target
+    // components to three source components. No conjugation; alias-safe.
+    void evaluate_transpose(const Complex* seed, Complex* result);
     // Device-resident path. The caller fills device_input(), then launches
     // evaluate_device(); device_output() remains on the same CUDA stream.
     Complex* device_input();

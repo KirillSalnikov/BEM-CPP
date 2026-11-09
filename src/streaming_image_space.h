@@ -10,11 +10,13 @@ class ImageSpace {
     std::vector<int> offsets_;
     std::vector<V> u_,c_;
     int n_,rank_=0;
+    double sector_floor_=0;
     static Complex inner(const V& a,const V& b,int lo,int hi) {
         Complex z=0;for(int i=lo;i<hi;++i)z+=std::conj(a[i])*b[i];return z;
     }
 public:
-    explicit ImageSpace(std::vector<int> offsets):offsets_(std::move(offsets)),n_(offsets_.empty()?0:offsets_.back()) {
+    explicit ImageSpace(std::vector<int> offsets,double sector_floor=0):offsets_(std::move(offsets)),n_(offsets_.empty()?0:offsets_.back()),sector_floor_(sector_floor) {
+        if(!std::isfinite(sector_floor)||sector_floor<0||sector_floor>.01)throw std::invalid_argument("image-space sector floor");
         if(offsets_.size()<2||offsets_[0]!=0||n_<1)throw std::invalid_argument("image-space dimensions");
         for(size_t i=1;i<offsets_.size();++i)if(offsets_[i]<offsets_[i-1])throw std::invalid_argument("image-space offsets");
     }
@@ -22,6 +24,10 @@ public:
     size_t bytes()const{return 2*u_.size()*size_t(n_)*sizeof(Complex);}
     bool add(V u,V c) {
         if(int(u.size())!=n_||int(c.size())!=n_)throw std::invalid_argument("image-space column size");
+        // A symmetry-pure pilot has zero components in some sectors. Without
+        // a whole-column floor, roundoff in those sectors is normalized to
+        // unit image norm and can create enormous spurious inverse directions.
+        const double floor=sector_floor_*std::sqrt(std::max(0.,inner(c,c,0,n_).real()));
         int added=0;
 #pragma omp parallel for reduction(+:added) schedule(static)
         for(int s=0;s<int(offsets_.size())-1;++s){const int lo=offsets_[s],hi=offsets_[s+1];
@@ -29,7 +35,7 @@ public:
             for(int pass=0;pass<2;++pass)for(size_t j=0;j<c_.size();++j){const Complex a=inner(c_[j],c,lo,hi);
                 for(int i=lo;i<hi;++i){c[i]-=a*c_[j][i];u[i]-=a*u_[j][i];}}
             const double length=std::sqrt(std::max(0.,inner(c,c,lo,hi).real()));
-            if(std::isfinite(length)&&length>1e-8*std::max(original,1e-300)){
+            if(std::isfinite(length)&&length>std::max(floor,1e-8*std::max(original,1e-300))){
                 for(int i=lo;i<hi;++i){c[i]/=length;u[i]/=length;}++added;
             }else for(int i=lo;i<hi;++i)c[i]=u[i]=0.;
         }

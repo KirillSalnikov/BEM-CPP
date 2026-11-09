@@ -15,7 +15,11 @@ SOLVER_ENV = {'BEM_TMATRIX_WAVE_RANK','BEM_TMATRIX_MBJ_OVERLAP','BEM_TMATRIX_MBJ
               'BEM_SECTOR_FIRST_PASS_FACTOR',
               'BEM_CIRCULANT_OPPOSITE_WEIGHT','BEM_CIRCULANT_OPPOSITE_MASK',
               # Only the FP32 near kernel reads this; the strict action is unchanged.
-              'BEM_FMM_P2P_LOCAL_COORDINATES'}
+              'BEM_FMM_P2P_LOCAL_COORDINATES',
+              # The compressed inner operator retains the accurate native
+              # residual gate; DS accuracy must be covered by the migration
+              # proof. Neither option permits reusing identical-solver audits.
+              'BEM_TMATRIX_COMPRESSED_FFT_CASE','BEM_FMM_P2P_DOUBLE_SINGLE'}
 LOCATION_ENV = {'BEM_SO3_TMPDIR','BEM_SO3_BINARY_FP32','BEM_SO3_BINARY_FP64'}
 
 def digest(path):
@@ -28,7 +32,8 @@ def atomic_json(path,data):
 def physical_parameters(parameters):
     # Restart changes the Krylov basis length, not the equation or its
     # acceptance tolerance. A validated solver migration still repeats audits.
-    result={k:v for k,v in parameters.items() if k not in ('binary_digest','c6_driver_digest','incident_schedule_digest','restart')}
+    result={k:v for k,v in parameters.items() if k not in ('binary_digest','c6_driver_digest','incident_schedule_digest','restart',
+                                                        'compressed_fft_assets_digest','compressed_fft_code_digest')}
     result['BEM_environment']={k:v for k,v in result.get('BEM_environment',{}).items()
                                if k not in SOLVER_ENV | LOCATION_ENV}
     return result
@@ -156,9 +161,29 @@ def migrate(source,destination,parameters,directions,modal,tolerance,signature,p
             target=destination/'c6_audits';target.mkdir(exist_ok=True)
             atomic_json(target/path.name,dict(audit,signature=signature,solver_migration_source=provenance,
                 reused_for_identical_solver_and_inputs=True,remeasured=False))
+    # Carry only a conservative tolerance policy, never a passed audit. The
+    # unchanged tight/loose tolerances are part of the physical fingerprint.
+    # This avoids relearning a known failed loose tolerance after a restart.
+    inherited_degrees=[]
+    if parameters.get('adaptive_tight_tol') is not None:
+        policy_sources=[]
+        for path in (source/'adaptive_tolerance').glob('*.json'):
+            prior=json.loads(path.read_text())
+            degree=prior.get('tight_from_degree')
+            if (prior.get('signature')==old_signature and type(degree) is int
+                    and 1<=degree<=max(m[1] for m in modal)):
+                inherited_degrees.append(degree)
+                policy_sources.append({'path':str(path),'sha256':digest(path)})
+        if inherited_degrees:
+            target=destination/'adaptive_tolerance';target.mkdir(exist_ok=True)
+            atomic_json(target/'solver_migration_policy.json',dict(
+                signature=signature,tight_from_degree=min(inherited_degrees),
+                solver_migration_source=provenance,source_policies=policy_sources,
+                policy_only=True,remeasured=False))
     report={'source':str(source),'source_signature':old_signature,'target_signature':signature,
             'proof_sha256':digest(proof_path),'copied_columns':len(accepted),'copied_packets':len(receipts),
             'skipped_uncommitted_columns':len(files)-len(accepted),'copied_data_sha256':hashes,
             'new_coded_audits_required':not reuse_audits,'old_residuals_are_retained_not_remeasured':True,
+            'inherited_tight_from_degree':min(inherited_degrees) if inherited_degrees else None,
             'identical_solver_coded_audits_reused':bool(reuse_audits)}
     atomic_json(report_path,report);return report

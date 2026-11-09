@@ -52,6 +52,9 @@ public:
     int size() const {return size_;}
     int rank() const {return int(images_.size());}
     int capacity() const {return capacity_;}
+    // Read-only diagnostic export. In sector GMRES these are coordinates
+    // BEFORE the fixed right inverse, not physical surface currents.
+    const Vector& solution_column(int index) const {return solutions_.at(index);}
     bool dirty() const {return dirty_;}
     std::uint64_t generation() const {return generation_;}
     double storage_gib() const {return 2.*rank()*size_*sizeof(Complex)/(1024.*1024.*1024.);}
