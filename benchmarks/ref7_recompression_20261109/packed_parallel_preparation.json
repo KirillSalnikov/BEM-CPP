@@ -1,0 +1,26 @@
+[
+  {
+    "index": 0,
+    "old_complex64_bytes": 3468165120,
+    "packed_half_bytes": 1301314560,
+    "seconds": 22.97080964899942
+  },
+  {
+    "index": 3,
+    "old_complex64_bytes": 3468165120,
+    "packed_half_bytes": 1301314560,
+    "seconds": 4.087858417995449
+  },
+  {
+    "index": 6,
+    "old_complex64_bytes": 1207959552,
+    "packed_half_bytes": 454033408,
+    "seconds": 8.135093413002323
+  },
+  {
+    "index": 7,
+    "old_complex64_bytes": 1207959552,
+    "packed_half_bytes": 454033408,
+    "seconds": 1.7425653120008064
+  }
+]

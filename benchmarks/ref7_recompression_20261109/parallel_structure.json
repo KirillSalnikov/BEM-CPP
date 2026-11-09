@@ -1,0 +1,26 @@
+[
+  {
+    "block": 0,
+    "diagonal_negation_max_abs_error": 0.0,
+    "old_complex64_bytes": 3468165120,
+    "packed_complex64_bytes": 2601123840
+  },
+  {
+    "block": 3,
+    "diagonal_negation_max_abs_error": 0.0,
+    "old_complex64_bytes": 3468165120,
+    "packed_complex64_bytes": 2601123840
+  },
+  {
+    "block": 6,
+    "diagonal_negation_max_abs_error": 0.0,
+    "old_complex64_bytes": 1207959552,
+    "packed_complex64_bytes": 905969664
+  },
+  {
+    "block": 7,
+    "diagonal_negation_max_abs_error": 0.0,
+    "old_complex64_bytes": 1207959552,
+    "packed_complex64_bytes": 905969664
+  }
+]

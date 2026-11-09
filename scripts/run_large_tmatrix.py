@@ -35,6 +35,7 @@ SCRIPTS += ('compressed_fft_service.py','symmetric_galerkin_fft.py','closed_gale
 SCRIPTS += ('mbs_particle_geometry.py',)
 SCRIPTS += ('packed_current_csr.py','packed_current_csr_kernel.py','bounded_spectral_storage.py')
 SCRIPTS += ('packed_current_host.py','packed_current_cpu.cpp')
+SCRIPTS += ('recompress_spectral_factors.py',)
 BINARIES = ('muller_tmatrix_fmm_server', 'tmatrix_so3_mstm', 'tmatrix_so3_mstm_fp32')
 GEOMETRY_DATA = ('mbs_fixed_aggregate.json',)
 PROFILE = {

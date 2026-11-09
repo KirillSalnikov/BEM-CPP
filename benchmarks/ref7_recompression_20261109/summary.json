@@ -1,0 +1,41 @@
+{
+  "status": "operator_checks_passed_T_pilot_waiting",
+  "selected_case": "/home/kirill/neuro/BEM-CPP-analytic-alpha/benchmarks/ref7_recompression_20261109/variants/recompressed_packed_0",
+  "FFT_process_peak_allocated_GiB_before": 5.499778747558594,
+  "FFT_process_peak_allocated_GiB_after": 3.7874460220336914,
+  "peak_reduction_percent": 31.134574755121257,
+  "streamed_GiB_per_action_before": 29.223641149699688,
+  "streamed_GiB_per_action_after": 16.259833090007305,
+  "stream_reduction_percent": 44.36068727125608,
+  "pinned_MiB_before": 788.250244140625,
+  "pinned_MiB_after": 185.25006103515625,
+  "maximum_relative_native_action_error": 0.0001535142007271918,
+  "operator_gate": 0.0005,
+  "strict_T_residual_tolerance": 2e-06,
+  "L": 65,
+  "timing_note": "Shared GPU; no clean throughput comparison.",
+  "allocation_note": "Torch allocated FFT process peak, excluding native FMM process; full T peak not yet measured.",
+  "checks": {
+    "host": "24 passed, 4 subtests passed",
+    "final": "20 passed",
+    "miniature_race_negative_control": "Inconclusive: removing the allocation wait did not reproduce the real first-use failure in the small test; full ref7 five-variant audit passed after the fix."
+  },
+  "ranks": [
+    [
+      128,
+      80
+    ],
+    [
+      128,
+      48
+    ],
+    [
+      192,
+      128
+    ],
+    [
+      192,
+      128
+    ]
+  ]
+}

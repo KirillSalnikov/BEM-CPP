@@ -1,0 +1,6 @@
+{
+  "local_storage": "host_packed",
+  "spectral_budget_MiB": 2242,
+  "frequency_batch": 8,
+  "compact_maps": true
+}

@@ -1,0 +1,8 @@
+{
+  "local_storage": "host_packed",
+  "spectral_budget_MiB": 1024,
+  "frequency_batch": 8,
+  "compact_maps": true,
+  "symbol_storage": "packed_half",
+  "shared_stream_buffers": true
+}

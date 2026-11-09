@@ -1,0 +1,239 @@
+{
+  "status": "complete",
+  "GPU_shared_with_another_project": true,
+  "strict_native_oracles": "/home/kirill/neuro/BEM-CPP-analytic-alpha/benchmarks/ref7_memory_20261109/geometry_ref7",
+  "records": [
+    {
+      "name": "baseline",
+      "case": "/home/kirill/neuro/BEM-CPP-analytic-alpha/benchmarks/ref7_recompression_20261109/variants/baseline",
+      "configuration": {
+        "local_storage": "host_packed",
+        "spectral_budget_MiB": 2242,
+        "frequency_batch": 8,
+        "compact_maps": true
+      },
+      "load_s": 1.8771605910005746,
+      "operator_bytes": 3392028928,
+      "stream_bytes_per_action": 31378645752,
+      "pinned_bytes": 826540288,
+      "map_bytes": 1321107456,
+      "local_host_bytes": 3778738948,
+      "actions": [
+        {
+          "input": "random",
+          "repeat": 0,
+          "seconds": 27.378824961997452,
+          "relative_native_error": 5.919189348776442e-06
+        },
+        {
+          "input": "random",
+          "repeat": 1,
+          "seconds": 5.576506789002451,
+          "relative_native_error": 5.919187060166434e-06
+        },
+        {
+          "input": "smooth",
+          "repeat": 0,
+          "seconds": 4.933414724000613,
+          "relative_native_error": 0.000144911323982768
+        },
+        {
+          "input": "smooth",
+          "repeat": 1,
+          "seconds": 5.185567852000531,
+          "relative_native_error": 0.00014491133278341078
+        }
+      ],
+      "peak_allocated_bytes": 5905342464,
+      "peak_reserved_bytes": 7845445632,
+      "passes_original_action_gate": true
+    },
+    {
+      "name": "previous_half",
+      "case": "/home/kirill/neuro/BEM-CPP-analytic-alpha/benchmarks/ref7_recompression_20261109/variants/previous_half",
+      "configuration": {
+        "local_storage": "host_packed",
+        "spectral_budget_MiB": 2242,
+        "frequency_batch": 8,
+        "compact_maps": true,
+        "symbol_storage": "half"
+      },
+      "load_s": 53.52402637100022,
+      "operator_bytes": 4493270272,
+      "stream_bytes_per_action": 25574219512,
+      "pinned_bytes": 795877632,
+      "map_bytes": 1321107456,
+      "local_host_bytes": 3778738948,
+      "actions": [
+        {
+          "input": "random",
+          "repeat": 0,
+          "seconds": 7.118818296999962,
+          "relative_native_error": 7.237840813796197e-06
+        },
+        {
+          "input": "random",
+          "repeat": 1,
+          "seconds": 4.562232008000137,
+          "relative_native_error": 7.237842908461845e-06
+        },
+        {
+          "input": "smooth",
+          "repeat": 0,
+          "seconds": 4.393158742001106,
+          "relative_native_error": 0.00015317403733054592
+        },
+        {
+          "input": "smooth",
+          "repeat": 1,
+          "seconds": 4.391524616003153,
+          "relative_native_error": 0.00015317404951900693
+        }
+      ],
+      "peak_allocated_bytes": 7007779840,
+      "peak_reserved_bytes": 8518631424,
+      "passes_original_action_gate": true
+    },
+    {
+      "name": "recompressed_packed_0",
+      "case": "/home/kirill/neuro/BEM-CPP-analytic-alpha/benchmarks/ref7_recompression_20261109/variants/recompressed_packed_0",
+      "configuration": {
+        "local_storage": "host_packed",
+        "spectral_budget_MiB": 0,
+        "frequency_batch": 8,
+        "compact_maps": true,
+        "symbol_storage": "packed_half",
+        "shared_stream_buffers": true
+      },
+      "load_s": 1.6490696409964585,
+      "operator_bytes": 1551777856,
+      "stream_bytes_per_action": 17458862840,
+      "pinned_bytes": 194248768,
+      "map_bytes": 1321107456,
+      "local_host_bytes": 3778738948,
+      "actions": [
+        {
+          "input": "random",
+          "repeat": 0,
+          "seconds": 14.007012199006567,
+          "relative_native_error": 7.249953184016528e-06
+        },
+        {
+          "input": "random",
+          "repeat": 1,
+          "seconds": 5.485353192001639,
+          "relative_native_error": 7.249953499628448e-06
+        },
+        {
+          "input": "smooth",
+          "repeat": 0,
+          "seconds": 5.400495239999145,
+          "relative_native_error": 0.0001535142007271918
+        },
+        {
+          "input": "smooth",
+          "repeat": 1,
+          "seconds": 5.663598469000135,
+          "relative_native_error": 0.00015351419232159208
+        }
+      ],
+      "peak_allocated_bytes": 4066739200,
+      "peak_reserved_bytes": 6247415808,
+      "passes_original_action_gate": true
+    },
+    {
+      "name": "recompressed_packed_1024",
+      "case": "/home/kirill/neuro/BEM-CPP-analytic-alpha/benchmarks/ref7_recompression_20261109/variants/recompressed_packed_1024",
+      "configuration": {
+        "local_storage": "host_packed",
+        "spectral_budget_MiB": 1024,
+        "frequency_batch": 8,
+        "compact_maps": true,
+        "symbol_storage": "packed_half",
+        "shared_stream_buffers": true
+      },
+      "load_s": 1.7583951599954162,
+      "operator_bytes": 2459844672,
+      "stream_bytes_per_action": 16550796024,
+      "pinned_bytes": 194248768,
+      "map_bytes": 1321107456,
+      "local_host_bytes": 3778738948,
+      "actions": [
+        {
+          "input": "random",
+          "repeat": 0,
+          "seconds": 3.4871939180011395,
+          "relative_native_error": 7.249954573813876e-06
+        },
+        {
+          "input": "random",
+          "repeat": 1,
+          "seconds": 3.353615861997241,
+          "relative_native_error": 7.24995398751097e-06
+        },
+        {
+          "input": "smooth",
+          "repeat": 0,
+          "seconds": 3.367534727003658,
+          "relative_native_error": 0.00015351421733581264
+        },
+        {
+          "input": "smooth",
+          "repeat": 1,
+          "seconds": 3.1273650829971302,
+          "relative_native_error": 0.00015351420430706692
+        }
+      ],
+      "peak_allocated_bytes": 4974806016,
+      "peak_reserved_bytes": 7155482624,
+      "passes_original_action_gate": true
+    },
+    {
+      "name": "recompressed_full_0",
+      "case": "/home/kirill/neuro/BEM-CPP-analytic-alpha/benchmarks/ref7_recompression_20261109/variants/recompressed_full_0",
+      "configuration": {
+        "local_storage": "host_packed",
+        "spectral_budget_MiB": 0,
+        "frequency_batch": 8,
+        "compact_maps": true,
+        "symbol_storage": "full",
+        "shared_stream_buffers": true
+      },
+      "load_s": 1.0586463959989487,
+      "operator_bytes": 1551777856,
+      "stream_bytes_per_action": 23300416248,
+      "pinned_bytes": 194248768,
+      "map_bytes": 1321107456,
+      "local_host_bytes": 3778738948,
+      "actions": [
+        {
+          "input": "random",
+          "repeat": 0,
+          "seconds": 9.629063674998179,
+          "relative_native_error": 5.915777554685534e-06
+        },
+        {
+          "input": "random",
+          "repeat": 1,
+          "seconds": 5.26793378200091,
+          "relative_native_error": 5.9157769595689666e-06
+        },
+        {
+          "input": "smooth",
+          "repeat": 0,
+          "seconds": 5.5448214249991,
+          "relative_native_error": 0.00014534605814054875
+        },
+        {
+          "input": "smooth",
+          "repeat": 1,
+          "seconds": 5.5985000989967375,
+          "relative_native_error": 0.00014534604296054636
+        }
+      ],
+      "peak_allocated_bytes": 4066739200,
+      "peak_reserved_bytes": 6247415808,
+      "passes_original_action_gate": true
+    }
+  ]
+}

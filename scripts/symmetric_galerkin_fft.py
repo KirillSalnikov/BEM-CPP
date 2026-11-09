@@ -181,17 +181,21 @@ class TorchSymmetricAction:
     """One resident symbol per orbit, with face aliases as multiple RHS."""
     def __init__(self,cpu,device,dtype,*,factors=None,factor_storage='full',local_storage='coo',
                  spectral_budget_bytes=None,stream_cache=None,frequency_batch=16,compact_maps=False,
-                 symbol_storage='full'):
+                 symbol_storage='full',shared_stream_buffers=False):
         import torch
         if factor_storage not in ('full','half'):raise ValueError('Invalid factor storage')
-        if symbol_storage not in ('full','half'):raise ValueError('Invalid symbol storage')
+        if symbol_storage not in ('full','half','packed_half'):raise ValueError('Invalid symbol storage')
         if factor_storage=='half' and dtype!=torch.complex64:raise ValueError('Half factor storage uses FP32 arithmetic')
-        if symbol_storage=='half' and dtype!=torch.complex64:raise ValueError('Half symbol storage uses FP32 arithmetic')
+        if symbol_storage!='full' and dtype!=torch.complex64:raise ValueError('Half symbol storage uses FP32 arithmetic')
+        if symbol_storage=='packed_half' and spectral_budget_bytes is None:raise ValueError('Packed symbols require bounded storage and a cache')
+        if shared_stream_buffers and spectral_budget_bytes is None:raise ValueError('Shared transfer buffers require bounded storage')
+        self.stream_pool=None
         if spectral_budget_bytes is not None:
             if spectral_budget_bytes<0 or stream_cache is None or factor_storage!='half' or frequency_batch<1:
                 raise ValueError('Bounded storage requires nonnegative budget, cache, half factors and positive batch')
-            from bounded_spectral_storage import StreamedSpectralBlock,half_factors
+            from bounded_spectral_storage import StreamedSpectralBlock,half_factors,SharedStreamBuffers
             from pathlib import Path
+            if shared_stream_buffers:self.stream_pool=SharedStreamBuffers(device)
         self.spectral_resident_bytes=0;self.stream_transfer_bytes=0;self.pinned_bytes=0;self.map_bytes=0
         def encode_half(values):
             encoded=torch.empty((*values.shape,2),device=device,dtype=torch.float16)
@@ -228,20 +232,26 @@ class TorchSymmetricAction:
                 if spectral_budget_bytes is not None and self.spectral_resident_bytes+spectral_bytes>spectral_budget_bytes:
                     left,ls=half_factors(u,Path(stream_cache)/str(index),'left')
                     right,rs=half_factors(v,Path(stream_cache)/str(index),'right')
-                    group['streamed']=StreamedSpectralBlock((left,right,ls*rs),device=device,batch=frequency_batch,half=True)
+                    group['streamed']=StreamedSpectralBlock((left,right,ls*rs),device=device,batch=frequency_batch,half=True,pool=self.stream_pool)
                 elif factor_storage=='half':
                     left,ls=encode_half(u);right,rs=encode_half(v);group.update(left_half=left,right_half=right,factor_scale=ls*rs)
                 else:group.update(left=torch.as_tensor(u,device=device,dtype=dtype),right=torch.as_tensor(v,device=device,dtype=dtype))
             else:
                 symbol=op.symbol.reshape(-1,op.tc,op.sc) if isinstance(op,ParallelGalerkinFFT) else op.symbol
-                spectral_bytes=op.symbol.size*(4 if symbol_storage=='half' else torch.empty((),dtype=dtype).element_size())
-                if symbol_storage=='half':spectral_bytes+=len(symbol)*4
+                if symbol_storage=='packed_half':
+                    encoded,scale=half_factors(symbol,Path(stream_cache)/str(index),'symbol_packed',packed_currents=True)
+                    spectral_bytes=encoded.nbytes+scale.nbytes
+                else:
+                    spectral_bytes=op.symbol.size*(4 if symbol_storage=='half' else torch.empty((),dtype=dtype).element_size())
+                    if symbol_storage=='half':spectral_bytes+=len(symbol)*4
                 if spectral_budget_bytes is not None and self.spectral_resident_bytes+spectral_bytes>spectral_budget_bytes:
                     if symbol.dtype!=np.complex64:raise ValueError('Streaming symbol requires complex64')
-                    if symbol_storage=='half':
-                        encoded,scale=half_factors(symbol,Path(stream_cache)/str(index),'symbol')
-                        group['streamed']=StreamedSpectralBlock((encoded,scale),device=device,batch=512,half_matrix=True)
-                    else:group['streamed']=StreamedSpectralBlock((symbol,),device=device,batch=512)
+                    if symbol_storage!='full':
+                        if symbol_storage=='half':encoded,scale=half_factors(symbol,Path(stream_cache)/str(index),'symbol')
+                        group['streamed']=StreamedSpectralBlock((encoded,scale),device=device,batch=512,half_matrix=True,pool=self.stream_pool)
+                    else:group['streamed']=StreamedSpectralBlock((symbol,),device=device,batch=512,pool=self.stream_pool)
+                elif symbol_storage=='packed_half':
+                    group.update(symbol_half=torch.as_tensor(encoded,device=device),symbol_scale=torch.as_tensor(scale,device=device))
                 elif symbol_storage=='half':
                     encoded,scale=encode_half(symbol);group.update(symbol_half=encoded,symbol_scale=scale)
                 else:group['symbol']=torch.as_tensor(op.symbol,device=device,dtype=dtype)
@@ -250,6 +260,8 @@ class TorchSymmetricAction:
                 self.stream_transfer_bytes+=group['streamed'].transfer_bytes
             else:self.spectral_resident_bytes+=spectral_bytes
             self.bytes+=sum(v.numel()*v.element_size() for v in group.values() if torch.is_tensor(v));self.groups.append(group)
+        if self.stream_pool is not None:
+            self.bytes+=self.stream_pool.bytes;self.pinned_bytes+=self.stream_pool.host_bytes
         if local_storage in ('packed','host_packed'):
             if dtype!=torch.complex64:raise ValueError('Packed local storage uses complex64')
             if local_storage=='host_packed':
@@ -266,12 +278,13 @@ class TorchSymmetricAction:
     @staticmethod
     def symbol_product(group,spectrum,rows):
         import torch
+        from bounded_spectral_storage import decode_half_symbol
         if 'streamed' in group:return group['streamed'](spectrum,rows)
         if 'symbol_half' not in group:return torch.bmm(group['symbol'].reshape(len(spectrum),rows,-1),spectrum)
         result=torch.empty((len(spectrum),rows,spectrum.shape[-1]),device=spectrum.device,dtype=spectrum.dtype)
         for first in range(0,len(spectrum),512):
             last=min(first+512,len(spectrum))
-            symbol=torch.view_as_complex(group['symbol_half'][first:last].float())
+            symbol=decode_half_symbol(group['symbol_half'][first:last])
             result[first:last]=torch.bmm(symbol,spectrum[first:last])*group['symbol_scale'][first:last]
         return result
 

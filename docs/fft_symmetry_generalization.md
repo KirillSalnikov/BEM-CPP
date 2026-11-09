@@ -206,6 +206,64 @@ resident action (0.614 s versus about 0.080 s); keep resident storage when it
 fits. A tested deeper FMM tree was rejected because it changed the control
 operator by 1.65e-5; the accepted ref=7 configuration retains depth six.
 
+### Further ref=7 memory reduction
+
+`scripts/recompress_spectral_factors.py` applies FP64 thin QR factorizations
+to existing cross-face factors and an SVD to their small core. It writes
+balanced complex64 factors, with a per-frequency relative Frobenius tail
+and rounding bound of 1e-5. This bound concerns the supplied factors; it
+does not include their original approximation or subsequent FP16 encoding.
+The original factors remain available. For ka=40, ref=7, the four stored
+ranks changed from 128/128/192/192 to 80/48/128/128. Their complex64 storage
+fell from 43.28 to 25.98 GiB, with about 430 s of CPU preparation including
+the half-precision cache.
+
+The optional `shared_stream_buffers` setting uses two transfer slots sized
+for the largest streamed batch, shared across sequential blocks. CUDA events
+protect both reuse and the first transfer from memory whose previous work
+is pending on the allocation stream. `symbol_storage: "packed_half"`
+stores three blocks of `[[A,B],[C,-A]]` after verifying the exact identity.
+This packing is lossless relative to the existing half-precision encoding;
+half-precision storage itself remains approximate.
+
+The minimum-memory candidate uses:
+
+```json
+{
+  "local_storage": "host_packed",
+  "spectral_budget_MiB": 0,
+  "frequency_batch": 8,
+  "compact_maps": true,
+  "symbol_storage": "packed_half",
+  "shared_stream_buffers": true
+}
+```
+
+Measured with the actual 758,784-triangle ref=7 operator:
+
+| Metric | Previous full symbols | Recompressed, packed, shared |
+|:--|--:|--:|
+| Peak PyTorch allocated memory, FFT process | 5.500 GiB | 3.787 GiB |
+| Pinned spectral transfer buffers | 788.25 MiB | 185.25 MiB |
+| Spectral host-to-device bytes per action | 29.224 GiB | 16.260 GiB |
+| Maximum relative action error on the two saved native controls | 0.01449% | 0.01535% |
+
+The previous half-symbol variant, before recompression and shared slots,
+peaked at 6.527 GiB under its 2242 MiB resident-coefficient budget.
+A recompressed 1024 MiB budget variant also passed, peaking at 4.633 GiB.
+All five configurations passed the 5e-4 original-operator startup criterion
+on random and smooth inputs, including first use and repeated applications.
+See `benchmarks/ref7_recompression_20261109/actions.json`. The earlier
+`actions_before_stream_fix.json` contains a rejected first-use NaN and is
+explicitly superseded. Tests cover packing equivalence, varying shapes,
+CUDA streams, and factor error against independently formed dense matrices.
+
+These peaks exclude the companion native FMM process and are not the full
+T-build peak. Timings were taken while another GPU project was active and
+must not be used as clean speedup measurements. The short T pilot retains
+L=65 and the original strict residual tolerance 2e-6. The action checks do
+not establish final Mueller accuracy or ref=7 mesh convergence.
+
 ### Modal cutoff of the completed ka=40 reference
 
 An analytic SO(3) check of the completed SciIce ref=6 T matrix (L=65)

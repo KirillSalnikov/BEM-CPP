@@ -1,0 +1,27 @@
+{
+  "updated_utc": "2026-11-09T11:40:10.551872+00:00",
+  "complete": true,
+  "ready_sizes": [
+    20,
+    25,
+    30,
+    35,
+    40
+  ],
+  "pending_sizes": [],
+  "mbs_states": {
+    "20": "converged",
+    "25": "converged",
+    "30": "converged",
+    "35": "converged",
+    "40": "converged"
+  },
+  "pdf": "/home/kirill/neuro/BEM-CPP-analytic-alpha/exports/scice_bem_mbs_cone5_1pct_20261109/BEM_MBS_backcone_1pct.pdf",
+  "theta_range_deg": [
+    175,
+    180
+  ],
+  "fullauto_tolerance": 0.01,
+  "all_sizes_same_geometry": true,
+  "coherent_only": true
+}

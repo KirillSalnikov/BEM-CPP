@@ -1,0 +1,24 @@
+{
+  "status": "passed",
+  "published_rows_unchanged": true,
+  "BEM_direct_sizes": [
+    20,
+    25,
+    30,
+    35,
+    40
+  ],
+  "Mueller_shape_per_size": [
+    1801,
+    4,
+    4
+  ],
+  "PDF_pages": 10,
+  "PDF_pages_visually_checked": [
+    1,
+    2,
+    4
+  ],
+  "PDF_sha256": "69d9b0d24e2fb577d2b4fdcf72c0ca8c20120cb3a0ba1d4a68f0bbf3ca5973f4",
+  "completed_ref7_solution_included": false
+}

@@ -1,0 +1,46 @@
+{
+  "status": "complete",
+  "records": [
+    {
+      "index": 1,
+      "old_rank": 128,
+      "rank": 80,
+      "old_bytes": 9248440320,
+      "bytes": 5780275200,
+      "half_bytes": 2890143480,
+      "bound": 9.066677725696305e-06,
+      "seconds": 58.103582897994784
+    },
+    {
+      "index": 2,
+      "old_rank": 128,
+      "rank": 48,
+      "old_bytes": 9248440320,
+      "bytes": 3468165120,
+      "half_bytes": 1734088440,
+      "bound": 9.065034215514879e-06,
+      "seconds": 56.53279231199849
+    },
+    {
+      "index": 4,
+      "old_rank": 192,
+      "rank": 128,
+      "old_bytes": 13985906688,
+      "bytes": 9323937792,
+      "half_bytes": 4661971968,
+      "bound": 9.07995942353288e-06,
+      "seconds": 115.54864739800541
+    },
+    {
+      "index": 5,
+      "old_rank": 192,
+      "rank": 128,
+      "old_bytes": 13985906688,
+      "bytes": 9323937792,
+      "half_bytes": 4661971968,
+      "bound": 9.079113944464306e-06,
+      "seconds": 117.91279474800103
+    }
+  ],
+  "seconds": 453.69418922899786
+}

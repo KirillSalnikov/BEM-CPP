@@ -1,0 +1,26 @@
+{
+  "sources": {
+    "/home/kirill/neuro/BEM-CPP-analytic-alpha/runs/scice_column_ka20_40_n13116_20261104/direct/node001_ka25.00000000_ref6_L43/tmatrix.npy": "a223014fcdfd3891938acdcc6137104c87739dbc85dca7b645217c99c77b052d",
+    "/home/kirill/neuro/BEM-CPP-analytic-alpha/runs/scice_column_ka20_40_n13116_20261104/direct/node001_ka25.00000000_ref6_L43/average.json": "76645d2aee026fa3cc6dc7b4008fc0c5af4d4515937cf3fbf35fffec2ae5f66b",
+    "/home/kirill/neuro/BEM-CPP-analytic-alpha/scripts/tmatrix_so3_mstm.py": "82dcdaefa22b56bb72d1c17540ed9624c168689dec2cd3e37f4a5be112643b82"
+  },
+  "contraction": {
+    "method": "analytic_full_SO3_Mackowski_GSF",
+    "Euler_quadrature_nodes": 0,
+    "all_16_mueller_entries": true,
+    "order": 43,
+    "mode_count": 3870,
+    "reciprocity_relative_defect": 0.00013376633794696314,
+    "cyclic_relative_defect": 1.2004820464435e-08,
+    "reciprocity_projection_applied": false,
+    "reciprocal_partner_passes": 2,
+    "cyclic_order": 6,
+    "T_storage_precision": "fp32",
+    "contraction_precision": "fp64",
+    "threads": 4,
+    "estimated_peak_ram_gib": 0.4058445990085602,
+    "contractions_s": 5.582187777996296,
+    "end_to_end_s": 6.231001159998414,
+    "source": "https://github.com/dmckwski/MSTM/tree/a0c982121cf9ac352531f4816639a07d814385bd"
+  }
+}
