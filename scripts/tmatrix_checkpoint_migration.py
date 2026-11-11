@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import shutil
 import numpy as np
-from tmatrix_symmetry import c2x_plan, c2x_partner_column
+from tmatrix_symmetry import c2x_plan, c2x_partner_column, vertical_mirror_plan
 
 SOLVER_ENV = {'BEM_TMATRIX_WAVE_RANK','BEM_TMATRIX_MBJ_OVERLAP','BEM_TMATRIX_MBJ_NODES','BEM_TMATRIX_FFT_INNER',
               'BEM_TMATRIX_CIRCULANT_BLEND','BEM_CIRCULANT_SHIFT','BEM_TMATRIX_FFT_RADIUS','BEM_PFFT_CORR_MEMORY',
@@ -38,12 +38,24 @@ def physical_parameters(parameters):
                                                         'compressed_fft_assets_digest','compressed_fft_code_digest')}
     result['BEM_environment']={k:v for k,v in result.get('BEM_environment',{}).items()
                                if k not in SOLVER_ENV | LOCATION_ENV}
+    return without_vertical_schedule(result)
+
+def without_vertical_schedule(parameters):
+    """C6v column reconstruction changes scheduling, not any solved equation.
+
+    The builder independently validates geometry and audits the new relation.
+    Keep the existing C2 fingerprint; never allow a C2/C6v substitution.
+    """
+    result=dict(parameters)
+    result.pop('vertical_reuse',None);result.pop('vertical_audit_tol',None)
+    if not result.get('c2_reuse'):
+        result.pop('symmetry_digest',None)
     return result
 
 def identical_solver_parameters(parameters):
     result={k:v for k,v in parameters.items() if k not in ('c6_driver_digest','incident_schedule_digest')}
     result['BEM_environment']={k:v for k,v in result.get('BEM_environment',{}).items() if k not in LOCATION_ENV}
-    return result
+    return without_vertical_schedule(result)
 
 def migrate(source,destination,parameters,directions,modal,tolerance,signature,proof_path):
     source,destination=Path(source).resolve(),Path(destination).resolve()
@@ -87,7 +99,9 @@ def migrate(source,destination,parameters,directions,modal,tolerance,signature,p
             except ProcessLookupError:pass
             else:raise ValueError('stop source builder at a committed checkpoint before migration')
     files={int(p.stem):p for p in (source/'columns').glob('*.json')}
-    count=len(modal);permutation,signs,_,_=c2x_plan(max(m[1] for m in modal))
+    count=len(modal)
+    old_vertical=old['parameters'].get('vertical_reuse',False)
+    permutation,signs,_,_=(vertical_mirror_plan if old_vertical else c2x_plan)(max(m[1] for m in modal))
     accepted=set();receipts={};visiting=set()
     def validate(index):
         if index in accepted:return True
@@ -115,7 +129,10 @@ def migrate(source,destination,parameters,directions,modal,tolerance,signature,p
                     raise ValueError('source packed column checksum mismatch')
                 receipts[batch]=receipt
             derived=meta.get('derived_by')
-            if derived=='C2x_half_turn':
+            if derived in ('C2x_half_turn','sigma_v_xz'):
+                flag='vertical_reuse' if derived=='sigma_v_xz' else 'c2_reuse'
+                if not old['parameters'].get(flag) or not parameters.get(flag):
+                    raise ValueError('source reconstruction requires the same target symmetry')
                 origin=meta['source_column']
                 if (not isinstance(origin,int) or not 0<=origin<count or modal[origin][2]<=0
                         or int(permutation[origin])!=index or not validate(origin)):return False
@@ -135,9 +152,10 @@ def migrate(source,destination,parameters,directions,modal,tolerance,signature,p
         audits=list((source/'c6_audits').glob('*.json'))
         if not audits or not all(json.loads(p.read_text()).get('passed') for p in audits):
             raise ValueError('source coded symmetry audits missing or failed')
-    if any(json.loads(files[i].read_text()).get('derived_by')=='C2x_half_turn' for i in accepted):
-        if not json.loads((source/'c2_audit.json').read_text()).get('passed'):
-            raise ValueError('source C2 audit missing or failed')
+    for method,name in [('C2x_half_turn','c2_audit.json'),('sigma_v_xz','vertical_audit.json')]:
+        if any(json.loads(files[i].read_text()).get('derived_by')==method for i in accepted):
+            if not json.loads((source/name).read_text()).get('passed'):
+                raise ValueError('source symmetry audit missing or failed: '+method)
     columns=destination/'columns';columns.mkdir(exist_ok=True)
     batches=destination/'c6_batches';batches.mkdir(exist_ok=True)
     hashes={};provenance={'directory':str(source),'signature':old_signature,'proof_sha256':digest(proof_path)}
@@ -154,7 +172,7 @@ def migrate(source,destination,parameters,directions,modal,tolerance,signature,p
     # them only with identical executable/settings/incident formulas and an
     # explicit input-equivalence proof. Never treat this as a fresh measurement.
     archive=destination/'solver_migration_source_audits';archive.mkdir(exist_ok=True)
-    for path in list((source/'c6_audits').glob('*.json'))+list(source.glob('c2_audit.json')):
+    for path in list((source/'c6_audits').glob('*.json'))+list(source.glob('c2_audit.json'))+list(source.glob('vertical_audit.json')):
         shutil.copyfile(path,archive/path.name)
         if reuse_audits and path.parent.name=='c6_audits':
             audit=json.loads(path.read_text())

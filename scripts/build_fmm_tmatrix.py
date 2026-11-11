@@ -102,6 +102,9 @@ def main():
     parser.add_argument('--c2-reuse',action='store_true',
                         help='For the built-in prism, audit C2x covariance then reconstruct negative-m columns')
     parser.add_argument('--c2-audit-tol',type=float,default=1e-4)
+    parser.add_argument('--vertical-reuse',action='store_true',
+                        help='Audit xz mirror covariance and reconstruct negative-m columns (also for C6v bullets)')
+    parser.add_argument('--vertical-audit-tol',type=float,default=1e-4)
     parser.add_argument('--c6-pack',action='store_true',
                         help='Pack distinct C6 sectors using two phase codes, independent audits and fallback')
     parser.add_argument('--c6-audit-tol',type=float,default=1e-4)
@@ -153,6 +156,8 @@ def main():
             args.shape='particle';args.obj=generated
         sym=particle_info['solver_symmetries']
         if args.c2_reuse and not sym['c2_x']:parser.error('--c2-reuse requires verified C2x symmetry')
+        if args.vertical_reuse and not sym['vertical_mirror']:
+            parser.error('--vertical-reuse requires verified xz reflection symmetry')
         if args.c6_pack and not sym['c6_z']:parser.error('--c6-pack requires verified C6z symmetry')
         if args.mirror_pack and not (sym['c6_z'] and sym['horizontal_mirror']):
             parser.error('--mirror-pack requires verified C6z and horizontal reflection symmetry')
@@ -160,6 +165,7 @@ def main():
             full=not (args.columns or args.column_indices or args.plane_only)
             if full:
                 args.c2_reuse=sym['c2_x'];args.c6_pack=sym['c6_z']
+                args.vertical_reuse=sym['vertical_mirror'] and not args.c2_reuse
                 args.mirror_pack=sym['c6_z'] and sym['horizontal_mirror']
             args.incident_prefetch=not args.release_incident_buffer
             # Small-ka higher multipoles radiate by cancellation. Keep the
@@ -253,6 +259,15 @@ def main():
         parser.error('an incident-order shell requires --no-average and cannot be combined with other column selectors or --plane-only')
     if args.c2_reuse and (not (builtin_prism or symmetry_allowed.get('c2_x')) or args.columns or args.column_indices or args.plane_only):
         parser.error('--c2-reuse requires a complete build with verified C2x symmetry')
+    if args.vertical_reuse and (args.c2_reuse or not (builtin_prism or symmetry_allowed.get('vertical_mirror'))
+                               or args.columns or args.column_indices or args.plane_only):
+        parser.error('--vertical-reuse requires a complete build with verified xz reflection and no --c2-reuse')
+    if not np.isfinite(args.vertical_audit_tol) or args.vertical_audit_tol<=0:
+        parser.error('--vertical-audit-tol must be finite and positive')
+    m_reuse=args.c2_reuse or args.vertical_reuse
+    reuse_method='sigma_v_xz' if args.vertical_reuse else 'C2x_half_turn'
+    reuse_tolerance=args.vertical_audit_tol if args.vertical_reuse else args.c2_audit_tol
+    reuse_audit_file='vertical_audit.json' if args.vertical_reuse else 'c2_audit.json'
     if not np.isfinite(args.c2_audit_tol) or args.c2_audit_tol<=0:
         parser.error('--c2-audit-tol must be finite and positive')
     if args.c6_pack and (not (builtin_prism or symmetry_allowed.get('c6_z')) or args.columns or args.column_indices or args.plane_only):
@@ -326,6 +341,8 @@ def main():
     if not args.c2_reuse:
         # Preserve existing non-symmetry checkpoint identities.
         fingerprint.pop('c2_reuse'); fingerprint.pop('c2_audit_tol')
+    if not args.vertical_reuse:
+        fingerprint.pop('vertical_reuse');fingerprint.pop('vertical_audit_tol')
     fingerprint['geometry']=geometry
     fingerprint['geometry_digest']=hashlib.sha256(args.obj.read_bytes()).hexdigest() if args.obj else None
     if particle_info is not None and args.obj is not None:
@@ -347,7 +364,7 @@ def main():
     fingerprint['incident_digest']=hashlib.sha256((ROOT/'scripts/tmatrix_incident.py').read_bytes()).hexdigest()
     fingerprint['projection_digest']=hashlib.sha256((ROOT/'scripts/tmatrix_projection.py').read_bytes()).hexdigest()
     fingerprint['harmonics_digest']=hashlib.sha256((ROOT/'scripts/tmatrix_reference.py').read_bytes()).hexdigest()
-    if args.c2_reuse:
+    if m_reuse:
         fingerprint['symmetry_digest']=hashlib.sha256((ROOT/'scripts/tmatrix_symmetry.py').read_bytes()).hexdigest()
     fingerprint['BEM_environment']={k:v for k,v in os.environ.items() if k.startswith('BEM_')}
     signature=hashlib.sha256(json.dumps(fingerprint,sort_keys=True).encode()+directions.tobytes()).hexdigest()
@@ -384,7 +401,8 @@ def main():
     print(f'Preparing {args.projection_method} projection for {count} T modes',flush=True)
     weighted_projection=(np.load(projection_path,mmap_mode='r') if args.projection_method=='dense'
                          else SphericalProjector(args.order,z,w))
-    schedule=shell_schedule(args.order,args.incident_min_order,c2=args.c2_reuse,c6=args.c6_pack,mirror=args.mirror_pack)
+    schedule=shell_schedule(args.order,args.incident_min_order,c2=args.c2_reuse,c6=args.c6_pack,
+                            mirror=args.mirror_pack,vertical=args.vertical_reuse)
     requested=(schedule['requested'] if args.incident_min_order>1 else
                list(dict.fromkeys(args.column_indices)) if args.column_indices else list(range(first,first+number)))
     def valid_column(index):
@@ -408,14 +426,15 @@ def main():
                    values.shape==(count,) and np.isfinite(values).all())
             if not valid:
                 return False
-            if information.get('derived_by')=='C2x_half_turn':
+            if information.get('derived_by') in ('C2x_half_turn','sigma_v_xz'):
                 origin=information['source_column']
-                if (not args.c2_reuse or not isinstance(origin,int) or not 0<=origin<count
-                        or modal_list[origin][2]<=0 or int(c2_permutation[origin])!=index
+                if (not m_reuse or information['derived_by']!=reuse_method
+                        or not isinstance(origin,int) or not 0<=origin<count
+                        or modal_list[origin][2]<=0 or int(reuse_permutation[origin])!=index
                         or not valid_column(origin)):
                     return False
                 original=np.load(column_dir/f'{origin:06d}.npy')
-                if not np.array_equal(values,c2x_partner_column(original,origin,c2_permutation,c2_signs)):
+                if not np.array_equal(values,c2x_partner_column(original,origin,reuse_permutation,reuse_signs)):
                     return False
             if 'c6_batch' in information:
                 if not args.c6_pack:
@@ -436,62 +455,62 @@ def main():
         except (OSError,ValueError,KeyError):
             return False
     symmetry_report=None
-    c2_verified=False
-    if args.c2_reuse:
-        c2_permutation,c2_signs=schedule['permutation'],schedule['signs']
-        c2_representatives,c2_audits=schedule['representatives'],schedule['c2_audits']
+    symmetry_verified=False
+    if m_reuse:
+        reuse_permutation,reuse_signs=schedule['permutation'],schedule['signs']
+        reuse_representatives,reuse_audits=schedule['representatives'],schedule['c2_audits']
         # Audits come first, so an incompatible numerical operator is rejected
         # before spending time on the remaining representative columns.
         audit_work=schedule['audit_work']
         work_order=schedule['work']
     else:
         work_order=requested
-    def update_c2_columns(new_sources=None):
-        nonlocal symmetry_report,c2_verified
-        if not args.c2_reuse:
+    def update_symmetry_columns(new_sources=None):
+        nonlocal symmetry_report,symmetry_verified
+        if not m_reuse:
             return
-        became_verified=not c2_verified
-        if not c2_verified:
-            if not all(valid_column(i) and valid_column(int(c2_permutation[i])) for i in c2_audits):
+        became_verified=not symmetry_verified
+        if not symmetry_verified:
+            if not all(valid_column(i) and valid_column(int(reuse_permutation[i])) for i in reuse_audits):
                 return
             comparisons=[]
-            for target in c2_audits:
-                source=int(c2_permutation[target])
+            for target in reuse_audits:
+                source=int(reuse_permutation[target])
                 original=np.load(column_dir/f'{source:06d}.npy')
                 measured=np.load(column_dir/f'{target:06d}.npy')
-                predicted=c2x_partner_column(original,source,c2_permutation,c2_signs)
+                predicted=c2x_partner_column(original,source,reuse_permutation,reuse_signs)
                 error=float(np.linalg.norm(predicted-measured)/max(np.linalg.norm(measured),1e-300))
                 comparisons.append({'source':source,'target':target,'relative_column_error':error})
             maximum=max(item['relative_column_error'] for item in comparisons)
-            symmetry_report={'method':'C2x_half_turn','audit_columns':comparisons,
-                'maximum_audit_relative_error':maximum,'tolerance':args.c2_audit_tol,
-                'passed':bool(np.isfinite(maximum) and maximum<=args.c2_audit_tol),
+            symmetry_report={'method':reuse_method,'audit_columns':comparisons,
+                'maximum_audit_relative_error':maximum,'tolerance':reuse_tolerance,
+                'passed':bool(np.isfinite(maximum) and maximum<=reuse_tolerance),
                 'audit_is_sampled_not_an_operator_norm_bound':True,
                 'reconstructed_columns_have_no_independent_residual_check':True}
-            atomic_json(out/'c2_audit.json',symmetry_report)
+            atomic_json(out/reuse_audit_file,symmetry_report)
             if not symmetry_report['passed']:
-                raise RuntimeError(f'C2 column audit failed: {maximum:.3e}; no symmetry-derived columns accepted')
-            c2_verified=True
-            print(f'C2 covariance accepted on {len(comparisons)} independent column pairs: {maximum:.3e}',flush=True)
+                raise RuntimeError(f'{reuse_method} column audit failed: {maximum:.3e}; no symmetry-derived columns accepted')
+            symmetry_verified=True
+            print(f'{reuse_method} covariance accepted on {len(comparisons)} independent column pairs: {maximum:.3e}',flush=True)
         # Scan all representatives once on resume / first acceptance. During
         # a long build only inspect the newly solved pair (never O(q^3) I/O).
-        sources=c2_representatives if became_verified or new_sources is None else new_sources
+        sources=reuse_representatives if became_verified or new_sources is None else new_sources
         for source in sources:
             if modal_list[source][2]<0:
                 continue
-            target=int(c2_permutation[source])
+            target=int(reuse_permutation[source])
             if target==source or valid_column(target) or not valid_column(source):
                 continue
             original=np.load(column_dir/f'{source:06d}.npy')
-            values=c2x_partner_column(original,source,c2_permutation,c2_signs)
+            values=c2x_partner_column(original,source,reuse_permutation,reuse_signs)
             metadata=json.loads((column_dir/f'{source:06d}.json').read_text())
             atomic_array(column_dir/f'{target:06d}.npy',values)
             provenance={'c6_batch':metadata['c6_batch']} if 'c6_batch' in metadata else {}
             atomic_json(column_dir/f'{target:06d}.json',{
                 'mode':modal_list[target],'status':metadata['status'],
-                'scale':metadata['scale'],'derived_by':'C2x_half_turn','source_column':source,
+                'scale':metadata['scale'],'derived_by':reuse_method,'source_column':source,
                 'strict_residual_measured_for_this_column':False,**provenance})
-    update_c2_columns()
+    update_symmetry_columns()
     pending=[i for i in work_order if not valid_column(i)]
     if args.plane_only:
         pending=[]
@@ -524,7 +543,7 @@ def main():
             (out/name).mkdir(exist_ok=True)
         c6_reference_groups=schedule['c6_groups']
     if args.c6_pack and not c6_individual_fallback:
-        controls=list(dict.fromkeys((audit_work if args.c2_reuse else [])+
+        controls=list(dict.fromkeys((audit_work if m_reuse else [])+
                       [index for group in c6_reference_groups for index in group]))
         missing_controls=[i for i in controls if not valid_column(i)]
         tasks.extend(single_tasks(missing_controls))
@@ -762,7 +781,7 @@ def main():
                         check['column_sha256']=hashes
                         atomic_json(out/'c6_batches'/f'{batch}.json',check)
                         saved=group
-                update_c2_columns(saved)
+                update_symmetry_columns(saved)
                 atomic_json(out/'progress.json',{'state':'solving','pid':os.getpid(),'mode_count':count,
                             'last_columns':saved,'last_attempted_columns':group,'rhs_kind':kind,
                             'pairs_this_run':len(timings),'remaining_worker_pairs':len(tasks)+len(inflight),'last_pair':status,
@@ -847,10 +866,10 @@ def main():
             'additional_control_columns':sorted(int(p.stem) for p in column_dir.glob('*.json')
                 if int(p.stem) not in requested_set and valid_column(int(p.stem))),
             'is_complete_T_matrix':complete,'reciprocity_inferred_entries':0}
-    if args.c2_reuse:
+    if m_reuse:
         report['symmetry_reuse']=symmetry_report
         report['independently_solved_columns']=sum('derived_by' not in item for item in all_status)
-        report['reconstructed_columns']=sum(item.get('derived_by')=='C2x_half_turn' for item in all_status)
+        report['reconstructed_columns']=sum(item.get('derived_by')==reuse_method for item in all_status)
         report['maximum_strict_residual_applies_to']='independently_solved_columns_only'
     if args.c6_pack:
         audits=[]
@@ -862,6 +881,7 @@ def main():
             'version':tmatrix_c6.VERSION,'phase_codes_per_packet':2,'maximum_columns_per_packet':12 if args.mirror_pack else 6,
             'horizontal_reflection_parity':args.mirror_pack,
             'vertical_reflection_from_C2_and_horizontal':bool(args.mirror_pack and args.c2_reuse),
+            'vertical_reflection_reuse':args.vertical_reuse,
             'shared_incident_cache':not args.no_incident_cache,
             'released_incident_buffer':args.release_incident_buffer,
             'independent_reference_audits_complete':len(audits)==len(c6_reference_groups) and all(a['passed'] for a in audits),

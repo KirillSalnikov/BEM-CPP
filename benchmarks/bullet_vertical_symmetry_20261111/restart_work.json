@@ -1,0 +1,14 @@
+{
+  "saved_columns": 3646,
+  "full_columns": 5616,
+  "missing_control_columns": [
+    5511,
+    5562,
+    5564,
+    5615
+  ],
+  "independent_control_pairs": 2,
+  "remaining_production_packets": 187,
+  "old_remaining_worker_pairs": 345,
+  "note": "Mirror controls must pass before reconstructed columns are accepted; no extra GPU solve performed here."
+}

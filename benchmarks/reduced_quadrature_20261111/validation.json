@@ -1,0 +1,9 @@
+{
+  "quadrature_moments_passed": true,
+  "production_mesh_match": true,
+  "all_nested_solves_accepted": true,
+  "production_resumed": true,
+  "production_worker_pid": 281547,
+  "pause_total_s": 627.1118144989014,
+  "saved_production_columns": 3571
+}

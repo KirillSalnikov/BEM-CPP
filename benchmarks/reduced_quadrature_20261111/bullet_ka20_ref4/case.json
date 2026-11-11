@@ -1,0 +1,54 @@
+{
+  "shape": "/home/kirill/neuro/BEM-CPP-analytic-alpha/benchmarks/reduced_quadrature_20261111/bullet_ka20_ref4/geometry.obj",
+  "shape_name": "bullet",
+  "ka": 20.0,
+  "ref": 4,
+  "rhs": [
+    {
+      "name": "plane_0",
+      "kind": "plane",
+      "direction": [
+        0.5690272834649945,
+        0.1959318064122034,
+        0.7986355100472928
+      ],
+      "polarization": [
+        0.7551247098829502,
+        0.26001028909004714,
+        -0.6018150231520483
+      ]
+    },
+    {
+      "name": "plane_1",
+      "kind": "plane",
+      "direction": [
+        0.5690272834649945,
+        0.1959318064122034,
+        0.7986355100472928
+      ],
+      "polarization": [
+        -0.3255681544571567,
+        0.9455185755993167,
+        -2.7755575615628914e-17
+      ]
+    },
+    {
+      "name": "mode_0_28_5",
+      "kind": "regular_spherical_wave",
+      "mode": [
+        0,
+        28,
+        5
+      ]
+    },
+    {
+      "name": "mode_1_28_5",
+      "kind": "regular_spherical_wave",
+      "mode": [
+        1,
+        28,
+        5
+      ]
+    }
+  ]
+}

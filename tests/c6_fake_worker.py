@@ -11,7 +11,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'scripts'))
 from tmatrix_incident import regular_fields
 from tmatrix_reference import modes, transverse_harmonics, tangent_frame
-from tmatrix_symmetry import c2x_plan
+from tmatrix_symmetry import c2x_plan, vertical_mirror_plan
 
 
 def receive(connection, array):
@@ -44,7 +44,7 @@ def main():
     if mirror:
         parity=np.array([(p+l+m)%2 for p,l,m in modal])
         kernel[parity[:,None]!=parity[None,:]]=0
-    permutation, signs, _, _ = c2x_plan(order)
+    permutation, signs, _, _ = (vertical_mirror_plan if os.environ.get('BEM_TEST_FAKE_C6V')=='1' else c2x_plan)(order)
     kernel = .5*(kernel+signs[:,None]*kernel[np.ix_(permutation,permutation)]*signs[None,:])
     phase = np.array([1j**(l-p) for p,l,m in modal])
     outgoing = transverse_harmonics(directions, order)

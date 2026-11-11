@@ -1,0 +1,112 @@
+{
+  "pairs": 1749,
+  "max_error": 0.0001440975538338531,
+  "quantiles": [
+    1.0471538671445343e-05,
+    3.028236451426001e-05,
+    5.7004416966145854e-05
+  ],
+  "worst": [
+    {
+      "source": 2498,
+      "target": 2400,
+      "mode": [
+        0,
+        49,
+        49
+      ],
+      "relative_error": 0.0001440975538338531
+    },
+    {
+      "source": 2598,
+      "target": 2500,
+      "mode": [
+        0,
+        50,
+        49
+      ],
+      "relative_error": 0.00010936120821898516
+    },
+    {
+      "source": 1934,
+      "target": 1848,
+      "mode": [
+        0,
+        43,
+        43
+      ],
+      "relative_error": 0.00010098876533536812
+    },
+    {
+      "source": 2700,
+      "target": 2602,
+      "mode": [
+        0,
+        51,
+        49
+      ],
+      "relative_error": 9.315290757967192e-05
+    },
+    {
+      "source": 2804,
+      "target": 2706,
+      "mode": [
+        0,
+        52,
+        49
+      ],
+      "relative_error": 8.21134591827892e-05
+    },
+    {
+      "source": 2022,
+      "target": 1936,
+      "mode": [
+        0,
+        44,
+        43
+      ],
+      "relative_error": 7.742275933133073e-05
+    },
+    {
+      "source": 2302,
+      "target": 2208,
+      "mode": [
+        0,
+        47,
+        47
+      ],
+      "relative_error": 7.265189904985447e-05
+    },
+    {
+      "source": 2112,
+      "target": 2026,
+      "mode": [
+        0,
+        45,
+        43
+      ],
+      "relative_error": 7.09048470570581e-05
+    },
+    {
+      "source": 3335,
+      "target": 3291,
+      "mode": [
+        1,
+        22,
+        22
+      ],
+      "relative_error": 6.959133142720387e-05
+    },
+    {
+      "source": 1442,
+      "target": 1368,
+      "mode": [
+        0,
+        37,
+        37
+      ],
+      "relative_error": 6.946432124424338e-05
+    }
+  ],
+  "source": "/home/kirill/neuro/BEM-CPP-analytic-alpha/runs/scice_regular_shapes_ka20_20261111/Bullet/bem"
+}

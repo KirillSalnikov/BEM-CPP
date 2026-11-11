@@ -1,0 +1,20 @@
+{
+  "passed": true,
+  "moment_errors": [
+    {
+      "points": 1,
+      "observed_points": 1,
+      "max_absolute_monomial_error": 0.0
+    },
+    {
+      "points": 3,
+      "observed_points": 3,
+      "max_absolute_monomial_error": 5.55112e-17
+    },
+    {
+      "points": 7,
+      "observed_points": 7,
+      "max_absolute_monomial_error": 1.9984e-14
+    }
+  ]
+}

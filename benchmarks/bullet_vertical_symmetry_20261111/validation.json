@@ -1,0 +1,10 @@
+{
+  "host_tests_passed": 44,
+  "subtests_passed": 8,
+  "gpu_tests_skipped": 4,
+  "production_controls": "pending GPU access; two independent RHS pairs at L52",
+  "committed_columns_preserved": 3646,
+  "committed_packets_preserved": 622,
+  "production_worker_unchanged": true,
+  "reduced_quadrature_enabled_in_production": false
+}

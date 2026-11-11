@@ -1,0 +1,13 @@
+{
+  "source": "/home/kirill/neuro/BEM-CPP-analytic-alpha/runs/scice_regular_shapes_ka20_20261111/Bullet/bem",
+  "source_signature": "42d39a28d13a30459a03176576e4cc69780e847958bde10253fb194868904d08",
+  "target_signature": "c286d97f9ea214df087f43034825fc162b3eda7cf112f3c24f333ce822520af4",
+  "proof_sha256": "6ae9ac13137c779048e96d9a74cf9165ae2967b7b02b2a7a96d74190ee4e74eb",
+  "copied_columns": 3646,
+  "copied_packets": 622,
+  "skipped_uncommitted_columns": 0,
+  "new_coded_audits_required": false,
+  "old_residuals_are_retained_not_remeasured": true,
+  "inherited_tight_from_degree": 23,
+  "identical_solver_coded_audits_reused": true
+}

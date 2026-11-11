@@ -1,0 +1,12 @@
+{
+  "geometry_sha256": "711b22d9355a891f99797c7e6b83cc62a4f3c6221fd9caeb7eedb7ba4c53574e",
+  "production_geometry_sha256": "711b22d9355a891f99797c7e6b83cc62a4f3c6221fd9caeb7eedb7ba4c53574e",
+  "same_geometry": true,
+  "dofs": 221184,
+  "production_dofs": 221184,
+  "ka": 20,
+  "ref": 5,
+  "production_ka": 20.0,
+  "production_ref": 5,
+  "production_strict_interval": "4"
+}

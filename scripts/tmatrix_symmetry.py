@@ -22,3 +22,15 @@ def c2x_plan(order):
 
 def c2x_partner_column(column, source, permutation, signs):
     return signs[source]*signs*np.asarray(column)[permutation]
+
+
+def vertical_mirror_plan(order):
+    """Reflection in xz: E is polar, H is axial.
+
+    U|p,l,m> = (-1)^(p+m+1) |p,l,-m>. This holds for Cnv
+    particles, including a bullet without C2x or a horizontal mirror.
+    The spatial mirror must be measured and the column relation audited.
+    """
+    permutation, _, representatives, audits = c2x_plan(order)
+    signs = np.array([(-1.)**(p+m+1) for p, l, m in modes(order)])
+    return permutation, signs, representatives, audits

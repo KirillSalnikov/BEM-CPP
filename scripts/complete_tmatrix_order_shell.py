@@ -16,7 +16,7 @@ from build_fmm_tmatrix import atomic_array, atomic_json
 from study_tmatrix_cutoff import digest, error_metrics
 from tmatrix_reference import modes
 from tmatrix_reciprocal_extension import complete_order_extension, extension_layout, extension_work_counts
-from tmatrix_symmetry import c2x_plan, c2x_partner_column
+from tmatrix_symmetry import c2x_plan, c2x_partner_column, vertical_mirror_plan
 from tmatrix_so3_mstm import analytic_mueller_tmatrix
 
 
@@ -54,7 +54,8 @@ class AcceptedColumns:
         self.parameters = manifest['parameters']
         self.modal = modes(self.parameters['order'])
         require(manifest['modes'] == [list(m) for m in self.modal], 'Wrong saved modal order')
-        self.flip, self.signs, _, _ = c2x_plan(self.parameters['order'])
+        self.flip, self.signs, _, _ = (vertical_mirror_plan if self.parameters.get('vertical_reuse')
+                                     else c2x_plan)(self.parameters['order'])
         self.hashes = {}
 
     def get(self, index, active=()):
@@ -78,10 +79,11 @@ class AcceptedColumns:
         require(value.shape == (len(self.modal),) and value.dtype == np.complex128 and np.isfinite(value).all(),
                 'Invalid kernel column')
         derived = info.get('derived_by')
-        require(derived in (None, 'C2x_half_turn', 'C6_packed_RHS'), 'Unknown or inferred column provenance')
-        if derived == 'C2x_half_turn':
+        require(derived in (None, 'C2x_half_turn', 'sigma_v_xz', 'C6_packed_RHS'), 'Unknown or inferred column provenance')
+        if derived in ('C2x_half_turn', 'sigma_v_xz'):
             origin = info['source_column']
-            require(self.parameters.get('c2_reuse') and isinstance(origin, int) and 0 <= origin < len(self.modal)
+            flag='vertical_reuse' if derived=='sigma_v_xz' else 'c2_reuse'
+            require(self.parameters.get(flag) and isinstance(origin, int) and 0 <= origin < len(self.modal)
                     and self.modal[origin][2] > 0 and int(self.flip[origin]) == index, 'Invalid C2 parent')
             parent, _ = self.get(origin, (*active, index))
             require(np.array_equal(value, c2x_partner_column(parent, origin, self.flip, self.signs)),
@@ -135,7 +137,7 @@ def assemble(source, shell, out, *, control_gate=1e-4, ntheta=1801, threads=2):
     low, high, *_ = extension_layout(old_order, order)
     require(b['incident_order_shell']['requested_columns'] == high.tolist(), 'Wrong shell columns')
     for summary in (a, b):
-        if summary['parameters'].get('c2_reuse'):
+        if summary['parameters'].get('c2_reuse') or summary['parameters'].get('vertical_reuse'):
             require(summary['symmetry_reuse']['passed'], 'C2 audit failed')
         if summary['parameters'].get('c6_pack'):
             require(summary['c6_packing']['independent_reference_audits_complete'], 'C6 audit is incomplete')

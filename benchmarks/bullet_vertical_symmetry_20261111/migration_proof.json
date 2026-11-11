@@ -1,0 +1,26 @@
+{
+  "source_binary_digest": "de07f3bd09ae1546163a6b015a3f0d57cd2bf1595b5d84aa6b9b85caa437c1c8",
+  "target_binary_digest": "de07f3bd09ae1546163a6b015a3f0d57cd2bf1595b5d84aa6b9b85caa437c1c8",
+  "physical_parameters_sha256": "21787fdae9e5518a358e3b824bdadd07abd00f29ab28d32370becd1701b6f1de",
+  "validated": true,
+  "physical_source_hashes_before": {
+    "bin/muller_tmatrix_fmm_server": "de07f3bd09ae1546163a6b015a3f0d57cd2bf1595b5d84aa6b9b85caa437c1c8",
+    "scripts/tmatrix_incident.py": "73a281dd0b5c2c7c387c8e5ad389971cc6c4ce2891a7d0feb431e2071aac07b4",
+    "scripts/tmatrix_reference.py": "e452d45820a6d5d0ab5cd6344be066c3994a928739e439017750932ad0ecff25",
+    "scripts/tmatrix_projection.py": "c9562e596b570a53ef54f5c0bdfd76d0ed562a6fe7b654a510aa29b7253140e4",
+    "scripts/tmatrix_c6.py": "e61b2916cd0fd91778b975e29033b84c50a42d58d9761e64de00741ae8216db7"
+  },
+  "physical_source_hashes_after": {
+    "bin/muller_tmatrix_fmm_server": "de07f3bd09ae1546163a6b015a3f0d57cd2bf1595b5d84aa6b9b85caa437c1c8",
+    "scripts/tmatrix_incident.py": "73a281dd0b5c2c7c387c8e5ad389971cc6c4ce2891a7d0feb431e2071aac07b4",
+    "scripts/tmatrix_reference.py": "e452d45820a6d5d0ab5cd6344be066c3994a928739e439017750932ad0ecff25",
+    "scripts/tmatrix_projection.py": "c9562e596b570a53ef54f5c0bdfd76d0ed562a6fe7b654a510aa29b7253140e4",
+    "scripts/tmatrix_c6.py": "e61b2916cd0fd91778b975e29033b84c50a42d58d9761e64de00741ae8216db7"
+  },
+  "maximum_field_relative_difference": 0.0,
+  "maximum_strict_residual": 2.9704839423063705e-05,
+  "equivalence_kind": "identical_worker_and_incident_inputs",
+  "identical_incident_fields": true,
+  "reuse_identical_solver_audits": true,
+  "scope": "Only the Python negative-m schedule changes. New vertical covariance audits remain mandatory."
+}
