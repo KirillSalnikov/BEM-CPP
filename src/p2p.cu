@@ -2,6 +2,7 @@
 #include "gpu_select.h"
 #include "p2p_radial_factors.h"
 #include "p2p_double_single.cuh"
+#include "p2p_compensated.cuh"
 #include <cuda_runtime.h>
 #include <cstdio>
 #include <atomic>
@@ -1373,6 +1374,40 @@ __device__ __forceinline__ void accumulate_vector_values(
     }
 }
 
+// Fuse compensated products and sums before normalization. This preserves
+// the two-component result while avoiding a normalization after every product.
+template <>
+__device__ __forceinline__ void accumulate_vector_values<P2PCompensated>(
+    P2PCompensated dx,P2PCompensated dy,P2PCompensated dz,
+    const P2PCompensated unit[3],P2PCompensated gr,P2PCompensated gi,
+    P2PCompensated ga_re,P2PCompensated ga_im,P2PCompensated gb_re,P2PCompensated gb_im,
+    const P2PCompensated qr[3],const P2PCompensated qi[3],
+    P2PCompensated cr[3],P2PCompensated ci[3],P2PCompensated ar[3],P2PCompensated ai[3]) {
+    P2PCompensated gqr[3],gqi[3];
+#pragma unroll
+    for(int j=0;j<3;++j) {
+        gqr[j]=cp_fma(gr,qr[j],-gi*qi[j]);
+        gqi[j]=cp_fma(gr,qi[j],gi*qr[j]);
+    }
+    cr[0]=cp_fma(dy,gqr[0],cp_fma_raw(-dx,gqr[1],cr[0]));
+    ci[0]=cp_fma(dy,gqi[0],cp_fma_raw(-dx,gqi[1],ci[0]));
+    cr[1]=cp_fma(dz,gqr[0],cp_fma_raw(-dx,gqr[2],cr[1]));
+    ci[1]=cp_fma(dz,gqi[0],cp_fma_raw(-dx,gqi[2],ci[1]));
+    cr[2]=cp_fma(dz,gqr[1],cp_fma_raw(-dy,gqr[2],cr[2]));
+    ci[2]=cp_fma(dz,gqi[1],cp_fma_raw(-dy,gqi[2],ci[2]));
+    P2PCompensated dr(0),di(0);
+#pragma unroll
+    for(int j=0;j<3;++j) {dr=cp_fma(unit[j],qr[j],dr);di=cp_fma(unit[j],qi[j],di);}
+    const auto ir=cp_fma(P2PCompensated(2),gb_re,-ga_re);
+    const auto ii=cp_fma(P2PCompensated(2),gb_im,-ga_im);
+    const auto rr=cp_fma(ga_re,dr,-ga_im*di),ri=cp_fma(ga_re,di,ga_im*dr);
+#pragma unroll
+    for(int j=0;j<3;++j) {
+        ar[j]=cp_fma(unit[j],rr,cp_fma_raw(ir,qr[j],cp_fma_raw(-ii,qi[j],ar[j])));
+        ai[j]=cp_fma(unit[j],ri,cp_fma_raw(ir,qi[j],cp_fma_raw(ii,qr[j],ai[j])));
+    }
+}
+
 template <typename ComputeReal, typename ChargeReal>
 __device__ __forceinline__ void accumulate_vector_source_action(
     ComputeReal dx,
@@ -1697,6 +1732,28 @@ __device__ __forceinline__ void p2p_shared_source_action(
         qr, qi,
         curl_acc_re, curl_acc_im,
         action_acc_re, action_acc_im);
+}
+
+#include "p2p_two_media.cuh"
+
+void launch_p2p_two_media_leaf(
+    const double* targets,const double* sources,
+    const double* qxr,const double* qxi,const double* qyr,const double* qyi,const double* qzr,const double* qzi,
+    const int* target_offsets,const int* target_ids,const int* near_offsets,const int* near_ids,int leaves,
+    double ker,double kei,double kir,double kii,double cer,double cei,double cir,double cii,
+    double* cr,double* ci,double* ar,double* ai,int precision,int threads,int split) {
+    if(leaves<0||!targets||!sources||!qxr||!qxi||!qyr||!qyi||!qzr||!qzi||!target_offsets||!target_ids||!near_offsets||!near_ids||!cr||!ci||!ar||!ai)
+        throw std::invalid_argument("two-medium P2P dimensions/buffers");
+    if(precision<0||precision>2||(threads!=64&&threads!=128&&threads!=256)||split<1||split>128||(split&(split-1)))
+        throw std::invalid_argument("two-medium P2P precision/launch parameters");
+    if(leaves==0)return;
+#define LAUNCH_TWO_MEDIA(TYPE) p2p_two_media_shared_kernel<TYPE><<<leaves*split,threads>>>(targets,sources,qxr,qxi,qyr,qyi,qzr,qzi, \
+    target_offsets,target_ids,near_offsets,near_ids,leaves,split,ker,kei,kir,kii,cer,cei,cir,cii,cr,ci,ar,ai)
+    if(precision==2){LAUNCH_TWO_MEDIA(P2PCompensated);}
+    else if(precision==1){LAUNCH_TWO_MEDIA(P2PDoubleSingle);}
+    else {LAUNCH_TWO_MEDIA(double);}
+#undef LAUNCH_TWO_MEDIA
+    CUDA_CHECK(cudaGetLastError());
 }
 
 template <typename Real, int Tile = 128, bool RealWaveNumber = false, bool FastTrig = false,
@@ -2169,15 +2226,20 @@ void launch_p2p_vector_actions_batch3_leaf(
         if (!announced.exchange(true, std::memory_order_relaxed)) {
             std::fprintf(stderr, "  [P2P] double-single near action enabled; FP64 far action retained\n");
         }
-#define LAUNCH_DS_SHARED(FACTORED) \
-        p2p_vector_actions_shared_sources<P2PDoubleSingle,128,true,false,true,FACTORED> \
+#define LAUNCH_DS_SHARED(TYPE,FACTORED) \
+        p2p_vector_actions_shared_sources<TYPE,128,true,false,true,FACTORED> \
             <<<n_leaves*ds_split,ds_threads>>>( \
                 d_tgt,d_src,d_qx_re,d_qx_im,d_qy_re,d_qy_im,d_qz_re,d_qz_im, \
                 d_tgt_offsets,d_tgt_ids,d_near_source_offsets,d_near_source_ids, \
                 n_leaves,ds_split,k_re,k_im,d_curl_re,d_curl_im, \
                 d_hessian_action_re,d_hessian_action_im)
-        if(bem_env_flag_enabled("BEM_FMM_P2P_DS_FACTORED")){LAUNCH_DS_SHARED(true);}
-        else{LAUNCH_DS_SHARED(false);}
+        if(bem_env_flag_enabled("BEM_FMM_P2P_DS_COMPENSATED")) {
+            if(bem_env_flag_enabled("BEM_FMM_P2P_DS_FACTORED")){LAUNCH_DS_SHARED(P2PCompensated,true);}
+            else{LAUNCH_DS_SHARED(P2PCompensated,false);}
+        } else {
+            if(bem_env_flag_enabled("BEM_FMM_P2P_DS_FACTORED")){LAUNCH_DS_SHARED(P2PDoubleSingle,true);}
+            else{LAUNCH_DS_SHARED(P2PDoubleSingle,false);}
+        }
 #undef LAUNCH_DS_SHARED
         return;
     }

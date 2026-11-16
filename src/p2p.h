@@ -1,6 +1,18 @@
 #ifndef P2P_H
 #define P2P_H
 
+// Two media, one three-component current. Accumulate H_e-H_i and the
+// requested complex-weighted curl combination on identical flat near lists.
+// precision: 0=FP64, 1=double-single, 2=compensated double-single.
+void launch_p2p_two_media_leaf(
+    const double* targets,const double* sources,
+    const double* qxr,const double* qxi,const double* qyr,const double* qyi,const double* qzr,const double* qzi,
+    const int* target_offsets,const int* target_ids,const int* near_offsets,const int* near_ids,int leaves,
+    double ke_real,double ke_imag,double ki_real,double ki_imag,
+    double ce_real,double ce_imag,double ci_real,double ci_imag,
+    double* curl_real,double* curl_imag,double* action_real,double* action_imag,
+    int precision=0,int threads=64,int leaf_split=32);
+
 // P2P near-field kernel launch functions (definitions in p2p.cu)
 
 // Scalar potential only: phi_i = sum_j G(r_i, r_j) * q_j

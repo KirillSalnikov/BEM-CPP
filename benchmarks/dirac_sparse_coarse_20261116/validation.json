@@ -1,0 +1,8 @@
+{
+  "python_tests": 27,
+  "native_tests": "passed (native code unchanged since native_tests.log)",
+  "checkpoint_tests": "passed",
+  "rebuilt_library_identical": true,
+  "bounded_projection_test": "passed",
+  "sha256": "f3ec3ffd9e7b065fa02a6f7d8d69762569b3d0a5a637cfbcc8c47324bee0ea89"
+}

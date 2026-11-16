@@ -1,0 +1,63 @@
+{
+  "schema": 1,
+  "method": "dirac",
+  "task": "average",
+  "shape": "prism",
+  "ka": 0.7,
+  "index": [
+    1.3116,
+    0.0
+  ],
+  "wavelength_um": 0.532,
+  "radius_um": 0.05926930080742183,
+  "aspect": 1.4285714285714286,
+  "orientation_degrees": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "symmetry_requested": "auto",
+  "symmetry_selected": "d6h",
+  "geometry_symmetries": {
+    "c6_z": true,
+    "vertical_mirror": true,
+    "horizontal_mirror": true
+  },
+  "ref": 0,
+  "L": 3,
+  "degree": 2,
+  "tolerance": 1e-08,
+  "backend": "dense",
+  "global_patches": 256,
+  "batch_size": 8,
+  "threads": 4,
+  "ntheta": 37,
+  "ram_budget_gib": 8.0,
+  "available_ram_gib": 57.844886779785156,
+  "disk_free_gib": 254.4533462524414,
+  "disk_planning_gib": 1.0000804662704468,
+  "out": "/tmp/bem-staged-validation-20261116/runs/portable_smoke",
+  "estimated_base_mesh_panels": 48,
+  "dense_Dirac_operator_estimate_gib": 0.000823974609375,
+  "accuracy_target": 0.01,
+  "accuracy_certified": false,
+  "parameter_selection": "Initial wavelength/enclosing-sphere estimates; ref and L convergence must be checked separately.",
+  "memory_scope": "Dirac native preflight plus process-tree RSS limit; FMM/ILU reserves are estimates, not allocator bounds.",
+  "particle": null,
+  "particle_file": null,
+  "obj": null
+}
+Команда: /usr/bin/python3 /tmp/bem-staged-validation-20261116/benchmarks/clifford_dielectric_20261115/tmatrix.py --shape prism --ka 0.7 --index '(1.3116+0j)' --aspect 1.4285714285714286 --ref 0 --degree 2 --order 24 --target-order 13 --near-subdiv 1 --tol 1e-08 --backend dense --ram-budget-gib 8.0 --kernel-budget-gib 3.2 --out /tmp/bem-staged-validation-20261116/runs/portable_smoke/result --L 3 --block-panels 1 --batch-size 8 --symmetry c6hv --so3 mstm --so3-threads 4 --matrix-budget-gib 2.0 --coarse-budget-gib 5.6 --ntheta 37 --dense-kernel simd --dense-cache orbits12 --sector-coarse-basis 3
+mkdir -p bin build/mstm64
+cd build/mstm64 && gfortran -O3 -fopenmp -ffree-line-length-none -cpp -DBEM_SO3_STORAGE_KIND=8 ../../third_party/mstm/so3_recurrences.f90 ../../third_party/mstm/so3_average.f90 ../../tools/tmatrix_so3_mstm.f90 -o ../../bin/tmatrix_so3_mstm
+{
+  "state": "complete",
+  "method": "dirac",
+  "task": "average",
+  "accuracy_certified": false,
+  "target_accuracy_percent": 1.0,
+  "result_directory": "/tmp/bem-staged-validation-20261116/runs/portable_smoke/result",
+  "reason": null,
+  "peak_rss_gib": 0.07681655883789062,
+  "elapsed_s": 5.4374163090001275
+}

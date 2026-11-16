@@ -1,0 +1,87 @@
+{
+  "backend": "fmm",
+  "ka": 20.0,
+  "ref": 3,
+  "packet": 1,
+  "eps": 1e-08,
+  "panels": 3072,
+  "setup_s": 12.854306772002019,
+  "kernel_bytes": 380661896,
+  "reference_two_RHS_s": 5.225974155997392,
+  "selected_two_RHS_s": 1.9507124660012778,
+  "selected_error": 2.176070762885758e-11,
+  "cache_info": {
+    "policy": "near_orbits",
+    "group_size": 12,
+    "representative_panels": 256,
+    "kernel_bytes": 380661896,
+    "dense_far_bytes": 0,
+    "point_sources": 39936,
+    "direct_audit": {
+      "relative_error": 1.3451953531602352e-14,
+      "panels": [
+        0,
+        47,
+        384,
+        431,
+        768,
+        815,
+        1152,
+        1199,
+        1536,
+        1583,
+        1920,
+        1967,
+        2367,
+        2431,
+        2495,
+        2559,
+        2623,
+        2687,
+        2751,
+        2815,
+        2879,
+        2943,
+        3007,
+        3071
+      ],
+      "seconds": 3.698909133003326
+    }
+  },
+  "coarse_prepare_s": 23.60124673199607,
+  "coarse_bytes": 604004352,
+  "coarse_memory_plan": {
+    "persistent_bytes": 604004352,
+    "workspace_bytes": 83427328,
+    "assembly_chunk": 8,
+    "panel_factors_bytes": 26296320,
+    "stored_W_bytes": 0,
+    "assembly": "direct exact coarse tiles, no pair cache"
+  },
+  "solve_two_RHS_s": 46.63342661799834,
+  "iterations": [
+    7,
+    7
+  ],
+  "residuals": [
+    5.287535334072897e-09,
+    5.720225985694163e-09
+  ],
+  "coarse_statistics": {
+    "(5, 1)": {
+      "setup_s": 23.601213308997103,
+      "assembly_s": 11.309538668996538,
+      "fine_size": 20480,
+      "coarse_size": 6144,
+      "bytes": 604004352,
+      "stored_W_bytes": 0,
+      "column_error": 1.3539269504048717e-14,
+      "coarse_range_error": 3.404095093438799e-11
+    }
+  },
+  "wall_s": 90.4038567940006,
+  "maxrss_bytes": 3163258880,
+  "fmm_s": 56.64444979601103,
+  "near_s": 2.2876793080286006,
+  "projection_s": 0.04865378596150549
+}

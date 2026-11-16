@@ -1,0 +1,21 @@
+{
+  "default_backend_unchanged": true,
+  "explicit_backend": "fmm-sector",
+  "coarse_factorization": "hierarchical",
+  "coarse_global_scope": "full",
+  "coarse_aggregate_groups_by_ka": {
+    "20": 256,
+    "40": 512
+  },
+  "coarse_aggregate_basis": 3,
+  "coarse_near_radius": 1.5,
+  "coarse_ilu_drop": 0.001,
+  "coarse_ilu_fill": 4,
+  "fmm_eps": 1e-08,
+  "fmm_strict_eps": 1e-12,
+  "fmm_packet": 1,
+  "tolerance": 1e-08,
+  "library": "/home/kirill/neuro/BEM-CPP-analytic-alpha/benchmarks/dirac_sparse_coarse_20261116/libdirac_hierarchy.so",
+  "sha256": "f3ec3ffd9e7b065fa02a6f7d8d69762569b3d0a5a637cfbcc8c47324bee0ea89",
+  "scope": "Experimental explicit profile; see measured tradeoffs and ka40 status in report.json. No production queue was restarted."
+}

@@ -4941,6 +4941,13 @@ void HelmholtzFMM::evaluate_multilevel_pair_device(
     const double* const charges_re[6], const double* const charges_im[6],
     HelmholtzFMM* middle, HelmholtzFMM& coarse)
 {
+    evaluate_multilevel_pair_device(charges_re,charges_im,middle,coarse,true);
+}
+
+void HelmholtzFMM::evaluate_multilevel_pair_device(
+    const double* const charges_re[6], const double* const charges_im[6],
+    HelmholtzFMM* middle, HelmholtzFMM& coarse,bool include_near)
+{
     if (!batch3_device_allocated || !p2p_enabled)
         throw std::runtime_error("multilevel pair needs a finest-level three-channel workspace");
     const size_t stride=size_t(n_nodes)*L, field_bytes=stride*sizeof(double);
@@ -4992,7 +4999,7 @@ void HelmholtzFMM::evaluate_multilevel_pair_device(
 #undef LAUNCH_MULTILEVEL_PAIR_L2P
     CUDA_CHECK(cudaGetLastError());
     if(profile)CUDA_CHECK(cudaEventRecord(events[2]));
-    if(leaves>0)launch_p2p_vector_actions_pair_batch3_leaf(
+    if(leaves>0 && include_near)launch_p2p_vector_actions_pair_batch3_leaf(
         d_tgt_pts,d_src_pts,
         charges_re[0],charges_im[0],charges_re[1],charges_im[1],charges_re[2],charges_im[2],
         charges_re[3],charges_im[3],charges_re[4],charges_im[4],charges_re[5],charges_im[5],

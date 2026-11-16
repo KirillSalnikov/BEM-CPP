@@ -214,7 +214,33 @@ public:
         }
     }
 
-    void add(const std::vector<Six>& charges,std::vector<Twelve>& fields) {
+    bool can_pair_near(const FmmBand& other) const {
+        return near && other.near && vector_near && other.vector_near &&
+            &points==&other.points && source_ids==other.source_ids &&
+            target_ids==other.target_ids && point_leaf==other.point_leaf &&
+            near_sources==other.near_sources;
+    }
+    // This explicit operation also validates its topology; a caller must not
+    // suppress either ordinary near action until can_pair_near() succeeds.
+    void add_paired_near(const FmmBand& other,const std::vector<Six>& charges,
+                         C mu_e,C mu_i,C eps_e,C eps_i,std::vector<Twelve>& combined) {
+        if(!can_pair_near(other) || charges.size()!=points.size() || combined.size()!=points.size())
+            throw std::invalid_argument("incompatible CPU two-medium near actions");
+#ifdef BEM_CPU_HAS_AVX512_P2P
+        const auto start=Clock::now();
+#pragma omp parallel for schedule(static)
+        for(size_t p=0;p<points.size();++p)for(int c=0;c<6;++c){
+            near_soa[3+2*c][p]=charges[p][c].real();near_soa[4+2*c][p]=charges[p][c].imag();}
+#pragma omp parallel for schedule(dynamic,16)
+        for(size_t t=0;t<target_ids.size();++t){const int p=target_ids[t];
+            avx512::near_field_two_media(near_soa,near_sources[point_leaf[p]],points[p],f.k,other.f.k,
+                mu_e,mu_i,eps_e,eps_i,combined[p]);}
+        times[5]=elapsed(start);
+#else
+        throw std::runtime_error("paired CPU near requires AVX512");
+#endif
+    }
+    void add(const std::vector<Six>& charges,std::vector<Twelve>& fields,bool skip_near=false) {
         if(charges.size()!=points.size() || fields.size()!=points.size())
             throw std::invalid_argument("CPU FMM charge/field dimensions");
         times.fill(0);
@@ -298,7 +324,7 @@ public:
             }
             times[4]=elapsed(start);start=Clock::now();
         }
-        if(near) {
+        if(near && !skip_near) {
 #ifdef BEM_CPU_HAS_AVX512_P2P
             if(vector_near) {
 #pragma omp parallel for schedule(static)

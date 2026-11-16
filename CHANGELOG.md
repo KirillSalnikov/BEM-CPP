@@ -5,6 +5,16 @@ Semantic Versioning while its public interfaces are stabilizing.
 
 ## Unreleased
 
+- Add `bem solve`, `wizard`, `methods` and `continue`: common physical inputs,
+  fixed ZYZ orientation, saved T and analytic SO(3), audited automatic/explicit
+  symmetries, transparent initial ref/L selection and process-tree RAM limits.
+- Add the experimental CPU Dirac solver, SIMD/batched strict audits, symmetry
+  caches, exact-near/FMM sector action and bounded global P1 correction.
+- Remove a full correction-matrix copy in sparse projection; map T/kernel
+  storage to disk and convert conventions in bounded column tiles.
+- Document measured ka20/ka40 tradeoffs and unsupported combinations; no
+  universal 1% certificate or large complete-T speedup is inferred from probes.
+
 - Fix CPU-only build recipes that omitted the existing CUDA-header fallback;
   host tests now compile with the repository stubs when CUDA is absent.
 - Require SciPy 1.15+ for the T-matrix spherical harmonics; reject the legacy

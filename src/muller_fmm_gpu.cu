@@ -1,4 +1,5 @@
 #include "muller_fmm_gpu.h"
+#include "p2p.h"
 
 #include <cuda_runtime.h>
 
@@ -598,6 +599,24 @@ __global__ void farfield_pair_fp32_accum_kernel(
                     complex_sub(
                         j_perpendicular[axis], r_cross_m[axis]));
         }
+    }
+}
+
+__global__ void assemble_combined_near_kernel(
+    const int* counts,const int* dofs,const double* values,const double* normals,
+    const double* weights,int points,const double* cr,const double* ci,const double* ar,const double* ai,
+    int offset,double* k1r,double* k1i,double* k2r,double* k2i) {
+    const int p=blockIdx.x*blockDim.x+threadIdx.x;if(p>=points)return;
+    const double nx=normals[3*p],ny=normals[3*p+1],nz=normals[3*p+2];
+    for(int j=0;j<counts[p];++j){const int f=p*kMaximumBasisFunctions+j;
+        const double tx=values[3*f],ty=values[3*f+1],tz=values[3*f+2];
+        const double rot[3]={ty*nz-tz*ny,tz*nx-tx*nz,tx*ny-ty*nx};
+        const double curl[3]={tx*ny-nx*ty,tx*nz-nx*tz,ty*nz-ny*tz};
+        double2 a=make_double2(0,0),c=make_double2(0,0);
+        for(int d=0;d<3;++d){a=complex_add(a,complex_scale(load_split(ar,ai,3*p+d),rot[d]));
+            c=complex_add(c,complex_scale(load_split(cr,ci,3*p+d),curl[d]));}
+        const int row=offset+dofs[f];atomic_add_complex(k1r,k1i,row,complex_scale(a,weights[p]));
+        atomic_add_complex(k2r,k2i,row,complex_scale(c,weights[p]));
     }
 }
 
@@ -1234,6 +1253,30 @@ void MullerGpuAssembly::assemble_media_and_correction(
     cuda_check(
         cudaStreamSynchronize(0),
         "synchronize Muller GPU assembly");
+}
+
+void MullerGpuAssembly::add_two_media_near(HelmholtzFMM& exterior,const HelmholtzFMM& interior,
+    std::complex<double> ce,std::complex<double> ci,int slot,bool electric_current) {
+    if(!initialized||slot<0||slot>=system_slots||regular_points!=exterior.Nt||regular_points!=interior.Nt)
+        throw std::invalid_argument("two-media near assembly slot/dimensions");
+    auto& e=exterior;const auto& i=interior;
+    double* scratch[]={e.d_grad_re,e.d_grad_im,e.d_hess_re,e.d_hess_im};
+    for(double* p:scratch){if(!p)throw std::runtime_error("two-media point scratch unavailable");
+        cuda_check(cudaMemsetAsync(p,0,size_t(regular_points)*3*sizeof(double)),"clear two-media scratch");}
+    const auto enabled=[](const char* key){const char* s=std::getenv(key);return s&&std::strcmp(s,"0")!=0;};
+    int precision=0;
+    if(e.k.imag()==0 && i.k.imag()==0 && enabled("BEM_FMM_P2P_DOUBLE_SINGLE"))
+        precision=enabled("BEM_FMM_P2P_DS_COMPENSATED")?2:1;
+    const char* setting=std::getenv("BEM_FMM_MEDIA_THREADS");const int threads=setting?std::atoi(setting):64;
+    setting=std::getenv("BEM_FMM_MEDIA_LEAF_SPLIT");const int split=setting?std::atoi(setting):32;
+    launch_p2p_two_media_leaf(e.d_tgt_pts,e.d_src_pts,charge_re(0,slot),charge_im(0,slot),charge_re(1,slot),charge_im(1,slot),charge_re(2,slot),charge_im(2,slot),
+        e.d_tgt_id_offsets_cached,e.d_tgt_ids_cached,e.d_leaf_near_source_offsets_cached,e.d_leaf_near_source_ids_cached,int(e.leaf_info.size()),
+        e.k.real(),e.k.imag(),i.k.real(),i.k.imag(),ce.real(),ce.imag(),ci.real(),ci.imag(),scratch[0],scratch[1],scratch[2],scratch[3],precision,threads,split);
+    assemble_combined_near_kernel<<<(regular_points+255)/256,256>>>(d_regular_counts,d_regular_dofs,d_regular_values,d_regular_normals,d_regular_weights,regular_points,
+        scratch[0],scratch[1],scratch[2],scratch[3],slot*current_dofs,d_k1_re,d_k1_im,
+        electric_current?d_k2_mu_re:d_k2_epsilon_re,electric_current?d_k2_mu_im:d_k2_epsilon_im);
+    cuda_check(cudaGetLastError(),"assemble two-media near action");
+    cuda_check(cudaStreamSynchronize(0),"synchronize two-media near action");
 }
 
 void MullerGpuAssembly::combine_and_download(

@@ -1,0 +1,105 @@
+{
+  "scope": "Array-size model only. Excludes sparse ILU, near cache, FMM workspace, Krylov/T arrays and temporary buffers. No accuracy or full-fit claim.",
+  "cases": [
+    {
+      "ka": 20,
+      "ref": 3,
+      "panels": 3072,
+      "full_dofs": 245760,
+      "full_P1_LU_bytes": 604004352,
+      "all_panel_LU_bytes": 315555840,
+      "capped_global": {
+        "128": {
+          "columns": 3072,
+          "LU_bytes": 151007232,
+          "W_bytes": 1006632960
+        },
+        "256": {
+          "columns": 6144,
+          "LU_bytes": 604004352,
+          "W_bytes": 2013265920
+        },
+        "512": {
+          "columns": 6144,
+          "LU_bytes": 604004352,
+          "W_bytes": 2013265920
+        }
+      }
+    },
+    {
+      "ka": 40,
+      "ref": 4,
+      "panels": 11904,
+      "full_dofs": 952320,
+      "full_P1_LU_bytes": 9069229056,
+      "all_panel_LU_bytes": 1222778880,
+      "capped_global": {
+        "128": {
+          "columns": 3072,
+          "LU_bytes": 151007232,
+          "W_bytes": 3900702720
+        },
+        "256": {
+          "columns": 6144,
+          "LU_bytes": 604004352,
+          "W_bytes": 7801405440
+        },
+        "512": {
+          "columns": 12288,
+          "LU_bytes": 2415968256,
+          "W_bytes": 15602810880
+        }
+      }
+    },
+    {
+      "ka": 80,
+      "ref": 5,
+      "panels": 47616,
+      "full_dofs": 3809280,
+      "full_P1_LU_bytes": 145106522112,
+      "all_panel_LU_bytes": 4891115520,
+      "capped_global": {
+        "128": {
+          "columns": 3072,
+          "LU_bytes": 151007232,
+          "W_bytes": 15602810880
+        },
+        "256": {
+          "columns": 6144,
+          "LU_bytes": 604004352,
+          "W_bytes": 31205621760
+        },
+        "512": {
+          "columns": 12288,
+          "LU_bytes": 2415968256,
+          "W_bytes": 62411243520
+        }
+      }
+    },
+    {
+      "ka": 80,
+      "ref": 7,
+      "panels": 758784,
+      "full_dofs": 60702720,
+      "full_P1_LU_bytes": 36848208224256,
+      "all_panel_LU_bytes": 77942292480,
+      "capped_global": {
+        "128": {
+          "columns": 3072,
+          "LU_bytes": 151007232,
+          "W_bytes": 248638341120
+        },
+        "256": {
+          "columns": 6144,
+          "LU_bytes": 604004352,
+          "W_bytes": 497276682240
+        },
+        "512": {
+          "columns": 12288,
+          "LU_bytes": 2415968256,
+          "W_bytes": 994553364480
+        }
+      }
+    }
+  ]
+}

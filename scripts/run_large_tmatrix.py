@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -32,7 +33,7 @@ SCRIPTS = ('run_large_tmatrix.py', 'bounded_bem_run.py', 'build_fmm_tmatrix.py',
 SCRIPTS += ('compressed_fft_service.py','symmetric_galerkin_fft.py','closed_galerkin_fft.py',
             'galerkin_cross_fft.py','streamed_galerkin_fft.py','tiled_galerkin_fft.py',
             'compressed_galerkin_fft.py','surface_symmetry.py','regular_surface_geometry.py')
-SCRIPTS += ('mbs_particle_geometry.py',)
+SCRIPTS += ('mbs_particle_geometry.py','scattering_frame.py')
 SCRIPTS += ('packed_current_csr.py','packed_current_csr_kernel.py','bounded_spectral_storage.py')
 SCRIPTS += ('packed_current_host.py','packed_current_cpu.cpp')
 SCRIPTS += ('recompress_spectral_factors.py',)
@@ -58,6 +59,14 @@ PROFILE = {
     # Keep the established 32 leaf partitions; change launch occupancy only.
     'BEM_FMM_P2P_THREADS': '128',
     'BEM_FMM_P2P_SHARED_REAL': '1',
+    # Ref7 ka40 native ABBA: 83.22 -> 48.10 s per strict action, with
+    # <=6.44e-13 relative deviation from the saved original FP64 operator.
+    # These flags do not select the compensated path for mixed/absorbing P2P.
+    'BEM_FMM_P2P_DOUBLE_SINGLE': '1',
+    'BEM_FMM_P2P_DS_COMPENSATED': '1',
+    'BEM_FMM_P2P_DS_FACTORED': '1',
+    'BEM_FMM_P2P_DS_THREADS': '128',
+    'BEM_FMM_P2P_DS_LEAF_SPLIT': '32',
     # Share source loads and leaf-local coordinate conversion across P2M
     # directions. Only the mixed P2M action selects this kernel.
     'BEM_FMM_MULTILEVEL_P2M_SHARED': '1',
@@ -88,7 +97,7 @@ def stamp():
     return datetime.now(timezone.utc).isoformat()
 
 
-def frozen_runtime(destination, source=ROOT, worker_binary=None):
+def frozen_runtime(destination, source=ROOT, worker_binary=None, face_nufft=False):
     if not destination.exists():
         temporary = destination.with_name(destination.name+'.preparing')
         temporary.mkdir(parents=True, exist_ok=True)
@@ -97,6 +106,18 @@ def frozen_runtime(destination, source=ROOT, worker_binary=None):
             for name in names:
                 src=worker_binary if worker_binary is not None and name=='muller_tmatrix_fmm_server' else source/directory/name
                 shutil.copy2(src, temporary/directory/name)
+        if face_nufft:
+            # Freeze the optional numerical library as well as the worker.
+            # The wheel's private OpenMP library uses ../finufft.libs RPATH.
+            linked = subprocess.check_output(['ldd', str(temporary/'bin/muller_tmatrix_fmm_server')], text=True)
+            match = re.search(r'^\s*libfinufft[^ ]*\s+=>\s+(\S+)', linked, re.MULTILINE)
+            if not match or not Path(match.group(1)).is_file():
+                raise RuntimeError('face_nufft worker must link an available FINUFFT library')
+            library = Path(match.group(1)).resolve()
+            (temporary/'lib').mkdir(exist_ok=True)
+            shutil.copy2(library, temporary/'lib'/Path(match.group(0).split()[0]).name)
+            private = library.parent.parent/'finufft.libs'
+            if private.is_dir():shutil.copytree(private, temporary/'finufft.libs', dirs_exist_ok=True)
         hashes = {str(p.relative_to(temporary)): hashlib.sha256(p.read_bytes()).hexdigest()
                   for p in temporary.rglob('*') if p.is_file()}
         atomic_json(temporary/'sha256.json', hashes)
@@ -104,6 +125,8 @@ def frozen_runtime(destination, source=ROOT, worker_binary=None):
     for name, expected in json.loads((destination/'sha256.json').read_text()).items():
         if hashlib.sha256((destination/name).read_bytes()).hexdigest() != expected:
             raise RuntimeError(f'frozen runtime changed: {name}')
+    if face_nufft and not list((destination/'lib').glob('libfinufft*')):
+        raise RuntimeError('frozen runtime has no FINUFFT library')
     if worker_binary is not None and hashlib.sha256(worker_binary.read_bytes()).digest()!=hashlib.sha256((destination/'bin/muller_tmatrix_fmm_server').read_bytes()).digest():
         raise RuntimeError('requested worker differs from frozen runtime')
 
@@ -209,6 +232,9 @@ def main():
     parser.add_argument('--gpu-host-correction', action='store_true', help='Keep local corrections in host RAM while using GPU assembly; requires a host solver')
     parser.add_argument('--strict-face-fft', action='store_true', help='Experimental face FFT for FP64 residual actions; mixed actions remain FMM')
     parser.add_argument('--worker-binary',type=Path,help='Freeze this validated worker instead of the current build')
+    parser.add_argument('--farfield-backend',choices=('gpu','face_nufft'),default='gpu',help='Experimental cached CPU planar-face NUFFT radiation')
+    parser.add_argument('--farfield-cpu-threads',type=int,default=8)
+    parser.add_argument('--farfield-eps',type=float,default=1e-10)
     parser.add_argument('--max-iters', type=int, default=1000)
     parser.add_argument('--mbj-nodes', type=int)
     parser.add_argument('--mbj-overlap', type=int, default=0)
@@ -234,6 +260,10 @@ def main():
     parser.add_argument('--adaptive-tight-tol',type=float,help='Opt-in strict controls and tighter retries for C6 packets')
     parser.add_argument('--prepare-only', action='store_true')
     args = parser.parse_args()
+    if args.farfield_backend=='face_nufft':
+        if not args.worker_binary:parser.error('face_nufft requires an explicit FINUFFT-enabled --worker-binary')
+        if not 1<=args.farfield_cpu_threads<=64 or not 1e-14<=args.farfield_eps<=1e-6:
+            parser.error('face radiation requires threads1..64 and eps1e-14..1e-6')
     order_evidence=None
     if args.order_study:
         from select_tmatrix_order import audit_and_select,validate_target
@@ -279,10 +309,15 @@ def main():
     out = args.out.resolve(); out.mkdir(parents=True, exist_ok=True)
     lock = (out/'controller.lock').open('w')
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    runtime = out/'runtime'; frozen_runtime(runtime,worker_binary=args.worker_binary.resolve() if args.worker_binary else None)
+    runtime = out/'runtime'; frozen_runtime(runtime,worker_binary=args.worker_binary.resolve() if args.worker_binary else None,
+                                          face_nufft=args.farfield_backend=='face_nufft')
     base = out/f'main_ref{args.ref}_L{args.order}'
     env = {k:v for k,v in os.environ.items() if not k.startswith('BEM_')}
     profile=solver_profile(args.ref,args.mbj_nodes)
+    if args.farfield_backend=='face_nufft':
+        profile.update(BEM_FARFIELD_BACKEND='face_nufft',BEM_FARFIELD_CPU_THREADS=str(args.farfield_cpu_threads),
+                       BEM_FARFIELD_EPS=str(args.farfield_eps),BEM_FARFIELD_PARALLEL_FACES='1')
+        env['LD_LIBRARY_PATH']=str(runtime/'lib')+(os.pathsep+env['LD_LIBRARY_PATH'] if env.get('LD_LIBRARY_PATH') else '')
     if args.hybrid_cpu:
         profile.update(BEM_TMATRIX_HYBRID='1',BEM_TMATRIX_CPU_STRICT='1')
         profile.update(OMP_WAIT_POLICY=os.environ.get('OMP_WAIT_POLICY','PASSIVE'),
@@ -390,6 +425,9 @@ def main():
     if args.sector_projected_factor!=.5:plan['resume_command']+=['--sector-projected-factor',str(args.sector_projected_factor)]
     if args.sector_first_pass_factor:plan['resume_command']+=['--sector-first-pass-factor',str(args.sector_first_pass_factor)]
     if args.worker_binary:plan['resume_command']+=['--worker-binary',str(args.worker_binary.resolve())]
+    if args.farfield_backend=='face_nufft':
+        plan['resume_command']+=['--farfield-backend','face_nufft','--farfield-cpu-threads',str(args.farfield_cpu_threads),
+                                 '--farfield-eps',str(args.farfield_eps)]
     if args.order_study:plan['resume_command']+=['--order-study',str(args.order_study.resolve()),
         '--order-error-budget',str(args.order_error_budget),'--order-guard',str(args.order_guard)]
     if args.solver_restart_from:

@@ -1,0 +1,12 @@
+test_both_polarizations_against_strict_full_operator (test_dirac_hierarchy_cpu.HierarchyCPU.test_both_polarizations_against_strict_full_operator) ... ok
+test_close_releases_panel_factors_without_waiting_for_gc (test_dirac_hierarchy_cpu.HierarchyCPU.test_close_releases_panel_factors_without_waiting_for_gc) ... ok
+test_global_transfer_columns_range_and_sector_eviction (test_dirac_hierarchy_cpu.HierarchyCPU.test_global_transfer_columns_range_and_sector_eviction) ... ok
+test_outer_full_P1_matches_exact_coarse_and_uses_no_FMM (test_dirac_hierarchy_cpu.HierarchyCPU.test_outer_full_P1_matches_exact_coarse_and_uses_no_FMM) ... ok
+test_projection_does_not_copy_the_full_correction (test_dirac_hierarchy_cpu.HierarchyCPU.test_projection_does_not_copy_the_full_correction) ... ok
+test_small_budget_rejects_before_coarse_allocation (test_dirac_hierarchy_cpu.HierarchyCPU.test_small_budget_rejects_before_coarse_allocation) ... ok
+test_sparse_all_pairs_equal_dense_in_multiple_sectors (test_dirac_hierarchy_cpu.HierarchyCPU.test_sparse_all_pairs_equal_dense_in_multiple_sectors) ... ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 38.028s
+
+OK

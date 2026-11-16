@@ -3,6 +3,7 @@
 #include "muller_duffy.h"
 #include "quadrature.h"
 #include "host_muller_correction.h"
+#include "fmm_media_compat.h"
 
 #include <algorithm>
 #include <array>
@@ -1974,6 +1975,11 @@ void MullerFmmOperator::apply_current_operators_gpu(
 
 void MullerFmmOperator::apply_current_operator_pair_gpu(bool strict)
 {
+    const char* fuse_setting=std::getenv("BEM_FMM_FUSE_MEDIA");
+    const bool fuse_media=strict && fuse_setting && std::strcmp(fuse_setting,"0")!=0;
+    if(fuse_media && (!banded_fmm || !multilevel_pair_enabled() ||
+        !fmm_two_media_near_compatible(fmm_exterior,fmm_interior)))
+        throw std::runtime_error("GPU media fusion requires multilevel paired FMM with identical flat near lists");
     gpu_assembly.project_charges_and_mass(0, 0);
     gpu_assembly.project_charges_and_mass(current_dofs, 1);
     const auto evaluate = [&](HelmholtzFMM& fmm) {
@@ -1986,7 +1992,7 @@ void MullerFmmOperator::apply_current_operator_pair_gpu(bool strict)
             const bool exterior=&fmm==&fmm_exterior;
             fmm.evaluate_multilevel_pair_device(real,imag,
                 banded_fmm_middle?(exterior?&fmm_exterior_middle:&fmm_interior_middle):nullptr,
-                exterior?fmm_exterior_coarse:fmm_interior_coarse);
+                exterior?fmm_exterior_coarse:fmm_interior_coarse,!fuse_media);
             return;
         }
         const auto normal = [&]() {
@@ -2070,6 +2076,12 @@ void MullerFmmOperator::apply_current_operator_pair_gpu(bool strict)
         current_dofs,
         1,
         1);
+    if(fuse_media){
+        // Both far slots are consumed before exterior slot0 becomes scratch.
+        // The original sparse Duffy correction was assembled exactly once.
+        gpu_assembly.add_two_media_near(fmm_exterior,fmm_interior,mu_exterior,mu_interior,0,true);
+        gpu_assembly.add_two_media_near(fmm_exterior,fmm_interior,epsilon_exterior,epsilon_interior,1,false);
+    }
 }
 
 void MullerFmmOperator::apply_current_operator_quad_gpu()

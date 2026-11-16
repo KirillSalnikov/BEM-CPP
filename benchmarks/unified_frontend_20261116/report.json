@@ -1,0 +1,65 @@
+{
+  "T126_relative_difference_from_dense": 1.2302917512000184e-15,
+  "all16_difference_over_dense_M11": 1.6378302282724632e-14,
+  "mapped_T126_vs_previous": 0.0,
+  "frontend_tests": 27,
+  "frontend_subtests": 16,
+  "Dirac_native_python_tests": 28,
+  "legacy_frontend": "passed",
+  "native_Dirac": "passed",
+  "native_media": "passed",
+  "FINUFFT": "48 cases passed; configured optional headers/library",
+  "CUDA_two_media": "432 cases passed",
+  "source_builds": [
+    "Dirac shared library",
+    "Muller GPU T worker"
+  ],
+  "manual_pdf": "rebuilt and page inspected",
+  "smoke_runs": {
+    "dirac_average": {
+      "state": "complete",
+      "task": "average",
+      "maximum_strict_residual": 4.922306274167518e-09,
+      "columns": 30
+    },
+    "dirac_fixed": {
+      "state": "complete",
+      "task": "fixed",
+      "maximum_strict_residual": 8.667790592742939e-09,
+      "columns": null
+    },
+    "dirac_T_only": {
+      "state": "complete",
+      "task": "tmatrix",
+      "maximum_strict_residual": 4.922306274167518e-09,
+      "columns": 30
+    },
+    "muller_final": {
+      "state": "complete",
+      "task": "average",
+      "maximum_strict_residual": 8.501005312443258e-09,
+      "columns": 30
+    },
+    "muller_fixed_final": {
+      "state": "complete",
+      "task": "fixed",
+      "maximum_strict_residual": 4.6193567692579095e-10,
+      "columns": null
+    },
+    "pmchwt_final": {
+      "state": "complete",
+      "task": "fixed"
+    }
+  },
+  "completed_continue": "no recomputation",
+  "CPU_supervision": "no nvidia-smi required; resource limit stops child process group",
+  "sha256": {
+    "build/libdirac.so": "f3ec3ffd9e7b065fa02a6f7d8d69762569b3d0a5a637cfbcc8c47324bee0ea89",
+    "bin/muller_tmatrix_fmm_server": "3b12ebe78028d99844f89715010ecbe7c8d0b20bed095aaee178667855a45b50",
+    "scripts/bem_cli.py": "bd95b495aaec90f0c8ef7971b94207d6d77b2de6973a1a9d3a1ce6c6078abb83",
+    "scripts/build_fmm_tmatrix.py": "3cd1df4ca6835b7b57e9a4deac4d5146776bd18f6dfcbc3e847e08b21330240b",
+    "benchmarks/clifford_dielectric_20261115/tmatrix.py": "d44b6ff0052b6152af9bbfadb268c094b42f40e0407d3bcaa417ef91c355cb8a"
+  },
+  "panel_factor_release": "weakref check passed, no waiting for GC",
+  "clean_staged_checkout": "passed: built Dirac shared library and native FP64 SO3 from source, completed T30 and average without untracked workspace dependencies"
+}

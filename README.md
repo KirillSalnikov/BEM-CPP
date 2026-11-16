@@ -26,6 +26,29 @@ checkpoints and the limits of every published comparison. The primary method
 uses P2 for smooth surfaces and H(div)-compatible BDM1 for sharp particles.
 The legacy PMCHWT/RWG path is separate.
 
+The unified interface selects **Muller**, experimental CPU **Dirac**, or legacy
+**PMCHWT** and records physical parameters, numerical settings and resource limits:
+
+```bash
+./bem wizard
+./bem methods
+./bem solve --method muller --task average --shape prism \
+  --ka 3 --index 1.3116 --wavelength .532 --symmetry auto --out runs/example
+./bem solve --method dirac --task average --ka 20 --ram-gib 40 --dry-run
+./bem continue runs/example
+```
+
+`--task fixed` solves both polarizations at `--orientation ALPHA BETA GAMMA`
+(ZYZ degrees); `tmatrix` saves T; `average` saves T and its analytic SO(3)
+average. `--index` accepts absorption, e.g. `1.3116+0.1i`. Choose `--ka` or
+physical `--radius` in micrometres. `--symmetry none|c6|c6v|d6h` overrides the
+automatic policy, with geometry checks. The initial ref/L selection does **not**
+certify 1% accuracy; mesh and angular convergence remain separate controls.
+Dirac currently supports sphere/prism; PMCHWT exposes fixed incidence only.
+See the first sections of the [manual](MANUAL.md) for outputs, memory, building
+and supported combinations. The older `bem average` command uses numerical
+Euler quadrature; analytical averaging is `bem solve --task average`.
+
 Build on Linux with a compatible CUDA/GCC toolchain, gfortran and BLAS/LAPACK.
 CPU FFT also needs the double-precision FFTW runtime (`libfftw3-double3` on
 Ubuntu); `BEM_CPU_FFTW_LIBRARY` can select a non-system installation:

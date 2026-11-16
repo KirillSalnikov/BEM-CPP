@@ -1,0 +1,3 @@
+g++-12 -O3 -march=native -fopenmp -std=c++11 -Isrc -Ibenchmarks/face_radiation_cpp_20261115/include tests/muller_face_radiation_check.cpp src/muller_dense.cpp src/muller_nodal.cpp src/muller_duffy.cpp src/mesh.cpp -o tests/muller_face_radiation_check -Lbenchmarks/gpu_media_radiation_20261115/python_deps/finufft -lfinufft -Wl,-rpath,/home/kirill/neuro/BEM-CPP-analytic-alpha/benchmarks/gpu_media_radiation_20261115/python_deps/finufft
+OMP_NUM_THREADS=4 OMP_WAIT_POLICY=PASSIVE tests/muller_face_radiation_check
+{"passed":true,"cases":48,"rejected":6,"max_field_error":4.4576404583070404e-10}

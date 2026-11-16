@@ -286,3 +286,40 @@ The reference is L=65, not an infinite-order solution. These tests do not
 establish surface-mesh convergence or accuracy of a ref=7 T matrix. Results
 and individual analytic averages are in
 `benchmarks/ref7_memory_20261109/ka40_saved_T_L_controls/`.
+
+### Strict ref=7 checker arithmetic, 2026-11-10
+
+The real-wavenumber double-single P2P path has an additional compensated
+implementation, selected by `BEM_FMM_P2P_DS_COMPENSATED=1` together with
+`BEM_FMM_P2P_DOUBLE_SINGLE=1`. It uses FMA product residuals, fused
+two-component sums, and a short FP32 tail of the range-reduced sine/cosine
+polynomials. The leading terms, coordinates, charges, and accumulated
+results retain both FP32 components. Far translations and the final
+output retain the existing FP64 path. No leaf partition, quadrature,
+acceptance tolerance, or residual-check count changes.
+
+For the SciIce prism at ka=40/ref=7 (4,552,704 unknowns), the complete native
+action was timed in ABBA order against saved independent original-FP64
+images of random and smooth inputs. The mean changed from **83.220 s to
+48.101 s (1.730x)**; the maximum relative image difference was
+**6.437e-13**. Observed GPU memory after each action was unchanged at
+13,413 MiB. The accepted launch uses 128 threads and 32 source partitions;
+the control used the previous 64-thread setting. These figures include
+the whole native action, rather than just the isolated near kernel.
+
+`run_large_tmatrix.py` selects this configuration for new launches. Frozen
+runtimes and completed checkpoints are unchanged. Setting the compensated
+flag to zero retains the previous double-single arithmetic; setting the
+double-single flag to zero retains the original independent FP64 oracle.
+Absorbing media, non-flat source lists, and ordinary mixed iterations
+continue through their existing dispatch paths.
+
+The CUDA check covers both arithmetic variants, both vector-action APIs,
+nonzero global coordinate offsets, near-coincident targets, large phases,
+partial tiles, source partition settings, zero currents, and unsupported
+path fallbacks: 532 cases, maximum per-target vector discrepancy 1.951e-10
+against FP64. Reports and the executable comparison driver are under
+`benchmarks/ref7_checker_20261110/`. A more aggressive trigonometric tail
+was screened and discarded; the accepted code is the variant validated
+by the complete native-action comparison. No complete ref=7 T solve or
+ka=100 runtime is certified by these measurements.

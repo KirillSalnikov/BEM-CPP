@@ -1,0 +1,7 @@
+[WARNING] Deprecated: --no-highlight. Use --syntax-highlighting=none instead.
+Overfull \hbox (1.74954pt too wide) in paragraph at lines 461--462
+Overfull \hbox (6.0976pt too wide) in paragraph at lines 469--470
+Overfull \hbox (17.62357pt too wide) in paragraph at lines 471--472
+Overfull \hbox (2.67963pt too wide) in paragraph at lines 477--477
+Overfull \hbox (2.67963pt too wide) in paragraph at lines 478--478
+Built MANUAL.tex and MANUAL.pdf from MANUAL.md

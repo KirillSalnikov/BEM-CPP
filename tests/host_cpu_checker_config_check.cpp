@@ -7,17 +7,23 @@ int main()try{
     const char* requirements[]={"BEM_TMATRIX_HYBRID","BEM_TMATRIX_SECTOR_GMRES","BEM_TMATRIX_D6H_MESH",
         "BEM_TMATRIX_FACE_FFT","BEM_FACE_FFT_STRICT_ONLY","BEM_FACE_FFT_TARGET_FACES","BEM_FACE_FFT_REUSE_CROSS"};
     const auto reset=[&]{for(auto key:requirements)unsetenv(key);
-        for(auto key:{"BEM_CPU_CHECKER_BACKEND","BEM_CPU_FACE_FFT_TILE","BEM_TMATRIX_CPU_STRICT","BEM_CPU_AVX512"})unsetenv(key);};
+        for(auto key:{"BEM_CPU_CHECKER_BACKEND","BEM_CPU_FACE_FFT_TILE","BEM_TMATRIX_CPU_STRICT","BEM_CPU_AVX512","BEM_CPU_FUSE_MEDIA"})unsetenv(key);};
     reset();if(CpuCheckerConfig::from_environment("sphere",0).backend!="fmm")throw std::runtime_error("default backend changed");
     int accepted=1,rejected=0;
     const auto reject=[&](std::function<void()> action){bool refused=false;try{action();}catch(const std::exception&){refused=true;}
         if(!refused)throw std::runtime_error("invalid CPU checker configuration accepted");
         ++rejected;};
+    setenv("BEM_CPU_FUSE_MEDIA","1",1);
+    if(!CpuCheckerConfig::from_environment("sphere",0).fuse_media)throw std::runtime_error("media flag lost");
+    ++accepted;
+    for(auto value:{"","2","true"}){setenv("BEM_CPU_FUSE_MEDIA",value,1);reject([&]{CpuCheckerConfig::from_environment("prism",2);});}
+    reset();
     for(auto mode:{"face_fft","face_fft_batch","face_fft_shared"}){
         reset();for(auto key:requirements)setenv(key,"1",1);setenv("BEM_CPU_CHECKER_BACKEND",mode,1);
         const auto c=CpuCheckerConfig::from_environment("prism",2);
         if(!c.face||c.batch!=(std::string(mode)!="face_fft")||c.shared_near!=(std::string(mode)=="face_fft_shared"))throw std::runtime_error("backend mode lost");
         ++accepted;
+        setenv("BEM_CPU_FUSE_MEDIA","1",1);reject([&]{CpuCheckerConfig::from_environment("prism",2);});unsetenv("BEM_CPU_FUSE_MEDIA");
         for(auto key:requirements){if(!c.batch && std::string(key)=="BEM_FACE_FFT_REUSE_CROSS")continue;
             unsetenv(key);reject([&]{CpuCheckerConfig::from_environment("prism",2);});setenv(key,"1",1);}
         for(auto shape:{"sphere","tetra"})reject([&]{CpuCheckerConfig::from_environment(shape,2);});

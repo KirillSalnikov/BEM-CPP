@@ -8,12 +8,18 @@
 namespace bem_cpu {
 struct CpuCheckerConfig {
     std::string backend="fmm";
-    bool face=false,batch=false,shared_near=false;
+    bool face=false,batch=false,shared_near=false,fuse_media=false;
     int tile=32;
     static CpuCheckerConfig from_environment(const std::string& shape,int ref){
         CpuCheckerConfig config;
+        if(const char* value=std::getenv("BEM_CPU_FUSE_MEDIA")){
+            if(std::strcmp(value,"0") && std::strcmp(value,"1"))
+                throw std::invalid_argument("BEM_CPU_FUSE_MEDIA must be 0 or 1");
+            config.fuse_media=std::strcmp(value,"0")!=0;
+        }
         if(const char* value=std::getenv("BEM_CPU_CHECKER_BACKEND"))config.backend=value;
         if(config.backend=="fmm")return config;
+        if(config.fuse_media)throw std::invalid_argument("CPU fused media currently requires FMM backend");
         if(config.backend!="face_fft"&&config.backend!="face_fft_batch"&&config.backend!="face_fft_shared")
             throw std::invalid_argument("BEM_CPU_CHECKER_BACKEND must be fmm, face_fft, face_fft_batch or face_fft_shared");
         config.face=true;config.batch=config.backend!="face_fft";config.shared_near=config.backend=="face_fft_shared";

@@ -466,9 +466,18 @@ void PrismFaceFFT::init(const std::vector<double>& xyz,int ref,cdouble k,int dig
                           shared_geometry->p->aspect!=aspect || shared_geometry->p->target_faces!=p->target_faces ||
                           shared_geometry->p->reuse_cross!=p->reuse_cross))
         throw std::runtime_error("FFT near cache sharing requires identical ordered geometry");
-    const int seg=1<<ref;int nz=std::max(seg,int(std::ceil(std::sqrt(3.)*aspect*seg)));if(nz%2)++nz;
-    const int expected=7*12*seg*(seg+nz);
-    if(p->count!=expected)throw std::runtime_error("prism FFT needs the unrefined-edge D6h mesh and quadrature-7");
+    const int seg=1<<ref;
+    // Read the vertical cell count from the supplied quadrature. Recomputing
+    // ceil(sqrt(3)*aspect*seg) can differ by two rows from regular_prism at
+    // an integer boundary: that builder uses the length of a scaled edge.
+    // Preserve its actual mesh; the lattice and bijection checks below still
+    // verify every point rather than silently resampling the geometry.
+    const int row_points=7*12*seg;
+    const int nz=p->count/row_points-seg;
+    const double nominal_nz=std::max(double(seg),std::sqrt(3.)*aspect*seg);
+    if(p->count%row_points || nz<seg || nz%2 ||
+       nz<nominal_nz-1e-8 || nz>nominal_nz+2.+1e-8)
+        throw std::runtime_error("prism FFT needs the unrefined-edge D6h mesh and quadrature-7");
     const double pi=std::acos(-1.),width=std::cbrt(8*pi/(3*std::sqrt(3.)*aspect));
     const double height=aspect*width,radius=width/std::sqrt(3.);
     const double h=radius/seg,zstep=height/nz;

@@ -61,6 +61,12 @@ public:
         int slot,
         int fmm_result_slot = 0);
 
+    // After both far-field slots have been assembled, reuse exterior slot0
+    // point arrays as scratch. Add exact combined near terms for one current.
+    void add_two_media_near(HelmholtzFMM& exterior,const HelmholtzFMM& interior,
+        std::complex<double> curl_exterior,std::complex<double> curl_interior,
+        int current_slot,bool electric_current);
+
     void combine_and_download(
         std::complex<double> k_exterior,
         std::complex<double> epsilon_exterior,

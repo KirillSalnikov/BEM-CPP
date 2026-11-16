@@ -71,6 +71,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--shape',choices=['sphere','prism','tetra'],default='sphere')
     parser.add_argument('--obj',type=Path)
+    parser.add_argument('--obj-symmetry',action='store_true',help='Audit imported OBJ geometry before selecting compatible symmetry reductions')
     parser.add_argument('--particle','-p',nargs='+',type=float,
                         help='MBS-fast geometry: TYPE parameters; types 1,2,3,4,10,12,999')
     parser.add_argument('--particle-file','--pf',type=Path,help='Native MBS-fast polygon file')
@@ -125,12 +126,16 @@ def main():
     parser.add_argument('--so3-threads',type=int,default=4)
     parser.add_argument('--so3-precision',choices=['auto','fp32','fp64'],default='auto')
     parser.add_argument('--plane-only',action='store_true',help='Measure one direct plane-wave pair with the same resident operator')
+    parser.add_argument('--plane-euler',type=float,nargs=3,default=None,metavar=('ALPHA','BETA','GAMMA'),
+                        help='Fixed-incidence body-to-lab ZYZ angles in degrees; requires --plane-only')
     parser.add_argument('--out',type=Path,required=True)
     parser.add_argument('--worker-binary',type=Path,help='Pin a worker executable for long builds')
     parser.add_argument('--neural-prior',type=Path,
                         help='Checked T-specific physical current prior; one shared D6h correction for all modal RHS')
     parser.add_argument('--operator-cache-prefix',type=Path,help='Reuse validated near/MBJ caches from an existing operator')
     args=parser.parse_args()
+    if args.plane_euler is not None and (not args.plane_only or not np.isfinite(args.plane_euler).all()):
+        parser.error('--plane-euler requires --plane-only and three finite angles')
     particle_info=None
     if args.particle is not None or args.particle_file is not None:
         if args.obj is not None or (args.particle is not None and args.particle_file is not None):
@@ -154,6 +159,19 @@ def main():
             os.environ.setdefault('BEM_TMATRIX_D6H_MESH','1')
         else:
             args.shape='particle';args.obj=generated
+    elif args.obj is not None and args.obj_symmetry:
+        import trimesh
+        from surface_symmetry import PointGroup
+        from mbs_particle_geometry import solver_symmetries
+        mesh=trimesh.load(args.obj,force='mesh',process=False)
+        if not mesh.is_watertight or not mesh.is_winding_consistent or mesh.volume<=0:
+            parser.error('OBJ must be closed, consistently oriented and have positive volume')
+        measured=PointGroup.detect(np.asarray(mesh.vertices),np.asarray(mesh.faces)).summary()
+        particle_info=dict(name='imported_obj',particle=None,symmetry=measured,
+                           equivalent_radius=float((3*mesh.volume/(4*np.pi))**(1/3)))
+        particle_info['solver_symmetries']=solver_symmetries(particle_info)
+        args.shape='particle'
+    if particle_info is not None:
         sym=particle_info['solver_symmetries']
         if args.c2_reuse and not sym['c2_x']:parser.error('--c2-reuse requires verified C2x symmetry')
         if args.vertical_reuse and not sym['vertical_mirror']:
@@ -310,10 +328,18 @@ def main():
     directions.tofile(out/'directions.bin')
     check_basis=transverse_harmonics(directions[projection_points:],args.order)
     _,_,et,ep=tangent_frame(directions)
+    if args.plane_only:
+        from scattering_frame import frame
+        plane_theta=np.linspace(0.,180.,args.ntheta)
+        plane_frame,directions,et,ep=frame(args.plane_euler or [0.,0.,0.],plane_theta)
+        directions.tofile(out/'directions.bin')
     geometry=str(args.obj.resolve()) if args.obj else args.shape
     binary=args.worker_binary.resolve() if args.worker_binary else ROOT/'bin/muller_tmatrix_fmm_server'
     fingerprint={k:v for k,v in vars(args).items() if k not in ('out','columns','column_indices','max_pairs_this_run','fast_mlfma','ntheta','no_average','obj','plane_only','operator_cache_prefix','average_backend','so3_threads','so3_precision','worker_binary','seed_from','solver_restart_from','solver_restart_proof')}
     fingerprint.pop('particle');fingerprint.pop('particle_file');fingerprint.pop('particle_symmetry')
+    if not args.obj_symmetry:fingerprint.pop('obj_symmetry')
+    if not args.plane_only:fingerprint.pop('plane_euler')
+    else:fingerprint.update(plane_only=True,plane_ntheta=args.ntheta)
     if particle_info is not None:
         fingerprint['particle_geometry']=particle_info
         fingerprint['particle_generator_digest']=hashlib.sha256((ROOT/'scripts/mbs_particle_geometry.py').read_bytes()).hexdigest()
@@ -647,10 +673,12 @@ def main():
                 cache=not args.no_incident_cache and not args.plane_only,prefetch=args.incident_prefetch)
             plane_control=None
             if args.plane_only:
-                plane=np.array([1.,0.,0.,0.,1.,0.,0.,0.,1.],dtype=np.float64)
+                plane=np.ascontiguousarray(plane_frame,dtype=np.float64).ravel()
                 connection.sendall(struct.pack('=i',2)); connection.sendall(memoryview(plane).cast('B'))
                 plane_control=result()
                 atomic_json(out/'plane_control.json',plane_control)
+                from scattering_frame import mueller,save_mueller
+                save_mueller(out,plane_theta,mueller(far,et,ep,args.ka))
             inflight=deque()
             capacity=int(hello.get('hybrid_batch_capacity',1))
             if capacity not in (1,2):
@@ -823,6 +851,15 @@ def main():
                 except subprocess.TimeoutExpired:
                     process.kill(); process.wait()
     total_seconds=time.monotonic()-startup
+    if args.plane_only:
+        atomic_json(out/'summary.json',dict(complete=True,task='fixed',plane_control=plane_control,
+            elapsed_this_run_s=total_seconds,operator=hello,parameters=fingerprint,
+            euler_degrees=args.plane_euler or [0.,0.,0.],wavelength_um=args.wavelength,
+            volume_equivalent_radius_um=args.ka*args.wavelength/(2*np.pi) if args.wavelength else None,
+            Mueller_units='dimensionless; multiply by (wavelength/(2*pi))^2 for differential cross section',
+            maximum_strict_residual=max(plane_control['strict_residual_x'],plane_control['strict_residual_y'])))
+        atomic_json(out/'progress.json',dict(state='complete',task='fixed'))
+        return
     all_status=[json.loads((column_dir/f'{i:06d}.json').read_text()) for i in range(count) if valid_column(i)]
     phase=np.array([1j**(l-p) for p,l,m in modal_list])
     column_physics=[]
@@ -918,7 +955,7 @@ def main():
                 import mmap
                 kernel._mmap.madvise(mmap.MADV_DONTNEED)
                 mean,post=analytic_mueller_tmatrix(t,args.order,theta,threads=args.so3_threads,
-                    precision=args.so3_precision,cyclic_order=6 if (builtin_prism or symmetry_allowed.get('c6_z'))
+                    precision=args.so3_precision,cyclic_order=6 if args.c6_pack and (builtin_prism or symmetry_allowed.get('c6_z'))
                     and not c6_individual_fallback and (particle_info is None or args.particle_symmetry=='auto') else 1)
             else:
                 mean=args.ka**2*analytic_mueller(kernel,args.order,theta)

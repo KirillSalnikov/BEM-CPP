@@ -28,6 +28,10 @@
 #include "resident_prism_inverse.h"
 #include "resident_sector_operator.h"
 #include "external_fft_action.h"
+#ifdef BEM_ENABLE_FINUFFT
+#include "muller_face_radiation.h"
+#include "muller_dense.h"
+#endif
 #include <cuda_profiler_api.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -88,6 +92,13 @@ int main(int argc,char** argv) try {
     if(ka<=0||tol<=0||ref<0||restart<2||maxiter<1) throw std::runtime_error("invalid worker parameters");
     const auto cpu_backend=bem_cpu::CpuCheckerConfig::from_environment(shape,ref);
     const auto planar_config=bem_osrc::PreconditionerConfig::from_environment(shape,ref,ka,ri);
+    const char* radiation_setting=std::getenv("BEM_FARFIELD_BACKEND");
+    const std::string radiation_backend=radiation_setting?radiation_setting:"gpu";
+    if(radiation_backend!="gpu" && radiation_backend!="face_nufft")
+        throw std::invalid_argument("BEM_FARFIELD_BACKEND must be gpu or face_nufft");
+#ifndef BEM_ENABLE_FINUFFT
+    if(radiation_backend=="face_nufft")throw std::runtime_error("face_nufft requires a BEM_ENABLE_FINUFFT build");
+#endif
     const auto ritz_image_config=bem_ritz::ImageConfig::from_environment();
     const char* gpu_batch_setting=std::getenv("BEM_TMATRIX_GPU_BATCH2");
     if(gpu_batch_setting && std::strcmp(gpu_batch_setting,"0") && std::strcmp(gpu_batch_setting,"1"))
@@ -200,6 +211,22 @@ int main(int argc,char** argv) try {
     op.set_fmm_near_fp32(true);
 #endif
     const double setup_seconds=seconds(setup_start);
+    double radiation_setup_seconds=0,radiation_eps=0;
+    size_t radiation_owned_bytes=0,radiation_faces=0;
+    int radiation_threads=0;bool radiation_parallel=false;
+#ifdef BEM_ENABLE_FINUFFT
+    std::unique_ptr<MullerFaceRadiation> radiation;
+    if(radiation_backend=="face_nufft"){
+        const auto before=Clock::now();
+        radiation_eps=std::getenv("BEM_FARFIELD_EPS")?std::stod(std::getenv("BEM_FARFIELD_EPS")):1e-10;
+        radiation_threads=std::getenv("BEM_FARFIELD_CPU_THREADS")?std::stoi(std::getenv("BEM_FARFIELD_CPU_THREADS")):4;
+        const char* parallel=std::getenv("BEM_FARFIELD_PARALLEL_FACES");radiation_parallel=!parallel||std::strcmp(parallel,"0")!=0;
+        radiation.reset(new MullerFaceRadiation(op.mesh,op.k_exterior,directions,radiation_eps,radiation_threads,13,128,radiation_parallel));
+        radiation_owned_bytes=radiation->owned_bytes();radiation_faces=radiation->faces();radiation_setup_seconds=seconds(before);
+        std::printf("[face radiation] faces=%zu points=%zu threads=%d parallel=%d eps=%.3g owned_MiB=%.3f setup_s=%.6f\n",
+            radiation_faces,radiation->points(),radiation_threads,int(radiation_parallel),radiation_eps,radiation_owned_bytes/1048576.,radiation_setup_seconds);
+    }
+#endif
     MullerMbjPreconditioner mbj;
     const auto mbj_start=Clock::now();
     const char* mbj_environment=std::getenv("BEM_TMATRIX_MBJ_NODES");
@@ -530,7 +557,7 @@ int main(int argc,char** argv) try {
         const size_t budget=size_t(sector_integer("BEM_CPU_MEMORY_MB",24576,262144))*1024*1024;
         cpu_memory_budget=budget;
         const auto estimate=[&]{
-            size_t value=bem_cpu::MullerAction::estimated_workspace_bytes(op,cpu_phase_budget,true,cpu_backend.face,cpu_backend.batch,cpu_backend.tile);
+            size_t value=bem_cpu::MullerAction::estimated_workspace_bytes(op,cpu_phase_budget,true,cpu_backend.face,cpu_backend.batch,cpu_backend.tile,cpu_backend.fuse_media);
             if(cpu_backend.face){
                 // Startup symmetry probes, map vectors and an allowance for
                 // FFTW plan/internal allocations and per-thread kernel tiles.
@@ -546,7 +573,7 @@ int main(int argc,char** argv) try {
             throw std::runtime_error("CPU checker exceeds BEM_CPU_MEMORY_MB before allocating its workspace");
         setenv("BEM_CPU_AVX512","1",0);
         bem_cpu::configure_threads(cpu_threads,"BEM_CPU_AFFINITY");
-        cpu_checker.reset(new bem_cpu::MullerAction(op,cpu_phase_budget,true,cpu_backend.face,cpu_backend.batch,cpu_backend.tile,cpu_backend.shared_near));
+        cpu_checker.reset(new bem_cpu::MullerAction(op,cpu_phase_budget,true,cpu_backend.face,cpu_backend.batch,cpu_backend.tile,cpu_backend.shared_near,cpu_backend.fuse_media));
         if(cpu_backend.shared_near && cpu_checker->shared_avx512_near_bands!=4)
             throw std::runtime_error("CPU shared checker requires AVX512 in both media and face kinds");
         if(cpu_checker->workspace_bytes()>cpu_memory_budget)
@@ -665,6 +692,10 @@ int main(int argc,char** argv) try {
          <<",\"rhs_threads_max\":"<<rhs_assembler.thread_limit()
          <<",\"directions\":"<<directions.size()<<",\"radius\":"<<radius
          <<",\"operator_setup_s\":"<<setup_seconds<<",\"mbj_setup_s\":"<<mbj_seconds
+         <<",\"radiation_backend\":\""<<radiation_backend<<"\",\"radiation_setup_s\":"<<radiation_setup_seconds
+         <<",\"radiation_owned_bytes\":"<<radiation_owned_bytes<<",\"radiation_faces\":"<<radiation_faces
+         <<",\"radiation_threads\":"<<radiation_threads<<",\"radiation_eps\":"<<radiation_eps
+         <<",\"radiation_parallel_faces\":"<<(radiation_parallel?"true":"false")
          <<",\"mbj_storage_mb\":"<<mbj.storage_megabytes()
          <<",\"sector_gmres\":"<<(sector_solver?"true":"false")<<",\"orbit_nodes\":"<<(sector_solver?orbit_nodes:0)
          <<",\"hybrid_batch_capacity\":"<<(hybrid_requested?2:1)
@@ -681,6 +712,7 @@ int main(int argc,char** argv) try {
          <<",\"hybrid_cpu_avx512_near_bands\":"<<(cpu_checker?cpu_checker->avx512_near_bands:0)
          <<",\"hybrid_cpu_checker_backend\":\""<<cpu_backend.backend<<"\""
          <<",\"hybrid_cpu_shared_near_bands\":"<<(cpu_checker?cpu_checker->shared_avx512_near_bands:0)
+         <<",\"hybrid_cpu_fused_media_near_pairs\":"<<(cpu_checker?cpu_checker->fused_media_near_pairs:0)
          <<",\"hybrid_cpu_face_tile\":"<<(cpu_backend.face?cpu_backend.tile:0)
          <<",\"hybrid_cpu_D6h_error\":"<<cpu_D6h_error
          <<",\"hybrid_cpu_estimated_peak_bytes\":"<<cpu_estimated_peak_bytes
@@ -939,6 +971,32 @@ int main(int argc,char** argv) try {
         const double check_seconds=seconds(check_start);
         const auto farfield_start=Clock::now();
         std::vector<Complex> far_x,far_y;
+        double radiation_audit_seconds=0,radiation_audit_error=0;
+#ifdef BEM_ENABLE_FINUFFT
+        if(radiation){
+            radiation->apply_pair(solution[0].data(),solution[1].data(),far_x,far_y);
+            // One independent, bounded check on actual solved T currents.
+            // It runs before sending the first packet, not for every column.
+            if(completed_pairs==0){const auto audit_start=Clock::now();
+                const size_t count=std::min(size_t(32),directions.size());std::vector<Vec3> audit_directions;
+                std::vector<size_t> indices;for(size_t j=0;j<count;++j){const size_t index=count==1?0:j*(directions.size()-1)/(count-1);
+                    indices.push_back(index);audit_directions.push_back(directions[index]);}
+                std::vector<Complex> reference_x,reference_y;
+                // Independent original CPU FP64 quadrature; GPU production
+                // radiation may use FP32 phase/accumulation by default.
+                muller_nodal_farfield_pair(op.mesh,solution[0].data(),solution[0].data()+op.current_dofs,
+                    solution[1].data(),solution[1].data()+op.current_dofs,op.k_exterior,
+                    audit_directions,reference_x,reference_y,13);
+                double numerator=0,denominator=0;
+                for(size_t j=0;j<count;++j)for(int axis=0;axis<3;++axis){
+                    numerator+=std::norm(far_x[3*indices[j]+axis]-reference_x[3*j+axis])+std::norm(far_y[3*indices[j]+axis]-reference_y[3*j+axis]);
+                    denominator+=std::norm(reference_x[3*j+axis])+std::norm(reference_y[3*j+axis]);}
+                radiation_audit_error=std::sqrt(numerator/std::max(denominator,1e-300));radiation_audit_seconds=seconds(audit_start);
+                if(!std::isfinite(radiation_audit_error)||radiation_audit_error>1e-6)
+                    throw std::runtime_error("face radiation disagrees with original CPU FP64 first-packet reference");
+            }
+        }else
+#endif
         op.farfield_pair(solution[0].data(),solution[1].data(),directions,far_x,far_y);
         const double farfield_seconds=seconds(farfield_start);
         ++completed_pairs;
@@ -996,6 +1054,8 @@ int main(int argc,char** argv) try {
               <<",\"symmetry_warm_start_s\":"<<warm.seconds
               <<",\"rhs_s\":"<<rhs_seconds<<",\"strict_residual_x\":"<<rx<<",\"strict_residual_y\":"<<ry
               <<",\"check_s\":"<<check_seconds<<",\"farfield_s\":"<<farfield_seconds
+              <<",\"radiation_backend\":\""<<radiation_backend<<"\",\"radiation_audit_s\":"<<radiation_audit_seconds
+              <<",\"radiation_audit_error\":"<<radiation_audit_error
               <<",\"independent_residual_recheck\":"<<(independent_check ? "true" : "false")
               <<",\"worker_peak_rss_mb\":"<<usage.ru_maxrss/1024.
               <<",\"total_worker_s\":"<<seconds(request_start)<<"}";

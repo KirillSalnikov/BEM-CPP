@@ -1,12 +1,15 @@
 % Options for packages loaded elsewhere
 \PassOptionsToPackage{unicode}{hyperref}
 \PassOptionsToPackage{hyphens}{url}
-%
 \documentclass[
+  russian,
   11pt,
   a4paper,
 ]{report}
+\usepackage{xcolor}
+\usepackage[margin=22mm]{geometry}
 \usepackage{amsmath,amssymb}
+\setcounter{secnumdepth}{-\maxdimen} % remove section numbering
 \usepackage{iftex}
 \ifPDFTeX
   \usepackage[T1]{fontenc}
@@ -40,9 +43,8 @@
 }{% if KOMA class
   \KOMAoptions{parskip=half}}
 \makeatother
-\usepackage{xcolor}
-\usepackage[margin=22mm]{geometry}
 \usepackage{longtable,booktabs,array}
+\newcounter{none} % for unnumbered tables
 \usepackage{calc} % for calculating minipage widths
 % Correct order of tables after \paragraph or \subparagraph
 \usepackage{etoolbox}
@@ -54,34 +56,34 @@
 \makesavenoteenv{longtable}
 \usepackage{graphicx}
 \makeatletter
-\def\maxwidth{\ifdim\Gin@nat@width>\linewidth\linewidth\else\Gin@nat@width\fi}
-\def\maxheight{\ifdim\Gin@nat@height>\textheight\textheight\else\Gin@nat@height\fi}
-\makeatother
-% Scale images if necessary, so that they will not overflow the page
-% margins by default, and it is still possible to overwrite the defaults
-% using explicit options in \includegraphics[width, height, ...]{}
-\setkeys{Gin}{width=\maxwidth,height=\maxheight,keepaspectratio}
+\newsavebox\pandoc@box
+\newcommand*\pandocbounded[1]{% scales image to fit in text height/width
+  \sbox\pandoc@box{#1}%
+  \Gscale@div\@tempa{\textheight}{\dimexpr\ht\pandoc@box+\dp\pandoc@box\relax}%
+  \Gscale@div\@tempb{\linewidth}{\wd\pandoc@box}%
+  \ifdim\@tempb\p@<\@tempa\p@\let\@tempa\@tempb\fi% select the smaller of both
+  \ifdim\@tempa\p@<\p@\scalebox{\@tempa}{\usebox\pandoc@box}%
+  \else\usebox{\pandoc@box}%
+  \fi%
+}
 % Set default figure placement to htbp
-\makeatletter
 \def\fps@figure{htbp}
 \makeatother
-\setlength{\emergencystretch}{3em} % prevent overfull lines
-\providecommand{\tightlist}{%
-  \setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
-\setcounter{secnumdepth}{-\maxdimen} % remove section numbering
 \ifLuaTeX
-\usepackage[bidi=basic]{babel}
+\usepackage[bidi=basic,shorthands=off,provide=*]{babel}
 \else
-\usepackage[bidi=default]{babel}
+\usepackage[bidi=default,shorthands=off,provide=*]{babel}
 \fi
-\babelprovide[main,import]{russian}
 \ifPDFTeX
 \else
 \babelfont{rm}[]{DejaVu Serif}
 \fi
-% get rid of language-specific shorthands (see #6817):
-\let\LanguageShortHands\languageshorthands
-\def\languageshorthands#1{}
+\ifLuaTeX
+  \usepackage{selnolig} % disable illegal ligatures
+\fi
+\setlength{\emergencystretch}{3em} % prevent overfull lines
+\providecommand{\tightlist}{%
+  \setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
 
 \usepackage{fvextra}
 \RecustomVerbatimEnvironment{verbatim}{Verbatim}{breaklines=true,fontsize=\small}
@@ -96,10 +98,7 @@
 \sloppy
 \raggedbottom
 \AtBeginDocument{\hypersetup{colorlinks=true,linkcolor=blue!45!black,urlcolor=blue!55!black}}
-\ifLuaTeX
-  \usepackage{selnolig}  % disable illegal ligatures
-\fi
-\IfFileExists{bookmark.sty}{\usepackage{bookmark}}{\usepackage{hyperref}}
+\usepackage{bookmark}
 \IfFileExists{xurl.sty}{\usepackage{xurl}}{} % add URL line breaks if available
 \urlstyle{same}
 \hypersetup{
@@ -111,7 +110,7 @@
 
 \title{BEM-CPP: T-матрица и мультиразмерные расчёты}
 \author{К. С. Сальников}
-\date{Версия программы: 1.0.0 --- 1 ноября 2026 г.}
+\date{База 1.0.0; интерфейс и Дирак обновлены 16 ноября 2026 г.}
 
 \begin{document}
 \maketitle
@@ -120,9 +119,8 @@
 \setcounter{tocdepth}{1}
 \tableofcontents
 }
-\hypertarget{ux43dux430ux437ux43dux430ux447ux435ux43dux438ux435-ux438-ux433ux440ux430ux43dux438ux446ux44b-ux432ux435ux440ux441ux438ux438}{%
 \chapter{Назначение и границы
-версии}\label{ux43dux430ux437ux43dux430ux447ux435ux43dux438ux435-ux438-ux433ux440ux430ux43dux438ux446ux44b-ux432ux435ux440ux441ux438ux438}}
+версии}\label{ux43dux430ux437ux43dux430ux447ux435ux43dux438ux435-ux438-ux433ux440ux430ux43dux438ux446ux44b-ux432ux435ux440ux441ux438ux438}
 
 Руководство для release \nolinkurl{1.0.0}. Основной маршрут:
 поверхностные токи BEM → T-матрица → аналитическое усреднение по всем
@@ -144,9 +142,369 @@ MBS-fast. Числа относятся к конкретным сохранён
 сохранено в \href{docs/legacy_fixed_orientation_manual.md}{архиве
 фиксированной ориентации}.
 
-\hypertarget{ux444ux438ux437ux438ux447ux435ux441ux43aux438ux435-ux43fux430ux440ux430ux43cux435ux442ux440ux44b-ux438-ux43eux434ux438ux43dux430ux43aux43eux432ux430ux44f-ux433ux435ux43eux43cux435ux442ux440ux438ux44f}{%
+\chapter{Простой интерфейс: метод, частица и тип
+расчёта}\label{ux43fux440ux43eux441ux442ux43eux439-ux438ux43dux442ux435ux440ux444ux435ux439ux441-ux43cux435ux442ux43eux434-ux447ux430ux441ux442ux438ux446ux430-ux438-ux442ux438ux43f-ux440ux430ux441ux447ux451ux442ux430}
+
+Новые команды ветки разработки (16 ноября 2026 г.) работают поверх
+проверяемых решателей. Старые \nolinkurl{bem run},
+\nolinkurl{bem average} и экспертные скрипты сохранены.
+\textbf{\nolinkurl{bem average} --- прежнее численное усреднение по
+Эйлеровым углам.} Для аналитического усреднения через T используйте
+\textbf{\nolinkurl{bem solve --task average}}.
+
+Пошаговый запуск из терминала:
+
+\begin{verbatim}
+./bem wizard
+\end{verbatim}
+
+Команда задаёт вопросы о методе, форме, размере, материале и типе
+результата, печатает повторяемую командную строку и запускает расчёт. В
+пакетном режиме:
+
+\begin{verbatim}
+# Одна ориентация частицы; решаются обе поляризации.
+./bem solve --method muller --task fixed --shape prism \
+  --ka 3 --index 1.3116+0.05i --wavelength 0.532 \
+  --aspect 1.4285714285714286 --orientation 0 30 0 \
+  --out runs/prism_fixed
+
+# Построить и сохранить полную T, затем аналитически усреднить по SO(3).
+./bem solve --method muller --task average --shape prism \
+  --ka 3 --index 1.3116 --wavelength 0.532 --symmetry auto \
+  --out runs/prism_T_average
+
+# Экспериментальный Дирак на CPU; те же физические параметры.
+./bem solve --method dirac --task average --shape prism \
+  --ka 3 --index 1.3116 --wavelength 0.532 \
+  --out runs/dirac_T_average
+\end{verbatim}
+
+\nolinkurl{--task tmatrix} сохраняет T без свёртки SO(3).
+\nolinkurl{--task fixed} не строит T. \nolinkurl{--task average}
+сохраняет и T, и все 16 усреднённых элементов Мюллера.
+\nolinkurl{--ntheta 181} задаёт выходные углы рассеяния 0\ldots180°, не
+число ориентаций. Только режим \nolinkurl{fixed} принимает
+\nolinkurl{--orientation ALPHA BETA GAMMA}.
+
+\section{Как выбрать
+метод}\label{ux43aux430ux43a-ux432ux44bux431ux440ux430ux442ux44c-ux43cux435ux442ux43eux434}
+
+\begin{verbatim}
+./bem methods
+./bem solve --help
+\end{verbatim}
+
+{\def\LTcaptype{none} % do not increment counter
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+\nolinkurl{--method}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Уравнение и реализация
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Доступные расчёты
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\nolinkurl{muller} (по умолчанию) & Мюллер второго рода, P2 для гладких
+поверхностей и BDM1 для рёбер, GPU/FMM & Фиксированное падение, T,
+аналитическое SO(3); сфера, призма, тетраэдр, формы MBS, OBJ \\
+\nolinkurl{dirac} & Экспериментальное восьмикомпонентное уравнение
+Дирака, панельный базис P2/P3, CPU FP64 & Фиксированное падение, T,
+SO(3); пока только сфера и правильная шестиугольная призма \\
+\nolinkurl{pmchwt} & Прежняя RWG-дискретизация PMCHWT, GPU/FMM &
+Фиксированное падение; T/SO(3) в единый интерфейс не подключены \\
+\end{longtable}
+}
+
+FMM, FFT, плотное хранение, GMRES и предобуславливатели --- настройки
+вычисления выбранного уравнения. Это не дополнительные физические
+методы. Прежний RWG-эксперимент \nolinkurl{muller2} не эквивалентен
+основному Мюллеру и не предлагается новичку как взаимозаменяемый
+вариант.
+
+Для Дирака \nolinkurl{--backend auto} выбирает плотный SIMD-оператор,
+если оценка памяти позволяет. Иначе для симметричной призмы выбирается
+\nolinkurl{fmm-sector}: точное ближнее взаимодействие, FMM дальнего
+поля, локальная ILU и ограниченная глобальная поправка. Для большой
+сферы эта секторная реализация пока недоступна: интерфейс сообщает
+ограничение до расчёта. Произвольные формы следует считать Мюллером.
+Неподдерживаемое сочетание не заменяется другим уравнением без
+сообщения.
+
+\section{Физические параметры и
+формы}\label{ux444ux438ux437ux438ux447ux435ux441ux43aux438ux435-ux43fux430ux440ux430ux43cux435ux442ux440ux44b-ux438-ux444ux43eux440ux43cux44b}
+
+\nolinkurl{--index 1.3116+0.1i} задаёт относительный показатель при
+внешней среде с показателем 1, временной конвенции exp(-iωt) и Im(m)≥0.
+Допускается запись с \nolinkurl{j}. \nolinkurl{--wavelength} --- длина
+волны в микрометрах. Вместо \nolinkurl{--ka} можно задать
+\nolinkurl{--radius} --- радиус равновеликой сферы в микрометрах; два
+способа взаимоисключающие. Длина волны и ka определяют физический
+размер, но не заменяют показатель преломления при изменении материала.
+
+Для призмы \nolinkurl{--aspect} означает \textbf{высота / ширина между
+гранями}. Значение по умолчанию --- 10/7. SciIce Column с параметрами
+L/D=10/7, где D измеряется по вершинам, соответствует другому aspect:
+\textbf{1.6495721976846451}. Поэтому:
+
+\begin{verbatim}
+./bem solve --method muller --task average --shape prism \
+  --ka 20 --aspect 1.6495721976846451 --index 1.3116 \
+  --wavelength .532 --dry-run
+\end{verbatim}
+
+Для форм MBS используйте \nolinkurl{--particle TYPE PARAMETERS...}, для
+файла MBS --- \nolinkurl{--particle-file FILE}, для треугольного OBJ ---
+\nolinkurl{--obj FILE}. Это альтернативы \nolinkurl{--shape}, не
+дополнительные параметры той же команды.
+
+\begin{verbatim}
+# Bullet: длина призматической части 2, диаметр по вершинам 1.
+./bem solve --method muller --task average --particle 2 2 1 \
+  --ka 3 --symmetry auto --out runs/bullet
+
+# Собственная поверхность. ref здесь задаёт дальнейшее измельчение.
+./bem solve --method muller --task fixed --obj particle.obj \
+  --ka 3 --ref 1 --orientation 10 40 20 --out runs/imported
+\end{verbatim}
+
+Все типы и параметры перечислены в
+\href{docs/mbs_particle_shapes.md}{формы MBS}. У OBJ проверяются
+замкнутость, ориентация граней и геометрическая симметрия. Положение
+осей в файле важно для применимости специальных C6-сокращений. Для
+импортированных сеток автоматический ref --- оценка по самому длинному
+ребру, а не проверка качества сетки.
+
+\section{Ориентация и
+симметрия}\label{ux43eux440ux438ux435ux43dux442ux430ux446ux438ux44f-ux438-ux441ux438ux43cux43cux435ux442ux440ux438ux44f}
+
+Лабораторная падающая волна распространяется вдоль +z, две поляризации
+--- по x и y. Наблюдение идёт в плоскости xz. Углы задают активное
+вращение тела в лабораторную систему: R=Rz(alpha) Ry(beta) Rz(gamma), в
+градусах. Для расчёта в системе тела и падающие поля, и направления
+наблюдения, и базисы поляризации преобразуются одной матрицей. Нельзя
+повернуть только направление падения и оставить старый базис выходного
+поля.
+
+\nolinkurl{--symmetry auto} проверяет доступные геометрические операции
+и выбирает совместимые сокращения. \nolinkurl{--symmetry none} отключает
+сокращения. Явные \nolinkurl{c6}, \nolinkurl{c6v}, \nolinkurl{d6h}
+требуют соответствующей геометрии относительно осей тела: C6 ---
+вращения вокруг z; C6v добавляет вертикальные зеркала; D6h также
+горизонтальное зеркало. Например, bullet имеет C6v, но не D6h: ошибочная
+декларация отвергается. Геометрическая группа не отменяет численных
+проверок оператора, упаковки и восстановленных столбцов.
+
+Общий детектор находит и другие конечные группы. Мюллер использует
+реализованные совместимые преобразования, в том числе C2. Интерфейс не
+обещает ускорение для каждой найденной операции O(3). Дирак сейчас имеет
+секторные реализации C6/C6v/D6h для призмы; для фиксированного общего
+падения используются полные векторы, а не ошибочное присвоение падающей
+плоской волне одного сферического сектора.
+
+\section{Что выбирается
+автоматически}\label{ux447ux442ux43e-ux432ux44bux431ux438ux440ux430ux435ux442ux441ux44f-ux430ux432ux442ux43eux43cux430ux442ux438ux447ux435ux441ux43aux438}
+
+\begin{itemize}
+\tightlist
+\item
+  Начальный ref из ka, \textbar m\textbar, геометрического размера рёбер
+  и порядка базиса. Числа ref в Дираке и Мюллере \textbf{не означают
+  одинаковую сетку}.
+\item
+  Начальный L из радиуса описанной сферы: kR+4(kR)\^{}(1/3)+2 с
+  округлением вверх и дополнительным запасом для более строгого запроса.
+\item
+  Невязка: обычно 1e-5 для Мюллера и 1e-8 для Дирака; при ka≤1
+  применяется 1e-8, поскольку слабые высшие моды чувствительны к
+  численной компенсации.
+\item
+  Для Дирака --- способ хранения оператора, размер пакета,
+  последовательное освобождение секторных факторов, ограничение
+  глобального пространства.
+\item
+  Число потоков, резерв ОЗУ и диска; операционные бюджеты записываются в
+  план.
+\end{itemize}
+
+\nolinkurl{--accuracy-percent 1} --- целевая точность \textbf{начального
+подбора}, не обещание автоматически доказанной ошибки 1\%. В
+\nolinkurl{result_summary.json} честно записано
+\nolinkurl{accuracy_certified: false}. Текущий простой запуск не
+выполняет скрытую серию полных расчётов ref+1 и L+2. Для физической
+сертификации нужны эти независимые сравнения по всем требуемым углам и
+элементам. Невязка системы, ошибка сетки и усечение T --- разные ошибки.
+
+Эксперт может задать \nolinkurl{--ref}, \nolinkurl{--L},
+\nolinkurl{--tol}. Для Дирака также доступны
+\nolinkurl{--backend dense|fmm-sector}, \nolinkurl{--batch-size},
+\nolinkurl{--global-patches}. Последнее ограничивает число глобальных
+P1-участков предобуславливателя и \textbf{не является L}. При нехватке
+памяти программа не уменьшает незаметно ref или L.
+
+\section{План, файлы,
+продолжение}\label{ux43fux43bux430ux43d-ux444ux430ux439ux43bux44b-ux43fux440ux43eux434ux43eux43bux436ux435ux43dux438ux435}
+
+\begin{verbatim}
+# Показать параметры и точную команду, без сборки и расчёта.
+./bem solve --method dirac --task average --ka 20 --ram-gib 40 --dry-run
+
+# Возобновить по сохранённой конфигурации и проверенным столбцам.
+./bem continue runs/dirac_T_average
+\end{verbatim}
+
+Нужные библиотеки собираются при отсутствии; \nolinkurl{--no-build}
+запрещает такую сборку. Для CPU Дирака нужны g++, NumPy, SciPy, psutil,
+BLAS/LAPACK; секторный FMM использует FMM3D с зафиксированным commit
+\nolinkurl{cad293ae9b8ae1218dd8319d459ffcc5f1412875}. При первом запуске
+FMM он загружается и собирается локально. SO(3) требует gfortran и
+\nolinkurl{bin/tmatrix_so3_mstm}. GPU-методы требуют CUDA. Расширенные
+команды сборки даны далее. \nolinkurl{./bem methods} и справка не
+загружают нативные библиотеки.
+
+{\def\LTcaptype{none} % do not increment counter
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\linewidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Файл/каталог
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Содержимое
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\nolinkurl{calculation.json} & Физика, выбранные ref/L, методы,
+симметрии и бюджеты \\
+\nolinkurl{launch.json} & Команда и переменные окружения выбранного
+запуска \\
+\nolinkurl{monitor/worker.log} & Вывод решателя; при продолжении
+создаётся новый \nolinkurl{monitor_resume_*} \\
+\nolinkurl{monitor/status.json}, \nolinkurl{resources.jsonl} &
+Состояние, измеряемая RSS дерева процессов, свободная память и диск \\
+\nolinkurl{result_summary.json} & Завершение запуска, время и статус
+сертификации \\
+\nolinkurl{result/tmatrix.npy} & Полная T, complex128, режимы из
+\nolinkurl{tmatrix_reference.modes(L)} \\
+\nolinkurl{result/columns/} & Контрольные суммы и принятые столбцы T для
+продолжения \\
+\nolinkurl{result/mueller.csv}, \nolinkurl{mueller.npz} & Углы и все 16
+элементов для fixed/average Мюллера и Дирака \\
+\nolinkurl{result/summary.json} или \nolinkurl{report.json} & Подробные
+невязки, проверки, время и параметры решателя \\
+\end{longtable}
+}
+
+Старый PMCHWT сохраняет свой \nolinkurl{result/result.json}. Матрицы
+Мюллера новых fixed/T-режимов безразмерны: для дифференциального сечения
+умножать на (lambda/(2*pi))². Файлы фиксированного падения не содержат
+T. \nolinkurl{solution.npz} Дирака дополнительно сохраняет прежний
+совместимый формат. Для огромных T лучше читать \nolinkurl{tmatrix.npy}
+с \nolinkurl{numpy.load(..., mmap_mode='r')}.
+
+Если расчёт уже завершён и файлы результата существуют,
+\nolinkurl{bem continue} сообщает об этом без повторного решения и без
+повторной проверки всех столбцов. Совместимость незавершённых чекпоинтов
+проверяет сам решатель: другая геометрия, материал, численные параметры
+или вычислительный код не принимаются как та же задача. Перенос
+checkpoint между версиями требует отдельной проверки. Фиксированная
+ориентация при повторном запуске может пересчитываться целиком;
+гарантированная гранулярность продолжения T --- принятый столбец/пакет.
+
+\section{Память Дирака: исправления и измеренные
+границы}\label{ux43fux430ux43cux44fux442ux44c-ux434ux438ux440ux430ux43aux430-ux438ux441ux43fux440ux430ux432ux43bux435ux43dux438ux44f-ux438-ux438ux437ux43cux435ux440ux435ux43dux43dux44bux435-ux433ux440ux430ux43dux438ux446ux44b}
+
+Глобальная плотная P1-LU росла квадратично: для исследованного столбика
+ka20/ref3 она занимает 0,5625 GiB, ref4 --- 8,446 GiB, ref5 --- 135,14
+GiB. Новый опциональный предобуславливатель сочетает точные ближние
+панельные блоки/ILU с ограниченным числом глобальных P1-участков. Его
+применение не вызывает FMM. Глобальные взаимодействия сохраняются в
+поправке W; это обмен памяти и времени подготовки на более дешёвые
+последующие столбцы. При фиксированном числе участков W растёт линейно
+по числу панелей, но сохранение скорости сходимости при росте ka может
+требовать большего ранга.
+
+Устранено скрытое полное копирование Fortran-матрицы при умножении на
+разреженный проектор SciPy: глобальная проекция выполняется плитками по
+32 столбца. T и kernel собираются в отображаемых на диск массивах;
+перевод конвенций также идёт по 32 столбца. Страницы освобождаются перед
+SO(3). При закрытии оператора также освобождаются Python-массивы
+панельных LU и замыкание предобуславливателя; одного удаления нативного
+кэша для этого было недостаточно. Точная невязка и проверки зеркальных
+столбцов сохранены.
+
+Измерения CPU, 16 потоков, SciIce Column H/Df=1,6495721976846451,
+m=1,3116, P3, две моды с разными поляризациями одного сектора:
+
+{\def\LTcaptype{none} % do not increment counter
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\linewidth - 12\tabcolsep) * \real{0.1154}}
+  >{\raggedleft\arraybackslash}p{(\linewidth - 12\tabcolsep) * \real{0.1538}}
+  >{\raggedleft\arraybackslash}p{(\linewidth - 12\tabcolsep) * \real{0.1538}}
+  >{\raggedleft\arraybackslash}p{(\linewidth - 12\tabcolsep) * \real{0.1538}}
+  >{\raggedleft\arraybackslash}p{(\linewidth - 12\tabcolsep) * \real{0.1538}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 12\tabcolsep) * \real{0.1154}}
+  >{\raggedleft\arraybackslash}p{(\linewidth - 12\tabcolsep) * \real{0.1538}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Случай
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Глобальные участки
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Подготовка поправки, с
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Решение и проверки двух мод, с
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Пиковая RSS, GiB
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Итерации
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Максимальная строгая невязка
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+ka20/ref3 & 256 & 47,80 & 29,10 & 4,92 & 7 / 7 & 5,73e-9 \\
+ka40/ref4 & 512 & 358,14 & 352,71 & 23,03 & 27 / 27 & 5,24e-9 \\
+\end{longtable}
+}
+
+Это \textbf{не полные T20/T40}. На ka20 предыдущая FMM/P1 реализация
+решала эти две моды за 46,63 с: новая фаза решения быстрее в 1,60 раза,
+но подготовка дороже. Полное время первого двухмодового опыта почти
+одинаково: 90,40 → 89,65 с; прежняя FMM/P1 конфигурация занимала меньше
+RAM --- 2,95 GiB. Устранение скрытой копии снизило RSS именно нового
+варианта с 5,64 до 4,92 GiB. На ka40 вариант с 256 участками не уложился
+в 420 с пробного решения; принятый проверочный вариант использует 512.
+Полная малая T при ka3 совпала с плотным контролем по норме до 1,24e-15,
+усреднённые элементы/M11 --- до 1,79e-14; это эквивалентность алгоритмов
+на одной сетке.
+
+До крупных выделений выполняется оценка памяти. Запуск дополнительно
+контролирует сумму RSS дочерних процессов и оставляет резерв ОС/диска;
+при превышении завершает свою группу процессов, сохраняя уже принятые
+чекпоинты. Временного лимита по умолчанию нет. FMM/ILU имеют рабочие
+резервы, не строгую гарантию пика. Опрос RSS может не поймать короткий
+пик. Нет обещания, что ka80/ref7 поместится: в текущем Dirac P3 ref7
+даже одни полные локальные панельные LU требуют около 72,6 GiB.
+Уменьшение копий не устраняет физическую стоимость хранения такой сетки.
+
+Подробные результаты и команды:
+\nolinkurl{benchmarks/dirac_sparse_coarse_20261116/README.txt} и
+\nolinkurl{report.json}.
+
 \chapter{Физические параметры и одинаковая
-геометрия}\label{ux444ux438ux437ux438ux447ux435ux441ux43aux438ux435-ux43fux430ux440ux430ux43cux435ux442ux440ux44b-ux438-ux43eux434ux438ux43dux430ux43aux43eux432ux430ux44f-ux433ux435ux43eux43cux435ux442ux440ux438ux44f}}
+геометрия}\label{ux444ux438ux437ux438ux447ux435ux441ux43aux438ux435-ux43fux430ux440ux430ux43cux435ux442ux440ux44b-ux438-ux43eux434ux438ux43dux430ux43aux43eux432ux430ux44f-ux433ux435ux43eux43cux435ux442ux440ux438ux44f}
 
 Размер задаётся через радиус равновеликой сферы \(a\):
 
@@ -177,9 +535,8 @@ MBS-fast. Числа относятся к конкретным сохранён
 ka=10\ldots12 имеют \textbf{\(H/D_f=1\)}; их нельзя смешивать с этим
 столбиком.
 
-\hypertarget{ux447ux442ux43e-ux43fux440ux435ux434ux441ux442ux430ux432ux43bux44fux435ux442-ux441ux43eux431ux43eux439-t-ux43cux430ux442ux440ux438ux446ux430}{%
 \chapter{Что представляет собой
-T-матрица}\label{ux447ux442ux43e-ux43fux440ux435ux434ux441ux442ux430ux432ux43bux44fux435ux442-ux441ux43eux431ux43eux439-t-ux43cux430ux442ux440ux438ux446ux430}}
+T-матрица}\label{ux447ux442ux43e-ux43fux440ux435ux434ux441ux442ux430ux432ux43bux44fux435ux442-ux441ux43eux431ux43eux439-t-ux43cux430ux442ux440ux438ux446ux430}
 
 Регулярные векторные сферические волны задают падающее поле; исходящие
 --- рассеянное. Для коэффициентов \(a\) и \(b\) выполняется \(b=Ta\).
@@ -193,6 +550,7 @@ T-матрица}\label{ux447ux442ux43e-ux43fux440ux435ux434ux441ux442ux430ux432
 не позволяет произвольно удалить половину электрических/магнитных
 решений.
 
+{\def\LTcaptype{none} % do not increment counter
 \begin{longtable}[]{@{}rrr@{}}
 \toprule\noalign{}
 L & Строк и столбцов q & Хранение complex128, без заголовка \\
@@ -206,6 +564,7 @@ L & Строк и столбцов q & Хранение complex128, без за�
 64 & 8448 & 1089 MiB \\
 68 & 9520 & 1382.91 MiB \\
 \end{longtable}
+}
 
 Память T растёт как \(L^4\). Время построения зависит также от сетки,
 числа итераций, симметрий, повторного использования подпространств и
@@ -218,9 +577,8 @@ L & Строк и столбцов q & Хранение complex128, без за�
 неверен. Используйте индексирование из
 \nolinkurl{study_tmatrix_cutoff.py}.
 
-\hypertarget{ux430ux43dux430ux43bux438ux442ux438ux447ux435ux441ux43aux43eux435-ux443ux441ux440ux435ux434ux43dux435ux43dux438ux435}{%
 \section{Аналитическое
-усреднение}\label{ux430ux43dux430ux43bux438ux442ux438ux447ux435ux441ux43aux43eux435-ux443ux441ux440ux435ux434ux43dux435ux43dux438ux435}}
+усреднение}\label{ux430ux43dux430ux43bux438ux442ux438ux447ux435ux441ux43aux43eux435-ux443ux441ux440ux435ux434ux43dux435ux43dux438ux435}
 
 \nolinkurl{tmatrix_so3_mstm.py} свёртывает произведения элементов T с
 угловыми коэффициентами и вычисляет усреднённую матрицу Мюллера.
@@ -242,9 +600,8 @@ C_{ext}=-\frac{2\pi}{(ka)^2}\operatorname{Re}\operatorname{tr}T.\]
 матрицы Мюллера, проверяйте Stokes-конвенцию и единицы; дополнительная
 подгонка масштаба по переднему пику недопустима.
 
-\hypertarget{ux432ux440ux430ux449ux435ux43dux438ux44f-ux438-ux437ux435ux440ux43aux430ux43bux430}{%
 \section{Вращения и
-зеркала}\label{ux432ux440ux430ux449ux435ux43dux438ux44f-ux438-ux437ux435ux440ux43aux430ux43bux430}}
+зеркала}\label{ux432ux440ux430ux449ux435ux43dux438ux44f-ux438-ux437ux435ux440ux43aux430ux43bux430}
 
 Для правильной центрированной призмы используется C6 и зеркальная
 симметрия: горизонтальное отражение, вертикальные отражения и связанные
@@ -260,9 +617,8 @@ C_{ext}=-\frac{2\pi}{(ka)^2}\operatorname{Re}\operatorname{tr}T.\]
 ka=40 это различие сохранено. Для OBJ без точной симметрии упаковка
 неприменима.
 
-\hypertarget{ux443ux441ux442ux430ux43dux43eux432ux43aux430-ux438-ux43fux435ux440ux432ux44bux439-ux440ux430ux441ux447ux451ux442}{%
 \chapter{Установка и первый
-расчёт}\label{ux443ux441ux442ux430ux43dux43eux432ux43aux430-ux438-ux43fux435ux440ux432ux44bux439-ux440ux430ux441ux447ux451ux442}}
+расчёт}\label{ux443ux441ux442ux430ux43dux43eux432ux43aux430-ux438-ux43fux435ux440ux432ux44bux439-ux440ux430ux441ux447ux451ux442}
 
 Нужны Linux, GCC, CUDA для GPU-ветки, BLAS/LAPACK, FFTW, Python 3 с
 NumPy, SciPy и Matplotlib. Точные библиотеки и цели сборки перечислены в
@@ -314,9 +670,8 @@ python3 scripts/tmatrix_so3_mstm.py \
 Её профили описаны в \href{docs/quality_profiles.md}{quality\_profiles}.
 Это отдельный маршрут; один расчёт плоской волны не строит T.
 
-\hypertarget{ux431ux43eux43bux44cux448ux430ux44f-t-ux437ux430ux43fux443ux441ux43a-ux43fux430ux43cux44fux442ux44c-ux438-ux43fux440ux43eux434ux43eux43bux436ux435ux43dux438ux435}{%
 \chapter{Большая T: запуск, память и
-продолжение}\label{ux431ux43eux43bux44cux448ux430ux44f-t-ux437ux430ux43fux443ux441ux43a-ux43fux430ux43cux44fux442ux44c-ux438-ux43fux440ux43eux434ux43eux43bux436ux435ux43dux438ux435}}
+продолжение}\label{ux431ux43eux43bux44cux448ux430ux44f-t-ux437ux430ux43fux443ux441ux43a-ux43fux430ux43cux44fux442ux44c-ux438-ux43fux440ux43eux434ux43eux43bux436ux435ux43dux438ux435}
 
 \nolinkurl{run_large_tmatrix.py} фиксирует копию worker, параметры,
 среду и входные скрипты. Пример подготовки ka=40, а не автоматически
@@ -360,9 +715,8 @@ FP64-проверки. Он требует sector GMRES, дополнитель�
 поверхностных токов гораздо дороже архива одних усреднённых матриц
 Мюллера.
 
-\hypertarget{ux43aux430ux43a-ux43fux440ux43eux432ux435ux440ux44fux435ux442ux441ux44f-ux442ux43eux447ux43dux43eux441ux442ux44c-1}{%
 \chapter{Как проверяется точность
-1\%}\label{ux43aux430ux43a-ux43fux440ux43eux432ux435ux440ux44fux435ux442ux441ux44f-ux442ux43eux447ux43dux43eux441ux442ux44c-1}}
+1\%}\label{ux43aux430ux43a-ux43fux440ux43eux432ux435ux440ux44fux435ux442ux441ux44f-ux442ux43eux447ux43dux43eux441ux442ux44c-1}
 
 Основная опубликованная угловая метрика:
 
@@ -400,13 +754,13 @@ FP64-проверки. Он требует sector GMRES, дополнитель�
 результата. Сравнение на дискретных углах также не является строгой
 оценкой между ними.
 
-\hypertarget{ux437ux430ux432ux438ux441ux438ux43cux43eux441ux442ux44c-l-ux43eux442-ux440ux430ux437ux43cux435ux440ux430}{%
 \chapter{Зависимость L от
-размера}\label{ux437ux430ux432ux438ux441ux438ux43cux43eux441ux442ux44c-l-ux43eux442-ux440ux430ux437ux43cux435ux440ux430}}
+размера}\label{ux437ux430ux432ux438ux441ux438ux43cux43eux441ux442ux44c-l-ux43eux442-ux440ux430ux437ux43cux435ux440ux430}
 
 Историческая серия: призма \(H/D_f=1\), \(m=1.3\); минимум по изученному
 критерию относительно конечного эталона:
 
+{\def\LTcaptype{none} % do not increment counter
 \begin{longtable}[]{@{}rrrr@{}}
 \toprule\noalign{}
 ka & ref & Эталонный L & Минимальный L \\
@@ -419,6 +773,7 @@ ka & ref & Эталонный L & Минимальный L \\
 12 & 4 & 28 & 17 \\
 20 & 5 & 44 & 27 \\
 \end{longtable}
+}
 
 Локальная линейная аппроксимация \(L\approx1.22667ka+2.42667\) описывает
 этот набор ka=3\ldots20. Она не определяет L для ka=100 или для другой
@@ -428,6 +783,7 @@ ka & ref & Эталонный L & Минимальный L \\
 элементов и оба сечения. После устойчивого прохождения добавлен запас
 два порядка:
 
+{\def\LTcaptype{none} % do not increment counter
 \begin{longtable}[]{@{}rrrrrr@{}}
 \toprule\noalign{}
 ka & ref & Эталон L & Минимум & L с запасом & Ошибка с запасом \\
@@ -439,10 +795,11 @@ ka & ref & Эталон L & Минимум & L с запасом & Ошибка 
 10 & 3 & 20 & 16 & 18 & 0.0577\% \\
 40 & 6 & 64 & 56 & 58 & 0.2408\% \\
 \end{longtable}
+}
 
 \begin{figure}
 \centering
-\includegraphics{manual_assets/v1.0.0/order_vs_size.png}
+\pandocbounded{\includegraphics[keepaspectratio,alt={Порядок T в зависимости от размера; серии с разной геометрией разделены.}]{manual_assets/v1.0.0/order_vs_size.png}}
 \caption{Порядок T в зависимости от размера; серии с разной геометрией
 разделены.}
 \end{figure}
@@ -455,9 +812,8 @@ ka & ref & Эталон L & Минимум & L с запасом & Ошибка 
 на другую задачу через \nolinkurl{order-study} без совпадения параметров
 нельзя.
 
-\hypertarget{ux434ux43eux441ux442ux440ux43eux439ux43aux430-ux43fux43eux440ux44fux434ux43aux430-ux447ux435ux440ux435ux437-ux432ux437ux430ux438ux43cux43dux43eux441ux442ux44c}{%
 \section{Достройка порядка через
-взаимность}\label{ux434ux43eux441ux442ux440ux43eux439ux43aux430-ux43fux43eux440ux44fux434ux43aux430-ux447ux435ux440ux435ux437-ux432ux437ux430ux438ux43cux43dux43eux441ux442ux44c}}
+взаимность}\label{ux434ux43eux441ux442ux440ux43eux439ux43aux430-ux43fux43eux440ux44fux434ux43aux430-ux447ux435ux440ux435ux437-ux432ux437ux430ux438ux43cux43dux43eux441ux442ux44c}
 
 \nolinkurl{tmatrix_reciprocal_extension.py} сохраняет прежний квадрат T
 и непосредственно вычисленные новые входящие столбцы. Недостающий блок
@@ -475,17 +831,17 @@ BEM-расчёт выше L=64. Измеренного ускорения нас
 
 \begin{figure}
 \centering
-\includegraphics{manual_assets/v1.0.0/reciprocal_extension.png}
+\pandocbounded{\includegraphics[keepaspectratio,alt={Ретроспективное восстановление блока T через взаимность.}]{manual_assets/v1.0.0/reciprocal_extension.png}}
 \caption{Ретроспективное восстановление блока T через взаимность.}
 \end{figure}
 
-\hypertarget{ux432ux43bux438ux44fux43dux438ux435-ux432ux44bux442ux44fux43dux443ux442ux43eux441ux442ux438-ux438-ux441ux43fux43bux44eux441ux43dux443ux442ux43eux441ux442ux438}{%
 \chapter{Влияние вытянутости и
-сплюснутости}\label{ux432ux43bux438ux44fux43dux438ux435-ux432ux44bux442ux44fux43dux443ux442ux43eux441ux442ux438-ux438-ux441ux43fux43bux44eux441ux43dux443ux442ux43eux441ux442ux438}}
+сплюснутости}\label{ux432ux43bux438ux44fux43dux438ux435-ux432ux44bux442ux44fux43dux443ux442ux43eux441ux442ux438-ux438-ux441ux43fux43bux44eux441ux43dux443ux442ux43eux441ux442ux438}
 
 Шесть случаев с \(m=1.3116\). Минимальный L ниже относится к усечению;
 столбец сетки --- отдельное сравнение поверхности.
 
+{\def\LTcaptype{none} % do not increment counter
 \begin{longtable}[]{@{}rrrrcr@{}}
 \toprule\noalign{}
 ka & H/Df & R/a & Минимальный L & Сравнение ref & Ошибка сетки \\
@@ -500,10 +856,11 @@ ka & H/Df & R/a & Минимальный L & Сравнение ref & Ошибк
 5 & 1 & 1.2916 & 9 & 3→4 & 0.1489\% \\
 5 & 5 & 2.5376 & 16 & 2→3 & 0.5350\% \\
 \end{longtable}
+}
 
 \begin{figure}
 \centering
-\includegraphics{manual_assets/v1.0.0/shape_and_mesh.png}
+\pandocbounded{\includegraphics[keepaspectratio,alt={Влияние формы на порядок и независимую ошибку сетки.}]{manual_assets/v1.0.0/shape_and_mesh.png}}
 \caption{Влияние формы на порядок и независимую ошибку сетки.}
 \end{figure}
 
@@ -516,38 +873,38 @@ ka & H/Df & R/a & Минимальный L & Сравнение ref & Ошибк
 
 \begin{figure}
 \centering
-\includegraphics{manual_assets/v1.0.0/ka2_aspect0p2_all16.png}
+\pandocbounded{\includegraphics[keepaspectratio,alt={Все 16 элементов: ka=2, H/Df=0.2.}]{manual_assets/v1.0.0/ka2_aspect0p2_all16.png}}
 \caption{Все 16 элементов: ka=2, H/Df=0.2.}
 \end{figure}
 
 \begin{figure}
 \centering
-\includegraphics{manual_assets/v1.0.0/ka2_aspect1_all16.png}
+\pandocbounded{\includegraphics[keepaspectratio,alt={Все 16 элементов: ka=2, H/Df=1.}]{manual_assets/v1.0.0/ka2_aspect1_all16.png}}
 \caption{Все 16 элементов: ka=2, H/Df=1.}
 \end{figure}
 
 \begin{figure}
 \centering
-\includegraphics{manual_assets/v1.0.0/ka2_aspect5_all16.png}
+\pandocbounded{\includegraphics[keepaspectratio,alt={Все 16 элементов: ka=2, H/Df=5.}]{manual_assets/v1.0.0/ka2_aspect5_all16.png}}
 \caption{Все 16 элементов: ka=2, H/Df=5.}
 \end{figure}
 
 \begin{figure}
 \centering
-\includegraphics{manual_assets/v1.0.0/ka5_aspect0p2_all16.png}
+\pandocbounded{\includegraphics[keepaspectratio,alt={Все 16 элементов: ka=5, H/Df=0.2; сеточный критерий не пройден.}]{manual_assets/v1.0.0/ka5_aspect0p2_all16.png}}
 \caption{Все 16 элементов: ka=5, H/Df=0.2; сеточный критерий не
 пройден.}
 \end{figure}
 
 \begin{figure}
 \centering
-\includegraphics{manual_assets/v1.0.0/ka5_aspect1_all16.png}
+\pandocbounded{\includegraphics[keepaspectratio,alt={Все 16 элементов: ka=5, H/Df=1.}]{manual_assets/v1.0.0/ka5_aspect1_all16.png}}
 \caption{Все 16 элементов: ka=5, H/Df=1.}
 \end{figure}
 
 \begin{figure}
 \centering
-\includegraphics{manual_assets/v1.0.0/ka5_aspect5_all16.png}
+\pandocbounded{\includegraphics[keepaspectratio,alt={Все 16 элементов: ka=5, H/Df=5.}]{manual_assets/v1.0.0/ka5_aspect5_all16.png}}
 \caption{Все 16 элементов: ka=5, H/Df=5.}
 \end{figure}
 
@@ -557,9 +914,8 @@ ka & H/Df & R/a & Минимальный L & Сравнение ref & Ошибк
 0.0750\%. Поэтому увеличение L само по себе не решает проблему сеточной
 сходимости.
 
-\hypertarget{ux43cux443ux43bux44cux442ux438ux440ux430ux437ux43cux435ux440ux43dux430ux44f-t-ux433ux434ux435-ux432ux43eux437ux43dux438ux43aux430ux435ux442-ux44dux43aux43eux43dux43eux43cux438ux44f}{%
 \chapter{Мультиразмерная T: где возникает
-экономия}\label{ux43cux443ux43bux44cux442ux438ux440ux430ux437ux43cux435ux440ux43dux430ux44f-t-ux433ux434ux435-ux432ux43eux437ux43dux438ux43aux430ux435ux442-ux44dux43aux43eux43dux43eux43cux438ux44f}}
+экономия}\label{ux43cux443ux43bux44cux442ux438ux440ux430ux437ux43cux435ux440ux43dux430ux44f-t-ux433ux434ux435-ux432ux43eux437ux43dux438ux43aux430ux435ux442-ux44dux43aux43eux43dux43eux43cux438ux44f}
 
 При фиксированной форме и материале геометрические структуры и кэши
 можно переиспользовать, но оператор зависит от ka. Одна T при ka=40 не
@@ -577,9 +933,8 @@ SO(3) для плотной сетки. Интерполируется \textbf{�
 интервал сужается или добавляются опоры. Экстраполяция вне проверенного
 интервала запрещена политикой локальной модели.
 
-\hypertarget{ux432ux44bux43fux43eux43bux43dux435ux43dux43dux430ux44f-ux441ux435ux440ux438ux44f-ka1012}{%
 \section{Выполненная серия
-ka=10\ldots12}\label{ux432ux44bux43fux43eux43bux43dux435ux43dux43dux430ux44f-ux441ux435ux440ux438ux44f-ka1012}}
+ka=10\ldots12}\label{ux432ux44bux43fux43eux43bux43dux435ux43dux43dux430ux44f-ux441ux435ux440ux438ux44f-ka1012}
 
 Параметры: \(m=1.3116\), \(\lambda=0.532\) мкм, \textbf{\(H/D_f=1\)},
 ref4, L=24. Девять опор ka=10, 10.25, \ldots, 12; четыре независимых
@@ -607,21 +962,21 @@ ref4, L=24. Девять опор ka=10, 10.25, \ldots, 12; четыре нез�
 
 \begin{figure}
 \centering
-\includegraphics{manual_assets/v1.0.0/interpolation_M11.png}
+\pandocbounded{\includegraphics[keepaspectratio,alt={Четыре независимых размера: M11, прямое решение и интерполяция.}]{manual_assets/v1.0.0/interpolation_M11.png}}
 \caption{Четыре независимых размера: M11, прямое решение и
 интерполяция.}
 \end{figure}
 
 \begin{figure}
 \centering
-\includegraphics{manual_assets/v1.0.0/interpolation_all16.png}
+\pandocbounded{\includegraphics[keepaspectratio,alt={Только четыре контрольных размера, все 16 элементов; отмечены максимумы ошибок.}]{manual_assets/v1.0.0/interpolation_all16.png}}
 \caption{Только четыре контрольных размера, все 16 элементов; отмечены
 максимумы ошибок.}
 \end{figure}
 
 \begin{figure}
 \centering
-\includegraphics{manual_assets/v1.0.0/holdout_errors.png}
+\pandocbounded{\includegraphics[keepaspectratio,alt={Максимальные ошибки на независимых контрольных размерах.}]{manual_assets/v1.0.0/holdout_errors.png}}
 \caption{Максимальные ошибки на независимых контрольных размерах.}
 \end{figure}
 
@@ -633,9 +988,8 @@ ref4, L=24. Девять опор ka=10, 10.25, \ldots, 12; четыре нез�
 проверяют собственную семью через \nolinkurl{build_fmm_tmatrix.py}, а не
 подменяют геометрию старой модели.
 
-\hypertarget{ux43fux440ux438ux43cux435ux43dux435ux43dux438ux435-ux43a-ux441ux43eux431ux441ux442ux432ux435ux43dux43dux44bux43c-ux43eux43fux43eux440ux43dux44bux43c-t}{%
 \section{Применение к собственным опорным
-T}\label{ux43fux440ux438ux43cux435ux43dux435ux43dux438ux435-ux43a-ux441ux43eux431ux441ux442ux432ux435ux43dux43dux44bux43c-ux43eux43fux43eux440ux43dux44bux43c-t}}
+T}\label{ux43fux440ux438ux43cux435ux43dux435ux43dux438ux435-ux43a-ux441ux43eux431ux441ux442ux432ux435ux43dux43dux44bux43c-ux43eux43fux43eux440ux43dux44bux43c-t}
 
 Для уже подготовленного нижнего сеточного контроля и ещё действующего
 срока исходной серии можно подготовить исторический контроллер:
@@ -701,12 +1055,12 @@ C6-симметрии. Для произвольной формы использ
 использует барицентрические коэффициенты по размеру; она не переносит
 токи между новыми узлами поверхностной сетки.
 
-\hypertarget{ux43aux430ux43aux43eux439-ux448ux430ux433-ux440ux430ux437ux43cux435ux440ux430-ux434ux435ux439ux441ux442ux432ux438ux442ux435ux43bux44cux43dux43e-ux43fux440ux43eux432ux435ux440ux435ux43d}{%
 \section{Какой шаг размера действительно
-проверен}\label{ux43aux430ux43aux43eux439-ux448ux430ux433-ux440ux430ux437ux43cux435ux440ux430-ux434ux435ux439ux441ux442ux432ux438ux442ux435ux43bux44cux43dux43e-ux43fux440ux43eux432ux435ux440ux435ux43d}}
+проверен}\label{ux43aux430ux43aux43eux439-ux448ux430ux433-ux440ux430ux437ux43cux435ux440ux430-ux434ux435ux439ux441ux442ux432ux438ux442ux435ux43bux44cux43dux43e-ux43fux440ux43eux432ux435ux440ux435ux43d}
 
 Независимый опыт при ka=3 и 6, \(m=1.3116\), \(H/D_f=10/7\), ref2:
 
+{\def\LTcaptype{none} % do not increment counter
 \begin{longtable}[]{@{}lrrr@{}}
 \toprule\noalign{}
 Метод & Шаг опор Δka & Максимум при ka≈3 & Максимум при ka≈6 \\
@@ -721,10 +1075,11 @@ C6-симметрии. Для произвольной формы использ
 AAA, 9 опор & 0.125 & \textbf{0.00278\%} & \textbf{0.00302\%} \\
 Линейный, две опоры & 0.05 & \textbf{0.581\%} & \textbf{0.820\%} \\
 \end{longtable}
+}
 
 \begin{figure}
 \centering
-\includegraphics{manual_assets/v1.0.0/interpolation_spacing.png}
+\pandocbounded{\includegraphics[keepaspectratio,alt={Ошибка и шаг опор: универсального безопасного шага нет.}]{manual_assets/v1.0.0/interpolation_spacing.png}}
 \caption{Ошибка и шаг опор: универсального безопасного шага нет.}
 \end{figure}
 
@@ -736,9 +1091,8 @@ ka=3/6 не переносится автоматически на ka=40, рез
 сертификата интерполяции; частичный новый расчёт таким сертификатом не
 является.
 
-\hypertarget{ux43fux440ux43eux438ux437ux432ux43eux434ux43dux44bux435-taylor-paduxe9-ux438-ux441ux43cux435ux43dux430-ux446ux435ux43dux442ux440ux430}{%
 \section{Производные, Taylor, Padé и смена
-центра}\label{ux43fux440ux43eux438ux437ux432ux43eux434ux43dux44bux435-taylor-paduxe9-ux438-ux441ux43cux435ux43dux430-ux446ux435ux43dux442ux440ux430}}
+центра}\label{ux43fux440ux43eux438ux437ux432ux43eux434ux43dux44bux435-taylor-paduxe9-ux438-ux441ux43cux435ux43dux430-ux446ux435ux43dux442ux440ux430}
 
 Из \(A(k)x(k)=b(k)\) следует рекурсия по производным: один оператор в
 центре и правые части из производных ядра/падающего поля. Это может
@@ -748,7 +1102,7 @@ ka=3/6 не переносится автоматически на ka=40, рез
 
 \begin{figure}
 \centering
-\includegraphics{manual_assets/v1.0.0/taylor.png}
+\pandocbounded{\includegraphics[keepaspectratio,alt={Сравнение локальных Taylor/рациональных моделей на малых задачах.}]{manual_assets/v1.0.0/taylor.png}}
 \caption{Сравнение локальных Taylor/рациональных моделей на малых
 задачах.}
 \end{figure}
@@ -760,24 +1114,24 @@ Taylor ещё на 0.25 дало \textbf{1.1132\%}, то есть провал. 
 
 \begin{figure}
 \centering
-\includegraphics{manual_assets/v1.0.0/recenter.png}
+\pandocbounded{\includegraphics[keepaspectratio,alt={Перенос центра: область точности проверяется заново.}]{manual_assets/v1.0.0/recenter.png}}
 \caption{Перенос центра: область точности проверяется заново.}
 \end{figure}
 
 Это не измерение полной большой GPU T. Нативные FFT/FMM моменты и их
 полная стоимость остаются отдельными проверками плана ускорения.
 
-\hypertarget{ux43dux435ux432ux44fux437ux43aux430-ux438-ux438ux442ux43eux433ux43eux432ux430ux44f-ux43cux430ux442ux440ux438ux446ux430-ux43cux44eux43bux43bux435ux440ux430}{%
 \chapter{Невязка и итоговая матрица
-Мюллера}\label{ux43dux435ux432ux44fux437ux43aux430-ux438-ux438ux442ux43eux433ux43eux432ux430ux44f-ux43cux430ux442ux440ux438ux446ux430-ux43cux44eux43bux43bux435ux440ux430}}
+Мюллера}\label{ux43dux435ux432ux44fux437ux43aux430-ux438-ux438ux442ux43eux433ux43eux432ux430ux44f-ux43cux430ux442ux440ux438ux446ux430-ux43cux44eux43bux43bux435ux440ux430}
 
 Невязка \(\|Ax-b\|/\|b\|\) не равна ошибке Мюллера. При ka=40, ref4,
 одном фиксированном осевом падении относительно более строгого контроля:
 
+{\def\LTcaptype{none} % do not increment counter
 \begin{longtable}[]{@{}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
-  >{\raggedleft\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
-  >{\raggedleft\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedleft\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedleft\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.3333}}@{}}
 \toprule\noalign{}
 \begin{minipage}[b]{\linewidth}\raggedright
 Допуск
@@ -797,10 +1151,11 @@ Taylor ещё на 0.25 дало \textbf{1.1132\%}, то есть провал. 
 1e-4 & 2.1090\% & 27.0\% \\
 1e-3 & 23.5454\% & 43.3\% \\
 \end{longtable}
+}
 
 \begin{figure}
 \centering
-\includegraphics{manual_assets/v1.0.0/residual_accuracy.png}
+\pandocbounded{\includegraphics[keepaspectratio,alt={Невязка и ошибка: фиксированное падение ka=40.}]{manual_assets/v1.0.0/residual_accuracy.png}}
 \caption{Невязка и ошибка: фиксированное падение ka=40.}
 \end{figure}
 
@@ -812,19 +1167,19 @@ Taylor ещё на 0.25 дало \textbf{1.1132\%}, то есть провал. 
 остаётся незавершённой на дату снимка. Строгий исходный результат ka=40
 использовал около 2e-6.
 
-\hypertarget{ux438ux437ux43cux435ux440ux435ux43dux43dux43eux435-ux432ux440ux435ux43cux44f-ux438-ux440ux435ux441ux443ux440ux441ux44b-ka40}{%
 \chapter{Измеренное время и ресурсы
-ka=40}\label{ux438ux437ux43cux435ux440ux435ux43dux43dux43eux435-ux432ux440ux435ux43cux44f-ux438-ux440ux435ux441ux443ux440ux441ux44b-ka40}}
+ka=40}\label{ux438ux437ux43cux435ux440ux435ux43dux43dux43eux435-ux432ux440ux435ux43cux44f-ux438-ux440ux435ux441ux443ux440ux441ux44b-ka40}
 
 Машина исследования: RTX 3090 Ti 24 GiB, Ryzen 9 7950X (32 аппаратных
 потока), около 61 GiB доступной системе RAM. Параметры: \(m=1.3116\),
 \(\lambda=0.532\) мкм, \(H/D_f=10/7\), ref6, \textbf{1 032 192
 неизвестных}, L=64. Завершены все \textbf{8448 столбцов}.
 
+{\def\LTcaptype{none} % do not increment counter
 \begin{longtable}[]{@{}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
-  >{\raggedleft\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedleft\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.3333}}@{}}
 \toprule\noalign{}
 \begin{minipage}[b]{\linewidth}\raggedright
 Величина
@@ -847,6 +1202,7 @@ T на диске & 1 141 899 392 байт & NPY complex128, около 1.064 Gi
 проекции \\
 Csca / Cext & 7.43199 / 7.43512 & Принятые безразмерные сечения \\
 \end{longtable}
+}
 
 \textbf{10.43 часа --- не время полного холодного построения.} Расчёт
 проходил несколько продолжений; последняя сводка не содержит суммарное
@@ -857,14 +1213,14 @@ Csca / Cext & 7.43199 / 7.43512 & Принятые безразмерные се
 35 GiB RAM; пик зависит от варианта и кэшей. Это наблюдение процесса, а
 не жёсткая верхняя граница потребления.
 
-\hypertarget{ux43aux430ux43aux438ux435-ux443ux441ux43aux43eux440ux435ux43dux438ux44f-ux438ux437ux43cux435ux440ux435ux43dux44b-ux43eux442ux434ux435ux43bux44cux43dux43e}{%
 \section{Какие ускорения измерены
-отдельно}\label{ux43aux430ux43aux438ux435-ux443ux441ux43aux43eux440ux435ux43dux438ux44f-ux438ux437ux43cux435ux440ux435ux43dux44b-ux43eux442ux434ux435ux43bux44cux43dux43e}}
+отдельно}\label{ux43aux430ux43aux438ux435-ux443ux441ux43aux43eux440ux435ux43dux438ux44f-ux438ux437ux43cux435ux440ux435ux43dux44b-ux43eux442ux434ux435ux43bux44cux43dux43e}
 
+{\def\LTcaptype{none} % do not increment counter
 \begin{longtable}[]{@{}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.3333}}@{}}
 \toprule\noalign{}
 \begin{minipage}[b]{\linewidth}\raggedright
 Опыт
@@ -887,6 +1243,7 @@ RAM \\
 Другой CPU/GPU вариант ref5 & 271.17→280.37 с & \textbf{+3.39\%,
 замедление} \\
 \end{longtable}
+}
 
 FFT используется на регулярных участках граней; углы, близкие
 взаимодействия и нерегулярные части требуют поправок. Спектральное
@@ -895,9 +1252,8 @@ FFT используется на регулярных участках гран
 качество измеряется вместе со стоимостью применения. Проверенные
 невыгодные варианты сохранены как отрицательные результаты.
 
-\hypertarget{ux441ux440ux430ux432ux43dux435ux43dux438ux435-bem-ux438-mbs-fast-ux43fux440ux438-ka40}{%
 \chapter{Сравнение BEM и MBS-fast при
-ka=40}\label{ux441ux440ux430ux432ux43dux435ux43dux438ux435-bem-ux438-mbs-fast-ux43fux440ux438-ka40}}
+ka=40}\label{ux441ux440ux430ux432ux43dux435ux43dux438ux435-bem-ux438-mbs-fast-ux43fux440ux438-ka40}
 
 Использована завершённая BEM T выше с аналитическим SO(3). MBS-fast:
 \(m=1.3116\), та же длина волны и объём, \(H/D_v=1.2371791483\). Новый
@@ -917,6 +1273,7 @@ fullauto на 1\% или 4\%. Старые fullauto-запуски имеют с
 поточечные, не совместная гарантия всех углов/элементов. Они
 характеризуют статистику MBS, не точность его физической модели.
 
+{\def\LTcaptype{none} % do not increment counter
 \begin{longtable}[]{@{}lrr@{}}
 \toprule\noalign{}
 Сравнение с BEM & Когерентный MBS & Некогерентный MBS \\
@@ -929,6 +1286,7 @@ fullauto на 1\% или 4\%. Старые fullauto-запуски имеют с
 M11 вперёд, знаковое отличие & −1.005\% & +3.761\% \\
 M11 назад, знаковое отличие & −43.54\% & −29.67\% \\
 \end{longtable}
+}
 
 Максимум когерентного варианта находится в M11 при 180°; некогерентного
 --- M44 около 177.76°. Малое интегральное отклонение не означает
@@ -936,13 +1294,13 @@ M11 назад, знаковое отличие & −43.54\% & −29.67\% \\
 
 \begin{figure}
 \centering
-\includegraphics{manual_assets/v1.0.0/mbs_ka40_M11.png}
+\pandocbounded{\includegraphics[keepaspectratio,alt={BEM и оба режима MBS-fast: M11 в одной нормировке.}]{manual_assets/v1.0.0/mbs_ka40_M11.png}}
 \caption{BEM и оба режима MBS-fast: M11 в одной нормировке.}
 \end{figure}
 
 \begin{figure}
 \centering
-\includegraphics{manual_assets/v1.0.0/mbs_ka40_all16.png}
+\pandocbounded{\includegraphics[keepaspectratio,alt={Все 16 элементов: когерентный и некогерентный MBS-fast поверх BEM.}]{manual_assets/v1.0.0/mbs_ka40_all16.png}}
 \caption{Все 16 элементов: когерентный и некогерентный MBS-fast поверх
 BEM.}
 \end{figure}
@@ -964,18 +1322,18 @@ No equal-accuracy speedup over ADDA is currently claimed. Сопоставимо
 полной T и численное усреднение заданного набора ориентаций имеют разную
 стоимость и разные возможности повторного использования.
 
-\hypertarget{ux44dux43aux441ux43fux435ux440ux438ux43cux435ux43dux442ux430ux43bux44cux43dux44bux435-ux43dux430ux43fux440ux430ux432ux43bux435ux43dux438ux44f-ux438-ux432ux43eux441ux43fux440ux43eux438ux437ux432ux43eux434ux438ux43cux43eux441ux442ux44c}{%
 \chapter{Экспериментальные направления и
-воспроизводимость}\label{ux44dux43aux441ux43fux435ux440ux438ux43cux435ux43dux442ux430ux43bux44cux43dux44bux435-ux43dux430ux43fux440ux430ux432ux43bux435ux43dux438ux44f-ux438-ux432ux43eux441ux43fux440ux43eux438ux437ux432ux43eux434ux438ux43cux43eux441ux442ux44c}}
+воспроизводимость}\label{ux44dux43aux441ux43fux435ux440ux438ux43cux435ux43dux442ux430ux43bux44cux43dux44bux435-ux43dux430ux43fux440ux430ux432ux43bux435ux43dux438ux44f-ux438-ux432ux43eux441ux43fux440ux43eux438ux437ux432ux43eux434ux438ux43cux43eux441ux442ux44c}
 
 \href{docs/acceleration_plan.md}{План ускорения} содержит P1--P13 и
 условия приёмки. Состояние в этой версии --- снимок на 1 ноября 2026 г.;
 будущие проверки в очереди не считаются выполненными результатами
 release.
 
+{\def\LTcaptype{none} % do not increment counter
 \begin{longtable}[]{@{}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 2\tabcolsep) * \real{0.5000}}@{}}
 \toprule\noalign{}
 \begin{minipage}[b]{\linewidth}\raggedright
 Направление
@@ -1009,10 +1367,10 @@ P12 начальные токи/MBS/Ritz & Малые проверки; убед
 P13 D6h-модель & Малые проверки; число действий с подготовкой не
 сократилось \\
 \end{longtable}
+}
 
-\hypertarget{ux43fux435ux440ux435ux43dux43eux441ux438ux43cux44bux435-ux434ux430ux43dux43dux44bux435}{%
 \section{Переносимые
-данные}\label{ux43fux435ux440ux435ux43dux43eux441ux438ux43cux44bux435-ux434ux430ux43dux43dux44bux435}}
+данные}\label{ux43fux435ux440ux435ux43dux43eux441ux438ux43cux44bux435-ux434ux430ux43dux43dux44bux435}
 
 \nolinkurl{reference/v1.0.0/research/data.json} содержит сводки
 перечисленных серий; \nolinkurl{source_manifest.json} --- исходные
@@ -1033,9 +1391,8 @@ python3 scripts/build_manual.py
 \nolinkurl{MANUAL.md} --- основной источник, \nolinkurl{MANUAL.tex}
 генерируется из него. Сборщик не запускает новых BEM-расчётов.
 
-\hypertarget{ux430ux440ux445ux438ux432ux43dux44bux435-ux440ux430ux441ux442ux440ux43eux432ux44bux435-ux433ux440ux430ux444ux438ux43aux438}{%
 \section{Архивные растровые
-графики}\label{ux430ux440ux445ux438ux432ux43dux44bux435-ux440ux430ux441ux442ux440ux43eux432ux44bux435-ux433ux440ux430ux444ux438ux43aux438}}
+графики}\label{ux430ux440ux445ux438ux432ux43dux44bux435-ux440ux430ux441ux442ux440ux43eux432ux44bux435-ux433ux440ux430ux444ux438ux43aux438}
 
 Графики четырёх контрольных размеров, шести форм, Taylor и взаимности
 сохранены из исходных исследований. Их происхождение и хеши

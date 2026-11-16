@@ -3141,10 +3141,13 @@ def add_calculation_arguments(parser: argparse.ArgumentParser, average: bool) ->
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="bem",
-        description="Safe preset launcher for the BEM-CPP Muller solver.",
+        description="BEM: Muller, Dirac, PMCHWT; fixed incidence, T matrices and analytic SO(3).",
     )
     parser.add_argument("--version", action="version", version=f"bem {VERSION}")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    sys.path.insert(0, str(ROOT / 'scripts'))
+    from bem_cli import register
+    register(subparsers)
 
     run = subparsers.add_parser("run", help="single-orientation calculation")
     add_calculation_arguments(run, average=False)

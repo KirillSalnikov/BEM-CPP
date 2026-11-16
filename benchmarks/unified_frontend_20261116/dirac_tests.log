@@ -1,0 +1,32 @@
+test_arbitrary_vectors_full_and_compact (test_dirac_batch_checks_cpu.BatchChecksCPU.test_arbitrary_vectors_full_and_compact) ... ok
+test_corruption_of_one_direct_column_rejects_entire_batch (test_dirac_batch_checks_cpu.BatchChecksCPU.test_corruption_of_one_direct_column_rejects_entire_batch) ... ok
+test_corruption_outside_representative_rows_is_also_rejected (test_dirac_batch_checks_cpu.BatchChecksCPU.test_corruption_outside_representative_rows_is_also_rejected) ... ok
+test_every_modal_residual_against_independent_full_cache (test_dirac_batch_checks_cpu.BatchChecksCPU.test_every_modal_residual_against_independent_full_cache) ... ok
+test_mirror_batch_full_residual_and_one_bad_partner (test_dirac_batch_checks_cpu.BatchChecksCPU.test_mirror_batch_full_residual_and_one_bad_partner) ... ok
+test_zero_rhs_alongside_nonzero_rhs (test_dirac_batch_checks_cpu.BatchChecksCPU.test_zero_rhs_alongside_nonzero_rhs) ... ok
+test_budget_and_space_reject_before_allocation (test_dirac_coarse_cpu.CoarseDiracCPU.test_budget_and_space_reject_before_allocation) ... ok
+test_parallel_gemv_against_blas (test_dirac_coarse_cpu.CoarseDiracCPU.test_parallel_gemv_against_blas) ... ok
+test_sector_eviction_preserves_operator_and_bounds_live_cache (test_dirac_coarse_cpu.CoarseDiracCPU.test_sector_eviction_preserves_operator_and_bounds_live_cache) ... ok
+test_shared_assembly_parities_and_reuse (test_dirac_coarse_cpu.CoarseDiracCPU.test_shared_assembly_parities_and_reuse) ... ok
+test_arbitrary_full_action_and_inverse_transform (test_dirac_compact_cpu.CompactDiracCPU.test_arbitrary_full_action_and_inverse_transform) ... ok
+test_horizontal_parity_M_N_and_full_residual (test_dirac_compact_cpu.CompactDiracCPU.test_horizontal_parity_M_N_and_full_residual) ... ok
+test_unsupported_operations_reject (test_dirac_compact_cpu.CompactDiracCPU.test_unsupported_operations_reject) ... ok
+test_both_polarizations_against_strict_full_operator (test_dirac_hierarchy_cpu.HierarchyCPU.test_both_polarizations_against_strict_full_operator) ... ok
+test_global_transfer_columns_range_and_sector_eviction (test_dirac_hierarchy_cpu.HierarchyCPU.test_global_transfer_columns_range_and_sector_eviction) ... ok
+test_outer_full_P1_matches_exact_coarse_and_uses_no_FMM (test_dirac_hierarchy_cpu.HierarchyCPU.test_outer_full_P1_matches_exact_coarse_and_uses_no_FMM) ... ok
+test_projection_does_not_copy_the_full_correction (test_dirac_hierarchy_cpu.HierarchyCPU.test_projection_does_not_copy_the_full_correction) ... ok
+test_small_budget_rejects_before_coarse_allocation (test_dirac_hierarchy_cpu.HierarchyCPU.test_small_budget_rejects_before_coarse_allocation) ... ok
+test_sparse_all_pairs_equal_dense_in_multiple_sectors (test_dirac_hierarchy_cpu.HierarchyCPU.test_sparse_all_pairs_equal_dense_in_multiple_sectors) ... ok
+test_P0_without_horizontal_reduction (test_dirac_sector_fmm_cpu.SectorFMMCPU.test_P0_without_horizontal_reduction) ... ok
+test_P1_coarse_inverse_and_both_polarizations (test_dirac_sector_fmm_cpu.SectorFMMCPU.test_P1_coarse_inverse_and_both_polarizations) ... ok
+test_full_and_selected_arbitrary_packet (test_dirac_sector_fmm_cpu.SectorFMMCPU.test_full_and_selected_arbitrary_packet) ... ok
+test_near_budget_is_enforced (test_dirac_sector_fmm_cpu.SectorFMMCPU.test_near_budget_is_enforced) ... ok
+test_complex_index_modal_sectors_and_mirror (test_dirac_symmetry_cpu.DiracSymmetryCPU.test_complex_index_modal_sectors_and_mirror) ... ok
+test_geometry_rejects_false_rotation (test_dirac_symmetry_cpu.DiracSymmetryCPU.test_geometry_rejects_false_rotation) ... ok
+test_rotation_mirror_operator_and_inverse (test_dirac_symmetry_cpu.DiracSymmetryCPU.test_rotation_mirror_operator_and_inverse) ... ok
+test_selected_rows_and_rejection (test_dirac_symmetry_cpu.DiracSymmetryCPU.test_selected_rows_and_rejection) ... ok
+
+----------------------------------------------------------------------
+Ran 27 tests in 109.025s
+
+OK

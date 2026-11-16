@@ -1,0 +1,10 @@
+{
+  "first_columns": 8,
+  "preserved": true,
+  "cache_policy_and_budget_change_allowed": true,
+  "positive_hole_recomputed": true,
+  "T_hole_error": 9.099011219116469e-16,
+  "changed_aspect_rejected": true,
+  "changed_coarse_rejected": true,
+  "RAM_rejected_before_near_allocation": true
+}

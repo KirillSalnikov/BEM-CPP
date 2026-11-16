@@ -1,0 +1,15 @@
+OMP_NUM_THREADS=4 OMP_WAIT_POLICY=PASSIVE tests/dirac_transmission_check
+OMP_NUM_THREADS=4 tests/muller_cpu_media_check
+PASS CPU media pairing: cases=16 relative_error=2.9376344206801517e-16; zero, alias, symmetry, memory, rejection
+tests/host_cpu_checker_config_check
+PASS CPU checker policy: accepted14 rejected60; overflow controls passed
+g++-12 -O3 -march=native -fopenmp -std=c++11 -Isrc  tests/muller_face_radiation_check.cpp src/muller_dense.cpp src/muller_nodal.cpp src/muller_duffy.cpp src/mesh.cpp -o tests/muller_face_radiation_check
+In file included from tests/muller_face_radiation_check.cpp:1:
+src/muller_face_radiation.h:7:10: fatal error: finufft.h: No such file or directory
+    7 | #include <finufft.h>
+      |          ^~~~~~~~~~~
+compilation terminated.
+{"clifford_cases":500,"clifford_relative_error":7.5547279026765616e-15,"matched_medium_identity_error":5.4146502580342713e-17,"P1_P2_P3_matched_medium_identity_error":5.7449873313107457e-17,"rotation_reflection_P0_P1_P2_P3_error":1.8780480943984109e-15,"near52_P3_rotation_reflection_error":1.8187367015680946e-14,"SIMD_FP64_error":4.1951163706952895e-16,"mixed_storage_error":1.4988257238331759e-08,"self_block_error":4.3556474631494564e-16,"batch_FP64_error":4.4229299950452188e-16,"rejections":3}
+OMP_NUM_THREADS=4 OMP_WAIT_POLICY=PASSIVE tests/dirac_compact_cache_check
+{"cases":8,"max_error":6.4133271636182253e-16}
+make: *** [Makefile:211: tests/muller_face_radiation_check] Error 1

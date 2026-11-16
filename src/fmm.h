@@ -386,6 +386,9 @@ struct HelmholtzFMM {
     void evaluate_multilevel_pair_device(
         const double* const charges_re[6], const double* const charges_im[6],
         HelmholtzFMM* middle, HelmholtzFMM& coarse);
+    void evaluate_multilevel_pair_device(
+        const double* const charges_re[6], const double* const charges_im[6],
+        HelmholtzFMM* middle, HelmholtzFMM& coarse,bool include_near);
     void evaluate_vector_actions_pair_batch3_device_strict(
         const double* first_x_re,
         const double* first_x_im,

@@ -1,0 +1,3 @@
+g++-12 -I/usr/include -O3 -std=c++11 -Isrc -Itests tests/p2p_two_media_check.cpp build/muller-fp32/p2p.o -o tests/p2p_two_media_check -lcudart
+tests/p2p_two_media_check
+PASS 432 cases; scaled FP64/DS/comp 1.93895e-15 9.78864e-11 1.37898e-10; combined 3.18112e-15 1.64796e-10 1.95018e-10; zero exact

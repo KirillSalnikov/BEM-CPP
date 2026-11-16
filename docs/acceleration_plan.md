@@ -1319,3 +1319,982 @@ T-worker с явным учётом двух операторов в памят�
 - Source worker, mesh, expansion origin, L, quadratures and residual gates
   remain identical. The reduced-quadrature FGMRES experiment is still separate.
 - Details and limitations: [C6v T reuse](c6v_tmatrix_reuse.md).
+
+### 2026-11-11: exact-near / cheap-far inner operator (priority)
+
+Implemented an isolated A7-Aq correction on geometrically close, nonadjacent
+BDM1 triangle pairs. Duffy self/edge/vertex terms stay exactly once. Rigid
+local blocks share templates; distance selection preserves rotations and
+vertical reflection. Original A7 remains the acceptance equation.
+
+Dense all-pair identity error is 1.884e-15 for q1, 6.222e-16 for q3.
+Small ka10/ref1 CPU screening, both polarizations and eight inner steps:
+outer iterations 36 -> 19 at radius 1.5, or 13 at radius 2. At radius 2,
+A7 actions 76 -> 30 and cheap actions 576 -> 164. This is a coarse-mesh
+iteration experiment, not a measured production GPU or full-T speedup.
+
+Actual ka20/ref5 host correction: radius 1.5 uses 596 MiB and 13.44 ms/apply;
+radius 2 uses 1308 MiB and 28.79 ms/apply (four threads). Setup 2.32/4.97 s;
+standalone peak RSS 1.99/4.08 GiB. GPU operators occupy separate memory.
+
+Short GPU screening is queued before the pending bullet continuation:
+ka10/ref3 with two radii; only a >5% gain promotes to ka20/ref4, then the
+real two-code ka20/ref5 T packet. Per-case bounds 300/480/420 seconds.
+The unchanged production worker resumes after success or rejection.
+Details: benchmarks/near_far_20261111/README.txt, report.json, gpu_status.json.
+
+### 2026-11-12: near/far GPU outcome and completed bullet
+
+The ka10/ref3 GPU screen did not confirm an additional gain: best corrected
+solve times are 4.130 s (radius 1.5) and 4.336 s (radius 2), versus
+3.817/3.853 s for the best uncorrected nested inverse, over four RHS.
+The extra correction costs 8.2%/12.5% more time; the preregistered 5% gain
+gate prevented unnecessary ka20 GPU tests. Keep this option experimental.
+
+The C6v bullet continuation finished on 11 November at 22:22 Asia/Tomsk:
+5616/5616 columns, ka20/ref5/L52, n=1.3116, wavelength 0.532 um. It retained
+3646 old columns, reconstructed 946 by vertical reflection and completed
+189 worker pairs in the resumed run; end-to-end continuation 7912.4 s.
+The vertical audit passed at 6.658e-5 relative column error. All 16 Mueller
+elements are analytically averaged at 1801 output angles. L48-vs-L52
+maximum all16/M11 difference is 6.602e-5 (0.00660%); this checks only the
+saved-order tail, not mesh convergence or modes beyond L52. All four
+regular SciIce ka20 forms and their eight-page BEM/MBS comparison are ready.
+Do not rerun this completed bullet when resuming the campaign.
+
+### 2026-11-12: compressed FFT adopted for the actual ka40 Plate mesh
+
+The original Plate launch had the circulant preconditioner but still used
+the FMM inner action, unlike the completed Column. Prepared separate FFT
+assets from its exact ref6 native mesh (893952 DOFs), with unchanged near
+correction and quadratures. D6h aliases reduce 64 face interactions to eight
+canonical blocks. Spectral construction takes 152.358 s; cross ranks are
+128/128/192/192, random holdout errors <=5.053e-6.
+
+Eight T columns, both polarizations and degrees 1/32/64: complete native
+worker pair time falls 1115.253 -> 305.978 s, a measured 3.645x gain. Strict
+residual <=9.965e-7 against the original FMM; relative column error <=1.913e-5;
+field relative-L2 and maximum error divided by peak <=2.579e-5 on 490
+directions. Startup action discrepancy 4.221e-5. These checks establish
+solver agreement on this mesh, not discretization accuracy or full-T speed.
+
+Migrated all 12 committed Plate columns bitwise to Plate/bem_fft. Frozen
+worker and physical fingerprint stay identical; coded symmetry audits are
+repeated for the changed inner operator. Campaign resumed without a wall
+time limit. Droxtal/Bullet do not use these prism-specific assets. Full SO(3)
+averaging and reports remain queued after each complete T. Evidence:
+benchmarks/plate40_fft_20261112/README.txt and validation.json.
+
+The remaining cost includes about 25.4 s of strict checks per control pair
+and about 6.5 s of far-field projection. Their acceptance gates were not
+weakened. Measure packed production tasks before extrapolating this control
+speedup to the entire ka40 T matrix.
+
+### 2026-11-15: Clifford BEM article — candidate kernel paths
+
+Read Lee et al. (2016), DOI 10.1016/j.enganabound.2016.07.007, from the
+desktop. Its PEC examples at ka about 6 use constant triangles and do not
+establish a speedup against our dielectric Muller/FFT solver. Eq.49/52
+subtract an exact k-monogenic field to remove the principal-value term.
+Derived an FFT-compatible decomposition into the unchanged Cauchy
+convolution plus target-local correction blocks. A CPU Clifford-algebra
+finite-sum check gives <=4.09e-16 error; self quadrature and physical
+scattering are deliberately outside this test. No production change.
+
+Prioritize a two-medium potential/gradient action using J/M and surface
+divergences, reusing the experimental maxwell_exterior_projector/FMM path.
+This could avoid the native contracted Hessian kernel, but adds divergence
+channels. Derive boundary jumps and discrete near terms; first validate
+against tiny dense cases/refinement, then time actual ka10/20 C6 packets.
+Keep the original strict action until equivalence/error is established.
+
+The completed Plate ka40 has 382 committed packets: strict checks consume
+50.33% of worker time, Krylov action 26.24%, far field 15.61%. A hypothetical
+2x/3x cheaper strict action yields 1.336x/1.505x packet speedup, excluding
+setup/incident waits/SO3; this is not a measured new acceleration. Near
+Duffy corrections are already cached, so singularity subtraction alone
+does not save their integration cost on every iteration.
+
+Further candidates: regularized/compressed near remainders, then an
+approximate dielectric Dirac inverse as an inner/coarse preconditioner.
+Use Helsing/Rosen's transmission formulation rather than PEC conditions.
+Geometry-only local frames are mandatory for reuse across T columns (the
+paper's Eq.73 frame depends on incident E). Both polarizations, T order
+and analytic SO3 remain unchanged. Details, source hash, cost receipts and
+CPU derivation: benchmarks/clifford_article_20261115/README.txt,
+analyze.py and assessment.json. No full-T repetition is needed for screening.
+
+### 2026-11-15: first-derivative action implemented; CPU screen rejected
+
+Implemented a separate two-medium J/M action with surface-divergence source
+channels, native Duffy/template topology, mass13 and unchanged K2. Both
+matrix-free variants match their own dense references to <=3.18e-15.
+Rotation and both mirrors pass the 1e-4 sampled gate. Finite quadrature
+prevents substituting this action for the original strict operator; keep
+that operator for final acceptance and iterative defect corrections.
+
+Measured fused CPU direct actions improve only 1.033x at ka10/ref2 and
+1.029x at ka20/ref2. Actual 12-mode C6/mirror packets with both phase codes,
+both polarizations, common MBJ50 and original residual2e-6 get slower:
+25.775 -> 38.601 s (64 -> 98 summed iterations) at ka10;
+27.914 -> 71.693 s (65 -> 170) at ka20. Maximum original residual5.461e-7;
+packet far-field relative L2 difference <=1.158e-6. Ref2 is a coarse screen,
+especially at ka20, not a physically converged mesh or production GPU test.
+
+The compiled scalar-FMM GPU path is queued behind the unrelated training
+job, without suspending it: two dense-reference gates, then action timings
+at ka10/ref3 and ka20/ref4. It uses additional divergence channels and point
+workspaces; speed/VRAM benefits are unproven. No full T or production
+replacement is queued. Check gpu_queue.json before claiming GPU results.
+Evidence: benchmarks/first_derivative_20261115/README.txt and report.json.
+
+### 2026-11-15: preserve discrete consistency; fuse CPU media
+
+Followup to the first-derivative screen: the quadrature discrepancy is
+nonlocal. Keeping all K1 entries within radius0.3 leaves95.25%/96.58% of
+its Frobenius norm at ka10/20. A local near correction is insufficient.
+Using the new action as a short inner solve in FGMRES is valid and reduces
+the naive170 iterations at ka20 to10 outer+80 inner, but is still slower
+than applying the original operator with shared work. Recycling alone did
+not fix the mismatch. Do not promote the derivative substitution or claim
+that the full Clifford dielectric formulation has been implemented.
+
+Implemented the useful exact optimization in the production CPU checker:
+`near_field_two_media` shares geometry/current gathers and contracts the
+two-medium coefficient differences once. `BEM_CPU_FUSE_MEDIA=1` enables
+it for CPU backend `fmm`; default off. Requires AVX512 and exactly matching
+near lists. Memory accounting includes192 bytes/point of extra CPU storage.
+The T-server configuration and receipts expose the option; its host object
+compiled. Existing independent CPU/GPU startup checks remain mandatory.
+
+Physical one-leaf CPU tests, ref2/4032DOFs,8threads, real C6/mirror T packets:
+ka10:4.254->2.565s (1.659x),64->64iterations;
+ka20:4.322->2.580s (1.675x),65->65iterations.
+Original residual<=1.699e-7; all16 Mueller entries on two plane-wave
+directions/both polarizations agree within7.398e-14 relative to original
+M11. Rotation/reflections, aliasing, zero/reused workspaces, material loss,
+memory limits and rejected map configurations pass. The larger2.27x scalar
+experiment includes J/M batching already present in production; do not use
+that number as the production speedup. These are small CPU packet tests,
+not a production multilevel/GPU/full-T speed estimate or mesh convergence.
+
+Superseded the old waiting first-derivative GPU queue. The new queue waits
+without touching other jobs, then checks real native FMM trees against
+original CPU and GPU actions at ref1/ka10,ref2/ka20,ref3/ka20. Each probe is
+bounded at360s. Consult the live status before promoting the flag or
+estimating ka40/100. Evidence and queue:
+`benchmarks/first_derivative_consistent_20261115/README.txt`, `report.json`,
+`gpu_queue.json`. Regression command: `make host-media-pair-checks`.
+
+### 2026-11-15: fused GPU media and planar-face radiation prototype
+
+Implemented opt-in `BEM_FMM_FUSE_MEDIA=1` in the strict paired multilevel
+GPU assembly path. Fuses the two media's near coefficients per current;
+reuses consumed far-field buffers, with no additional large VRAM array.
+Keeps the original quadrature operator and sparse corrections. The strict
+DS path goes from four near launches to two; this does not predict a gain
+for the existing FP64 J/M-paired implementation. Default remains off.
+All CUDA objects and native action probes compiled. Independent host
+long-double Hessian oracle:3000 cases, scaled error<=5.29e-12.
+Actual GPU correctness and timing are pending, not claimed complete.
+
+`benchmarks/gpu_media_radiation_20261115/gpu_queue.py` waits for the previous
+bounded CPU/GPU audit and a free GPU.432 kernel comparisons and three full
+native actions (real/absorbing, saved physical current) have a combined
+690-second execution limit. Build hashes are rechecked after waiting.
+No long T job is launched and unrelated jobs are untouched.
+
+Reusable CPU prototype `scripts/face_nufft_radiation.py`:batched2D type3
+NUFFT per planar face, no assumed symmetry or changed quadrature weights.
+Real solved column currents at ka10/20,ref2,8736points,543angles,4threads:
+native paired radiation .06325/.06836s; new transform .00844/.00841s.
+Including measured current projection and final field assembly gives
+.01286/.01266s, i.e.4.92/5.40x; including the plan on the first call gives
+2.52/3.05x. All16 Mueller error/originalM11<=6.34e-9 fraction.
+Rotation/translation/zero/unsupported-input gates pass. This is a CPU
+prototype measurement, not an integrated T-worker or GPU speedup.
+
+Next gates: GPU full-action timing; then ref6/7. Radiation must be compared
+with native GPU on identical RHS/directions including transfer cost, and
+validated on spherical-mode currents and analytically averaged T output
+before production integration. The previous ka40 profile assigns15.61%
+to radiation, so this stage alone cannot accelerate that worker beyond
+1.185x even if free. Report/reproduction/remaining limitations:
+`benchmarks/gpu_media_radiation_20261115/README.txt`, `radiation_report.json`,
+`radial_host.json`, `gpu_queue.json`.
+
+### 2026-11-15: cached C++ radiation, full-T replay validated
+
+Implemented `src/muller_face_radiation.h` and optional T-worker backend
+`face_nufft`:two tangential components,8 transforms for a pair instead of12;
+affine BDM basis cached per triangle; original signed Dunavant quadrature;
+parallel independent face plans. No symmetry/polarization or T truncation
+change. Default GPU backend remains unchanged; new worker is isolated.
+
+Complete CPU radiation ka10/20,ref2,543angles,4threads improves20.18/20.93x
+over the native paired CPU reference (.06613/.06807s -> .003277/.003252s).
+At8threads:.001957/.001938s versus .03305/.03460s. This is approximately
+another3.9x over the preceding Python prototype.48 geometry/quadrature/
+rotation/reflection/in-place/zero cases and6 rejection cases passed.
+
+Re-radiated all880 saved ka10/ref2/L20 T columns, on the old aspect10/7 mesh
+and original3872-direction grid. No BEM solve. All880 radiation calls took
+1.355s; T relative error2.898e-11, worst column7.880e-10. Unchanged analytic
+SO(3),1801angles,zero Euler nodes:all16 Mueller error/originalM11<=1.1981e-11
+fraction (1.1981e-9 percent). Added numerical error only; not proof of old
+mesh/cutoff physical accuracy.
+
+ka40/ref6 radiation screen:893952DOFs,1936896quad points,35912directions,
+two synthetic currents,8threads; reused pair .17585s, prep .3969s,
+peak process RSS812.5MiB. Sixteen-angle original direct check2.71e-9.
+No full ka40 solve or GPU speed ratio inferred from this measurement.
+
+Worker:one32-direction original CPU FP64 audit of the first solved packet,
+with setup/audit times and backend in receipts. Launcher gets explicit
+`--farfield-backend face_nufft`, `--farfield-cpu-threads`, `--farfield-eps`,
+and requires the explicit FINUFFT-enabled `--worker-binary`. Freezing copies
+and hashes FINUFFT/private OpenMP dependencies. Preparation and repeat
+resume checks passed; both optional and default host builds compile.
+
+Two bounded native GPU comparisons (ka20/ref2,ka40/ref4,180s each) wait
+without interfering with training. They compare the actual FP32 production
+radiation as well as FP64, including transfers/projection/download. Before
+changing defaults:inspect them and exercise first-packet worker dispatch.
+Next opportunities:overlap CPU radiation with the next GPU packet; lazily
+allocate unused GPU direct-radiation buffers (192 bytes/mass point); continue
+the larger strict-operator work. Radiation alone was15.61% of the old ka40
+worker profile, so its removal cannot exceed1.185x total speedup.
+Artifacts:`benchmarks/face_radiation_cpp_20261115/README.txt`, `report.json`,
+`replayed_report.json`, `large_ref6.json`, `gpu_queue.json`.
+
+### 2026-11-15: GPU radiation comparisons completed, including shared ka40/ref6
+
+The previously pending standalone queues finished at08:20UTC. On a free
+GPU, ka40/ref4/35912 directions takes .402722s in native production FP32
+radiation versus .025688s in the new CPU FFT backend (15.68x,8threads).
+The small physical ka20/ref2 case favors the idle GPU:.000570s versus
+.001509s on CPU (GPU2.65x faster). Keep backend choice explicit.
+
+At the user's explicit request, repeated measurements with external GPU
+training running. ka40/ref4:.871315s GPU versus .026152s CPU (33.32x).
+ka40/ref6/1936896 quadrature points/35912 directions:13.668964s GPU versus
+.179008s CPU (76.36x); CPU plan preparation .399259s. Training remained
+present in every telemetry sample and was not paused or signalled. Ref6
+uses synthetic currents. Its96-direction independent FP64 audit gives
+relative field L2 error1.906e-9. Ref6 idle-GPU speed remains unmeasured;
+do not extrapolate it from the contention factor at ref4. These are reused
+radiation pair times, not full T solving or a mesh-convergence measurement.
+
+The fused GPU two-media queue also passed432 kernel comparisons and three
+native full-action cases, but small-case median speed ratios are only
+0.970...1.034. No material production gain demonstrated; keep default off.
+
+Remaining gate:runtime first-packet dispatch in the integrated T worker.
+Further opportunities remain overlapping CPU radiation with a subsequent
+GPU solve, lazy unused GPU radiation buffers, and reducing strict-check
+cost. Whole-worker radiation-removal ceiling from the old profile remains
+1.185x. Evidence:`benchmarks/face_radiation_cpp_20261115/parallel_measurement/`
+(`report.json`, `timings.csv`, raw repetitions and GPU telemetry), plus
+the completed `gpu_queue.json` files in both radiation experiment folders.
+
+### 2026-11-15: repeated confirmation of the Clifford-followup limits
+
+On the user's request, reran existing probes with the same physical RHS,
+8 CPU threads, MBJ50 and original residual tolerance2e-6. Native one-leaf
+CPU modal packets reproduce1.6669x at ka10/ref2 and1.6472x at ka20/ref2,
+with unchanged64/65 summed iterations. Four held-out plane-wave RHS at
+each size give all16 Mueller error/original M11<=8.319e-14.
+
+Three launches of the native multilevel CPU ref3/ka20 action,12 alternating
+old/new pairs, give only1.0262x (.770456 ->.750821s), original action error
+4.003e-16. This is the relevant qualification to the one-leaf1.67x result.
+GPU strict fusion repeat under external training gives .9994x FP64 and
+.9851x compensated-DS; previously completed idle cases give .970...1.034x.
+No material GPU benefit established. Other processes were untouched.
+
+Scalar derivative rewrite at ka20 reproduces170 versus65 iterations and
+32.447 versus28.786s. As an inner solve it takes17.718s (10outer+80inner),
+still slower than the exact fused scalar action12.383s. Retain the original
+discrete operator. Full dielectric Clifford formulation remains a future
+research direction; the failed rewrite is not a test of every such method.
+FFT radiation has independent mathematical/code provenance and its gain
+must not be attributed to Clifford algebra. No full T rerun or default change.
+
+Evidence/reproduction:
+`benchmarks/first_derivative_consistent_20261115/confirmation/README.txt`,
+`report.json`, `manifest.json`, `provenance.json`, `run.py`, `summarize.py`.
+
+### 2026-11-15: full dielectric Dirac formulation implemented and screened
+
+The previously deferred formulation now has an independent implementation in
+`src/dirac_transmission.{h,cpp}`: Helsing/Karlsson/Rosen 2007.12260v4 (23)-(35),
+eight densities, both media, physical E/H/radiation, P0/P1/P2 Galerkin, Duffy
+with analytic static singular subtraction, and material scaling. This is
+separate from the earlier exact two-media fusion and FFT radiation work.
+`make host-dirac-check` validates independent Clifford products, matched-index
+identity, and rotation/translation/reflection covariance for all three degrees.
+P2 was derived as an orthonormal quadratic triangular basis, not a fitted field
+correction. No production worker or backend default was switched.
+
+Regular M/N T columns and existing analytic SO(3) averaging are connected in
+`benchmarks/clifford_dielectric_20261115/tmatrix.py` (zero Euler nodes).
+Sphere ka1/ref4/L3: Mie T error0.202%, all16 averaged/Mie M11<=0.537%,
+64.33s including preparation. Prism ka3/L7: full P1/ref2 T68.04s versus
+P2/ref1 T24.28s (2.80x within the new method); averaged all16 disagreement
+0.135%, held-out plane-wave field reconstruction0.0415%. Independent Muller
+ref3 plane-wave comparisons give P1/ref2 max0.576% and P2/ref1 max0.495%
+over both incidences, three observation azimuths, theta0..180 and all16.
+P2/ref1 with the cheaper target7/Duffy14 rule used for its full T passes the
+same independent plane-wave gate at0.904%; the0.495% result uses13/24.
+
+For ka10, a finer independent Muller reference was necessary: old ref2 versus
+ref4 differs6.37% in M11 L2; ref3 versus ref4 differs0.506%. FMM and dense
+Muller on identical ref2 agree to5.10e-9 in complex fields. Dirac P2/ref2
+has M11 L2 error0.0846% versus Muller ref4, but max all16/local M11 remains
+2.778% (axial incidence, theta133deg, M12). The 1% all-angle gate has NOT
+passed. Raising P1 quadrature alone did not fix this. Eq.(34) projected
+densities worsened the worst angle and remain optional/off.
+
+Four ka10 plane RHS plus preparation: P1/ref3 target13/d24 143.4s, P2/ref2
+40.8s; scalar-pair storage7.177GB ->2.081GB. This observed3.5x is an internal
+discretization improvement, not a demonstrated production Muller speedup.
+Eight CPU threads; external GPU training continued. Full ka20/40/100 T has
+not been run with Dirac. The current pair cache costs128*Ncoeff^2 bytes and
+must not be used for a large campaign.
+
+Next gates, in order:
+1. Establish ka10 spatial convergence at deep minima using independent finer
+   references; distinguish finite-reference error from candidate error.
+2. Keep exact P2 near interactions and replace only far scalar interactions
+   with FMM/FFT for the eight charges. Validate every physical field against
+   this CPU reference before performance comparisons.
+3. Add/test local or grouped eight-density preconditioning; current screening
+   GMRES has no MBJ, so iteration comparisons with production MBJ are unequal.
+4. Benchmark complete T setup+solve+radiation+analytic averaging at a common
+   physical error; then ka20/40, followed by memory/time estimates for ka100.
+
+Reproduction, raw fields, source provenance, metrics and figures:
+`benchmarks/clifford_dielectric_20261115/README.txt`, `report.json`,
+`validation.pdf`, `build.py`, `build_manifest.json`, `final_manifest.json`.
+
+### 2026-11-15: Dirac far FMM, refined near blocks and resumable full T
+
+Implemented the next two gates in a separate optional CPU backend, with
+P0/P1/P2/P3 Galerkin and both media. The C++ operator now stores sparse
+exact-minus-point-quadrature near blocks; eight scalar charges and gradients
+are evaluated by pinned FMM3D, locally built with OpenMP and native SIMD.
+The neighbor list uses spatial bins, with no dense pair-distance table.
+Independent dense/FMM action agreement is below8e-12 in the multilevel
+ka10/ref2/P2 check; absorption, normalization and zero-RHS checks pass.
+P3 rotation/reflection tests pass; the refined sparse correction itself
+is covariant under rotation/reflection to1.84e-14 in both media.
+
+The outstanding ka10 angular error was sensitive to target quadrature in
+near blocks. Refining only this integral from13 to52 target nodes leaves
+the FMM points and cache size unchanged. Against independent Muller ref5,
+P2/ref3 maximum all16/local M11 falls from1.140% to0.552%; M11 L2 is0.00697%.
+Final near208 and Muller ref6 comparisons are in the updated report cited
+below: against ref6, near52 gives0.4394% and near208 gives0.3840%; ref5->ref6
+itself changes0.2910%. Near52->208 changes0.4052%. Selectnear52 for the
+next same-geometry ka10 run, with source Duffy24 and tolerance1e-8.
+Do not substitute M11 L2 for the angular maximum. Original near13
+P3 h-refinement ref2->3 gives0.934%, P2->P3 atref3 gives0.174%.
+The projection from paper Eq34 is still optional/off: it worsened this case.
+
+The complete T driver now accepts --backend fmm and --near-subdiv. Atomic
+per-column checkpoints carry numerical/code fingerprints and checksums;
+--resume and --max-columns are tested, including rejection of changed
+material and corrupted data. A126-column prism T atka3/L7 matches the dense
+T to1.23e-15 and its analytic SO(3) Mueller matrix to5.43e-15; no Euler-node
+averaging. Near13->52 changes the averaged diagram by0.0706% at most.
+
+Memory: ka10/ref3/P2 scalar cache28.708GB dense equivalent ->1.319GB sparse.
+ka40/ref4/P2 capacity probe:460800DOFs,4.800GB sparse versus424.673GB dense
+equivalent,6.19GB peakRSS; setup67.99s, one action6.274s (near13). This is
+not a ka40 spatial-convergence or full-T timing result. Small ka3 fullT
+is slower with FMM:91.98s versus36.37s dense, including setup. Shared-load
+measurements,8CPUthreads; external GPU processes were never stopped.
+
+Remaining production gates:
+1. Local/grouped preconditioning for eight densities, measured with strict
+   residuals and all16 physical errors. Current Dirac GMRES has no MBJ.
+2. Reuse FMM trees and translations, batch modal RHS; reduce independent
+   columns by verified rotational and mirror symmetry sectors.
+3. Accelerate radiation/projection for large T; this driver still integrates
+   far fields directly. Keep full setup+solve+radiation+SO3 accounting.
+4. Physically converged ka20/40 comparisons against production Muller at
+   equal angular error before any worker/default switch or ka100 forecast.
+
+Evidence and reproducible commands:
+`benchmarks/clifford_fmm_20261115/README.txt`, `report.json`, `validation.pdf`,
+`check.py`, `checkpoint_check.py`, `native_build_manifest.json`,
+`final_manifest.json`. The previous dense-stage report is retained as history.
+
+### 2026-11-15: successful combinations at the same 1% physical target
+
+The earlier small-FMM slowdown is not a limit on the Dirac formulation.
+Two measured combinations now pass the same sampled all16/Muller-ref6 M11
+criterion atka10, with final strict residual below1e-8:
+
+* P3/ref2, dense near52/Duffy24,16CPUthreads:53760DOFs,5.780GB kernel cache,
+  four cold plane RHS plus preparation/fields/audits55.858s; max error0.8443%.
+  P2/ref3 FMM uses119808DOFs and1.319GB. Flat prism geometry is preserved
+  when coarsening; this does not justify coarsening curved surface geometry.
+* P2/ref3, FMM eps1e-3 inside GMRES, explicit defect corrections audited
+  with eps1e-10,24threads:four cold RHS151.064s, max error0.4393%.
+  Same-grid diagram change versus strict Dirac is only0.000102%.
+  One solve77.881s ->30.777s,2.53x, with the same final1e-8 tolerance.
+  The slower eps1e-4 correction variant did not win; eps1e-3 was validated
+  by the strict final action, not accepted using its own inaccurate residual.
+
+Actual ka10/L18 T packets (TWO columns, not a fullT):standard P2 FMM166.410s,
+refined P2 FMM74.516s,P3 dense35.309s including setup. Corresponding solve
+totals97.719s,44.198s,20.897s. T-column relative differences versus standard
+are2.58e-8 for refinement and0.01732% for the coarse P3 discretization.
+The complete ka3/L7 T plus analytic SO3 now takes23.449s using dense near52,
+versus99.869s for the previous FMM near52 variant (4.26x). Its T agrees to
+1.16e-15 and averaged all16/M11 to3.23e-15. Thread count/backend choice are
+part of these configurations; do not present the ratios as an isolated
+single-kernel or production GPU speedup.
+
+Implementation:cached Gauss nodes, shared refined near quadrature in dense
+and sparse paths, optional validated -fcx-limited-range compilation,
+solve_refined(), --solver/--tol in the T driver and checkpoint fingerprint,
+fingerprint of the actually selected shared library. Old library/source
+are archived. Production Muller defaults remain untouched.
+
+Next:use dense P3 when the cache fits and its physical test passes; use
+refined FMM when dense storage is unsuitable. Check complete ka10 angular
+averaging and other sizes before extending the accuracy claim. Persistent
+FMM trees, modal batching and symmetry reduction remain separate work.
+Do not extrapolate this measured gain into a ka40/100 full-T timing claim.
+Evidence:`benchmarks/clifford_speed_combinations_20261115/README.txt`,
+`report.json`, `speed_and_accuracy.pdf`, `manifest.json`; the report includes
+the final measured four-RHS baseline and all timing scopes.
+
+Final cold four-RHS baseline completed:375.943s for standard P2/ref3 FMM
+(8threads),151.064s for refined FMM (24threads,2.49x),55.858s for P3/ref2
+dense (16threads,6.73x). Preparation, fields and strict audits are included;
+every final residual is below1e-8. These are measured configuration gains
+on the shared machine, not a full ka10 T timing or a ka40 extrapolation.
+
+### 2026-11-15: matched-accuracy Muller comparison, including failed profiles
+
+The four cold ka10 plane-wave RHS were compared at the same sampled
+all16/local-M11 <1% target against Muller ref6. Current-source Muller ref5
+with GPU FMM, CPU GMRES, MBJ50, separate current actions and FINUFFT
+radiation takes218.118s including setup/audits/fields; worst error0.29096%,
+maximum strict residual8.63e-10. Fields agree with the prior strict ref5
+solution to4.17e-9 relative L2. Ref3 and ref4 fail this physical target.
+Reusing the earlier same-day Dirac measurements gives55.858s for dense
+P3/ref2 (0.84433%,3.905x faster) and151.064s for refined P2/ref3 FMM
+(0.43931%,1.444x faster). External GPU training remained running; these
+are shared-load configuration comparisons, not an idle-device benchmark,
+full T timing, isolated Clifford-algebra gain or universal optimum.
+
+Fixed a separate FFT initialization error at an integer vertical-cell
+boundary: deriving nz again from sqrt(3)*aspect disagreed with the mesh
+builder's scaled-edge ceil by two rows. The FFT now reads the actual nz
+from the supplied quadrature count and retains lattice/bijection checks.
+Strict action agreement:1.391e-7 atref3 for the boundary aspect and
+1.470e-10 atref2/aspect1. The physical geometry and existing mesh are kept.
+Atref5 the exact-near-cache FFT accepted two oblique RHS with residuals
+below9e-10 and all16/ref6 error0.08363%; their setup+solve+audit+field sum
+is216.280s. Stopped the incomplete four-RHS FFT run after219.93s, with only
+two RHS accepted: it already exceeded the completed FMM profile. Do not
+report an extrapolated full FFT time or an untested axial diagram.
+
+Unresolved gate:default mixed paired-current FMM stalled near1.9e-4 true
+residual atref5; paired device GMRES stalled near2.5e-6 atref3. Strict
+repeatability, linearity and CPU/GPU assembly checks passed; a trial
+cuBLAS stream binding did not fix it and was reverted. Separate current
+actions restored convergence. Preserve rejected logs; isolate paired
+near/far stages before counting any paired-path timing as a speedup.
+Production binaries/defaults were not switched by this comparison.
+
+Next:resolve that paired mixed-path gate; validate P3/refined FMM atka20
+and other shapes; measure modal RHS and complete analytic SO(3) before
+extrapolating to larger T matrices. Dense P3 uses5.780GB kernel cache at
+ka10 and cannot be assumed to fit at larger sizes. Evidence and commands:
+`benchmarks/muller_dirac_matched_20261115/README.txt`, `report.json`,
+`comparison.pdf`, `fft_screen.json`, action checks and build manifests.
+
+### 2026-11-15: dense Dirac SIMD and local LU blocks validated in T driver
+
+Selected additional acceleration:FP64 component-wise SIMD contractions and
+one-panel LU blocks (80x80 forP3). Four cold ka10 P3/ref2 RHS including setup,
+fields and independent original FP64 checks:55.858s ->40.752s (1.371x).
+Solve total 41.300 s -> 25.796 s (1.601x); iterations 84/84/66/66 -> 59/59/49/49.
+All final residuals<1e-8; all16/local-ref6-M11 maximum0.84429%, within the
+same sampled1% target. Diagram change versus previousP3 is6.52e-7 of M11.
+Extra storage69.028MB, preparation0.047s; canonical5.780GB cache unchanged.
+
+Applied to genuine spherical modal RHS and analytic SO(3), not only a
+plane-wave microbenchmark. Complete ka3/L7/P2ref1 T126 and averaging:
+23.449s ->16.536s (1.418x), relativeT change5.75e-9 and averaged all16/M11
+change1.773e-8. Two-column ka10/L18/P3ref2 packet:35.309s ->23.312s including
+setup, solves20.897s ->8.809s. This is exactly two of720 columns, not a full
+ka10 T timing. Shared-machine timings; old same-day measurements reused,
+external training never stopped. Do not infer ka40/100 gains from this.
+
+`solve.py` and `tmatrix.py` expose `--dense-kernel simd --block-panels 1`;
+the selected library is in the evidence directory below. Defaults remain
+explicitly selectable; the old scalar operator is retained for independent
+checks. Dense options are rejected for near-only FMM objects. Checkpoints
+fingerprint these options and reject incompatible resumes. Fresh small
+resume checks preserve existing columns. Unit checks include absorbing
+index, arbitrary rotations/reflections, P0..P3 and padded grouped blocks.
+
+Rejected for this target:groups2/4/8 barely reduce iterations; FP32 storage
+with FP64 accumulation needs extra strict defect corrections and does not
+beat selectedFP64+panel blocks. Its optional cache is2.890GB extra atka10.
+Reciprocal triangular action agrees to5.08e-15 but is slower; archived and
+removed from working core. No rejected timing is counted as a speedup.
+
+Next useful work:cache translation-equivalent near quadrature templates
+without changing geometrical or quadrature decisions; batch modal RHS to
+reuse coefficient reads; derive local block inverses for sparse/FMM; then
+verify ka20/40 physical convergence and fullT cost. Larger panels or looser
+residuals are not a substitute for that validation. Evidence and commands:
+`benchmarks/dirac_dense_optimization_20261115/README.txt`, `report.json`,
+`optimization.pdf`, `unit_final.log`, `integration_checks.json`, `T_ka3/`,
+`T_ka10_packet/`, `selected.json`, `manifest.json`.
+
+### 2026-11-15: exact FP64 RHS batching validated through full T and SO(3)
+
+Added tiled dense actions for 1..16 independent RHS. Selected source tile
+256 and batch size 8; FP64 SIMD and one-panel LU remain unchanged. Each RHS
+runs standard SciPy GMRES, with native requests coordinated on the calling
+thread. There are no coupled Krylov spaces, weaker tolerances or nested
+OpenMP teams. Every column retains an independent original scalar FP64 audit.
+
+Fresh matched ka10 four-plane-RHS solves: 26.174 -> 11.681 s (2.241x),
+identical 59/59/49/49 iterations. Full cold scope including setup, fields and
+extra audits: 25.655 s versus the previous same-day 40.752 s. Physical
+all16/local-reference-M11 maximum remains 0.84429% on the sampled directions.
+
+Fresh matched eight-column ka10/L18 packet: 52.070 -> 28.727 s including
+setup (1.813x); solves 37.250 -> 14.045 s (2.652x), identical iterations.
+Measured process peak RSS 5.562 -> 5.827 GiB (+271.87 MiB). The 5.780 GB
+kernel cache is shared. These are eight of 720 columns, not a full T timing.
+
+Fresh full ka3/L7/P2ref1 T126 plus exact SO(3): 16.025 -> 11.972 s (1.339x),
+solves 8.155 -> 4.092 s. Relative T change 6.72e-16; averaged all16/M11
+change 2.91e-15. No orientation quadrature. All strict residuals below 1e-8.
+Batch 8 beat batch 4 (12.754 s full ka3). CPU-only tests were sequential on
+shared hardware; no ka20/40/100 runtime extrapolation is justified yet.
+
+`tmatrix.py --dense-kernel simd --block-panels 1 --batch-size 8 --batch-tile 256`
+selects the measured configuration. Default batch size stays 1. Batch options
+and solver code are fingerprinted. Resume preserves complete files and fills
+noncontiguous missing columns; incompatible settings are rejected. API tests
+cover zero RHS, absorbing index, different iteration counts and native error
+propagation. Unit tests compare batches through size 16 with the scalar action.
+
+Next: reusable geometry/quadrature templates for setup; profile analytic SO(3)
+contractions (about 3.2 s of the small full-T case); transfer batching to FMM
+and radiation, then check ka20/40 spatial convergence before large runs.
+Evidence: `benchmarks/dirac_batch_optimization_20261115/README.txt`,
+`report.json`, `optimization.pdf`, `selected.json`, `unit.log`, `status.json`.
+
+### 2026-11-15: cyclic Dirac sectors, audited mirror columns and factored SO(3)
+
+Accepted profile: dense FP64 SIMD + one-panel LU + batch8, `--symmetry c6v
+--so3 factored`. Geometry, polynomial basis permutations and all eight
+scalar/axial/pseudoscalar/polar components are transformed explicitly.
+C6 reduces ka10 solver dimension 53760 -> 8960 and evaluates only target
+representative rows. Vertical mirrors reconstruct partner T columns, each
+with an independent original full FP64 residual on the transformed density.
+The full pair cache remains stored; do not claim a sixfold cache reduction.
+
+First fixed a real quadrature-boundary inconsistency: strict comparisons
+selected different near rules for symmetry-equivalent pairs. A scale-relative
+128*epsilon(double) tie margin, also reflected in sparse bin extent, reduces
+ka10 rotational covariance error 1.047e-5 -> 1.013e-14 and mirror error
+7.417e-6 -> 1.410e-14. Physical ka10 all16/local-ref6-M11 error is now
+0.845968% on the same sampled directions, within 1%. Difference from old
+quadrature is at most 0.002894% of M11. All timings below compare the same
+corrected operator, never use the uncorrected matrix as a sector oracle.
+
+Fresh identical first 35 ka10/L18 T columns: 88.557 -> 28.730 s including
+setup (3.082x), solves and strict audits 67.628 -> 12.085 s (5.596x).
+20 columns solved, 15 mirrored; relative column difference 5.88e-15.
+Peak RSS 5.862 -> 5.667 GiB. These are 35 of 720 columns, not a full T.
+A separate eight-mode M/N comparison without mirror recovery gave
+13.913 -> 4.044 s with identical iterations (3.44x).
+
+Full ka3/L7 T126 + analytic SO(3): 11.483 -> 6.253 s (1.836x), with
+70 independent solves and 56 mirrored columns. SO(3) 3.126 -> 0.355 s
+(8.801x): retain exact covariance factors, precontract the fixed incoming
+basis and process output angles with GEMMs. No SVD truncation or orientation
+quadrature. Full T difference 2.55e-15; averaged all16/M11 difference 1.092e-14.
+Workspace is explicitly bounded; acceleration does not imply large-L cost
+or precision has been validated. All full residuals are below 1e-8.
+
+Rejected: tiled GEMM inside the BEM action was slower than SIMD despite
+agreement <7e-16; archived and removed from working core. LGMRES recycling
+with outer_k8 and prepend_outer_v=True on six same-sector modes used
+251 actions / 5.147 s versus GMRES 245 / 5.024 s. Not selected. Preliminary
+32-column timings are not used because early mirror checkpoints change the
+index set; the final 35-column comparison has identical indices 0..34.
+
+Tests cover absorbing index, arbitrary/broken geometric transformations,
+selected rows, zero/full scalar checks, P0..P3, mirror RHS signs, complete
+SO(3) versus numerical quadrature, resume with early partner checkpoints and
+a missing positive column. Shared CPU/GPU background activity appeared during
+the campaign and was left running; measured factors are not hardware guarantees.
+
+Next: horizontal-mirror parity inside cyclic sectors; reduced coefficient
+storage with an independent full residual path; reusable geometric quadrature
+templates; then ka20/40 mesh convergence. Evidence and reproducible commands:
+`benchmarks/dirac_symmetry_gemm_20261115/README.txt`, `report.json`,
+`optimization.pdf`, `selected.json`, `unit.log`, `python_tests.log`,
+`resume_checks.json`, `so3_check.json`, `gemm_screen.json`, `recycle_screen.json`.
+
+### 2026-11-16: horizontal parity and directly assembled orbit cache
+
+Completed the first two follow-ups from the preceding entry. Selected
+experimental CPU Dirac profile: SIMD FP64, one-panel LU, batch8/tile256,
+`--symmetry c6hv --dense-cache orbits12 --so3 factored`, OpenMP16/BLAS1.
+Horizontal parity is `(-1)^(p+l+m+1)` for M/N index p=0/1. ka10/P3ref2
+sector size falls 8960 -> 4480 (full 53760). Vertical mirror column recovery
+and exact analytic SO(3) remain active.
+
+Native deferred construction assembles representative target rows directly,
+with all source columns and both directed reciprocal Galerkin quadratures.
+No full intermediate cache. Coefficients ka10: 5,780,275,200 -> 481,689,600
+bytes, exactly 12x less. Full-space scalar FP64 residuals are reconstructed
+geometrically for arbitrary densities, not restricted to modal eigenvectors.
+This is NOT an independently stored full matrix. Fresh uncached quadratures
+audit 24 representative/unretained target panels at initialization; full-cache
+comparisons on arbitrary vectors, LU factors and solved modes give ~1e-14.
+Residuals for direct and mirrored columns remain below 1e-8. No approximation
+in storage, no FP32 or SVD truncation. Native full-cache-only operations now
+reject compact objects, including multi-RHS native batch.
+
+Fresh matched final-build timings versus previous c6v/full winner:
+
+- ka10/L18 identical first 35 of 720 columns: wall including preparation
+  27.115 -> 15.715 s (1.725x); solves/audits 11.327 -> 9.618 s (1.178x).
+  Peak RSS 5.667 -> 0.708 GiB (8.008x). 20 solves + 15 mirrored in both.
+  Column difference 2.798e-15. The wall factor is not a full-T estimate.
+- Full ka3/L7 T126 + analytic SO(3): 6.071 -> 4.859 s (1.249x), T difference
+  1.146e-15; averaged all16/M11 difference 4.791e-15. Small-mesh solve phase
+  is slower, 1.530 -> 2.017 s, because full-space reconstruction has overhead.
+- Same ka10 four plane waves vs saved Muller ref6: maximum sampled
+  all16/local-reference-M11 error remains 0.845968%. Exact cache reduction
+  leaves fields unchanged to ~2e-15. This certifies this sampled ka10 setup,
+  not ka20/40 spatial convergence.
+
+Actual larger capacity test: ka20/P3ref3, 2496 panels, 199680 full / 16640
+sector unknowns. Full coefficient cache would need 79,744,204,800 bytes
+(74.27 GiB); compact uses 6,645,350,400 bytes (6.19 GiB), process peak
+6.627 GiB. Two M/N modes solved and projected into outgoing L30 in 37.385 s
+including setup: setup12.506, solves18.723, radiation/projection1.425 s.
+Iterations124/123, residuals8.787e-9/9.766e-9. This is two columns, NOT a
+full T, not an orientation average, not a spatial/L-convergence certificate.
+
+Validation: `make host-dirac-check` (old Clifford/full suite plus 8 compact
+P0..P3/refinement cases), 7 opt-in Python tests, checkpoint early partner,
+resume preserving completed bytes, positive hole, configuration rejection.
+Final selected library SHA256:
+`dfc0e37b77251f44fcf00e429c8cdd80c8b5c1a751e9ebb3623ffdded42d567f`.
+Results: `benchmarks/dirac_horizontal_cache_20261115/README.txt`,
+`report.json`, `optimization.pdf`, `timings.csv`, `manifest.json`.
+
+Remaining priorities, ordered by the new evidence:
+
+1. Reduce ka20 sector iterations (123–124): stronger local/face/coarse
+   preconditioner, benchmark setup + solves + strict checks together.
+2. Transfer exact orbit symmetries to FMM/compressed far interactions with
+   exact near blocks, because the representative cache still scales as N².
+   Retain an independently audited full-space residual path.
+3. Reuse geometric quadrature templates during representative-row assembly.
+4. Validate ka20 then ka40 mesh convergence on held-out directions and both
+   polarizations; only then calibrate L against analytically averaged output.
+   No large full T launch based solely on this two-mode capacity test.
+
+Compact mode currently requires verified free C6 x horizontal mirror orbits;
+full native Cauchy / field(project=True) remains full-cache-only. Production
+Muller/GPU binaries and default full-cache behavior are unchanged.
+
+### 2026-11-16: reusable two-level preconditioner for cyclic T sectors
+
+Implemented the first remaining priority above. Keep the exact operator and
+full-space scalar FP64 residual checks. Add a polynomial coarse correction
+to the one-panel LU: `M = B + (Z - B A Z) (R A Z)^-1 R`, where Z inserts
+complete degree-0 or degree-1 panel polynomials in the symmetry sector and
+R=Z^H selects them. Cache W=B A Z-Z and LU(R A Z), so applying M needs no
+full BEM action. All face-to-face interactions enter the coarse matrix.
+Coarse cache keys are (m modulo 6, horizontal parity); it is reusable across
+l and compatible M/N modes. Shared assembly uses common transformed blocks
+for several sectors; the correction matvec uses parallel FP64 SIMD.
+
+T driver flags: `--sector-coarse-basis 0|1|3` (0=old panel LU, 1=P0,
+3=P1; these numbers are basis counts). Preserve default0. Explicit coarse
+memory budget and upfront all-sector capacity check. Changing only the
+memory budget is permitted on resume; changing the coarse space is rejected.
+Selected library in `benchmarks/dirac_coarse_preconditioner_20261116/`:
+`a770cbf9718d3d7c9f0de071403b6a85b3e8477a497d8e506c4fe5df19ea343a`.
+
+Ka20/P3ref3, eight M/N modes l=1,5,15,25, m=-1, two sector keys:
+
+- Old panel LU: iterations119..133, solve/check phase62.875 s.
+- P0: iterations32..37; preparation7.126 s + solve29.723 s =36.873 s
+  including small wrapper overhead. 1.706x versus the old phase including
+  the new preconditioner preparation, 2.115x with that cache already prepared.
+- P1: every mode takes9 iterations; preparation26.523 s + solve20.599 s
+  =47.150 s including wrapper overhead. 1.334x including preparation,
+  3.052x for the solve phase. Tested field differences6.202e-9 /5.737e-9.
+
+These ka20 phase timings EXCLUDE shared operator/RHS preparation and far
+radiation. They are not complete cold calculation times. Fresh T-driver
+comparisons below include all preparation, audits and radiation.
+
+Identical first288/720 ka10/L18/P3ref2 T columns (152 solved,136 mirrored):
+old/P0/P1 wall101.189/83.520/79.905 s; solve/check78.730/58.178/51.215 s;
+coarse setup0/2.794/6.385 s. P1 wins this series by1.266x overall.
+Total iterations5899/2458/1019. Column differences1.175e-8 /1.145e-8,
+full residuals below1e-8. Peak RSS0.759/1.156/2.324 GiB in separate processes.
+Full ka3/L7 T126 + analytic SO(3):4.852/4.622/4.702 s. Maximum normalized
+averaged Mueller changes7.353e-9 /7.203e-9. No orientation quadrature added.
+
+Do not equate the iteration reduction with whole-T speedup. Even with P1,
+ka10 mirrored-column checks consume19.32 s and radiation/projection13.29 s;
+direct-column full checks remain too. No check frequency was reduced.
+No full ka10/20 T, ka40/100 timing or ka20 spatial-convergence certificate
+is claimed by these partial-column / modal experiments.
+
+Additional permanent memory per ka20 sector: P0 487,332,352 bytes,
+P1 1,727,811,072 bytes. A full T may need12 sectors: about5.45/19.31 GiB
+extra, plus BEM storage and temporary assembly arrays. Use a24 GiB coarse
+budget for P1 at ka20 on this machine; default8 GiB suffices for P0.
+Both W and Ac remain dense, so scaling to ka100 needs further compression.
+
+Validation: old native Clifford/full tests plus transformed columns against
+independent full assembly;10 Python tests covering both M/N families,
+multiple sector keys in a batch, absorbing index, arbitrary vectors,
+coarse-range exactness, reuse, budget rejection and SIMD-vs-BLAS; full T and
+analytic average; checkpoint pair/hole/rejection and memory-budget change.
+Evidence: README.txt, report.json, optimization.pdf, timings.csv,
+validation.json, resume_checks.json, manifest.json in the new benchmark folder.
+
+Next priorities from measured remaining cost:
+
+1. Batch full-space FP64 audits with an independent scalar kernel, sharing
+   coefficient reads across RHS while preserving every density's residual.
+2. Batch W and coarse-LU applications for several RHS in the same sector;
+   current inverse requests are still processed separately.
+3. Reduce dense W/Ac storage/cost and combine this correction with exact near
+   blocks plus FMM/compressed far action, retaining all symmetry signs.
+4. Continue ka20/40 mesh and L convergence checks before large full T runs.
+
+### 2026-11-16: bound dense Dirac sector memory and connect production analytic SO(3)
+
+New experimental profile in `benchmarks/dirac_bounded_memory_20261116/`.
+Keep every full-space FP64 residual audit and all three geometric symmetry
+uses. Group T solves by cyclic/horizontal sector; retain a single coarse
+W/LU cache, releasing it only between completed batches. Store W in its
+assembly (Fortran) layout and apply it through a tiled FP64 native kernel,
+removing the full-size C-order copy. Assemble/finish sectors one at a time;
+fill Ac directly into its LU buffer. Bound coarse assembly workspace as
+well as permanent arrays. The `all` cache policy remains an explicit control.
+
+Add actual aspect to CLI/configuration (SciIce Column is1.6495721976846451).
+Add a preflight based on the actual generated mesh before any dense pair
+cache allocation. Model includes Krylov batches, temporaries and T arrays;
+RAM budget defaults48GiB, additionally limited by current available RAM.
+It is a planning estimate, not an allocator-level hard cap.
+
+Connect the already validated FP64 Mackowski GSF analytic SO(3) routine to
+this T builder (`--so3 mstm`). All16 entries, reciprocal-partner contraction
+when required, no reciprocity projection and no Euler quadrature. Release
+the native operator before averaging; share projected/kernel storage.
+The old factored/reference options remain for independent comparisons.
+
+Fresh complete ka10/P3ref2/L18 T720 on the prototype aspect1.1547005383792517:
+wall223.282 ->200.281s; peakRSS2.69144 ->0.94396GiB (2.851x reduction).
+T difference1.636e-15; all16 averaged differences/M11 max6.374e-14.
+Solve/check130.366 ->133.124s, coarse setup6.536 ->8.423s; the time saving
+comes from SO(3)26.437 ->0.297s. Do not call this a GMRES speedup.
+Complete ka3/P2ref1/L7 T126: peakRSS0.20094 ->0.12141GiB,
+wall4.654 ->4.392s; Terror7.264e-16, Mueller/M11 error6.879e-14.
+
+Remaining scaling priority is the quadratic operator, not more eviction:
+
+1. Replace representative-row dense FAR storage by a spatial block hierarchy
+   or the existing FMM action. Retain exact near Galerkin blocks. Build bounded
+   tiles directly, never create a full dense matrix before compressing it.
+2. Provide the same cyclic/horizontal reduced action and independent full
+   residual path through that operator. Audit unretained rows by fresh direct
+   quadratures, plus arbitrary-vector action comparisons at small sizes.
+3. Compress or make matrix-free the coarse W/Ac when even one sector is too
+   large; pair this with the operator path. Moving a dense PiB matrix to disk
+   is not a solution. Measure setup and applications, not only iteration count.
+4. Validate the actual SciIce aspect and P3 refinement convergence at ka20/40.
+   A Dirac P3 ref7 is NOT the old Muller ref7 discretization; do not transfer
+   its accuracy or size requirements from the old six-hour run.
+
+The new sector policy alone does NOT make ka40/ref4 or ka80/ref7 fit.
+Complete ka20 T runtime and its mesh/L1% convergence remain unmeasured.
+See report.json for the separate all-twelve-sector ka20 memory experiment,
+checkpoint/hole tests, and the zero-padded L40 analytic-averaging check.
+
+Measured ka20/P3ref3 on the actual SciIce aspect (3072 panels,245760 DOFs):
+all12 P1 sector preparations plus four identical modal solves in separate
+processes: old peakRSS41.01497GiB, new12.36154GiB, reduction3.318x.
+Wall353.361 ->324.288s. Iterations[7,8,7,7] unchanged; field L2 difference
+9.311e-15, maximum full residual4.166e-9. This is NOT a full T construction;
+T arrays, spherical radiation and larger simultaneous batches add memory.
+
+Final validation:11 CPU tests pass; sector-order checkpoints preserve existing
+columns, tolerate operational budget/cache-policy changes and recover positive
+mirror holes (T difference1.071e-15). Changed aspect/coarse basis rejected.
+L40 FP64 GSF accepts the zero-padded solved L7 T and reproduces all16 averages
+to6.080e-14/M11 in16.10s. This checks averaging, not L40 physical convergence.
+Clean rebuild is byte-identical to the library used for all new measurements.
+
+### 2026-11-16: batch independent full FP64 column audits
+
+Completed the full-audit batching priority in the experimental Dirac T path.
+New reference contraction vectorizes over RHS (packet width<=8, up to16 RHS
+per API call) while retaining increasing-source accumulation in FP64. Its
+Clifford table is independent of the iteration dense_batch kernel. The old
+scalar action remains an oracle. Full arbitrary densities are supported;
+there is no assumption that a density is already in its claimed mode sector.
+
+Final GMRES audits are grouped after all workers finish; each density retains
+its own residual gate. Sector checking includes unretained full-space panels.
+Mirror RHS/lifting/residual checks are grouped before any partner checkpoint
+is written. No checks removed, no FP32, no new permanent operator storage.
+Use --reference-checks batch (default); scalar remains a control.
+
+Isolated 8-RHS full checks: ka10 1.068912 ->0.314269s (3.401x);
+actual SciIce ka20 18.399655 ->5.549165s (3.316x). Operator differences
+<=2.463e-16. Sixteen RHS give3.320x/3.286x. These are check-phase speedups.
+Full T126 ka3:4.636892 ->3.925408s (1.181x), identical T bits and350iterations;
+all16 averaged errors/M11 max1.915e-14. Both measurements precede external load.
+
+Full T720 ka10: new wall133.851940s, peakRSS0.96469GiB; identical T bits and
+2568iterations, all16 averaged difference/M11 max2.581e-14. All378direct and
+342mirror columns retain residual<1e-8. Column reference actions33.927s.
+UNRELATED CPU LOAD appeared during the old ka10 run. Its287.784916s must
+NOT be used as a clean baseline/speedup ratio. The ka10 full run establishes
+correctness and memory here; its speedup field is deliberately null.
+
+Validation:17 Python tests; native P0..P3 with two quadrature/refinement
+settings and packet sizes1/2/3/8/9/16; full independent matrix comparisons;
+zero RHS; injected bad direct, unretained-row and mirrored data are rejected.
+Checkpoint files preserved; positive holes recovered with Terror1.071e-15.
+Clean rebuild matches the measured library byte for byte.
+Evidence/profile: benchmarks/dirac_batch_checks_20261116/report.json,
+selected.json, README.txt, fp64_checks.pdf, validation.json and logs.
+
+Remaining priorities: reduce quadratic far-operator storage for large meshes;
+batch the W/coarse-LU applications within a sector (still separate inverse
+requests); accelerate far radiation/projection. Check-phase acceleration must
+not be carried over as the speedup of the entire T construction.
+
+### 2026-11-16: optional symmetry-reduced FMM, no stored coarse W
+
+Implemented `--backend fmm-sector` in the experimental CPU Dirac T builder.
+Dense SIMD remains the default: FMM is a memory option, not a measured speed
+winner. Native code constructs exact near-minus-point corrections only for
+symmetry representative panels. Far interactions are applied by FMM3D at
+representative targets. Full arbitrary-density residuals use a tighter FMM
+epsilon and reconstructed near corrections on all panels. Independent direct
+quadratures audit retained and unretained rows. Rotational, horizontal and
+vertical mirror symmetries, atomic checkpoints and analytic SO(3) remain.
+
+Assemble Ac directly in bounded low-polynomial tiles, without a dense pair
+cache. Retain only Ac LU and apply `Mx = B(x-AZ Ac^-1 Rx)+Z Ac^-1 Rx`.
+No W is stored; the extra FMM action is the cost. LU and panel/T/Krylov
+allocations are checked before building the near cache. FMM workspace is
+reserved in the model but is not a hard process-wide allocation cap.
+
+Actual SciIce aspect1.6495721976846451, ka20/ref3/P3, two modal RHS including
+setup, both polarizations, one P1 sector, tolerance1e-8:
+
+* Dense: peakRSS12.379GiB, total55.900s, solve/check12.243s.
+* FMM packet2/eps1e-10: peakRSS3.920GiB, total98.845s.
+* FMM packet1/eps1e-8, strict1e-12: peakRSS2.946GiB (4.20x less),
+  total90.404s (1.62x longer), solve/check46.633s.
+* Operator cache9.375 ->0.355GiB; coarse2.438 ->0.563GiB. Iterations7,7
+  unchanged. Density L2 difference1.292e-10; strict residual<=5.721e-9.
+
+The same ka10 experiment is worse in both peak RSS and time because FMM
+workspace dominates. Do not replace fitting dense runs with FMM automatically.
+Measurements are fresh sequential processes on a shared workstation, not an
+exclusive timing environment. No full T10/T20 runtime is inferred here.
+
+Full T126 ka3/ref1/P2/L7 validates all direct/mirrored columns and analytic
+averaging against dense. Conservative FMM T difference1.132e-15 and all16
+Mueller difference/M11 max2.010e-14. Both FMM profiles retain strict checks.
+This checks the same discretization, not physical mesh/L convergence.
+
+Actual ka40/ref4/P3 (11904 panels) operator-only capacity check: near cache
+1.310GiB versus140.771GiB for dense representative rows; peakRSS5.427GiB.
+Setup46.135s; two full strict actions21.580s, two selected actions9.704s.
+Selected/strict error3.414e-11; independent direct-row audit1.781e-14.
+This excludes coarse LU, GMRES, T arrays and a complete T40 computation.
+
+Remaining scaling work, in order:
+
+1. Reuse FMM trees/setup across iterations and batches; FMM consumes most
+   runtime, while the exact near correction is only a small fraction.
+2. Compress W or an equivalent correction to avoid the extra AZ action,
+   without reintroducing a full dense W allocation.
+3. Replace dense Ac LU by a multilevel/compressed coarse solve. P1 LU alone
+   still needs about8.45GiB at ref4 and135GiB at ref5. Budget rejection is
+   active; ka80/ref7 memory has NOT been solved by this change.
+4. Spatial/L convergence on the real SciIce geometry remains separate.
+   Dirac P3 ref7 is not the former Muller ref7 discretization.
+
+Evidence and reproducible commands:
+`benchmarks/dirac_sector_fmm_20261116/README.txt`, `report.json`, `selected.json`,
+`memory_vs_time.pdf`, `validation.json`, `resume_checks.json` and measurement
+scripts. Production Muller/FFT/GPU solvers and queues were not restarted.
+
+
+## 2026-11-16: ограниченная глобальная поправка Дирака и единый запуск
+
+Результаты: `benchmarks/dirac_sparse_coarse_20261116/report.json`.
+Локальная P1 ILU без глобальных взаимодействий не заменяет полный coarse:
+на ka20 проверка не завершилась за выделенное время. Добавлены глобальные
+P1-участки в физических плоскостях граней с точным переносом полиномов и
+поворотом векторных/аксиальных компонент. Глобальная матрица G=Q*AQ,
+поправка W=BsAQ−Q; M=Bs−WG⁻¹Q*. Bs сохраняет перекрёстное взаимодействие
+низких/высоких степеней локального панельного inverse. Применение M не
+вызывает FMM, что проверяется отдельным тестом.
+
+На SciIce ka20/ref3: 256 участков, 7/7 итераций, строгая невязка до5.73e−9;
+решение двух мод с проверками46.633→29.097с (1.60×), подготовка23.601→47.799с.
+Полный первый опыт90.404→89.645с, RSS2.946→4.920GiB против предыдущего
+matrix-free-W варианта. Это не измерение ускорения полной T.
+На ka40/ref4: 512 участков, 27/27, до5.24e−9; подготовка358.142с,
+решение352.713с, всего757.191с, пикRSS23.026GiB. 256 участков не завершили
+решение за420с; эту настройку не принимать как подтверждённую дляka40.
+
+Исправлено полное скрытое копирование Fortran AZ внутри SciPy sparse@dense:
+проекция идёт по32 столбца. Это снизило пик нового ka20-варианта5.642→4.920GiB.
+Дополнительно T/kernel теперь отображаются на диск, конвенции переводятся
+по32 столбца с освобождением страниц. Финальный NPZ пишется атомарно.
+
+Новый `bem solve` даёт выбор muller/dirac/pmchwt, fixed/tmatrix/average,
+физический размер, комплексный показатель, длину волны, ZYZ-ориентацию и
+проверяемую симметрию. `bem wizard` — пошаговый запуск; `bem continue` —
+продолжение. Начальные ref/L не выдаются за сертификат1%; при нехватке RAM
+они не уменьшаются. Предварительная оценка и монитор RSS/свободной памяти
+сохраняют контроль над процессом. Код/контроли: `tests/test_unified_frontend.py`.
+
+Следующие приоритеты: переиспользование дерева FMM между действиями;
+снижение квадратичной стоимости сборки AQ; адаптивное глобальное пространство
+для роста ka. Фиксированный cap даёт линейную память W, но не гарантирует
+постоянное число итераций. Текущий Dirac P3 ref7 остаётся слишком большим
+для61GiB RAM: полные панельные LU сами требуют около72.6GiB. Не переносить
+на него память/время старого Muller ref7.
+
+Дополнение: освобождены Python-факторы LU и замыкание inverse при `Dirac.close()`,
+а не только нативный кэш. Перед SO(3) удаляются ссылки на последние токи,
+секторные объекты и геометрические преобразования. Освобождение факторов
+проверено через weakref без ожидания циклического GC.

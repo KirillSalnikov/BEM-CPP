@@ -19,7 +19,7 @@ def atomic_json(path, value):
 
 
 def run(command, out, env=None, rss_limit_gib=48, available_gib=6, disk_reserve_gib=40,
-        wall_limit_s=None):
+        wall_limit_s=None, progress_callback=None):
     if wall_limit_s is not None and wall_limit_s<=0:
         raise ValueError('wall_limit_s must be positive')
     out=Path(out); out.mkdir(parents=True,exist_ok=True)
@@ -35,7 +35,7 @@ def run(command, out, env=None, rss_limit_gib=48, available_gib=6, disk_reserve_
         if old.get('state')=='complete':
             return old
     atomic_json(out/'command.json',identity)
-    start=time.monotonic(); peak_rss=peak_vram=0; reason=None
+    start=time.monotonic(); peak_rss=peak_vram=0; reason=None;last_notice=start
     with (out/'worker.log').open('a',buffering=1) as log, (out/'resources.jsonl').open('a',buffering=1) as samples:
         process=subprocess.Popen(command,env=env,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
         state={'state':'running','signature':signature,'pid':process.pid,'supervisor_pid':os.getpid(),
@@ -55,9 +55,16 @@ def run(command, out, env=None, rss_limit_gib=48, available_gib=6, disk_reserve_
                 except psutil.Error:
                     rss=0
                 free=shutil.disk_usage(out).free; available=psutil.virtual_memory().available
-                gpu=subprocess.run(['nvidia-smi','--query-gpu=memory.used,memory.free','--format=csv,noheader,nounits'],
-                                   text=True,capture_output=True,timeout=5)
-                used,gpu_free=(map(float,gpu.stdout.strip().split(',')) if gpu.returncode==0 else (0,0))
+                used=gpu_free=0
+                # CPU-only hosts and multiple GPUs are valid configurations.
+                # Device totals are telemetry, not memory owned by this child.
+                if shutil.which('nvidia-smi'):
+                    try:
+                        gpu=subprocess.run(['nvidia-smi','--query-gpu=memory.used,memory.free','--format=csv,noheader,nounits'],
+                                           text=True,capture_output=True,timeout=2)
+                        rows=[list(map(float,line.split(','))) for line in gpu.stdout.splitlines()] if gpu.returncode==0 else []
+                        used=sum(row[0] for row in rows);gpu_free=sum(row[1] for row in rows)
+                    except (OSError,ValueError,subprocess.TimeoutExpired):pass
                 peak_rss=max(peak_rss,rss); peak_vram=max(peak_vram,used)
                 sample={'elapsed_s':time.monotonic()-start,'rss_gib':rss/2**30,'available_ram_gib':available/2**30,
                         'disk_free_gib':free/2**30,'gpu_used_mib':used,'gpu_free_mib':gpu_free}
@@ -65,6 +72,8 @@ def run(command, out, env=None, rss_limit_gib=48, available_gib=6, disk_reserve_
                 state={'state':'running','signature':signature,'pid':process.pid,'supervisor_pid':os.getpid(),
                        **sample,'peak_rss_gib':peak_rss/2**30,'peak_gpu_mib':peak_vram}
                 atomic_json(status_path,state)
+                if progress_callback is not None and time.monotonic()-last_notice>=15:
+                    progress_callback(state);last_notice=time.monotonic()
                 if rss>rss_limit_gib*2**30 or available<available_gib*2**30 or free<disk_reserve_gib*2**30:
                     reason='resource reserve reached (RAM/RSS/disk)'
                 if wall_limit_s is not None and time.monotonic()-start>=wall_limit_s:

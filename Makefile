@@ -195,12 +195,37 @@ $(MULLER_FMM_FP32_DEMO): tools/muller_nodal_fmm_demo.cpp $(SRCDIR)/alpha_fourier
 $(BINDIR)/muller_tmatrix_fmm_server: HOST_OPT=-O3 -march=native -fcx-limited-range -pthread
 $(BINDIR)/muller_tmatrix_fmm_server: ARCH=-arch=sm_86
 TMATRIX_SERVER_HOST_OBJ ?= build/muller_tmatrix_server_host.o
+# Optional FINUFFT backend; default builds retain no FINUFFT dependency.
+FINUFFT_CPPFLAGS ?=
+FINUFFT_LINK_FLAGS ?=
 STREAMING_HOST_HEADERS = $(SRCDIR)/streaming_host_gmres.h $(SRCDIR)/streaming_recycle_space.h $(SRCDIR)/streaming_two_level.h $(SRCDIR)/krylov_deflation.h
 $(BINDIR)/muller_tmatrix_fmm_server: tools/muller_tmatrix_fmm_server.cpp $(MULLER_FP32_OBJS) $(STREAMING_HOST_HEADERS) $(SRCDIR)/streaming_polynomial_inverse.h $(SRCDIR)/tmatrix_symmetry_warm_start.h $(SRCDIR)/tmatrix_rhs_assembly.h $(SRCDIR)/block_circulant_fft.cu $(SRCDIR)/prism_circulant_layout.cpp $(SRCDIR)/prism_circulant_inverse.cpp $(SRCDIR)/block_circulant_fft.h $(SRCDIR)/prism_circulant_layout.h $(SRCDIR)/prism_circulant_inverse.h $(SRCDIR)/global_coarse_inverse.cu $(SRCDIR)/global_coarse_inverse.h $(SRCDIR)/prism_wave_basis.h
 	@mkdir -p $(BINDIR) build
 	@mkdir -p $(dir $(TMATRIX_SERVER_HOST_OBJ))
-	$(CXX) $(CXXFLAGS) $(FP32_PRECISION_FLAGS) $(if $(filter 1,$(OPENMP)),-fopenmp) -I$(SRCDIR) -c tools/muller_tmatrix_fmm_server.cpp -o $(TMATRIX_SERVER_HOST_OBJ)
-	$(NVCC) $(NVFLAGS) $(FP32_PRECISION_FLAGS) -I$(SRCDIR) -o $@ $(TMATRIX_SERVER_HOST_OBJ) $(filter-out %.h tools/muller_tmatrix_fmm_server.cpp,$^) $(LDFLAGS) -lcublas -ldl
+	$(CXX) $(CXXFLAGS) $(FP32_PRECISION_FLAGS) $(FINUFFT_CPPFLAGS) $(if $(filter 1,$(OPENMP)),-fopenmp) -I$(SRCDIR) -c tools/muller_tmatrix_fmm_server.cpp -o $(TMATRIX_SERVER_HOST_OBJ)
+	$(NVCC) $(NVFLAGS) $(FP32_PRECISION_FLAGS) -I$(SRCDIR) -o $@ $(TMATRIX_SERVER_HOST_OBJ) $(filter-out %.h tools/muller_tmatrix_fmm_server.cpp,$^) $(LDFLAGS) -lcublas -ldl $(FINUFFT_LINK_FLAGS)
+
+$(BINDIR)/muller_tmatrix_fmm_server: $(SRCDIR)/muller_face_radiation.h
+
+$(HOST_TEST_DIR)/muller_face_radiation_check: tests/muller_face_radiation_check.cpp $(SRCDIR)/muller_face_radiation.h $(SRCDIR)/muller_dense.cpp $(SRCDIR)/muller_nodal.cpp $(SRCDIR)/muller_duffy.cpp $(SRCDIR)/mesh.cpp
+	$(CXX) -O3 -march=native -fopenmp -std=c++11 -I$(SRCDIR) $(FINUFFT_CPPFLAGS) $(filter-out %.h,$^) -o $@ $(FINUFFT_LINK_FLAGS)
+
+.PHONY: host-face-radiation-check
+host-face-radiation-check: $(HOST_TEST_DIR)/muller_face_radiation_check
+	OMP_NUM_THREADS=4 OMP_WAIT_POLICY=PASSIVE $(HOST_TEST_DIR)/muller_face_radiation_check
+
+$(HOST_TEST_DIR)/dirac_transmission_check: tests/dirac_transmission_check.cpp $(SRCDIR)/dirac_transmission.cpp $(SRCDIR)/dirac_transmission.h $(SRCDIR)/mesh.cpp
+	@mkdir -p $(HOST_TEST_DIR)
+	$(CXX) $(HOST_CUDA_INCLUDE) -O3 -march=native -Wall -std=c++11 -fopenmp -I$(SRCDIR) $(filter-out %.h,$^) -o $@
+
+$(HOST_TEST_DIR)/dirac_compact_cache_check: tests/dirac_compact_cache_check.cpp $(SRCDIR)/dirac_transmission.cpp $(SRCDIR)/dirac_transmission.h $(SRCDIR)/mesh.cpp
+	@mkdir -p $(HOST_TEST_DIR)
+	$(CXX) $(HOST_CUDA_INCLUDE) -O3 -march=native -Wall -std=c++11 -fopenmp -I$(SRCDIR) $(filter-out %.h,$^) -o $@
+
+.PHONY: host-dirac-check
+host-dirac-check: $(HOST_TEST_DIR)/dirac_transmission_check $(HOST_TEST_DIR)/dirac_compact_cache_check
+	OMP_NUM_THREADS=4 OMP_WAIT_POLICY=PASSIVE $(HOST_TEST_DIR)/dirac_transmission_check
+	OMP_NUM_THREADS=4 OMP_WAIT_POLICY=PASSIVE $(HOST_TEST_DIR)/dirac_compact_cache_check
 
 $(BINDIR)/muller_fmm_action_probe: HOST_OPT=-O3 -march=native
 $(BINDIR)/muller_fmm_action_probe: ARCH=-arch=sm_86
@@ -487,6 +512,18 @@ $(HOST_TEST_DIR)/p2p_radial_factors_check: $(HOST_TEST_DIR)/p2p_radial_factors_c
 	$(CXX) $(CXXFLAGS) -I$(SRCDIR) -o $@ $<
 
 $(SRCDIR)/p2p.o $(FP32_BUILD_DIR)/p2p.o: $(SRCDIR)/p2p_double_single.cuh
+$(SRCDIR)/p2p.o $(SRCDIR)/p2p.fmm.o $(FP32_BUILD_DIR)/p2p.o $(HOST_TEST_DIR)/p2p_double_single_check $(HOST_TEST_DIR)/p2p_strict_real_check $(HOST_TEST_DIR)/p2p_shared_check: $(SRCDIR)/p2p_two_media.cuh
+$(SRCDIR)/muller_fmm.o $(FP32_BUILD_DIR)/muller_fmm.o: $(SRCDIR)/fmm_media_compat.h
+
+# Opt-in GPU two-medium near-action regression; requires an available GPU.
+$(HOST_TEST_DIR)/p2p_two_media_check: tests/p2p_two_media_check.cpp tests/p2p_test_buffers.h $(SRCDIR)/p2p.h $(FP32_BUILD_DIR)/p2p.o
+	$(CXX) $(HOST_CUDA_INCLUDE) -O3 -std=c++11 -I$(SRCDIR) -Itests $< $(FP32_BUILD_DIR)/p2p.o -o $@ -lcudart
+
+.PHONY: cuda-p2p-two-media-check
+cuda-p2p-two-media-check: $(HOST_TEST_DIR)/p2p_two_media_check
+	$(HOST_TEST_DIR)/p2p_two_media_check
+
+$(SRCDIR)/p2p.o $(SRCDIR)/p2p.fmm.o $(FP32_BUILD_DIR)/p2p.o $(HOST_TEST_DIR)/p2p_double_single_check $(HOST_TEST_DIR)/p2p_strict_real_check $(HOST_TEST_DIR)/p2p_shared_check: $(SRCDIR)/p2p_compensated.cuh
 
 $(HOST_TEST_DIR)/p2p_strict_real_check: $(HOST_TEST_DIR)/p2p_strict_real_check.cu $(SRCDIR)/p2p.cu $(SRCDIR)/fmm.h $(SRCDIR)/gpu_select.h $(SRCDIR)/p2p_radial_factors.h $(SRCDIR)/p2p_double_single.cuh $(HOST_TEST_DIR)/p2p_test_buffers.h
 	$(NVCC) $(NVFLAGS) $(FP32_STREAM_FLAGS) $(FP32_PRECISION_FLAGS) -I$(SRCDIR) -o $@ $< $(LDFLAGS)
@@ -715,6 +752,15 @@ $(FP32_BUILD_DIR)/prism_face_fft.o: $(SRCDIR)/prism_face_fft.h
 $(HOST_TEST_DIR)/host_cpu_checker_config_check: tests/host_cpu_checker_config_check.cpp $(SRCDIR)/host_cpu_checker_config.h $(SRCDIR)/host_memory_estimate.h
 	@mkdir -p $(HOST_TEST_DIR)
 	$(CXX) -O2 -Wall -std=c++11 -I$(SRCDIR) $< -o $@
+
+# Opt-in AVX512 physical two-medium CPU action regression (no CUDA context).
+$(HOST_TEST_DIR)/muller_cpu_media_check: tests/muller_cpu_media_check.cpp tests/physical_face_cpu_fixture.h $(CPU_FACE_HEADERS) $(SRCDIR)/muller_fmm_cpu.h $(SRCDIR)/muller_fmm_cpu_avx512.h $(SRCDIR)/muller_taylor_correction.h $(SRCDIR)/muller_taylor_kernel.h $(SRCDIR)/tmatrix_symmetry_warm_start.h $(SRCDIR)/muller_nodal.cpp $(SRCDIR)/muller_duffy.cpp $(SRCDIR)/mesh.cpp
+	$(CXX) $(HOST_CUDA_INCLUDE) -O3 -march=native -Wall -std=c++11 -fopenmp -DBEM_FMM_ONLY -I$(SRCDIR) -Itests $(filter-out %.h,$^) -o $@ -ldl
+
+.PHONY: host-media-pair-checks
+host-media-pair-checks: $(HOST_TEST_DIR)/muller_cpu_media_check $(HOST_TEST_DIR)/host_cpu_checker_config_check
+	OMP_NUM_THREADS=4 $(HOST_TEST_DIR)/muller_cpu_media_check
+	$(HOST_TEST_DIR)/host_cpu_checker_config_check
 
 $(HOST_TEST_DIR)/muller_cpu_cross_map_check: tests/muller_cpu_cross_map_check.cpp $(SRCDIR)/muller_fmm_cpu.h $(SRCDIR)/muller_fmm_cpu_avx512.h $(CPU_FACE_HEADERS)
 	$(CXX) $(CXXFLAGS) $(if $(filter 1,$(OPENMP)),-fopenmp) -I$(SRCDIR) $< -o $@ -lm -ldl

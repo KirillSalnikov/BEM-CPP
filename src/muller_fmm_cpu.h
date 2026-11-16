@@ -13,6 +13,8 @@ class MullerAction {
     std::unique_ptr<PrismFaceAction> face_exterior,face_interior;
     std::vector<Six> charges,mass_current;
     std::vector<Twelve> exterior_fields,interior_fields;
+    std::vector<Twelve> combined_near_fields;
+    bool fuse_media_near=false;
 public:
     std::array<double,6> fmm_times{};
     double project_s=0,fields_s=0,test_s=0;
@@ -22,11 +24,13 @@ public:
     int merged_angular_bands=0;
     int avx512_near_bands=0;
     int shared_avx512_near_bands=0;
+    int fused_media_near_pairs=0;
     static size_t estimated_workspace_bytes(const MullerFmmOperator& op,size_t phase_budget,
                                             bool merge_equal_angles=true,bool use_face_fft=false,
-                                            bool batch_face_fft=false,int face_tile=32) {
+                                            bool batch_face_fft=false,int face_tile=32,bool fuse_media=false) {
         const size_t points=op.quadrature.size(),mass=op.mass_quadrature.size();
         if(batch_face_fft && !use_face_fft)throw std::invalid_argument("CPU batch estimate requires face FFT");
+        if(fuse_media && use_face_fft)throw std::invalid_argument("CPU fused media currently requires FMM backend");
         if(use_face_fft){
             if(!op.prism_fft_exterior||!op.prism_fft_interior)throw std::invalid_argument("CPU face estimate needs prepared geometry");
             size_t bytes=memory::mul(memory::add(points,mass),sizeof(Six)+sizeof(MullerBasisSample));
@@ -40,6 +44,7 @@ public:
             return bytes;
         }
         size_t bytes=(points+mass)*(sizeof(Six)+sizeof(MullerBasisSample))+2*points*sizeof(Twelve);
+        if(fuse_media)bytes=memory::add(bytes,memory::mul(points,sizeof(Twelve)));
         const bool merge=merge_equal_angles && op.banded_fmm_middle &&
             op.fmm_exterior.L==op.fmm_exterior_middle.L && op.fmm_interior.L==op.fmm_interior_middle.L;
         const auto band=[&](const HelmholtzFMM& f,bool forced_far=false) {
@@ -61,6 +66,7 @@ public:
         size_t n=(charges.size()+mass_current.size())*sizeof(Six)
             +(exterior_fields.size()+interior_fields.size())*sizeof(Twelve)
             +(basis.size()+mass_basis.size())*sizeof(MullerBasisSample);
+        n+=combined_near_fields.size()*sizeof(Twelve);
         for(const auto* bands:{&exterior,&interior})for(const auto& band:*bands)n+=band->workspace_bytes();
         if(face_exterior)n+=face_exterior->workspace_bytes();
         if(face_interior)n+=face_interior->workspace_bytes();
@@ -69,9 +75,10 @@ public:
     // Phase budget is PER active band. Total cache use is reported by workspace_bytes().
     explicit MullerAction(const MullerFmmOperator& prepared,size_t phase_budget=64*1024*1024,
                           bool merge_equal_angles=true,bool use_face_fft=false,
-                          bool batch_face_fft=false,int face_tile=32,bool shared_near=false):op(prepared) {
+                          bool batch_face_fft=false,int face_tile=32,bool shared_near=false,bool fuse_media=false):op(prepared) {
         if(batch_face_fft && !use_face_fft)throw std::invalid_argument("CPU batched faces require face FFT");
         if(shared_near && !batch_face_fft)throw std::invalid_argument("CPU shared near requires batched faces");
+        if(fuse_media && use_face_fft)throw std::invalid_argument("CPU fused media currently requires FMM backend");
         if(op.use_pfft || !op.fmm_exterior.initialized || !op.fmm_interior.initialized)
             throw std::runtime_error("CPU action needs retained FMM trees (use strict-only face FFT)");
         rows.resize(op.current_dofs);mass_rows.resize(op.current_dofs);
@@ -105,6 +112,11 @@ public:
         if(merge)merged_angular_bands=2;
         if(op.banded_fmm_middle && !merge) {append(exterior,op.fmm_exterior_middle);append(interior,op.fmm_interior_middle);}
         if(op.banded_fmm) {append(exterior,op.fmm_exterior_coarse);append(interior,op.fmm_interior_coarse);}
+        if(fuse_media){
+            if(exterior.empty() || interior.empty() || !exterior.front()->can_pair_near(*interior.front()))
+                throw std::invalid_argument("CPU fused media requires AVX512 and identical fine near lists");
+            fuse_media_near=true;fused_media_near_pairs=1;combined_near_fields.resize(points.size());
+        }
     }
     void apply(const C* input,C* output) {
         auto start=Clock::now();const int n=op.current_dofs;
@@ -139,9 +151,15 @@ public:
                 continue;
             }
             for(auto& band:bands) {
-                band->add(charges,fields);
+                band->add(charges,fields,fuse_media_near && band.get()==bands.front().get());
                 for(int j=0;j<6;++j)fmm_times[j]+=band->times[j];
             }
+        }
+        if(fuse_media_near){
+            std::fill(combined_near_fields.begin(),combined_near_fields.end(),Twelve{});
+            exterior.front()->add_paired_near(*interior.front(),charges,
+                op.mu_exterior,op.mu_interior,op.epsilon_exterior,op.epsilon_interior,combined_near_fields);
+            fmm_times[5]+=exterior.front()->times[5];
         }
         fields_s=elapsed(start);start=Clock::now();
         // Copy protects in-place use; corrections also read the original current.
@@ -163,6 +181,12 @@ public:
                     k1[c]+=point.weight*rot[a]*(e[6*c+3+a]-i[6*c+3+a]);
                     k2e[c]+=point.weight*curl[a]*(op.epsilon_exterior*e[6*c+a]-op.epsilon_interior*i[6*c+a]);
                     k2m[c]+=point.weight*curl[a]*(op.mu_exterior*e[6*c+a]-op.mu_interior*i[6*c+a]);
+                }
+                if(fuse_media_near){const auto& combined=combined_near_fields[s.point];
+                    for(int a=0;a<3;++a){
+                        k1[0]+=point.weight*rot[a]*combined[3+a];k1[1]+=point.weight*rot[a]*combined[9+a];
+                        k2m[0]+=point.weight*curl[a]*combined[a];k2e[1]+=point.weight*curl[a]*combined[6+a];
+                    }
                 }
             }
             for(int j=op.correction.row_offsets[row];j<op.correction.row_offsets[row+1];++j) {

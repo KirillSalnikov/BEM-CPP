@@ -47,6 +47,8 @@ int main() try {
         return values;
     };
     double worst=0, fallback_worst=0; int cases=0;
+    for(int compensated:{0,1}) {
+    setenv("BEM_FMM_P2P_DS_COMPENSATED",compensated?"1":"0",1);
     for(int factored:{0,1}) for(int threads:{64,128,256}) for(int split:{1,4,32}) {
         setenv("BEM_FMM_P2P_DS_FACTORED",factored?"1":"0",1);
         setenv("BEM_FMM_P2P_THREADS",std::to_string(threads).c_str(),1);
@@ -70,6 +72,7 @@ int main() try {
             if(error>2e-12) throw std::runtime_error("DS fallback changed an unsupported action");
             ++cases;
         }
+    }
     }
     // Independent DS settings must not change the ordinary FP64/mixed path;
     // invalid settings fall back and oversized blocks are capped.
@@ -102,6 +105,7 @@ int main() try {
     Q.zero();
     auto zero=run(true,true,true,false,40.,0.);
     for(auto value:zero) if(value!=0.) throw std::runtime_error("Zero charges are not zero");
+    unsetenv("BEM_FMM_P2P_DS_COMPENSATED");
     std::printf("PASS %d cases; worst DS per-target error %.4e; fallback %.4e; zero exact\n",
                 cases,worst,fallback_worst);
 } catch(const std::exception& error) {
