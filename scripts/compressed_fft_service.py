@@ -110,7 +110,7 @@ def load_operator(case):
     from symmetric_galerkin_fft import TorchSymmetricAction
     torch.set_num_threads(1)
     config=json.loads((case/'execution.json').read_text()) if (case/'execution.json').exists() else {}
-    if set(config)-{'local_storage','spectral_budget_MiB','frequency_batch','compact_maps','symbol_storage','shared_stream_buffers'}:
+    if set(config)-{'local_storage','spectral_budget_MiB','frequency_batch','compact_maps','symbol_storage','shared_stream_buffers','trim_zero_rank'}:
         raise ValueError('Unknown FFT execution setting')
     with (case/'bound_operator.pkl').open('rb') as stream:cpu=pickle.load(stream)
     # Runtime snapshots may live elsewhere than the construction directory.
@@ -135,6 +135,7 @@ def load_operator(case):
                                factor_storage='half',local_storage=local_storage,
                                compact_maps=config.get('compact_maps',False),
                                shared_stream_buffers=config.get('shared_stream_buffers',False),
+                               trim_zero_rank=config.get('trim_zero_rank',False),
                                symbol_storage=config.get('symbol_storage','full'),**options)
     torch.cuda.empty_cache()
     return result

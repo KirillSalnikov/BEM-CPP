@@ -41,6 +41,8 @@ class Transmission {
     std::vector<int> dense_row_map_;
     std::vector<size_t> near_rows_;
     std::vector<int> near_columns_;
+    // Optional pair -> translation-equivalent block; never changes quadrature.
+    std::vector<size_t> near_patterns_;
     std::array<Kernel,10> integrate(const Panel&,const Vec3&,C,bool)const;
     std::array<Kernel,100> pair_integrals(int,int,int,const std::vector<std::array<double,3>>&,const std::vector<std::array<double,3>>&)const;
     std::array<Kernel,100> reciprocal_pair(int,int,int,const std::vector<std::array<double,3>>&,const std::vector<std::array<double,3>>&)const;
@@ -54,7 +56,9 @@ public:
     int size()const{return int(panels_.size())*basis_count_*8;}
     int basis_count()const{return basis_count_;}
     const std::vector<Panel>& panels()const{return panels_;}
-    size_t kernel_bytes()const{return (kernels_[0].size()+kernels_[1].size())*sizeof(Kernel)+(kernels32_[0].size()+kernels32_[1].size())*sizeof(float)+near_rows_.size()*sizeof(size_t)+near_columns_.size()*sizeof(int);}
+    size_t kernel_bytes()const{return (kernels_[0].size()+kernels_[1].size())*sizeof(Kernel)+(kernels32_[0].size()+kernels32_[1].size())*sizeof(float)+(near_rows_.size()+near_patterns_.size())*sizeof(size_t)+near_columns_.size()*sizeof(int);}
+    size_t near_pair_count()const{return near_columns_.size();}
+    size_t near_pattern_count()const{return kernels_[0].size()/(basis_count_*basis_count_);}
     const Scaling& coefficients()const{return scale_;}
     void cauchy(int medium,const C* density,C* result)const;
     void apply(const C* density,C* result)const;
@@ -65,7 +69,7 @@ public:
     void apply_rows(int count,const C* density,int row_count,const int* rows,C* result,int tile=256)const;
     void build_rows(int panel_count,const int* panel_ids,size_t max_bytes);
     // Sparse exact-minus-quadrature correction on representative panels only.
-    void build_near_rows(int panel_count,const int* panel_ids,size_t max_bytes);
+    void build_near_rows(int panel_count,const int* panel_ids,size_t max_bytes,bool share_translations=false);
     void near_correction_rows(int medium,const C*density,int panel_count,const int*panel_ids,C*result)const;
     void self_blocks_direct(int panel_count,const int*panel_ids,C*result)const;
     // Direct bounded tile for a coarse matrix; no dense pair cache required.
@@ -98,6 +102,7 @@ public:
     void near_correction(int medium,const C*density,C*result)const;
     void quadrature_charges(const C*density,C*charges)const;
     void project_cauchy(const C*sampled_cartesian_eight,C*result)const;
+    void project_cauchy_rows(const C*sampled_cartesian_eight,int count,const int*ids,C*result)const;
     // Cartesian output [scalar,Hx,Hy,Hz,pseudoscalar,Ex,Ey,Ez].
     // Interior H is rescaled to exterior impedance units.
     void field(int medium,const C* density,const std::vector<Vec3>& targets,C* result)const;

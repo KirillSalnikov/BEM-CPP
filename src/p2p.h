@@ -1,6 +1,11 @@
 #ifndef P2P_H
 #define P2P_H
 
+class HelmholtzFMM;
+// Three scalar potentials and gradients, additive to far-field buffers.
+// Explicit opt-in: 1=FP64, 2=two-float compensated arithmetic.
+void launch_p2p_scalar3_pot_grad(HelmholtzFMM& f,int precision);
+
 // Two media, one three-component current. Accumulate H_e-H_i and the
 // requested complex-weighted curl combination on identical flat near lists.
 // precision: 0=FP64, 1=double-single, 2=compensated double-single.

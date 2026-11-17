@@ -1,0 +1,60 @@
+{
+  "ka": 80,
+  "ref": 7,
+  "index": 1.3116,
+  "wavelength_um": 0.532,
+  "aspect": 1.6495721976846451,
+  "system_dofs": 4552704,
+  "accuracy_goal": 0.01,
+  "rows": [
+    {
+      "mode_count": 25536,
+      "C2_representatives": 12880,
+      "ideal_D6h_packets": 1120,
+      "independent_control_pairs": 21,
+      "coded_audit_pairs": 2,
+      "production_pairs": 1118,
+      "initial_worker_pairs_including_audits": 1141,
+      "L": 112,
+      "T_complex128_GiB": 9.71685791015625,
+      "seconds_per_packet_before_setup_for_seven_days": 530.0613496932515
+    },
+    {
+      "mode_count": 29280,
+      "C2_representatives": 14760,
+      "ideal_D6h_packets": 1280,
+      "independent_control_pairs": 21,
+      "coded_audit_pairs": 2,
+      "production_pairs": 1276,
+      "initial_worker_pairs_including_audits": 1299,
+      "L": 120,
+      "T_complex128_GiB": 12.775039672851562,
+      "seconds_per_packet_before_setup_for_seven_days": 465.58891454965357
+    },
+    {
+      "mode_count": 33280,
+      "C2_representatives": 16768,
+      "ideal_D6h_packets": 1451,
+      "independent_control_pairs": 21,
+      "coded_audit_pairs": 2,
+      "production_pairs": 1449,
+      "initial_worker_pairs_including_audits": 1472,
+      "L": 128,
+      "T_complex128_GiB": 16.50390625,
+      "seconds_per_packet_before_setup_for_seven_days": 410.8695652173913
+    },
+    {
+      "mode_count": 38086,
+      "C2_representatives": 19180,
+      "ideal_D6h_packets": 1655,
+      "independent_control_pairs": 21,
+      "coded_audit_pairs": 2,
+      "production_pairs": 1653,
+      "initial_worker_pairs_including_audits": 1676,
+      "L": 137,
+      "T_complex128_GiB": 21.614780962467194,
+      "seconds_per_packet_before_setup_for_seven_days": 360.85918854415274
+    }
+  ],
+  "note": "L candidates are not accuracy certificates. Packet budget must include solves, strict checks, radiation, reconstruction and analytic averaging; global setup consumes additional time."
+}

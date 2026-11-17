@@ -1,0 +1,136 @@
+{
+  "date": "2026-11-17",
+  "scope": "Clean staged-index export with no pre-existing libraries or operator caches. Builds and CPU numerical regressions only; no new GPU numerical or performance measurements.",
+  "source_parent_commit": "27f6396e3e155ca19e55a1a920a83123de28b4bf",
+  "changed_code_sha256": {
+    "Makefile": "1da1a5cfe148111d1d2f64d8e75312bc05b53a5e462b475a0df00f9ff6816373",
+    "benchmarks/clifford_dielectric_20261115/batch_checks.py": "318e3fec0e7e3170ac50edc2f169ed9685a657fe6c091de93f4fb9206e5dc1cb",
+    "benchmarks/clifford_dielectric_20261115/binding.cpp": "60676e32d050f821053c02ec0cdb4532bf61caa7155a32c5f83146d69ec0a02e",
+    "benchmarks/clifford_dielectric_20261115/build.py": "b71667f73c23a5a13b64daa6108e05981584a8a17a434a8920a0f141c597e94d",
+    "benchmarks/clifford_dielectric_20261115/dirac_symmetry.py": "0bca978b45d7d68c0e56cad32a207f909f68b8eadb3843ddca3333a33ce3ed70",
+    "benchmarks/clifford_dielectric_20261115/matrix_storage.py": "492a33f4c2bdaf56ce55b29a9dbb3176239b67974e95f5a12837edd12e1ee76c",
+    "benchmarks/clifford_dielectric_20261115/memory_plan.py": "f711121a0d669e22e15cde6b1c4a255c95666a22448555e2a8bcf15741841e02",
+    "benchmarks/clifford_dielectric_20261115/packed_reference.py": "b6df9ec7ce5f9b352ebe1050d119032dd12a32ebccc5aa757d53100af9b0b37b",
+    "benchmarks/clifford_dielectric_20261115/radiation.py": "5b38b4bb59e757c69b492621c578dcd22ba6bc02dd9a15b3bc4e23e6ddaedd1e",
+    "benchmarks/clifford_dielectric_20261115/sector_coarse.py": "9ee3bd9582e57dda7f595a8bb40b570d8dbdaf3483d9a4665dbd33e97d074ecc",
+    "benchmarks/clifford_dielectric_20261115/sector_coarse_hierarchy.py": "06570a30dea91512c4f62f1aa02569e177b8d67eadf7648e3b6e18af0ecf97cc",
+    "benchmarks/clifford_dielectric_20261115/sector_fmm.py": "2cf5c88e9f14133cbb945734da3410009092addda46e25c3a360df74389c9d66",
+    "benchmarks/clifford_dielectric_20261115/solve.py": "88cc3f9880c12ba1c2a2a1dfac38ec2d3c2a7b8158c734202a31b1945ea5f639",
+    "benchmarks/clifford_dielectric_20261115/tmatrix.py": "a1f048d1d71f7da2d7fe55691e56624d5b421b14fa1a62ea5e6900b1325f01d6",
+    "benchmarks/clifford_fmm_20261115/bem_direct.hpp": "aa979c039bc75905cf031fc2bae5c4c00b0b1f74139a059ec98b68e535b1a636",
+    "benchmarks/clifford_fmm_20261115/build.py": "7665fce304633c4464b6bb1789c5f051d13fe313dab76250867389fd6c9f6b1f",
+    "benchmarks/clifford_fmm_20261115/direct_kernel.py": "5c9b1011a17ca75b02c9e5ef21576df9cddc1f5cb1d727e7b760d892cc0001ce",
+    "benchmarks/clifford_fmm_20261115/native.py": "84e6c14717baa8db4bd79e721e2b012f490eade05b3255c522b4871304cf9e73",
+    "benchmarks/clifford_fmm_20261115/scheduling.py": "f0bddbb4950eb7eb6c139a5b10a64968732b8266816b9f58a685e185b938e12b",
+    "benchmarks/dirac_gpu_fmm_20261116/bridge.cpp": "1a5b361ab421a7abfd439e21d631126f2c0d7cf13d963bd0770634ffdd6eeb09",
+    "benchmarks/dirac_gpu_fmm_20261116/build.py": "2d6aa1d2bc512eb179c8f5072bb0f25486e1ad7224aa33b53616ee20ed95da1d",
+    "benchmarks/dirac_gpu_fmm_20261116/engine.py": "351453de133e93af625bac274bc1f556f2bef052d81e4d981a81eafddfc69a10",
+    "benchmarks/dirac_gpu_fmm_20261116/native.py": "deee9e6de4ce9815b2a5591a49f8aced32db9f6aa73e94d4bbde056d5cb06ee4",
+    "requirements-analysis.txt": "45a8c86ff82667c9b2151968ead7722010d49b91bae6117f29f3f37baa672701",
+    "scripts/bem_cli.py": "f024b5702ca0df99f642b2594953045abc13ea169226983a3702992b301c0c53",
+    "scripts/bounded_spectral_storage.py": "84deab1f00faba6cc1a6e3bfc62099c083e8e1bffca082d2f6542b76c12932b4",
+    "scripts/compressed_fft_service.py": "c090b22d35361bf20711aa2604d7ad8bdeacf9864bab4940a067cff0298bbc3f",
+    "scripts/face_nufft_radiation.py": "6ef32fa1b6e4c6d4c1cbf082ed631fc8c16f6d4975efd08497e10c2fbc1d5819",
+    "scripts/galerkin_basis_metric.py": "53ff68ee84fb1e9fa700b84249448f596d0b6a6b55d4930cb16ae018a8ba1240",
+    "scripts/streamed_galerkin_fft.py": "ee17d09bc00d21bb0b02fb4532dde5b8bbe75277c24459e871c6a0a0de6215cf",
+    "scripts/symmetric_galerkin_fft.py": "0e2e50f28166fd8dc10603b83e9759ed90dac12e277626a84de9e9554681c659",
+    "src/dirac_transmission.cpp": "41f816c1340fc759a18bcb1a2ed14b0d646fee90e6560111a1bc58db4c7cb91c",
+    "src/dirac_transmission.h": "2b62ec96065c49e49de7e001035ceedf588d79e7d4e5b021ec3d89631ad89f64",
+    "src/fmm.cu": "4ee0e0d6fee2272a8db3c959ab79eeb621ab9699c9276c709236999cf327a0c7",
+    "src/fmm.h": "3e371b66473aca2ebde46e826ce5ccabc90ce9c1333c1292eb40419f4105fe5f",
+    "src/fmm_multilevel.cuh": "12228dbb65d426885d66d36defa4fb9c6c81da66f8e523a6db7659998a793237",
+    "src/muller_fmm_gpu.cu": "b8e7559aeb9f553fa278bac9199c9d9fb43ecfc67b76febd9ed05807833fa0f5",
+    "src/muller_fmm_gpu.h": "3d0dd98a58270190f53fc18dd38781c30ecc80b77f2cee807700f938dcd23517",
+    "src/p2p.cu": "89229444bf3674777c70f239c0d83140fdee0e664a5291131c0d8f20f7e9178a",
+    "src/p2p.h": "1d7dce7d712061ac34aa0e85d33ddd91c73298fef64168d9c9370f4e746ff5fe",
+    "src/p2p_scalar3.cuh": "624508e33820278391d286d1f031722a9b89f469695ce9422c6ee4e99a84b50c",
+    "src/pfft.cu": "0bb504aa8f5c2e698d5461de4e7296563d85dfd4d15dff8887d45b027c9a6bf0",
+    "src/pfft.h": "af53600de9038ae04d548f6b063bcc24a9923675323f6f2a23abd240dcc1a415",
+    "src/pfft_tensor_correlation.h": "5a03903c266d90975069f5f149f3c972817caddf9d8f01a5469d4ba797c6810c",
+    "tests/muller_lazy_radiation_check.cpp": "92c2b0900671b580caa1ecc08c61ac4ed11f30bfcc715ec1d822138d39fcbec3",
+    "tests/pfft_tensor_correlation_check.cpp": "aa949285520f6c5963b2168e98764f2e108f1d008a1664a61302fcf1f72f4544",
+    "tests/test_bounded_spectral_storage.py": "1ab0737d22dbeb9d89c4ec603f917372161f03480415ce8a7c9eb799cf590951",
+    "tests/test_dirac_compact_memory_cpu.py": "66f32e3cda3d3da8aa8ac43e6466f70c05919326c09398a66f0dcfafef6c191a",
+    "tests/test_dirac_fmm_direct_cpu.py": "153bc9a593ee2996a09ae8dd2ccfc765e263711140dd5c1545b78993c8181d2e",
+    "tests/test_dirac_hierarchy_cpu.py": "4357f0820cfa49c6665b4677a9b60ba91d1410e23b912cc756d66b94f1cc22cb",
+    "tests/test_dirac_packed_reference_cpu.py": "ac90b327f7c98cb6ec9489a00216c2b24cd7e4b78070a19141029282cef8362e",
+    "tests/test_dirac_radiation_cpu.py": "c76e97b146ee22af312f328b67954af3588b89c399d88016753247545c8a6a0c",
+    "tests/test_dirac_scalar_fmm_gpu.py": "6d6a230afd2660be1988016d11f573d7bf294ce80693da5c86873bf3bf9055e9",
+    "tests/test_documentation_freshness.py": "2a718703e98171ca6a3e9d965f19dbc9ad66ad3d9dcaeb00fcd59c229fedf7a4",
+    "tests/test_galerkin_basis_metric.py": "27f2a359d57b8997265cd1bc3760267f35022aca1c26c83789e7a4bb639700c1",
+    "tests/test_streamed_galerkin_sketch.py": "6f638471166f072721d1aa3b66e50cc3473c8d24b99b10bcdd76fe95ee2d89cc",
+    "tests/test_unified_frontend.py": "f0d4790ba97359611b4511d7d8ba9f341ce3d65dd6d802acaa6c51c7d7e41868"
+  },
+  "python_packages": {
+    "numpy": "2.4.2",
+    "scipy": "1.17.0",
+    "threadpoolctl": "3.6.0",
+    "finufft": "2.5.1"
+  },
+  "builds": [
+    {
+      "command": "python benchmarks/clifford_dielectric_20261115/build.py --fast-complex --output build/libdirac.so",
+      "status": "pass"
+    },
+    {
+      "command": "python benchmarks/clifford_fmm_20261115/build.py --fmm-only --jobs 8",
+      "status": "pass"
+    },
+    {
+      "command": "make muller-fp32 bin/muller_tmatrix_fmm_server CXX=g++-12 CUDA_HOME=/usr ARCH=-arch=sm_86 -j2",
+      "status": "pass"
+    },
+    {
+      "command": "python benchmarks/dirac_gpu_fmm_20261116/build.py",
+      "status": "pass"
+    },
+    {
+      "command": "make bin/tmatrix_so3_mstm bin/tmatrix_so3_mstm_fp32",
+      "status": "pass"
+    }
+  ],
+  "tests": [
+    {
+      "scope": "Unified frontend; bounded spectral storage; basis metric; streamed sketches",
+      "passed": 32,
+      "skipped_GPU": 4,
+      "subtests_passed": 6,
+      "seconds": 1.42
+    },
+    {
+      "scope": "Dirac hierarchical/compact preconditioners, memory bounds, packed strict reference, FMM direct sums, radiation, batch checks, sector solve and symmetry",
+      "passed": 50,
+      "subtests_passed": 34,
+      "seconds": 315.54
+    },
+    {
+      "scope": "Host pFFT tensor correlation versus independent six-loop sum",
+      "status": "pass",
+      "max_relative_error": 2.44983e-14
+    },
+    {
+      "scope": "Documentation freshness and public CPU dense/full-p1 and GPU Muller dry-runs",
+      "status": "pass"
+    },
+    {
+      "scope": "Incremental rebuild on p2p_scalar3.cuh changes, make dry-run",
+      "status": "pass"
+    }
+  ],
+  "environment": {
+    "OMP_NUM_THREADS": 2,
+    "OPENBLAS_NUM_THREADS": 1,
+    "CUDA_VISIBLE_DEVICES": "",
+    "BEM_DIRAC_LIBRARY": "isolated build/libdirac.so",
+    "note": "CPU test settings; production performance measurements used other documented thread counts."
+  },
+  "documentation": {
+    "manual_rebuilt": true,
+    "pages": 44,
+    "note": "Five small overfull table cells (maximum 17.624 pt); no missing-glyph warnings."
+  },
+  "pending": [
+    "CUDA numerical regressions were not rerun because the GPU was held by another workload.",
+    "Exact-zero FFT rank trimming and metric-balanced compression remain opt-in; no new production speedup is asserted."
+  ]
+}

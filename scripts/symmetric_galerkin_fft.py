@@ -181,7 +181,7 @@ class TorchSymmetricAction:
     """One resident symbol per orbit, with face aliases as multiple RHS."""
     def __init__(self,cpu,device,dtype,*,factors=None,factor_storage='full',local_storage='coo',
                  spectral_budget_bytes=None,stream_cache=None,frequency_batch=16,compact_maps=False,
-                 symbol_storage='full',shared_stream_buffers=False):
+                 symbol_storage='full',shared_stream_buffers=False,trim_zero_rank=False):
         import torch
         if factor_storage not in ('full','half'):raise ValueError('Invalid factor storage')
         if symbol_storage not in ('full','half','packed_half'):raise ValueError('Invalid symbol storage')
@@ -189,6 +189,7 @@ class TorchSymmetricAction:
         if symbol_storage!='full' and dtype!=torch.complex64:raise ValueError('Half symbol storage uses FP32 arithmetic')
         if symbol_storage=='packed_half' and spectral_budget_bytes is None:raise ValueError('Packed symbols require bounded storage and a cache')
         if shared_stream_buffers and spectral_budget_bytes is None:raise ValueError('Shared transfer buffers require bounded storage')
+        if trim_zero_rank and spectral_budget_bytes is None:raise ValueError('Zero-rank trimming requires bounded storage')
         self.stream_pool=None
         if spectral_budget_bytes is not None:
             if spectral_budget_bytes<0 or stream_cache is None or factor_storage!='half' or frequency_batch<1:
@@ -232,7 +233,7 @@ class TorchSymmetricAction:
                 if spectral_budget_bytes is not None and self.spectral_resident_bytes+spectral_bytes>spectral_budget_bytes:
                     left,ls=half_factors(u,Path(stream_cache)/str(index),'left')
                     right,rs=half_factors(v,Path(stream_cache)/str(index),'right')
-                    group['streamed']=StreamedSpectralBlock((left,right,ls*rs),device=device,batch=frequency_batch,half=True,pool=self.stream_pool)
+                    group['streamed']=StreamedSpectralBlock((left,right,ls*rs),device=device,batch=frequency_batch,half=True,pool=self.stream_pool,trim_zero_rank=trim_zero_rank,rank_cache=Path(stream_cache)/str(index)/'zero_rank_batches.json')
                 elif factor_storage=='half':
                     left,ls=encode_half(u);right,rs=encode_half(v);group.update(left_half=left,right_half=right,factor_scale=ls*rs)
                 else:group.update(left=torch.as_tensor(u,device=device,dtype=dtype),right=torch.as_tensor(v,device=device,dtype=dtype))

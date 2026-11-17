@@ -437,3 +437,30 @@ void HelmholtzFMM::evaluate_multilevel_far_uploaded(HelmholtzFMM* middle,Helmhol
     multilevel_transfer(*this,next,true);
     FmmCudaTimeline::mark("down-interpolate", tree.max_level);
 }
+
+// An arbitrary sequence of adjacent depths. Fine surface meshes still need
+// the high-order upper bands set by electrical size, not by the finest depth.
+void HelmholtzFMM::evaluate_multilevel_far_uploaded(const std::vector<HelmholtzFMM*>& upper) {
+    if(upper.empty())throw std::invalid_argument("multilevel hierarchy has no upper bands");
+    HelmholtzFMM* previous=this;
+    for(auto* next:upper) {
+        if(!next || next==previous || previous->tree.max_level!=next->tree.max_level+1 ||
+           previous->k!=next->k || previous->Ns!=next->Ns || previous->Nt!=next->Nt ||
+           next->p2p_enabled || !next->batch3_device_allocated)
+            throw std::invalid_argument("incompatible adjacent multilevel bands");
+        previous=next;
+    }
+    evaluate_batch3_far_uploaded();
+    previous=this;
+    for(auto* next:upper) {
+        multilevel_transfer(*previous,*next,false);
+        FmmCudaTimeline::mark("up-interpolate",previous->tree.max_level);
+        next->evaluate_batch3_far_uploaded(true);
+        previous=next;
+    }
+    for(size_t i=upper.size();i>0;--i) {
+        auto& fine=i==1?*this:*upper[i-2];
+        multilevel_transfer(fine,*upper[i-1],true);
+        FmmCudaTimeline::mark("down-interpolate",fine.tree.max_level);
+    }
+}

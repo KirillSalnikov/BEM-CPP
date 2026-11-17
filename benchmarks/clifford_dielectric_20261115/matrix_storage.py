@@ -29,5 +29,24 @@ def norm_squared(array, columns=32):
     for begin in range(0, array.shape[1], columns):
         tile = np.asarray(array[:, begin:begin+columns])
         result += float(np.einsum('ij,ij->', tile.conj(), tile).real)
+        release_pages(array)
     release_pages(array)
     return result
+
+
+def savez_bounded(stream, **arrays):
+    """NPZ-compatible archive without retaining all mapped input pages in RSS."""
+    import zipfile
+    with zipfile.ZipFile(stream, 'w', allowZip64=True) as archive:
+        for name,value in arrays.items():
+            array=np.asanyarray(value)
+            with archive.open(name+'.npy','w',force_zip64=True) as member:
+                class Writer:
+                    pending=0
+                    def write(self,data):
+                        count=member.write(data);self.pending+=count
+                        if self.pending>=64<<20:
+                            release_pages(array);self.pending=0
+                        return count
+                np.lib.format.write_array(Writer(),array,allow_pickle=False)
+            release_pages(array)

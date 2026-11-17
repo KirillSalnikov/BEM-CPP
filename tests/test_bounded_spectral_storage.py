@@ -6,11 +6,49 @@ from pathlib import Path
 import numpy as np
 import torch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
-from bounded_spectral_storage import StreamedSpectralBlock,half_factors,SharedStreamBuffers,decode_half_symbol
+from bounded_spectral_storage import (StreamedSpectralBlock,half_factors,SharedStreamBuffers,
+    decode_half_symbol,exact_factor_batch_ranks,factor_batch_views)
 from symmetric_galerkin_fft import TorchSymmetricAction
 
 
 class HalfSymbolTests(unittest.TestCase):
+    def test_zero_rank_cache_invalidated_by_factor_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp=Path(tmp);cache=tmp/'ranks.json'
+            np.save(tmp/'u.npy',np.ones((3,5,32,2),np.float16))
+            np.save(tmp/'v.npy',np.zeros((3,32,7,2),np.float16))
+            u=np.load(tmp/'u.npy',mmap_mode='r');v=np.load(tmp/'v.npy',mmap_mode='r+')
+            self.assertEqual(exact_factor_batch_ranks(u,v,2,cache),[8,8])
+            with patch('bounded_spectral_storage.np.any',side_effect=AssertionError('cached arrays were rescanned')):
+                self.assertEqual(exact_factor_batch_ranks(u,v,2,cache),[8,8])
+            v[0,-1,0,0]=1;v.flush()
+            self.assertEqual(exact_factor_batch_ranks(u,v,2,cache),[32,8])
+
+    def test_trim_exact_zero_factor_tails_in_original_products(self):
+        rng=np.random.default_rng(740)
+        left=rng.normal(size=(7,13,32,2)).astype(np.float16)
+        right=rng.normal(size=(7,32,11,2)).astype(np.float16)
+        for f,rank in enumerate((3,7,9,14,18,22,0)):
+            # Alternate one-sided tails: a zero factor column OR row is enough.
+            if f%2:left[f,:,rank:]=0
+            else:right[f,rank:]=0
+        ranks=exact_factor_batch_ranks(left,right,2)
+        self.assertEqual(ranks,[8,16,24,8])
+        arrays=(left,right,np.ones((7,1,1),np.float32))
+        decode=lambda a:a[...,0].astype(float)+1j*a[...,1].astype(float)
+        x=rng.normal(size=(7,11,3))+1j*rng.normal(size=(7,11,3))
+        expected=decode(left)@(decode(right)@x);transferred=0
+        for first,rank in zip(range(0,7,2),ranks):
+            count=min(2,7-first)
+            batch=factor_batch_views(arrays,first,count,rank)
+            packed=[np.ascontiguousarray(a) for a in batch]
+            actual=decode(packed[0])@(decode(packed[1])@x[first:first+count])
+            np.testing.assert_allclose(actual,expected[first:first+count],rtol=1e-13,atol=1e-12)
+            transferred+=sum(a.nbytes for a in packed)
+        self.assertLess(transferred,sum(a.nbytes for a in arrays))
+        left[0,0,-1,0]=np.nan
+        with self.assertRaisesRegex(ValueError,'Nonfinite'):exact_factor_batch_ranks(left,right,2)
+
     def test_packed_current_symbol_matches_full_half_encoding(self):
         rng=np.random.default_rng(972)
         array=lambda shape:np.asarray(rng.normal(size=shape)+1j*rng.normal(size=shape),np.complex64)
@@ -44,6 +82,31 @@ class HalfSymbolTests(unittest.TestCase):
 
 @unittest.skipUnless(torch.cuda.is_available(),'CUDA required for asynchronous storage')
 class BoundedStorageTests(unittest.TestCase):
+    def test_trimmed_rank_shared_async_buffers(self):
+        rng=np.random.default_rng(912)
+        array=lambda shape:np.asarray(rng.normal(size=shape)+1j*rng.normal(size=shape),np.complex64)
+        with tempfile.TemporaryDirectory() as tmp:
+            pool=SharedStreamBuffers('cuda');cases=[]
+            for index,(nf,nr,nc,rank,batch) in enumerate(((19,37,29,32,4),(13,29,23,24,3))):
+                left,right=array((nf,nr,rank)),array((nf,rank,nc))
+                for f in range(nf):
+                    r=min(rank,1+8*((f//batch)%3));left[f,:,r:]=0;right[f,r:]=0
+                u,us=half_factors(left,tmp,f'u{index}');v,vs=half_factors(right,tmp,f'v{index}')
+                op=StreamedSpectralBlock((u,v,us*vs),device='cuda',batch=batch,half=True,pool=pool,trim_zero_rank=True)
+                decode=lambda a:a[...,0].astype(np.float32)+1j*a[...,1].astype(np.float32)
+                cases.append((op,decode(u),decode(v),us*vs))
+                self.assertLess(op.transfer_bytes,u.nbytes+v.nbytes+(us*vs).nbytes)
+            streams=[torch.cuda.Stream(),torch.cuda.Stream()];checks=[]
+            for iteration in range(4):
+                for index,(op,u,v,scale) in enumerate(cases):
+                    x=array((len(u),v.shape[2],3))
+                    with torch.cuda.stream(streams[(iteration+index)%2]):
+                        actual=op(torch.as_tensor(x,device='cuda'),u.shape[1])
+                    checks.append((actual,(u@(v@x))*scale))
+            torch.cuda.synchronize()
+            for actual,expected in checks:
+                self.assertLess(np.linalg.norm(actual.cpu().numpy()-expected)/np.linalg.norm(expected),5e-7)
+
     def test_first_shared_use_waits_for_recycled_cuda_scratch(self):
         pool=SharedStreamBuffers('cuda')
         symbols=np.tile(np.eye(128,dtype=np.complex64),(16,1,1))

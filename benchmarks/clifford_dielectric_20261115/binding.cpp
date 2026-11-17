@@ -12,7 +12,11 @@ void* dirac_create_geometry(int shape,int ref,double aspect,double k,double re,d
 }catch(const std::exception&e){error=e.what();return nullptr;}}
 int dirac_build_rows(void*p,int n,const int*ids,size_t budget){try{static_cast<Transmission*>(p)->build_rows(n,ids,budget);return 0;}catch(const std::exception&e){error=e.what();return 1;}}
 int dirac_build_near_rows(void*p,int n,const int*ids,size_t budget){try{static_cast<Transmission*>(p)->build_near_rows(n,ids,budget);return 0;}catch(const std::exception&e){error=e.what();return 1;}}
+int dirac_build_near_rows_shared(void*p,int n,const int*ids,size_t budget){try{static_cast<Transmission*>(p)->build_near_rows(n,ids,budget,true);return 0;}catch(const std::exception&e){error=e.what();return 1;}}
+size_t dirac_near_pair_count(void*p){return static_cast<Transmission*>(p)->near_pair_count();}
+size_t dirac_near_pattern_count(void*p){return static_cast<Transmission*>(p)->near_pattern_count();}
 int dirac_near_rows(void*p,int medium,const C*x,int n,const int*ids,C*y){try{static_cast<Transmission*>(p)->near_correction_rows(medium,x,n,ids,y);return 0;}catch(const std::exception&e){error=e.what();return 1;}}
+int dirac_project_cauchy_rows(void*p,const C*x,int n,const int*ids,C*y){try{static_cast<Transmission*>(p)->project_cauchy_rows(x,n,ids,y);return 0;}catch(const std::exception&e){error=e.what();return 1;}}
 int dirac_self_blocks_direct(void*p,int n,const int*ids,C*y){try{static_cast<Transmission*>(p)->self_blocks_direct(n,ids,y);return 0;}catch(const std::exception&e){error=e.what();return 1;}}
 int dirac_direct_transformed_columns(void*p,int nt,const int*targets,int ns,const int*sources,const double*basis,const double*components,C*y){try{static_cast<Transmission*>(p)->direct_transformed_columns(nt,targets,ns,sources,basis,components,y);return 0;}catch(const std::exception&e){error=e.what();return 1;}}
 int dirac_direct_panel_pairs(void*p,int n,const int*targets,const int*sources,C*y){try{static_cast<Transmission*>(p)->direct_panel_pairs(n,targets,sources,y);return 0;}catch(const std::exception&e){error=e.what();return 1;}}
@@ -99,6 +103,50 @@ int dirac_dense_gemv_subtract_f(int rows,int cols,const C*matrix,const C*x,C*y){
             for(int i=0;i<width;++i){re[i]+=a[2*i]*xr-a[2*i+1]*xi;im[i]+=a[2*i]*xi+a[2*i+1]*xr;}
         }
         for(int i=0;i<width;++i)y[begin+i]-=C(re[i],im[i]);
+    }
+    return 0;
+}
+// Compressed preconditioner only: FP32 coefficients, FP64 input/product/sum.
+// The BEM operator and residual checks never call this entry point.
+int dirac_dense_gemv_subtract_cf(int rows,int cols,const std::complex<float>*matrix,const C*x,C*y){
+    if(rows<1||cols<1){error="compressed coarse GEMV dimensions";return 1;}
+    const int tile=64;
+#pragma omp parallel for schedule(static)
+    for(int begin=0;begin<rows;begin+=tile){
+        const int width=std::min(tile,rows-begin);double re[tile]={},im[tile]={};
+        for(int j=0;j<cols;++j){
+            const float*a=reinterpret_cast<const float*>(matrix+size_t(j)*rows+begin);
+            const double xr=x[j].real(),xi=x[j].imag();
+#pragma omp simd
+            for(int i=0;i<width;++i){re[i]+=double(a[2*i])*xr-double(a[2*i+1])*xi;im[i]+=double(a[2*i])*xi+double(a[2*i+1])*xr;}
+        }
+        for(int i=0;i<width;++i)y[begin+i]-=C(re[i],im[i]);
+    }
+    return 0;
+}
+// Multiple currents in one symmetry sector share W. Read each coefficient
+// tile once for the batch; inputs and all accumulation remain FP64.
+// x/y are row-major [nrhs, cols/rows]; W is column-major [rows, cols].
+int dirac_dense_gemm_subtract_cf(int rows,int cols,int nrhs,const std::complex<float>*matrix,const C*x,C*y){
+    if(rows<1||cols<1||nrhs<1||nrhs>16){error="compressed coarse GEMM dimensions";return 1;}
+    const int tile=64;
+#pragma omp parallel for schedule(static)
+    for(int begin=0;begin<rows;begin+=tile){
+        const int width=std::min(tile,rows-begin);
+        double re[16][tile]={},im[16][tile]={};
+        for(int j=0;j<cols;++j){
+            const float*a=reinterpret_cast<const float*>(matrix+size_t(j)*rows+begin);
+            double ar[tile],ai[tile];
+#pragma omp simd
+            for(int i=0;i<width;++i){ar[i]=double(a[2*i]);ai[i]=double(a[2*i+1]);}
+            for(int rhs=0;rhs<nrhs;++rhs){
+                const C value=x[size_t(rhs)*cols+j];const double xr=value.real(),xi=value.imag();
+#pragma omp simd
+                for(int i=0;i<width;++i){re[rhs][i]+=ar[i]*xr-ai[i]*xi;im[rhs][i]+=ar[i]*xi+ai[i]*xr;}
+            }
+        }
+        for(int rhs=0;rhs<nrhs;++rhs)for(int i=0;i<width;++i)
+            y[size_t(rhs)*rows+begin+i]-=C(re[rhs][i],im[rhs][i]);
     }
     return 0;
 }

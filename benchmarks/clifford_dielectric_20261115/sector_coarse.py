@@ -55,18 +55,25 @@ def coarse_columns(g,mode,coarse_basis=1,chunk=8):
     return coarse_columns_many(g,[mode],coarse_basis,chunk)[0]
 
 class CoarseCorrection:
-    def __init__(self,g,coarse_basis=1,budget_bytes=8<<30,kernel='simd',workspace_bytes=256<<20):
+    def __init__(self,g,coarse_basis=1,budget_bytes=8<<30,kernel='simd',workspace_bytes=256<<20,lu_threads=1):
         if coarse_basis not in (1,3,6,10) or coarse_basis>g.d.basis_count:raise ValueError('coarse polynomial space')
         if budget_bytes<0:raise ValueError('coarse cache budget must be nonnegative')
         self.g=g;self.coarse_basis=coarse_basis;self.cache={};self.statistics={}
+        if not isinstance(lu_threads,int) or not 1<=lu_threads<=64:raise ValueError('coarse LU threads must be in 1..64')
+        # Dedicated names: derived hierarchical coarse has independent LU
+        # controls initialized before calling this base constructor.
+        self.dense_lu_threads=lu_threads;self.dense_blas_limits=None
+        if lu_threads>1:
+            try:from threadpoolctl import threadpool_limits
+            except ImportError as e:raise RuntimeError('parallel coarse LU requires optional threadpoolctl') from e
+            self.dense_blas_limits=threadpool_limits
         self.budget_bytes=budget_bytes;self.bytes=0;self.setup_s=0.;self.peak_bytes=0;self.evictions=0
         self.workspace_bytes=int(workspace_bytes)
         if self.workspace_bytes<=0:raise ValueError('coarse assembly workspace must be positive')
         if kernel not in ('blas','simd'):raise ValueError('coarse correction kernel')
         self.kernel=kernel
         if kernel=='simd' and not hasattr(lib,'dirac_dense_gemv_subtract_f'):raise RuntimeError('selected library lacks column-major coarse SIMD action')
-        self.factors=np.ascontiguousarray(g.d._dense_factors[0][g.representatives])
-        self.pivots=np.ascontiguousarray(g.d._dense_factors[1][g.representatives])
+        self.factors,self.pivots=g.d.panel_factors(g.representatives)
         self.width=g.d.basis_count*8
         self.indices=np.arange(g.size).reshape(-1,g.d.basis_count,8)[:,:coarse_basis].ravel()
 
@@ -123,7 +130,12 @@ class CoarseCorrection:
         for i in range(len(self.g.representatives)):
             coarse[i*cbw:(i+1)*cbw]=az[i*self.width:i*self.width+cbw]
         if not np.isfinite(coarse).all():raise RuntimeError('nonfinite coarse matrix')
-        factor=lu_factor(coarse,overwrite_a=True,check_finite=False)
+        lu_begin=time.perf_counter();lu_threads=self.dense_lu_threads if nc>=1024 else 1
+        if lu_threads>1:
+            with self.dense_blas_limits(limits=lu_threads,user_api='blas'):
+                factor=lu_factor(coarse,overwrite_a=True,check_finite=False)
+        else:factor=lu_factor(coarse,overwrite_a=True,check_finite=False)
+        lu_seconds=time.perf_counter()-lu_begin
         audit_error=None
         if audit:
             rng=np.random.default_rng(867);q=rng.normal(size=nc)+1j*rng.normal(size=nc)
@@ -143,6 +155,7 @@ class CoarseCorrection:
             coarse_exactness=float(np.linalg.norm(self.apply(coarse_action,mode)-lifted)/np.linalg.norm(lifted))
             if coarse_exactness>2e-10:raise RuntimeError('two-level inverse fails coarse range exactness')
         self.statistics[str(key)]=dict(setup_s=time.perf_counter()-start+assembled,assembly_s=assembled,
+             lu_s=lu_seconds,lu_threads=lu_threads,
              fine_size=self.g.size,coarse_size=nc,bytes=az.nbytes+factor[0].nbytes+factor[1].nbytes,
              column_error=audit_error,coarse_range_error=coarse_exactness)
 

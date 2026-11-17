@@ -1,0 +1,284 @@
+{
+  "rows": [
+    {
+      "name": "ka10_ref2_dense_cpu",
+      "ka": 10,
+      "ref": 2,
+      "iterations": [
+        6,
+        6,
+        6,
+        6
+      ],
+      "max_residual": 7.56653754191008e-09,
+      "setup_s": 3.7466583939967677,
+      "solve_s": 1.1861153560021194,
+      "wall_s": 4.98414519400103,
+      "peak_rss_gib": 0.8449630737304688,
+      "max_sampled_intensity_error": 0.0007870991401083208,
+      "sampled_one_percent": true,
+      "projection": null
+    },
+    {
+      "name": "ka20_ref3_dense_cpu",
+      "ka": 20,
+      "ref": 3,
+      "iterations": [
+        7,
+        7,
+        7,
+        7
+      ],
+      "max_residual": 7.286949347704512e-09,
+      "setup_s": 29.1863722220005,
+      "solve_s": 15.896114662995387,
+      "wall_s": 45.31227743199997,
+      "peak_rss_gib": 12.043136596679688,
+      "max_sampled_intensity_error": 0.006056890380387533,
+      "sampled_one_percent": true,
+      "projection": null
+    },
+    {
+      "name": "ka30_ref4_fullP1_batch_lu16_cpu",
+      "ka": 30.0,
+      "ref": 4,
+      "iterations": [
+        7,
+        7,
+        7,
+        7
+      ],
+      "max_residual": 2.596398159313723e-09,
+      "setup_s": 381.90825082099764,
+      "solve_s": 139.752876493003,
+      "wall_s": 523.7487741489967,
+      "peak_rss_gib": 25.003402709960938,
+      "max_sampled_intensity_error": 0.01182429246729172,
+      "sampled_one_percent": false,
+      "projection": null
+    },
+    {
+      "name": "ka40_ref4_fullP1_compact_cpu",
+      "ka": 40.0,
+      "ref": 4,
+      "iterations": [
+        11,
+        11,
+        11,
+        12
+      ],
+      "max_residual": 7.526236341216203e-09,
+      "setup_s": 199.75487155700102,
+      "solve_s": 236.6250913949989,
+      "wall_s": 439.2567497459895,
+      "peak_rss_gib": 21.018699645996094,
+      "max_sampled_intensity_error": 0.003968178328748275,
+      "sampled_one_percent": true,
+      "projection": {
+        "L": 65,
+        "columns": 4,
+        "outgoing_rows": 8710,
+        "setup_s": 0.467986737996398,
+        "total_s": 0.808135160994425,
+        "scope": "Separately measured radiation/projection stage; existing solve/coarse preparation reused mathematically.",
+        "relative_field_L2": [
+          0.00012428507675782863,
+          0.0001303193576297778,
+          0.000366592250873328,
+          0.0003706564025661956
+        ]
+      },
+      "solve_process_body_s": 438.4486145849951,
+      "time_scope": "Sum of measured cold four-mode solve and separately measured L65 radiation/projection stage."
+    }
+  ],
+  "scope": "Four regular spherical modes, 181 angles in one meridian; not full Mueller/L convergence or a full-T time measurement.",
+  "batch_regression": {
+    "T_relative_L2": 4.702125428689269e-16,
+    "mueller_error_normalized_M11": 1.0512299851113798e-14
+  },
+  "compact_regression": {
+    "T_relative_L2": 1.6757953790501454e-15,
+    "mueller_error_normalized_M11": 1.602696062595624e-14
+  },
+  "selected_FMM_packet_regression": {
+    "T_relative_L2": 1.6757953790501454e-15,
+    "mueller_error_normalized_M11": 1.2662693406891884e-14
+  },
+  "ka30_projection_diagnostic": {
+    "records": [
+      {
+        "L": 50,
+        "field_L2_vs_direct": [
+          7.514844096163563e-05,
+          8.838680255051089e-05,
+          0.00017347698575264674,
+          0.0005160301740250357
+        ],
+        "max_local_intensity_error_vs_direct": [
+          0.000689470120226327,
+          0.001060507562944168,
+          0.0010633182016247405,
+          0.010703644655465435
+        ],
+        "max_local_intensity_error_vs_Muller_L50": [
+          0.003091270921572075,
+          0.0026463254100473903,
+          0.0017857062271507728,
+          0.004012546717373724
+        ]
+      },
+      {
+        "L": 60,
+        "field_L2_vs_direct": [
+          3.5990483212807135e-05,
+          4.886048027680492e-05,
+          7.340194003721262e-05,
+          0.00032491240848756475
+        ],
+        "max_local_intensity_error_vs_direct": [
+          1.0891267263630369e-07,
+          1.5278192299831903e-06,
+          2.1725351068209829e-07,
+          6.114423626760326e-05
+        ],
+        "max_local_intensity_error_vs_Muller_L50": [
+          0.0037834050557568927,
+          0.0027511513647516983,
+          0.0024025583911018583,
+          0.01182370363385825
+        ]
+      }
+    ],
+    "modes": [
+      [
+        0,
+        2,
+        -1
+      ],
+      [
+        1,
+        1,
+        -1
+      ],
+      [
+        0,
+        30,
+        -1
+      ],
+      [
+        1,
+        29,
+        -1
+      ]
+    ],
+    "scope": "Same completed currents. L50/L60 radiation projection only; no repeated boundary solve or fitted normalization."
+  },
+  "matched_ka40": {
+    "dirac_CPU_s": 439.2567497459895,
+    "muller_GPU_s": 344.1260507420011,
+    "speedup_Muller_over_Dirac": 0.7834280314212588,
+    "modes": [
+      [
+        0,
+        2,
+        -1
+      ],
+      [
+        1,
+        1,
+        -1
+      ],
+      [
+        0,
+        40,
+        -1
+      ],
+      [
+        1,
+        39,
+        -1
+      ]
+    ],
+    "outgoing_L": 65,
+    "Muller_FFT_assets_reused": "runs/scice_ka40_compressed_20261109/assets",
+    "GPU_iterations": [
+      {
+        "iterations": 149,
+        "sector_iterations_x": [
+          0,
+          149,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "sector_iterations_y": [
+          0,
+          147,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "host_iterations_x": 149,
+        "host_iterations_y": 147
+      },
+      {
+        "iterations": 151,
+        "sector_iterations_x": [
+          0,
+          151,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "sector_iterations_y": [
+          0,
+          148,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "host_iterations_x": 151,
+        "host_iterations_y": 148
+      }
+    ],
+    "scope": "Four independent modes with outgoing projection; CPU time is a sum of separately measured stages. Excludes packed full-T throughput and analytic averaging.",
+    "T_columns_relative_L2": [
+      0.00024316844139514026,
+      0.0002400708652329357,
+      0.00046322582567290824,
+      0.000615775686416208
+    ],
+    "historical_FFT_asset_build_s": 212.02446776002762,
+    "Muller_plus_historical_asset_build_s": 556.1505185020287,
+    "historical_asset_scope": "Sum of November 9 asset preparation and November 16 short run; not a fresh end-to-end measurement; other historical geometry/binding preparation may be absent."
+  }
+}

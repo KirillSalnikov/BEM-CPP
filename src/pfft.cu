@@ -2,6 +2,7 @@
 // Drop-in replacement for FMM with O(N log N) via FFT on regular grid
 
 #include "pfft.h"
+#include "pfft_tensor_correlation.h"
 #include <cufft.h>
 #include <algorithm>
 #include <array>
@@ -10,6 +11,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <stdexcept>
+#include <climits>
 
 #define CUFFT_CHECK(call) do { \
     cufftResult err = (call); \
@@ -471,7 +473,7 @@ static void build_near_list(const double* tgt, int Nt,
                             double dx2 = tx - src[j*3+0];
                             double dy2 = ty - src[j*3+1];
                             double dz2 = tz - src[j*3+2];
-                            if (dx2*dx2 + dy2*dy2 + dz2*dz2 < r2 || i == j) {
+                            if (dx2*dx2 + dy2*dy2 + dz2*dz2 < r2) {
                                 col_idx.push_back(j);
                             }
                         }
@@ -489,7 +491,7 @@ static void build_near_list(const double* tgt, int Nt,
                 double dx = tx - src[j*3+0];
                 double dy = ty - src[j*3+1];
                 double dz = tz - src[j*3+2];
-                if (dx*dx + dy*dy + dz*dz < r2 || i == j)
+                if (dx*dx + dy*dy + dz*dz < r2)
                     col_idx.push_back(j);
             }
             row_ptr[i+1] = (int)col_idx.size();
@@ -531,8 +533,13 @@ void HelmholtzPFFT::init(const double* targets, int n_tgt,
                           const double* sources, int n_src,
                           cdouble k_val, int digits, int /* max_leaf */,
                           double grid_spacing,
-                          double correction_radius_cells)
+                          double correction_radius_cells,
+                          int maximum_derivative)
 {
+    if(maximum_derivative<1||maximum_derivative>2||digits<2||digits>7||n_tgt<1||n_src<1)
+        throw std::invalid_argument("pFFT initialization dimensions/order");
+    max_derivative=maximum_derivative;
+    const int hessian_components=max_derivative==2?6:0;
     Timer timer;
     k = k_val;
     Nt = n_tgt;
@@ -605,6 +612,9 @@ void HelmholtzPFFT::init(const double* targets, int n_tgt,
     printf("  [pFFT] Grid memory: %.1f MB per buffer\n",
            grid_total * sizeof(PfftComplex) / 1e6);
 
+    if(grid_total>INT_MAX||size_t(Ns)*stencil>INT_MAX||size_t(Nt)*stencil>INT_MAX)
+        throw std::overflow_error("pFFT grid/stencil exceeds 32-bit kernel indexing");
+
     // --- Step 2: Precompute Green's function FFT ---
     printf("  [pFFT] Precomputing Green's function FFTs...\n");
 
@@ -613,7 +623,7 @@ void HelmholtzPFFT::init(const double* targets, int n_tgt,
     std::vector<PfftComplex> h_dGdy(grid_total);
     std::vector<PfftComplex> h_dGdz(grid_total);
     std::array<std::vector<PfftComplex>, 6> h_d2G;
-    for (int component = 0; component < 6; component++)
+    for (int component = 0; component < hessian_components; component++)
         h_d2G[component].resize(grid_total);
 
     for (int ix = 0; ix < M2x; ix++) {
@@ -635,7 +645,7 @@ void HelmholtzPFFT::init(const double* targets, int n_tgt,
                     h_dGdx[idx] = {0.0, 0.0};
                     h_dGdy[idx] = {0.0, 0.0};
                     h_dGdz[idx] = {0.0, 0.0};
-                    for (int component = 0; component < 6; component++)
+                    for (int component = 0; component < hessian_components; component++)
                         h_d2G[component][idx] = {0.0, 0.0};
                 } else {
                     // G = exp(ikR) / (4*pi*R)
@@ -669,7 +679,7 @@ void HelmholtzPFFT::init(const double* targets, int n_tgt,
                     const double displacement[3] = {dx, dy, dz};
                     const int row[6] = {0, 0, 0, 1, 1, 2};
                     const int column[6] = {0, 1, 2, 1, 2, 2};
-                    for (int component = 0; component < 6; component++) {
+                    for (int component = 0; component < hessian_components; component++) {
                         cdouble value =
                             G * a *
                             displacement[row[component]] *
@@ -694,7 +704,7 @@ void HelmholtzPFFT::init(const double* targets, int n_tgt,
         &d_d2Gxx_hat, &d_d2Gxy_hat, &d_d2Gxz_hat,
         &d_d2Gyy_hat, &d_d2Gyz_hat, &d_d2Gzz_hat
     };
-    for (int component = 0; component < 6; component++) {
+    for (int component = 0; component < hessian_components; component++) {
         CUDA_CHECK(cudaMalloc(
             hessian_hat[component],
             grid_total * sizeof(PfftComplex)));
@@ -718,23 +728,29 @@ void HelmholtzPFFT::init(const double* targets, int n_tgt,
     fft_green(h_dGdx, d_dGdx_hat);
     fft_green(h_dGdy, d_dGdy_hat);
     fft_green(h_dGdz, d_dGdz_hat);
-    for (int component = 0; component < 6; component++)
+    for (int component = 0; component < hessian_components; component++)
         fft_green(h_d2G[component], *hessian_hat[component]);
 
     printf("  [pFFT] Green's FFTs done: %.1fms\n", timer.elapsed_ms());
     timer.reset();
 
+    std::vector<PfftComplex>().swap(h_G);std::vector<PfftComplex>().swap(h_dGdx);
+    std::vector<PfftComplex>().swap(h_dGdy);std::vector<PfftComplex>().swap(h_dGdz);
+    for(auto& v:h_d2G)std::vector<PfftComplex>().swap(v);
+
     // --- Step 3: Compute interpolation stencils ---
     printf("  [pFFT] Computing interpolation stencils...\n");
 
-    std::vector<int>    h_src_idx(Ns * stencil);
-    std::vector<double> h_src_wt(Ns * stencil);
-    std::vector<int>    h_tgt_idx(Nt * stencil);
-    std::vector<double> h_tgt_wt(Nt * stencil);
+    std::vector<int> src_base(size_t(Ns)*3),tgt_base(size_t(Nt)*3);
+    std::vector<double> src_axes(size_t(Ns)*3*p1),tgt_axes(size_t(Nt)*3*p1);
+    std::vector<int>    h_src_idx(size_t(Ns) * stencil);
+    std::vector<double> h_src_wt(size_t(Ns) * stencil);
+    std::vector<int>    h_tgt_idx(size_t(Nt) * stencil);
+    std::vector<double> h_tgt_wt(size_t(Nt) * stencil);
 
     auto compute_stencil = [&](const double* pts, int N,
                                std::vector<int>& idx_out,
-                               std::vector<double>& wt_out) {
+                               std::vector<double>& wt_out, std::vector<int>& bases, std::vector<double>& axes) {
         double wx[8], wy[8], wz[8];  // max p+1 = 8
         for (int i = 0; i < N; i++) {
             double px = pts[i*3+0], py = pts[i*3+1], pz = pts[i*3+2];
@@ -759,6 +775,9 @@ void HelmholtzPFFT::init(const double* targets, int n_tgt,
             lagrange_weights(py, origin[1] + iy0 * h, h, p1, wy);
             lagrange_weights(pz, origin[2] + iz0 * h, h, p1, wz);
 
+            bases[3*i]=ix0;bases[3*i+1]=iy0;bases[3*i+2]=iz0;
+            for(int a=0;a<p1;++a){axes[size_t(i)*3*p1+a]=wx[a];axes[size_t(i)*3*p1+p1+a]=wy[a];axes[size_t(i)*3*p1+2*p1+a]=wz[a];}
+
             // Fill stencil (tensor product)
             int s = 0;
             for (int a = 0; a < p1; a++) {
@@ -778,8 +797,8 @@ void HelmholtzPFFT::init(const double* targets, int n_tgt,
         }
     };
 
-    compute_stencil(sources, Ns, h_src_idx, h_src_wt);
-    compute_stencil(targets, Nt, h_tgt_idx, h_tgt_wt);
+    compute_stencil(sources, Ns, h_src_idx, h_src_wt,src_base,src_axes);
+    compute_stencil(targets, Nt, h_tgt_idx, h_tgt_wt,tgt_base,tgt_axes);
 
     // Upload stencils to GPU
     CUDA_CHECK(cudaMalloc(&d_src_stencil_idx, (long long)Ns * stencil * sizeof(int)));
@@ -840,7 +859,7 @@ void HelmholtzPFFT::init(const double* targets, int n_tgt,
     std::vector<float> h_cdz_re(corr_nnz), h_cdz_im(corr_nnz);
     std::array<std::vector<float>, 6> h_c2_re;
     std::array<std::vector<float>, 6> h_c2_im;
-    for (int component = 0; component < 6; component++) {
+    for (int component = 0; component < hessian_components; component++) {
         h_c2_re[component].resize(corr_nnz);
         h_c2_im[component].resize(corr_nnz);
     }
@@ -853,7 +872,7 @@ void HelmholtzPFFT::init(const double* targets, int n_tgt,
     std::vector<cdouble> G_local(gsize);
     std::vector<cdouble> dGdx_local(gsize), dGdy_local(gsize), dGdz_local(gsize);
     std::array<std::vector<cdouble>, 6> d2G_local;
-    for (int component = 0; component < 6; component++)
+    for (int component = 0; component < hessian_components; component++)
         d2G_local[component].resize(gsize);
     for (int di = -grange; di <= grange; di++) {
         for (int dj = -grange; dj <= grange; dj++) {
@@ -864,7 +883,7 @@ void HelmholtzPFFT::init(const double* targets, int n_tgt,
                 if (R < 1e-30) {
                     G_local[li] = 0;
                     dGdx_local[li] = dGdy_local[li] = dGdz_local[li] = 0;
-                    for (int component = 0; component < 6; component++)
+                    for (int component = 0; component < hessian_components; component++)
                         d2G_local[component][li] = 0;
                 } else {
                     cdouble expikR = std::exp(cdouble(0, 1) * k * R);
@@ -884,7 +903,7 @@ void HelmholtzPFFT::init(const double* targets, int n_tgt,
                     const double displacement[3] = {dx, dy, dz};
                     const int row[6] = {0, 0, 0, 1, 1, 2};
                     const int column[6] = {0, 1, 2, 1, 2, 2};
-                    for (int component = 0; component < 6; component++) {
+                    for (int component = 0; component < hessian_components; component++) {
                         cdouble value =
                             G_local[li] * a *
                             displacement[row[component]] *
@@ -929,7 +948,7 @@ void HelmholtzPFFT::init(const double* targets, int n_tgt,
                 const double displacement[3] = {ddx, ddy, ddz};
                 const int row[6] = {0, 0, 0, 1, 1, 2};
                 const int column[6] = {0, 1, 2, 1, 2, 2};
-                for (int component = 0; component < 6; component++) {
+                for (int component = 0; component < hessian_components; component++) {
                     d2G_exact[component] =
                         G_exact * a *
                         displacement[row[component]] *
@@ -940,50 +959,13 @@ void HelmholtzPFFT::init(const double* targets, int n_tgt,
                 }
             }
 
-            // Grid-mediated Green's function:
-            // G_grid(i,j) = sum_a sum_b w_tgt[i,a] * G_grid[a-b] * w_src[j,b]
-            cdouble G_grid(0, 0), dGx_grid(0, 0), dGy_grid(0, 0), dGz_grid(0, 0);
-            cdouble d2G_grid[6] = {};
-
-            int base_i = (long long)i * stencil;
-            int base_j = (long long)j * stencil;
-
-            for (int a = 0; a < stencil; a++) {
-                double wa = h_tgt_wt[base_i + a];
-                if (fabs(wa) < 1e-15) continue;
-                int ga = h_tgt_idx[base_i + a];
-                // Decompose ga into grid coordinates
-                int ga_x = ga / (M2y * M2z);
-                int ga_y = (ga % (M2y * M2z)) / M2z;
-                int ga_z = ga % M2z;
-
-                for (int b = 0; b < stencil; b++) {
-                    double wb = h_src_wt[base_j + b];
-                    if (fabs(wb) < 1e-15) continue;
-                    int gb = h_src_idx[base_j + b];
-                    int gb_x = gb / (M2y * M2z);
-                    int gb_y = (gb % (M2y * M2z)) / M2z;
-                    int gb_z = gb % M2z;
-
-                    int di = ga_x - gb_x;
-                    int dj = ga_y - gb_y;
-                    int dk = ga_z - gb_z;
-
-                    // Look up in local table
-                    if (abs(di) <= grange && abs(dj) <= grange && abs(dk) <= grange) {
-                        long long li = (long long)(di+grange)*gspan*gspan +
-                                       (dj+grange)*gspan + (dk+grange);
-                        double ww = wa * wb;
-                        G_grid    += ww * G_local[li];
-                        dGx_grid  += ww * dGdx_local[li];
-                        dGy_grid  += ww * dGdy_local[li];
-                        dGz_grid  += ww * dGdz_local[li];
-                        for (int component = 0; component < 6; component++)
-                            d2G_grid[component] +=
-                                ww * d2G_local[component][li];
-                    }
-                }
-            }
+            const int displacement[3]={tgt_base[3*i]-src_base[3*j],tgt_base[3*i+1]-src_base[3*j+1],tgt_base[3*i+2]-src_base[3*j+2]};
+            const cdouble* kernels[10]={G_local.data(),dGdx_local.data(),dGdy_local.data(),dGdz_local.data()};
+            for(int q=0;q<hessian_components;++q)kernels[4+q]=d2G_local[q].data();
+            const auto grid=bem_pfft::tensor_correlation(p1,tgt_axes.data()+size_t(i)*3*p1,src_axes.data()+size_t(j)*3*p1,
+                                                       displacement,grange,kernels,4+hessian_components);
+            const cdouble G_grid=grid[0],dGx_grid=grid[1],dGy_grid=grid[2],dGz_grid=grid[3];
+            const cdouble* d2G_grid=grid.data()+4;
 
             // Correction = exact - grid
             cdouble cG  = G_exact - G_grid;
@@ -995,7 +977,7 @@ void HelmholtzPFFT::init(const double* targets, int n_tgt,
             h_cdx_re[p] = cdx.real();  h_cdx_im[p] = cdx.imag();
             h_cdy_re[p] = cdy.real();  h_cdy_im[p] = cdy.imag();
             h_cdz_re[p] = cdz.real();  h_cdz_im[p] = cdz.imag();
-            for (int component = 0; component < 6; component++) {
+            for (int component = 0; component < hessian_components; component++) {
                 const cdouble correction =
                     d2G_exact[component] - d2G_grid[component];
                 h_c2_re[component][p] = correction.real();
@@ -1056,7 +1038,7 @@ void HelmholtzPFFT::init(const double* targets, int n_tgt,
         &d_corr_d2Gyy_im, &d_corr_d2Gyz_im, &d_corr_d2Gzz_im
     };
     if (corr_nnz > 0) {
-        for (int component = 0; component < 6; component++) {
+        for (int component = 0; component < hessian_components; component++) {
             upload_corr(
                 h_c2_re[component], h_c2_im[component],
                 *hessian_correction_re[component],
@@ -1065,7 +1047,7 @@ void HelmholtzPFFT::init(const double* targets, int n_tgt,
     }
 
     printf("  [pFFT] Near-field correction done: %.1fms; tables=%s %.1f MiB\n", timer.elapsed_ms(),
-        corr_in_ram?"RAM via PCIe":"GPU",double(corr_nnz)*80/1048576.);
+        corr_in_ram?"RAM via PCIe":"GPU",double(corr_nnz)*(32+8*hessian_components)/1048576.);
     timer.reset();
 
     // --- Step 5: Allocate work buffers ---
@@ -1078,8 +1060,8 @@ void HelmholtzPFFT::init(const double* targets, int n_tgt,
     CUDA_CHECK(cudaMalloc(&d_result_im,  Nt * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_grad_re,    Nt * 3 * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_grad_im,    Nt * 3 * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_hess_re,    Nt * 6 * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_hess_im,    Nt * 6 * sizeof(double)));
+    if(max_derivative==2)CUDA_CHECK(cudaMalloc(&d_hess_re,    size_t(Nt) * 6 * sizeof(double)));
+    if(max_derivative==2)CUDA_CHECK(cudaMalloc(&d_hess_im,    size_t(Nt) * 6 * sizeof(double)));
 
     // Batch-2 buffers
     CUDA_CHECK(cudaMalloc(&d_charges2_re, Ns * sizeof(double)));
@@ -1100,11 +1082,11 @@ void HelmholtzPFFT::init(const double* targets, int n_tgt,
     initialized = true;
     printf("  [pFFT] Work-buffer init: %.1fms, estimated GPU storage: ~%.1f MB, correction RAM: %.1f MB\n",
            timer.elapsed_ms(),
-           (12 * grid_total * sizeof(PfftComplex) +
+           ((6+hessian_components) * grid_total * sizeof(PfftComplex) +
             (long long)(Ns + Nt) * stencil * 12.0 +
-            corr_nnz * (corr_in_ram ? 4.0 : 84.0) +
+            corr_nnz * (corr_in_ram ? 4.0 : 36.0+8*hessian_components) +
             (Ns + Nt) * (5 * 8.0 + 3 * 8.0 * 2)) / 1e6,
-            corr_in_ram ? corr_nnz * 80.0 / 1e6 : 0.);
+            corr_in_ram ? double(corr_nnz) * (32.0+8*hessian_components) / 1e6 : 0.);
 }
 
 void HelmholtzPFFT::prepare_charge_spectrum(
@@ -1319,6 +1301,7 @@ void HelmholtzPFFT::evaluate_grad_hessian(
     cdouble* grad_result,
     cdouble* hessian_result)
 {
+    if(max_derivative<2)throw std::logic_error("pFFT plan has no Hessian kernels");
     std::vector<double> h_re(Ns), h_im(Ns);
     for (int i = 0; i < Ns; i++) {
         h_re[i] = charges[i].real();
@@ -1392,6 +1375,7 @@ void HelmholtzPFFT::evaluate_grad_hessian_from_prepared(
     cdouble* grad_result,
     cdouble* hessian_result)
 {
+    if(max_derivative<2)throw std::logic_error("pFFT plan has no Hessian kernels");
     if (!initialized || !prepared_source.initialized ||
         Ns != prepared_source.Ns || Nt != prepared_source.Nt ||
         grid_total != prepared_source.grid_total ||
@@ -1471,6 +1455,7 @@ void HelmholtzPFFT::evaluate_vector_actions(
     cdouble* curl_result,
     cdouble* hessian_action)
 {
+    if(max_derivative<2)throw std::logic_error("pFFT plan has no Hessian kernels");
     if (!initialized)
         throw std::runtime_error("pFFT is not initialized");
     if (!d_vector_spectra) {
@@ -1535,6 +1520,7 @@ void HelmholtzPFFT::evaluate_vector_actions_from_prepared(
     cdouble* curl_result,
     cdouble* hessian_action)
 {
+    if(max_derivative<2)throw std::logic_error("pFFT plan has no Hessian kernels");
     if (!initialized || !prepared_source.initialized ||
         !prepared_source.d_vector_spectra ||
         Ns != prepared_source.Ns || Nt != prepared_source.Nt ||

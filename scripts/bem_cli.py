@@ -47,7 +47,8 @@ def register(subparsers):
     p.add_argument('--L', type=int, help='эксперт: переопределить угловой порядок T')
     p.add_argument('--tol', type=float, help='эксперт: невязка линейной системы')
     p.add_argument('--backend', choices=('auto','dense','fmm-sector'), default='auto', help='только Дирак')
-    p.add_argument('--global-patches', type=int, help='Дирак/FMM: глобальные P1-участки, 2..512 (не L)')
+    p.add_argument('--dirac-preconditioner',choices=('auto','panel','hierarchical','full-p1'),default='auto',help='Dirac/FMM: full-p1 включает пакетную сокращённую P1-поправку; auto выбирает panel при нехватке RAM')
+    p.add_argument('--global-patches', type=int, help='Дирак/FMM: глобальные P1-участки, 2..4096; ограничены доступной RAM (не L)')
     p.add_argument('--batch-size', type=int, help='Дирак: одновременно решаемые столбцы, 1..16')
     p.add_argument('--ram-gib', type=float, help='бюджет суммы RSS дерева расчёта; автоматически оставляется резерв ОС')
     p.add_argument('--threads', type=int, default=min(16, os.cpu_count() or 1))
@@ -141,8 +142,8 @@ def resolve(a):
     if not 2 <= a.ntheta <= 100001:raise ValueError('--ntheta: 2..100001')
     if a.orientation is not None and (a.task != 'fixed' or not all(math.isfinite(x) for x in a.orientation)):
         raise ValueError('--orientation: три конечных угла только для --task fixed; полная T задаётся в системе частицы')
-    if a.method != 'dirac' and (a.backend != 'auto' or a.global_patches is not None or a.batch_size is not None):
-        raise ValueError('--backend/--global-patches/--batch-size относятся к Дираку')
+    if a.method != 'dirac' and (a.backend != 'auto' or a.global_patches is not None or a.batch_size is not None or a.dirac_preconditioner!='auto'):
+        raise ValueError('--backend/--global-patches/--batch-size/--dirac-preconditioner относятся к Дираку')
     shape, enclosing, edge, base_panels, detected = geometry(a)
     if a.method == 'dirac' and shape not in ('sphere','prism'):
         raise ValueError('Дирак пока поддерживает только --shape sphere|prism; для этой формы выберите muller')
@@ -170,7 +171,7 @@ def resolve(a):
     if a.task == 'fixed':
         if a.L is not None:raise ValueError('--L относится к T, а не к fixed')
         order = 1
-    if not 1 <= order <= (128 if a.method == 'dirac' else 256):raise ValueError('L вне диапазона выбранного метода')
+    if not 1 <= order <= 256:raise ValueError('L вне диапазона выбранного метода')
     tol = a.tol if a.tol is not None else min(1e-8 if a.method == 'dirac' or ka<=1 else 1e-5,accuracy/1000)
     if not math.isfinite(tol) or not 1e-12 <= tol < 1:raise ValueError('--tol: от 1e-12 до 1 (не включая 1)')
     available = psutil.virtual_memory().available/GIB
@@ -181,13 +182,26 @@ def resolve(a):
     group = 12 if symmetry == 'd6h' else 6 if symmetry in ('c6','c6v') else 1
     dense_gib = 128*(panels*nb)**2/(12 if symmetry == 'd6h' else 1)/GIB
     backend = a.backend
+    if a.method=='dirac' and backend=='auto' and a.dirac_preconditioner=='full-p1':backend='fmm-sector'
     if a.method == 'dirac' and backend == 'auto':
         backend = 'dense' if dense_gib < .35*ram else 'fmm-sector'
     if a.method == 'dirac' and backend == 'fmm-sector' and (shape != 'prism' or symmetry not in ('c6v','d6h')):
         raise ValueError('Для большой задачи Дирака нужен fmm-sector с c6v/d6h призмой; уменьшите размер или выберите Мюллера')
-    patches = a.global_patches or (512 if ka > 25 else 256)
-    if not 2 <= patches <= 512:raise ValueError('--global-patches: 2..512')
-    batch = a.batch_size or (2 if ka > 25 else 8)
+    if a.dirac_preconditioner!='auto' and backend!='fmm-sector':
+        raise ValueError('--dirac-preconditioner требует --backend fmm-sector')
+    if a.dirac_preconditioner in ('hierarchical','full-p1') and a.task=='fixed':
+        raise ValueError('Иерархическая поправка доступна только для секторного T-решателя')
+    if a.dirac_preconditioner=='panel' and a.global_patches is not None:
+        raise ValueError('--global-patches не применяется с панельным LU')
+    patches = a.global_patches or (4096 if a.dirac_preconditioner=='full-p1' else 512 if ka > 25 else 256)
+    if not 2 <= patches <= 4096:raise ValueError('--global-patches: 2..4096')
+    preconditioner=a.dirac_preconditioner
+    if preconditioner=='auto':
+        # The stored global correction alone scales as fine_dofs * patches.
+        fine=panels*nb*8//group
+        global_bytes=16*fine*(24*patches)
+        preconditioner='panel' if a.method=='dirac' and backend=='fmm-sector' and global_bytes>.5*ram*GIB and a.global_patches is None else 'hierarchical'
+    batch = a.batch_size or (1 if a.method=='dirac' and panels>100000 else 4 if preconditioner=='full-p1' else 2 if ka > 25 else 8)
     if not 1 <= batch <= 16:raise ValueError('--batch-size: 1..16')
     modes = 2*order*(order+2)
     output = (a.out or ROOT/'runs'/f'{a.method}_{a.task}_ka{ka:g}_{time.strftime("%Y%m%d_%H%M%S")}').expanduser().resolve()
@@ -200,7 +214,8 @@ def resolve(a):
         wavelength_um=a.wavelength,radius_um=ka*a.wavelength/(2*math.pi),aspect=a.aspect,
         orientation_degrees=a.orientation or [0.,0.,0.],symmetry_requested=a.symmetry,symmetry_selected=symmetry,
         geometry_symmetries=detected,ref=ref,L=order,degree=degree,tolerance=tol,
-        backend=backend if a.method=='dirac' else 'fmm',global_patches=patches,batch_size=batch,
+        backend=backend if a.method=='dirac' else 'fmm',global_patches=patches,batch_size=batch,dirac_preconditioner=preconditioner,
+        preconditioner_note=('Panel LU uses less memory; iteration count at this size is not yet measured.' if a.method=='dirac' and preconditioner=='panel' else ''),
         threads=a.threads,ntheta=a.ntheta,ram_budget_gib=ram,available_ram_gib=available,
         disk_free_gib=disk,disk_planning_gib=disk_required,out=str(output),
         estimated_base_mesh_panels=panels,dense_Dirac_operator_estimate_gib=dense_gib if a.method=='dirac' else None,
@@ -221,7 +236,7 @@ def command(plan, resume=False):
              '--ref',str(p['ref']),'--degree',str(p['degree']),'--order','24','--target-order','13','--near-subdiv','1',
              '--tol',str(p['tolerance']),'--backend',p['backend'],'--ram-budget-gib',str(p['ram_budget_gib']),
              '--kernel-budget-gib',str(max(.01,.40*p['ram_budget_gib']) if p['backend']=='dense'
-                                        else min(8.,max(.01,.15*p['ram_budget_gib']))),'--out',str(out)]
+                                        else min(2. if p.get('estimated_base_mesh_panels',0)>100000 else 8.,max(.01,.15*p['ram_budget_gib']))),'--out',str(out)]
         if p['task']=='fixed':
             cmd+=['--orientation',*map(str,p['orientation_degrees']),'--ntheta',str(p['ntheta']),
                   '--symmetry',p['symmetry_selected']]
@@ -229,19 +244,24 @@ def command(plan, resume=False):
             sym={'d6h':'c6hv'}.get(p['symmetry_selected'],p['symmetry_selected'])
             cmd+=['--L',str(p['L']),'--block-panels','1','--batch-size',str(p['batch_size']),
                   '--symmetry',sym,'--so3','mstm','--so3-threads',str(min(4,p['threads'])),
-                  '--matrix-budget-gib',str(max(.05,.25*p['ram_budget_gib'])),
+                  '--matrix-budget-gib',str(max(.05,2*16*(2*p['L']*(p['L']+2))**2/GIB*1.01)),
                   '--coarse-budget-gib',str(max(.02,.7*p['ram_budget_gib'])),'--ntheta',str(p['ntheta'])]
             if p['task']=='tmatrix':cmd+=['--no-average']
             if resume:cmd+=['--resume']
             if p['backend']=='dense':
                 cmd+=['--dense-kernel','simd']
                 if sym=='c6hv':cmd+=['--dense-cache','orbits12']
-                if sym!='none':cmd+=['--sector-coarse-basis','3']
+                if sym!='none':cmd+=['--sector-coarse-basis','3','--coarse-lu-threads',str(min(16,p['threads']))]
+            elif p.get('dirac_preconditioner')=='panel':
+                cmd+=['--sector-coarse-basis','0','--fmm-eps',str(min(1e-8,p['tolerance'])),'--fmm-strict-eps',str(min(1e-12,p['tolerance']/100))]
             else:
                 cmd+=['--sector-coarse-basis','3','--coarse-factorization','hierarchical','--coarse-global-scope','full',
                       '--coarse-aggregate-groups',str(p['global_patches']),'--coarse-aggregate-basis','3',
                       '--fmm-eps',str(min(1e-8,p['tolerance'])),'--fmm-strict-eps',str(min(1e-12,p['tolerance']/100)),
-                      '--fmm-packet','1']
+                      '--fmm-packet','2' if p.get('dirac_preconditioner')=='full-p1' else '1']
+                if p.get('dirac_preconditioner')=='full-p1':
+                    cmd+=['--coarse-global-storage','fp32','--coarse-batch-correction','--coarse-eliminate-full-p1',
+                          '--coarse-lu-threads',str(min(16,p['threads'])),'--fmm-components','8','--fmm-reference-components','4']
         env['BEM_DIRAC_LIBRARY']=str(ROOT/'build/libdirac.so')
         return cmd,env
     if p['method']=='muller':
@@ -289,8 +309,18 @@ def ensure_build(p,no_build):
         inputs=[ROOT/'src/dirac_transmission.cpp',ROOT/'src/dirac_transmission.h',ROOT/'src/mesh.cpp',DIRAC/'binding.cpp']
         if not output.exists() or any(x.stat().st_mtime>output.stat().st_mtime for x in inputs):
             builds.append([sys.executable,str(DIRAC/'build.py'),'--fast-complex','--output',str(output)])
-        if p['backend']=='fmm-sector' and not (ROOT/'benchmarks/clifford_fmm_20261115/FMM3D/lib/libfmm3d.so').exists():
-            builds.insert(0,[sys.executable,str(ROOT/'benchmarks/clifford_fmm_20261115/build.py'),'--jobs',str(min(8,p['threads']))])
+        if p['backend']=='fmm-sector':
+            fmm=ROOT/'benchmarks/clifford_fmm_20261115'
+            library=fmm/'FMM3D/lib/libfmm3d.so'
+            manifest=fmm/'native_build_manifest.json'
+            native_build=json.loads(manifest.read_text()) if manifest.exists() else {}
+            revision=native_build.get('scheduling',{}).get('revision')
+            direct=native_build.get('direct_kernel',{})
+            direct_header=hashlib.sha256((fmm/'bem_direct.hpp').read_bytes()).hexdigest()
+            if (not library.exists() or revision!='direct-near-dynamic-1-v1' or
+                direct.get('revision')!='blocked-radial-gradient-fp64-poly-v2' or
+                direct.get('header_sha256')!=direct_header):
+                builds.insert(0,[sys.executable,str(fmm/'build.py'),'--fmm-only','--jobs',str(min(8,p['threads']))])
     else:
         target='bin/muller_tmatrix_fmm_server' if p['method']=='muller' else 'bin/bem_cuda_fmm'
         if not (ROOT/target).exists():builds.append(['make',target,'CXX=g++-12','CUDA_HOME=/usr','-j2'])

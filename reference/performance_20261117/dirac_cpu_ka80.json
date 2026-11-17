@@ -1,0 +1,127 @@
+{
+  "work": {
+    "ka": 80,
+    "ref": 7,
+    "degree": 3,
+    "panels": 758784,
+    "full_dofs": 60702720,
+    "sector_dofs": 5058560,
+    "sources": 9864192,
+    "workspace_bytes": 5341839360,
+    "setup_s": 43.80598337200354,
+    "records": [
+      {
+        "library": "benchmarks/dirac_fmm_leaf_20261116/libfmm3d_before.so",
+        "label": "before",
+        "seconds": 66.17101185099455,
+        "relative_error": 0.0,
+        "fmm_s": 62.55987416700373,
+        "near_s": 1.9236764120068983,
+        "projection_s": 0.01715704399975948,
+        "vector_norm": 3217.936722852449,
+        "peak_rss_gib": 37.02676010131836,
+        "rss_gib": 13.602588653564453
+      },
+      {
+        "library": "benchmarks/dirac_fmm_leaf_20261116/FMM3D_candidate/lib/libfmm3d.so",
+        "label": "polynomial",
+        "seconds": 62.04887819700525,
+        "relative_error": 2.719521554507254e-16,
+        "fmm_s": 58.4027665869944,
+        "near_s": 1.9499671290031984,
+        "projection_s": 0.014946245995815843,
+        "vector_norm": 3217.936722852449,
+        "peak_rss_gib": 37.11912155151367,
+        "rss_gib": 13.60763931274414
+      }
+    ]
+  },
+  "strict": {
+    "ref": 7,
+    "ka": 80.0,
+    "nd": 4,
+    "eps": 1e-12,
+    "full": true,
+    "sources": 9864192,
+    "targets": 9864192,
+    "records": [
+      {
+        "library": "benchmarks/dirac_fmm_leaf_20261116/libfmm3d_before.so",
+        "requested_leaf": 0,
+        "seconds": 119.11232515499432,
+        "profile": {
+          "leaf_size": 7285,
+          "wall_s": 119.11229615999764,
+          "stage_seconds": [
+            5.671517249000317,
+            2.411521908004943,
+            8.063478272000793,
+            3.8040037710015895,
+            12.287340797003708,
+            84.83224847800011
+          ],
+          "stages": [
+            "form_multipoles",
+            "upward",
+            "translations",
+            "downward",
+            "evaluate_expansions",
+            "direct_near"
+          ]
+        },
+        "ier": 0,
+        "maxrss_gib": 19.60204315185547,
+        "pot_error": 0.0,
+        "grad_error": 0.0,
+        "direct_audit_s": 3.7195144290017197,
+        "direct_pot_error": 3.0431123738810283e-14,
+        "direct_grad_error": 1.3579215958921398e-13
+      },
+      {
+        "library": "benchmarks/dirac_fmm_leaf_20261116/FMM3D_candidate/lib/libfmm3d.so",
+        "requested_leaf": 0,
+        "seconds": 105.78355481199833,
+        "profile": {
+          "leaf_size": 7285,
+          "wall_s": 105.78353124699788,
+          "stage_seconds": [
+            5.700944778000121,
+            2.468758914001228,
+            8.14324793900596,
+            3.8019780949980486,
+            12.402011860001949,
+            71.13199781299772
+          ],
+          "stages": [
+            "form_multipoles",
+            "upward",
+            "translations",
+            "downward",
+            "evaluate_expansions",
+            "direct_near"
+          ]
+        },
+        "ier": 0,
+        "maxrss_gib": 22.028701782226562,
+        "pot_error": 5.282780521595549e-16,
+        "grad_error": 2.672918486793159e-16,
+        "direct_audit_s": 3.7206881329984753,
+        "direct_pot_error": 3.044814802613868e-14,
+        "direct_grad_error": 1.358179216753527e-13
+      }
+    ],
+    "elapsed_s": 245.2436739679979
+  },
+  "validation": {
+    "state": "complete",
+    "T_relative_error": 5.11000596509931e-16,
+    "all16_over_M11": 1.4156164054774719e-14
+  },
+  "work_speedup": 1.0664336531742205,
+  "strict_packet_speedup": 1.126000401165231,
+  "libraries_sha256": {
+    "benchmarks/dirac_fmm_leaf_20261116/libfmm3d_before.so": "0baf7358dfd694fed0b0d3d787c183c19fb1f13029d6dfcad7d163a2310d198e",
+    "benchmarks/dirac_fmm_leaf_20261116/FMM3D_candidate/lib/libfmm3d.so": "e2e1f3cfa89f09e0d6febe3de354c9d119a4a669bc3e0aba8de11ad988796a3f",
+    "benchmarks/clifford_fmm_20261115/FMM3D/lib/libfmm3d.so": "e2e1f3cfa89f09e0d6febe3de354c9d119a4a669bc3e0aba8de11ad988796a3f"
+  }
+}

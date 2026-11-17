@@ -436,6 +436,7 @@ struct HelmholtzFMM {
     void evaluate_batch4_uploaded();
     void evaluate_batch3_far_uploaded(bool multipoles_ready = false);
     void evaluate_multilevel_far_uploaded(HelmholtzFMM* middle, HelmholtzFMM& coarse);
+    void evaluate_multilevel_far_uploaded(const std::vector<HelmholtzFMM*>& upper);
     // Algebraic transpose of the vector-action traversal, including the
     // derivative L2P, all band transfers and the original near interaction list.
     // Seeds: Nt*3; results: three Ns arrays. No complex conjugation here.
@@ -447,6 +448,9 @@ struct HelmholtzFMM {
     void evaluate_batch4_far_uploaded(bool evaluate_potential = true);
     void evaluate_gradient_batch4_l2p_uploaded();
     void evaluate_pot_grad_batch4_uploaded();
+    // First three scalar lanes; the fourth is zeroed. Keeps existing vector actions unchanged.
+    void evaluate_multilevel_pot_grad_batch3_uploaded(HelmholtzFMM* middle, HelmholtzFMM& coarse);
+    void evaluate_multilevel_pot_grad_batch3_uploaded(const std::vector<HelmholtzFMM*>& upper);
 
     // Run FMM tree traversal (P2M→M2M→M2L→L2L→L2P/P2P)
     // derivative_order: 0 potential, 1 gradient, 2 Hessian,

@@ -62,6 +62,20 @@ def test_dirac_backend_cap_and_T_only():
     assert e['OPENBLAS_NUM_THREADS']=='1'
 
 
+def test_full_P1_profile_enables_complete_compressed_CPU_path():
+    p=resolve(args('--method','dirac','--ka','40','--task','average',
+                   '--dirac-preconditioner','full-p1','--ram-gib','48'))
+    assert p['backend']=='fmm-sector' and p['global_patches']==4096
+    c,e=command(p)
+    assert '--coarse-eliminate-full-p1' in c and '--coarse-batch-correction' in c
+    assert c[c.index('--coarse-global-storage')+1]=='fp32'
+    assert c[c.index('--coarse-lu-threads')+1]=='16'
+    assert c[c.index('--fmm-packet')+1]=='2'
+    assert e['OPENBLAS_NUM_THREADS']=='1'
+    with pytest.raises(ValueError):
+        resolve(args('--method','dirac','--task','fixed','--dirac-preconditioner','full-p1'))
+
+
 def test_disk_rejected_before_launch():
     with patch('bem_cli.shutil.disk_usage') as d:
         d.return_value.free=1
@@ -119,3 +133,32 @@ def test_CPU_supervisor_without_nvidia_and_resource_stop(tmp_path):
                     rss_limit_gib=.000001,available_gib=0,disk_reserve_gib=0)
         assert stopped['state']=='failed'
         assert stopped['reason']=='resource reserve reached (RAM/RSS/disk)'
+
+
+def test_large_dirac_plan_uses_bounded_preconditioner_and_mapped_T():
+    with patch('psutil.virtual_memory') as mem:
+        mem.return_value.available=54*2**30
+        p=resolve(args('--method','dirac','--task','average','--ka','80','--ref','7',
+                       '--aspect','1.6495721976846451','--ram-gib','48'))
+    assert p['L']==137 and p['batch_size']==1
+    assert p['dirac_preconditioner']=='panel'
+    c,_=command(p)
+    assert c[c.index('--sector-coarse-basis')+1]=='0'
+    assert float(c[c.index('--matrix-budget-gib')+1])>43
+    assert 'iteration count' in p['preconditioner_note']
+
+
+def test_bounded_npz_archive_roundtrip_and_page_release(tmp_path):
+    sys.path.insert(0,str(R/'benchmarks/clifford_dielectric_20261115'))
+    import matrix_storage as ms
+    a=np.lib.format.open_memmap(tmp_path/'large.npy',mode='w+',dtype=complex,shape=(1024,5000),fortran_order=True)
+    a[:]=np.arange(1024)[:,None]+1j*np.arange(5000)[None,:]
+    calls=[];original=ms.release_pages
+    def release(value):
+        calls.append(value.shape);original(value)
+    with patch.object(ms,'release_pages',side_effect=release):
+        with (tmp_path/'solution.npz').open('wb') as stream:ms.savez_bounded(stream,T=a,modes=[(0,1,0)])
+    assert calls.count(a.shape)>=2
+    with np.load(tmp_path/'solution.npz') as saved:
+        np.testing.assert_array_equal(saved['T'],a)
+        np.testing.assert_array_equal(saved['modes'],[(0,1,0)])

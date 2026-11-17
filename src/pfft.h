@@ -31,6 +31,7 @@ struct HelmholtzPFFT {
     int M2x, M2y, M2z;  // doubled grid dimensions (Toeplitz embedding)
     double h;            // isotropic grid spacing
     double origin[3];    // grid origin (min corner - padding)
+    int max_derivative = 2; // 1: potential/gradient, 2: also Hessian
     int interp_p;        // interpolation order (default 3, so p+1=4 nodes/dim)
     int stencil;         // (interp_p+1)^3 stencil size
 
@@ -152,7 +153,8 @@ struct HelmholtzPFFT {
               const double* sources, int n_src,
               cdouble k_val, int digits = 3, int max_leaf = 64,
               double grid_spacing = 0.0,
-              double correction_radius_cells = -1.0);
+              double correction_radius_cells = -1.0,
+              int maximum_derivative = 2);
 
     static double grid_spacing_for_diameter(
         double diameter, cdouble wave_number,

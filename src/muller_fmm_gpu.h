@@ -107,6 +107,10 @@ public:
     void cleanup();
 
 private:
+    // CPU/NUFFT radiation never needs these large quadrature buffers.
+    // Allocate one or two polarizations only when GPU radiation is requested.
+    void ensure_farfield_currents(int polarizations);
+
     int system_slots = 2;
     void* d_input = nullptr;
     void* d_output = nullptr;

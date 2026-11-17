@@ -1,0 +1,11 @@
+{
+  "status": "complete",
+  "ka": 80,
+  "ref": 7,
+  "depth": 6,
+  "legacy_mean_s": 87.669202873,
+  "current_mean_s": 51.8708089715,
+  "max_relative_change": 3.280038479454789e-13,
+  "scope": "Two complete strict native actions on random/smooth vectors, same physical ka80/ref7 operator. This is not a complete T solve or full matrix accuracy certificate.",
+  "speedup": 1.690145278458432
+}

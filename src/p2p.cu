@@ -1091,6 +1091,8 @@ __device__ inline void p2p_pair_sine_cosine(
     sincos(value, sine, cosine);
 }
 
+#include "p2p_scalar3.cuh"
+
 template <typename ComputeReal>
 __global__ void p2p_grad_hessian_batch3_leaf_kernel(
     const double* __restrict__ tgt_xyz,

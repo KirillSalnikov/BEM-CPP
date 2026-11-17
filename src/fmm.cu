@@ -7243,6 +7243,107 @@ void HelmholtzFMM::evaluate_pot_grad_batch4_uploaded()
         d_gy4_re_cached, d_gy4_im_cached, d_gz4_re_cached, d_gz4_im_cached, d_grad4_re, d_grad4_im, Nt);
     CUDA_CHECK(cudaGetLastError());
 }
+// Three scalar fields through the same multilevel hierarchy used by vector
+// actions. A zero fourth lane reuses the tested batch4 L2P/P2P kernels.
+void HelmholtzFMM::evaluate_multilevel_pot_grad_batch3_uploaded(
+    HelmholtzFMM* middle, HelmholtzFMM& coarse)
+{
+    std::vector<HelmholtzFMM*> upper;
+    if(middle)upper.push_back(middle);
+    upper.push_back(&coarse);
+    evaluate_multilevel_pot_grad_batch3_uploaded(upper);
+}
+
+void HelmholtzFMM::evaluate_multilevel_pot_grad_batch3_uploaded(
+    const std::vector<HelmholtzFMM*>& upper)
+{
+    if (!batch4_allocated || !batch3_device_allocated)
+        throw std::runtime_error("multilevel scalar gradients require batch3 and batch4 workspaces");
+    FmmCudaTimeline profile(bem_env_flag_enabled("BEM_FMM_PROFILE_SCALAR3"),k.real(),k.imag(),false);
+    if(upper.empty())evaluate_batch3_far_uploaded();
+    else evaluate_multilevel_far_uploaded(upper);
+    FmmCudaTimeline::mark("far",tree.max_level);
+    CUDA_CHECK(cudaMemset(d_local4_re, 0, size_t(n_nodes)*L*sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_local4_im, 0, size_t(n_nodes)*L*sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_charges4_re, 0, size_t(Ns)*sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_charges4_im, 0, size_t(Ns)*sizeof(double)));
+    const int n_leaves = int(leaf_info.size());
+    {
+        const cdouble ik_val = cdouble(0, 1) * k;
+        const cdouble prefactor =
+            ik_val / (16.0 * M_PI * M_PI);
+        CUDA_CHECK(cudaMemset(
+            d_result_re, 0, Nt * sizeof(double)));
+        CUDA_CHECK(cudaMemset(
+            d_result_im, 0, Nt * sizeof(double)));
+        CUDA_CHECK(cudaMemset(
+            d_result2_re, 0, Nt * sizeof(double)));
+        CUDA_CHECK(cudaMemset(
+            d_result2_im, 0, Nt * sizeof(double)));
+        CUDA_CHECK(cudaMemset(
+            d_result3_re, 0, Nt * sizeof(double)));
+        CUDA_CHECK(cudaMemset(
+            d_result3_im, 0, Nt * sizeof(double)));
+        CUDA_CHECK(cudaMemset(
+            d_result4_re, 0, Nt * sizeof(double)));
+        CUDA_CHECK(cudaMemset(
+            d_result4_im, 0, Nt * sizeof(double)));
+        if (n_leaves > 0) {
+            l2p_kernel_batch4<<<n_leaves, 256>>>(
+                d_tgt_pts, d_dirs_cached, d_weights_cached,
+                d_local_re, d_local_im, d_local2_re, d_local2_im,
+                d_local3_re, d_local3_im, d_local4_re, d_local4_im,
+                k.real(), k.imag(),
+                prefactor.real(), prefactor.imag(),
+                d_result_re, d_result_im,
+                d_result2_re, d_result2_im,
+                d_result3_re, d_result3_im,
+                d_result4_re, d_result4_im,
+                d_leaf_idx_cached,
+                d_tgt_id_offsets_cached, d_tgt_ids_cached,
+                d_node_centers_cached, L, n_leaves);
+            CUDA_CHECK(cudaGetLastError());
+        }
+    }
+    evaluate_gradient_batch4_l2p_uploaded();
+    FmmCudaTimeline::mark("L2P_pot_grad",tree.max_level);
+
+
+    const int near_mode=bem_env_int("BEM_FMM_SCALAR3_NEAR",0);
+    if(p2p_enabled && near_mode) launch_p2p_scalar3_pot_grad(*this,near_mode);
+    else if(p2p_enabled) launch_p2p_pot_grad_batch4_leaf(
+        d_tgt_pts, d_src_pts,
+        d_charges_re, d_charges_im, d_charges2_re, d_charges2_im,
+        d_charges3_re, d_charges3_im, d_charges4_re, d_charges4_im,
+        d_tgt_id_offsets_cached, d_tgt_ids_cached,
+        d_src_id_offsets_cached, d_src_ids_cached,
+        d_leaf_near_offsets_cached, d_leaf_near_ids_cached,
+        n_leaves, k.real(), k.imag(),
+        d_result_re, d_result_im,
+        d_gx_re_tmp_cached, d_gx_im_tmp_cached, d_gy_re_cached, d_gy_im_cached, d_gz_re_cached, d_gz_im_cached,
+        d_result2_re, d_result2_im,
+        d_gx2_re_tmp_cached, d_gx2_im_tmp_cached, d_gy2_re_cached, d_gy2_im_cached, d_gz2_re_cached, d_gz2_im_cached,
+        d_result3_re, d_result3_im,
+        d_gx3_re_tmp_cached, d_gx3_im_tmp_cached, d_gy3_re_cached, d_gy3_im_cached, d_gz3_re_cached, d_gz3_im_cached,
+        d_result4_re, d_result4_im,
+        d_gx4_re_tmp_cached, d_gx4_im_tmp_cached, d_gy4_re_cached, d_gy4_im_cached, d_gz4_re_cached, d_gz4_im_cached);
+    CUDA_CHECK(cudaGetLastError());
+
+    FmmCudaTimeline::mark("P2P",tree.max_level);
+    int block = 256;
+    int grid = (Nt + block - 1) / block;
+    repack_gradient_kernel<<<grid, block>>>(d_gx_re_tmp_cached, d_gx_im_tmp_cached,
+        d_gy_re_cached, d_gy_im_cached, d_gz_re_cached, d_gz_im_cached, d_grad_re, d_grad_im, Nt);
+    repack_gradient_kernel<<<grid, block>>>(d_gx2_re_tmp_cached, d_gx2_im_tmp_cached,
+        d_gy2_re_cached, d_gy2_im_cached, d_gz2_re_cached, d_gz2_im_cached, d_grad2_re, d_grad2_im, Nt);
+    repack_gradient_kernel<<<grid, block>>>(d_gx3_re_tmp_cached, d_gx3_im_tmp_cached,
+        d_gy3_re_cached, d_gy3_im_cached, d_gz3_re_cached, d_gz3_im_cached, d_grad3_re, d_grad3_im, Nt);
+    repack_gradient_kernel<<<grid, block>>>(d_gx4_re_tmp_cached, d_gx4_im_tmp_cached,
+        d_gy4_re_cached, d_gy4_im_cached, d_gz4_re_cached, d_gz4_im_cached, d_grad4_re, d_grad4_im, Nt);
+    CUDA_CHECK(cudaGetLastError());
+    FmmCudaTimeline::mark("repack",tree.max_level);
+}
+
 
 void HelmholtzFMM::cleanup()
 {

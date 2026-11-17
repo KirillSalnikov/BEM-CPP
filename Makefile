@@ -295,6 +295,7 @@ $(BINDIR)/muller_mbj_cache_probe: tools/muller_mbj_cache_probe.cpp $(MULLER_FP32
 	$(NVCC) $(NVFLAGS) $(FP32_PRECISION_FLAGS) -I$(SRCDIR) -o $@ $^ $(LDFLAGS) -lcublas
 
 $(FP32_BUILD_DIR)/fmm.o $(SRCDIR)/fmm.o $(SRCDIR)/fmm.fmm.o: $(SRCDIR)/fmm_multilevel.cuh $(SRCDIR)/fmm_profile.cuh $(SRCDIR)/fmm_transpose.cuh
+$(FP32_BUILD_DIR)/p2p.o $(SRCDIR)/p2p.o $(SRCDIR)/p2p.fmm.o: $(SRCDIR)/p2p_scalar3.cuh
 $(FP32_BUILD_DIR)/muller_fmm.o $(SRCDIR)/muller_fmm.o: $(SRCDIR)/muller_fmm_transpose.inc
 
 $(BINDIR)/fmm_vector_action_probe: HOST_OPT=-O3 -march=native

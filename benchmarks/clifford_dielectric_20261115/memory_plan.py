@@ -30,12 +30,12 @@ def sector_fmm_memory_plan(a):
             pair_upper=(int(counts.sum())+group-1)//group
     finally:lib.dirac_destroy(p)
     panels=full//(8*nb);group=12 if a.symmetry=='c6hv' else 6;fine=full//group
-    factors=panels*(16*(8*nb)**2+4*(8*nb));nc=panels//group*8*a.sector_coarse_basis
+    factors=panels//group*(16*(8*nb)**2+4*(8*nb));nc=panels//group*8*a.sector_coarse_basis
     states=1 if a.coarse_cache_policy=='sector' else group
     coarse=states*(16*nc*nc+4*nc) if nc else 0
-    transforms=group*panels*(8*(nb*nb+64)+8)
+    transforms=group*(panels*5+6*nb*nb*8) # int32 images + uint8 permutation codes
     coarse_work=max(3*16*nc*a.sector_coarse_basis*8*8,16*(14*full+20*fine))+transforms if nc else 0
-    sparse_info={}
+    sparse_info={};fine_w=0
     if pair_upper is not None:
         nnz=pair_upper*(8*a.sector_coarse_basis)**2
         one=int((20*nnz+8*nc)*a.coarse_ilu_fill)+16*nc+8
@@ -44,30 +44,71 @@ def sector_fmm_memory_plan(a):
         if a.coarse_factorization=='hierarchical':
             ng=8*a.coarse_aggregate_basis*min(a.coarse_aggregate_groups,panels//group)
             rows=fine if a.coarse_global_scope=='full' else nc
-            global_bytes=16*(rows*ng+ng**2)+4*ng
-            coarse_work+=16*(2*ng**2+rows*640)+16384*panels
-        coarse=states*(one+global_bytes)
+            assembly_rows=rows
+            if getattr(a,'coarse_eliminate_full_p1',False):
+                if ng!=nc:raise ValueError('full P1 elimination requires one P1 patch per representative panel')
+                rows=fine-nc
+            w_itemsize=8 if getattr(a,'coarse_global_storage','fp64')=='fp32' else 16
+            global_bytes=w_itemsize*rows*ng+16*ng**2+4*ng
+            if a.coarse_global_scope=='full':fine_w=states*w_itemsize*rows*ng
+            row_reserve=704 if w_itemsize==8 else 640
+            lu_work=(max(128<<20,getattr(a,'coarse_lu_threads',1)*(32<<20))
+                     if w_itemsize==8 else 32*ng**2)
+            coarse_work+=lu_work+16*assembly_rows*row_reserve+16384*panels
+        coarse=states*((0 if getattr(a,'coarse_eliminate_full_p1',False) else one)+global_bytes)
         sparse_info=dict(factorization=a.coarse_factorization,near_pair_upper=pair_upper,
             factor_storage_reserve=one,bounded_global_correction_bytes=global_bytes,
+            global_storage=getattr(a,'coarse_global_storage','fp64'),
             dense_P1_Ac_bytes=16*ng**2 if a.coarse_factorization=='hierarchical' and ng==nc and a.sector_coarse_basis==3 else 0)
-    if coarse+coarse_work+factors//group>a.coarse_budget_gib*(1<<30):
+    if nc and coarse+coarse_work+factors>a.coarse_budget_gib*(1<<30):
         raise MemoryError('coarse LU and workspace exceed budget; no near cache allocated')
     if a.kernel_budget_gib<=0:raise ValueError('near cache budget must be positive')
     near_cap=int(a.kernel_budget_gib*(1<<30))
-    modes=2*a.L*(a.L+2);t_arrays=2*16*modes*modes
+    modes=2*a.L*(a.L+2);t_disk=2*16*modes*modes
+    t_arrays=min(t_disk,256<<20) # mmap pages released at each column
     # The native near builder enforces near_cap. FMM3D internal allocations
     # depend on ka, epsilon, packet and the adaptive tree; measure actual RSS.
-    work=16*(66*a.batch_size*fine+20*a.batch_size*full)+2*factors+2*transforms+(512<<20)
-    fmm_work=max(2<<30,16*13*panels*8*a.fmm_packet*16)
+    work=16*(66*a.batch_size*fine+20*a.batch_size*full)+2*transforms+(512<<20)
+    # Plan coordinates and native NUFFT workspaces persist during solves. This
+    # is a reserve, checked against measured RSS by the bounded runner.
+    radiation=(256*13*panels+2048*2*(2*a.L+4)**2+(64<<20)) if getattr(a,'radiation','direct')=='face' else 0
+    work+=radiation
+    budget=min(int(a.ram_budget_gib*(1<<30)),max(0,psutil.virtual_memory().available-(2<<30)))
+    components=getattr(a,'fmm_components',None)
+    reference_components=getattr(a,'fmm_reference_components',None)
+    gpu_working=getattr(a,'fmm_working_device','cpu')=='cuda'
+    # CPU audit buffers coexist with two persistent CUDA-plan host trees.
+    # This is a planning reserve; the bounded runner measures actual RSS.
+    gpu_host_cache=(2<<30)+768*13*panels if gpu_working else 0
+    def native_reserve(candidate):
+        reference=reference_components or (min(candidate,4) if panels>100000 else candidate)
+        channels=reference if gpu_working else max(candidate,reference)
+        return max(2<<30,16*13*panels*channels*a.fmm_packet*16)+gpu_host_cache
+    if components is None:
+        components=8
+        if panels>100000:
+            base=near_cap+factors+coarse+coarse_work+t_arrays+work
+            components=1
+            # Eight components share the radial kernel and FMM traversal. The
+            # single-RHS contraction streams its result without full gradient
+            # copies; retain the conservative native workspace reserve.
+            for candidate in (8,4,2,1):
+                reserve=native_reserve(candidate)
+                if base+reserve<=budget-(3<<30):
+                    components=candidate;break
+    if reference_components is None:
+        # Full-surface checks produce twelve times as many target values as
+        # a C6h working action. Keep their proven large-mesh packet width.
+        reference_components=min(components,4) if panels>100000 else components
+    fmm_work=native_reserve(components)
     iterative=near_cap+factors+coarse+coarse_work+t_arrays+work+fmm_work
     dm=(2*a.L+3)*3*a.L*2*a.L*2*16
     averaging=t_arrays+16*modes*modes+2*dm*(a.so3_threads+1)+(256<<20) if a.so3=='mstm' and not getattr(a,'no_average',False) else None
     estimate=max(iterative,averaging or 0)
-    budget=min(int(a.ram_budget_gib*(1<<30)),max(0,psutil.virtual_memory().available-(2<<30)))
     if estimate>budget:raise MemoryError(f'planned sector FMM peak {estimate/2**30:.2f} GiB exceeds RAM budget {budget/2**30:.2f} GiB; no near cache allocated')
     return dict(panels=panels,full_dofs=full,sector_dofs=fine,near_cache_cap_bytes=near_cap,dense_far_bytes=0,
-        stored_fine_W_bytes=0,coarse_resident_bytes=coarse,coarse_workspace_bytes=coarse_work,panel_factors_bytes=factors,sparse_coarse=sparse_info,
-        T_arrays_bytes=t_arrays,solver_workspace_reserve_bytes=work,FMM_workspace_reserve_bytes=fmm_work,
+        stored_fine_W_bytes=fine_w,coarse_resident_bytes=coarse,coarse_workspace_bytes=coarse_work,panel_factors_bytes=factors,sparse_coarse=sparse_info,
+        T_arrays_bytes=t_arrays,T_mapped_disk_bytes=t_disk,FMM_components=components,FMM_reference_components=reference_components,solver_workspace_reserve_bytes=work,FMM_workspace_reserve_bytes=fmm_work,GPU_host_cache_reserve_bytes=gpu_host_cache,radiation_workspace_reserve_bytes=radiation,
         solve_phase_estimate_bytes=iterative,SO3_phase_estimate_bytes=averaging,
         estimated_peak_bytes=estimate,effective_budget_bytes=budget,
         scope='Near cache cap and selected coarse factorization accounted before allocation. FMM/ILU workspace is a reserve, not a hard allocator limit; measure RSS. No spatial/L convergence certificate.')

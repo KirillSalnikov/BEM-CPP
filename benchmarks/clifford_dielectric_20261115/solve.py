@@ -150,7 +150,7 @@ class Dirac:
         if self._compact_geometry is not None and (kernel!='simd' or block_panels!=1):raise ValueError('orbit cache requires SIMD and one-panel LU')
         if self._correction_only and not getattr(self,'_matrix_free',False) and (kernel!='scalar' or block_panels):raise ValueError('dense acceleration cannot be applied to a near-only FMM cache')
         if (kernel!='scalar' or block_panels) and not hasattr(lib,'dirac_apply_simd'):raise RuntimeError('selected library lacks dense acceleration')
-        start=time.perf_counter();self._dense_inverse=None;self._dense_factors=None
+        start=time.perf_counter();self._dense_inverse=None;self._dense_factors=None;self._factor_panel_ids=None
         self.acceleration=dict(kernel=kernel,block_panels=block_panels,setup_s=0.,preconditioner_bytes=0,inverse_s=0.)
         if kernel=='mixed':
             if mixed_cache_bytes<0:raise ValueError('negative additional mixed-cache budget')
@@ -160,7 +160,12 @@ class Dirac:
             width=8*self.basis_count*block_panels;count=(self.count+block_panels-1)//block_panels
             if self._compact_geometry is None:
                 factors=np.empty((count,width,width),complex);check(lib.dirac_diagonal_blocks(self.p,block_panels,address(factors)))
-            else:factors=self._compact_geometry.self_blocks()
+            else:
+                g=self._compact_geometry;self._factor_panel_ids=g.representatives
+                count=len(g.representatives);factors=np.empty((count,width,width),complex)
+                ids=np.ascontiguousarray(g.representatives,np.int32)
+                if getattr(self,'_matrix_free',False):self.self_blocks_selected(ids,factors)
+                else:check(lib.dirac_self_blocks_selected(self.p,count,address(ids),address(factors)))
             pivots=np.empty((count,width),np.int32)
             for j in range(count):factors[j],pivots[j]=lu_factor(factors[j],check_finite=True)
             if not np.all(np.isfinite(factors)):raise RuntimeError('nonfinite block factors')
@@ -169,12 +174,37 @@ class Dirac:
             def inverse(x):
                 x=np.ascontiguousarray(x,dtype=complex).ravel()
                 if x.size!=self.size:raise ValueError('block inverse dimensions')
+                if self._factor_panel_ids is not None:
+                    # Rotate arbitrary full-space densities to representative
+                    # frames, solve there, and rotate back. No full LU copy.
+                    t0=time.perf_counter();g=self._compact_geometry
+                    view=x.reshape(self.count,self.basis_count,8);out=np.empty_like(view)
+                    for transform in g.transforms:
+                        for start in range(0,count,2048):
+                            stop=min(start+2048,count);ids=g.representatives[start:stop]
+                            basis=transform.basis[ids];comp=transform.components[ids]
+                            pulled=np.ascontiguousarray(np.einsum('pba,pbc,pcd->pad',basis,view[transform.image[ids]],comp,optimize=True))
+                            solved=np.empty_like(pulled)
+                            lib.dirac_block_lu(stop-start,width,address(factors[start]),address(pivots[start]),address(pulled),address(solved))
+                            out[transform.image[ids]]=np.einsum('pab,pbc,pdc->pad',basis,solved,comp,optimize=True)
+                    self.acceleration['inverse_s']+=time.perf_counter()-t0
+                    return out.ravel()
                 padded=x if len(x)==count*width else np.pad(x,(0,count*width-len(x)))
                 out=np.empty_like(padded);t=time.perf_counter()
                 lib.dirac_block_lu(count,width,address(factors),address(pivots),address(padded),address(out))
                 self.acceleration['inverse_s']+=time.perf_counter()-t;return out[:self.size]
             self._dense_inverse=inverse
         self._dense_kernel=kernel;self.acceleration['setup_s']=time.perf_counter()-start
+    def panel_factors(self,ids):
+        """Return representative factors without copying the entire LU cache."""
+        factors,pivots=self._dense_factors;ids=np.asarray(ids)
+        stored=getattr(self,'_factor_panel_ids',None)
+        if stored is not None:
+            if np.array_equal(ids,stored):return factors,pivots
+            positions=np.searchsorted(stored,ids)
+            if np.any(positions>=len(stored)) or not np.array_equal(stored[positions],ids):raise ValueError('panel factors outside stored representatives')
+            ids=positions
+        return np.ascontiguousarray(factors[ids]),np.ascontiguousarray(pivots[ids])
     def cauchy(self,x,medium=0):
         x=np.ascontiguousarray(x,dtype=complex).reshape(-1);y=np.empty_like(x)
         check(lib.dirac_cauchy(self.p,medium,address(x),address(y)));return y
@@ -185,6 +215,10 @@ class Dirac:
         return f.ravel()
     def solve_incident(self,incident,tol=1e-8,maxiter=10,initial=None):
         f=np.ascontiguousarray(incident,dtype=complex).reshape(-1);b=np.empty_like(f)
+        # Independent full-space plane checks must not allocate 60 full vectors
+        # on ref7. Keep the original total iteration allowance and tolerance.
+        restart=min(60,max(2,(8<<30)//(16*self.size)))
+        cycles=(maxiter*60+restart-1)//restart
         assert len(f)==self.size
         if not np.all(np.isfinite(f)) or not 0<tol<1:raise ValueError('invalid RHS or tolerance')
         lib.dirac_rhs(self.p,address(f),address(b));history=[]
@@ -199,16 +233,16 @@ class Dirac:
             residual=float(np.linalg.norm(defect)/bnorm);info=0
             for correction in range(6):
                 if residual<=tol:break
-                local=[];update,info=gmres(operator,defect,M=inverse,rtol=min(.1,.25*tol/residual),atol=0,restart=60,maxiter=maxiter,callback=local.append,callback_type='pr_norm')
+                local=[];update,info=gmres(operator,defect,M=inverse,rtol=min(.1,.25*tol/residual),atol=0,restart=restart,maxiter=cycles,callback=local.append,callback_type='pr_norm')
                 history.extend(local);h+=update;defect=b-self.apply_reference(h)
                 residual=float(np.linalg.norm(defect)/bnorm);strict_history.append(residual)
                 if residual<=tol:info=0;break
                 if info or not np.isfinite(residual):break
         else:
-            h,info=gmres(operator,b,M=inverse,x0=initial,rtol=tol,atol=0,restart=60,maxiter=maxiter,callback=history.append,callback_type='pr_norm')
+            h,info=gmres(operator,b,M=inverse,x0=initial,rtol=tol,atol=0,restart=restart,maxiter=cycles,callback=history.append,callback_type='pr_norm')
             residual=np.linalg.norm(self.apply_reference(h)-b)/bnorm;strict_history.append(float(residual))
         stats=dict(seconds=time.perf_counter()-start,action_s=self.action_s-before,calls=self.calls-calls,
-            iterations=len(history),info=int(info),residual=float(residual),history=[float(v) for v in history],
+            iterations=len(history),krylov_restart=restart,info=int(info),residual=float(residual),history=[float(v) for v in history],
             strict_history=strict_history,dense_kernel=self._dense_kernel,block_panels=self.acceleration['block_panels'],
             inverse_s=self.acceleration['inverse_s']-before_inverse)
         if info or not np.isfinite(residual) or residual>tol*1.01:raise RuntimeError('Dirac GMRES failed '+str(stats))

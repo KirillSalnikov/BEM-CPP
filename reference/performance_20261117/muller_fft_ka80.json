@@ -1,0 +1,35 @@
+{
+  "status": "complete",
+  "records": [
+    {
+      "input": "random",
+      "seconds": 6.399980139998661,
+      "relative_native_error": 1.4778542211366913e-05,
+      "warmup": true
+    },
+    {
+      "input": "smooth",
+      "seconds": 1.7480034870022791,
+      "relative_native_error": 0.00016114644986126643,
+      "warmup": false
+    },
+    {
+      "input": "random",
+      "seconds": 1.7154937279992737,
+      "relative_native_error": 1.4778541208858473e-05,
+      "warmup": false
+    },
+    {
+      "input": "smooth",
+      "seconds": 1.6992754009988857,
+      "relative_native_error": 0.00016114645742212517,
+      "warmup": false
+    }
+  ],
+  "load_s": 2.1586341340007493,
+  "stream_bytes_per_action": 22075087608,
+  "GPU_operator_bytes": 2544828480,
+  "GPU_peak_allocated_bytes": 5024556032,
+  "wait_included_wall_s": 210.56547229200078,
+  "scope": "Full ka80/ref7 FFT action vs saved current-native random/smooth vectors; no solver or full T speedup claim."
+}

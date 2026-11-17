@@ -964,23 +964,42 @@ void MullerGpuAssembly::init(
         cuda_check(
             cudaMalloc(reinterpret_cast<void**>(array), current_bytes),
             "allocate Muller operator work array");
-    for (int polarization = 0; polarization < 2; polarization++) {
-        for (int component = 0; component < 6; component++) {
-            cuda_check(
-                cudaMalloc(
-                    reinterpret_cast<void**>(
-                        &d_farfield_current_re[polarization][component]),
-                    static_cast<size_t>(mass_points) * sizeof(double)),
-                "allocate farfield current real");
-            cuda_check(
-                cudaMalloc(
-                    reinterpret_cast<void**>(
-                        &d_farfield_current_im[polarization][component]),
-                    static_cast<size_t>(mass_points) * sizeof(double)),
-                "allocate farfield current imaginary");
+    initialized = true;
+}
+
+void MullerGpuAssembly::ensure_farfield_currents(int polarizations)
+{
+    // Keep existing currents intact if a later polarization cannot be
+    // allocated. A failed first call must also be safe to retry or clean up.
+    double* real[2][6] = {};
+    double* imaginary[2][6] = {};
+    const size_t bytes = static_cast<size_t>(mass_points) * sizeof(double);
+    try {
+        for (int p = 0; p < polarizations; ++p) {
+            for (int c = 0; c < 6; ++c) {
+                if (!d_farfield_current_re[p][c])
+                    cuda_check(cudaMalloc(reinterpret_cast<void**>(&real[p][c]), bytes),
+                               "allocate farfield current real");
+                if (!d_farfield_current_im[p][c])
+                    cuda_check(cudaMalloc(reinterpret_cast<void**>(&imaginary[p][c]), bytes),
+                               "allocate farfield current imaginary");
+            }
+        }
+    } catch (...) {
+        for (int p = 0; p < 2; ++p) {
+            for (int c = 0; c < 6; ++c) {
+                cudaFree(real[p][c]);
+                cudaFree(imaginary[p][c]);
+            }
+        }
+        throw;
+    }
+    for (int p = 0; p < polarizations; ++p) {
+        for (int c = 0; c < 6; ++c) {
+            if (real[p][c]) d_farfield_current_re[p][c] = real[p][c];
+            if (imaginary[p][c]) d_farfield_current_im[p][c] = imaginary[p][c];
         }
     }
-    initialized = true;
 }
 
 void MullerGpuAssembly::upload_system_input(
@@ -1350,6 +1369,7 @@ void MullerGpuAssembly::farfield(
         field.clear();
         return;
     }
+    ensure_farfield_currents(1);
     cuda_check(
         cudaMemcpy(
             d_input, solution,
@@ -1457,14 +1477,8 @@ void MullerGpuAssembly::upload_farfield_samples(
         // Mark ownership before allocation so cleanup handles partial setup.
         initialized=true; farfield_only=true;
         allocate_and_upload(&d_mass_positions,positions,"upload standalone farfield positions");
-        for(int p=0;p<2;++p)
-            for(int c=0;c<6;++c) {
-                cuda_check(cudaMalloc(reinterpret_cast<void**>(&d_farfield_current_re[p][c]),points*sizeof(double)),
-                           "allocate standalone farfield current real");
-                cuda_check(cudaMalloc(reinterpret_cast<void**>(&d_farfield_current_im[p][c]),points*sizeof(double)),
-                           "allocate standalone farfield current imaginary");
-            }
     }
+    ensure_farfield_currents(2);
     std::vector<double> real(points),imaginary(points);
     const std::vector<std::complex<double>>* currents[2]={&currents_x,&currents_y};
     for(int p=0;p<2;++p)
@@ -1495,6 +1509,7 @@ void MullerGpuAssembly::farfield_pair(
         field_y.clear();
         return;
     }
+    ensure_farfield_currents(2);
     const int block = 256;
     const int point_grid = (mass_points + block - 1) / block;
     const std::complex<double>* solutions[2] = {solution_x, solution_y};

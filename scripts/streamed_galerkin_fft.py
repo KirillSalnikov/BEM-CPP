@@ -59,29 +59,58 @@ class GPUCrossTiles:
         cols=np.r_[np.arange(first_s*ns*6,last_s*ns*6),b.sc+np.arange(first_s*ns*6,last_s*ns*6)]
         return torch.fft.fft(kernel.to(torch.complex128) if self.fft64 else kernel,dim=0),rows,cols
 
-def compress_streamed(block,directory,rank,*,tile=4,tolerance=1e-4,device='cuda',progress=None,reference=None,precision=32):
+def sketch_workspace_bytes(nf,nr,nc,rank,*,transpose_sketch=False):
+    """Persistent complex64 sketches/random probes; excludes tiles and QR work."""
+    if min(nf,nr,nc,rank)<1:raise ValueError('Sketch dimensions/rank must be positive')
+    rank=min(rank,nr,nc)
+    rows,cols=(nc,nr) if transpose_sketch else (nr,nc)
+    ell=min(rank+64,rows)
+    return 8*(nf*(rows*rank+ell*cols+nr*8)+cols*rank+rows*ell+nc*8)
+
+
+def compress_streamed(block,directory,rank,*,tile=4,tolerance=1e-4,device='cuda',progress=None,reference=None,precision=32,transpose_sketch=False,metric_balance=False):
     """One-pass bilateral sketch, with independent held-out RHS checks.
 
     Only spectral tiles and sketches reside on the device. Factors are written
     into mmap files one frequency batch at a time. The full symbol is never
     allocated. A holdout is a diagnostic, not an operator-norm certificate.
+    Optionally sketch A.T to put oversampling on the shorter matrix dimension.
+    Output factors and the independent held-out RHS always act as original A.
+    Optional local tangent-metric balancing conditions the sketch, not the
+    returned operator or the physical-coordinate accuracy gate.
     """
     start=time.perf_counter();directory=Path(directory);directory.mkdir(exist_ok=True,parents=True)
-    nf,nr,nc=block.nfft,2*block.tc,2*block.sc;rank=min(rank,nr,nc);ell=min(rank+64,nr)
+    nf,nr,nc=block.nfft,2*block.tc,2*block.sc
+    workspace=sketch_workspace_bytes(nf,nr,nc,rank,transpose_sketch=transpose_sketch)
+    rank=min(rank,nr,nc)
+    sketch_rows,sketch_cols=(nc,nr) if transpose_sketch else (nr,nc)
+    ell=min(rank+64,sketch_rows)
     gen=torch.Generator(device=device);gen.manual_seed(840400+nr+nc)
     rand=lambda shape:torch.randn(shape,device=device,dtype=torch.complex64,generator=gen)
-    omega=rand((nc,rank));psi=rand((nr,ell));test=rand((nc,8))
-    y=torch.zeros((nf,nr,rank),device=device,dtype=torch.complex64)
-    z=torch.zeros((nf,ell,nc),device=device,dtype=torch.complex64)
+    omega=rand((sketch_cols,rank));psi=rand((sketch_rows,ell));test=rand((nc,8))
+    y=torch.zeros((nf,sketch_rows,rank),device=device,dtype=torch.complex64)
+    z=torch.zeros((nf,ell,sketch_cols),device=device,dtype=torch.complex64)
     held=torch.zeros((nf,nr,8),device=device,dtype=torch.complex64)
     builder=GPUCrossTiles(block,device,precision=precision);done=0
+    target_metric=source_metric=None
+    if metric_balance:
+        from galerkin_basis_metric import FaceBasisMetric
+        target_metric=FaceBasisMetric(block,block.target,device)
+        source_metric=FaceBasisMetric(block,block.source,device)
     total=((block.target.nx+tile-1)//tile)*((block.source.nx+tile-1)//tile)
     for i in range(0,block.target.nx,tile):
         for j in range(0,block.source.nx,tile):
             a,rows,cols=builder.symbol_tile(i,min(i+tile,block.target.nx),j,min(j+tile,block.source.nx))
             a=a.to(torch.complex64)
             rr=torch.as_tensor(rows,device=device);cc=torch.as_tensor(cols,device=device)
-            y[:,rr,:]+=a@omega[cc];z[:,:,cc]+=psi[rr].mH@a;held[:,rr,:]+=a@test[cc]
+            held[:,rr,:]+=a@test[cc]
+            if metric_balance:
+                a=target_metric.rows(source_metric.columns(a,inverse=True),inverse=True)
+            if transpose_sketch:
+                transposed=a.transpose(-1,-2)
+                y[:,cc,:]+=transposed@omega[rr];z[:,:,rr]+=psi[cc].mH@transposed
+            else:
+                y[:,rr,:]+=a@omega[cc];z[:,:,cc]+=psi[rr].mH@a
             done+=1
         if progress:progress(done,total,time.perf_counter()-start)
     del a,builder
@@ -91,16 +120,27 @@ def compress_streamed(block,directory,rank,*,tile=4,tolerance=1e-4,device='cuda'
     for first in range(0,nf,4):
         q,_=torch.linalg.qr(y[first:first+4],mode='reduced')
         b=torch.linalg.lstsq(psi.mH@q,z[first:first+4],driver='gels').solution
-        delta=q@(b@test)-held[first:first+4]
+        u,v=(b.transpose(-1,-2),q.transpose(-1,-2)) if transpose_sketch else (q,b)
+        if metric_balance:
+            u=target_metric.rows(u)
+            v=source_metric.columns(v)
+        delta=u@(v@test)-held[first:first+4]
         norm=lambda v:torch.sum(v.abs().double().square(),dim=(1,2))
-        errors.extend(torch.sqrt(norm(delta)/norm(held[first:first+4])).cpu().tolist())
+        def relative(delta,expected):
+            numerator,denominator=norm(delta),norm(expected)
+            ratio=torch.where(denominator>0,numerator/denominator,
+                              torch.where(numerator==0,torch.zeros_like(numerator),torch.full_like(numerator,float('inf'))))
+            return torch.sqrt(ratio).cpu().tolist()
+        errors.extend(relative(delta,held[first:first+4]))
         if reference is not None:
             exact=torch.as_tensor(reference[first:first+4],device=device,dtype=torch.complex64)
-            reference_errors.extend(torch.sqrt(norm(q@b-exact)/norm(exact)).cpu().tolist())
-        left[first:first+len(q)]=q.cpu().numpy();right[first:first+len(q)]=b.cpu().numpy()
+            reference_errors.extend(relative(u@v-exact,exact))
+        left[first:first+len(q)]=u.cpu().numpy();right[first:first+len(q)]=v.cpu().numpy()
     left.flush();right.flush()
-    report=dict(rank=rank,kernel_precision=precision,shape=[nf,nr,nc],factor_bytes=left.nbytes+right.nbytes,preparation_s=time.perf_counter()-start,holdout_errors=errors,holdout_max=max(errors),reference_errors=reference_errors,reference_max=max(reference_errors) if reference_errors else None,tolerance=tolerance,criterion='Eight held-out random RHS at every frequency; not an operator norm bound.')
-    if max(errors)>tolerance or (reference_errors and max(reference_errors)>tolerance):
+    report=dict(rank=rank,kernel_precision=precision,shape=[nf,nr,nc],factor_bytes=left.nbytes+right.nbytes,preparation_s=time.perf_counter()-start,holdout_errors=errors,holdout_max=max(errors),reference_errors=reference_errors,reference_max=max(reference_errors) if reference_errors else None,tolerance=tolerance,sketch_transposed=bool(transpose_sketch),sketch_workspace_bytes=workspace,criterion='Eight held-out random RHS of the original operator at every frequency; not an operator norm bound.')
+    report.update(metric_balance=bool(metric_balance),basis_condition_numbers=
+                  [target_metric.condition,source_metric.condition] if metric_balance else None)
+    if not np.isfinite(errors+reference_errors).all() or max(errors)>tolerance or (reference_errors and max(reference_errors)>tolerance):
         report['status']='failed_accuracy'
     else:report['status']='complete'
     return (left,right),report

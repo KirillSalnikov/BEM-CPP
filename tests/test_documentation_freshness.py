@@ -78,6 +78,11 @@ def main() -> int:
         "scripts/benchmark_tmatrix_incident.py",
         "benchmarks/global_solver_20261027/run_probe.py",
         "tools/mesh_capacity_probe.cpp",
+        "scripts/bem_cli.py",
+        "benchmarks/clifford_dielectric_20261115/build.py",
+        "benchmarks/clifford_dielectric_20261115/solve.py",
+        "benchmarks/clifford_dielectric_20261115/tmatrix.py",
+        "benchmarks/clifford_fmm_20261115/build.py",
     )
     implementation = "\n".join(read(name) for name in implementation_sources)
     implemented = set(re.findall(r"--[a-z][a-z0-9-]*", implementation))

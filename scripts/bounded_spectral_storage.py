@@ -105,16 +105,66 @@ def decode_half_symbol(encoded):
     return torch.cat((top,bottom),dim=1)
 
 
+def exact_factor_batch_ranks(left,right,batch,cache_path=None):
+    """Trim ONLY exact zero outer-product tails, retaining complete batches.
+
+    Zero padding survives half encoding exactly. No SVD tolerance, norm cutoff
+    or assumption about a recompression receipt is used here.
+    """
+    if batch<1 or left.ndim!=4 or right.ndim!=4 or left.shape[-1]!=2 or right.shape[-1]!=2 or \
+       left.shape[0]!=right.shape[0] or left.shape[2]!=right.shape[1] or not left.shape[2]:
+        raise ValueError('Invalid encoded factor dimensions/batch')
+    signature=None;maximum=left.shape[2]
+    if cache_path is not None and all(isinstance(a,np.memmap) for a in (left,right)):
+        def identity(a):
+            source=Path(a.filename).resolve();stat=source.stat()
+            return dict(source=str(source),shape=list(a.shape),dtype=str(a.dtype),
+                        size=stat.st_size,mtime_ns=stat.st_mtime_ns,ctime_ns=stat.st_ctime_ns,inode=stat.st_ino)
+        signature=dict(format=1,batch=batch,left=identity(left),right=identity(right))
+        cache_path=Path(cache_path)
+        if cache_path.exists():
+            saved=json.loads(cache_path.read_text());ranks=saved.get('ranks',[])
+            if saved.get('signature')==signature and len(ranks)==(len(left)+batch-1)//batch and \
+               all(type(r) is int and 1<=r<=maximum for r in ranks):return ranks
+    ranks=[]
+    for first in range(0,len(left),batch):
+        if not np.isfinite(left[first:first+batch]).all() or not np.isfinite(right[first:first+batch]).all():
+            raise ValueError('Nonfinite encoded spectral factors')
+        a=np.any(left[first:first+batch]!=0,axis=(1,3))
+        b=np.any(right[first:first+batch]!=0,axis=(2,3))
+        active=np.flatnonzero(np.any(a & b,axis=0))
+        rank=int(active[-1])+1 if len(active) else 1
+        ranks.append(min(maximum,(rank+7)//8*8))
+    if signature is not None:
+        cache_path.parent.mkdir(exist_ok=True,parents=True)
+        temporary=cache_path.with_suffix(f'.{os.getpid()}.tmp')
+        temporary.write_text(json.dumps(dict(signature=signature,ranks=ranks))+'\n');temporary.replace(cache_path)
+    return ranks
+
+
+def factor_batch_views(arrays,first,count,rank):
+    """Physical slices to pack into contiguous pinned/device slot prefixes."""
+    left,right,scale=arrays
+    if not 1<=rank<=left.shape[2] or first<0 or count<1 or first+count>len(left):
+        raise ValueError('Invalid factor batch slice')
+    return (left[first:first+count,:,:rank,:],right[first:first+count,:rank,:,:],scale[first:first+count])
+
+
 class StreamedSpectralBlock:
     """Two bounded pinned/device slots, with H2D copies overlapping products."""
-    def __init__(self, arrays, *, device, batch, half=False, half_matrix=False,pool=None):
+    def __init__(self, arrays, *, device, batch, half=False, half_matrix=False,pool=None,trim_zero_rank=False,rank_cache=None):
         import torch
         if torch.device(device).type!='cuda':raise ValueError('Streaming requires CUDA')
         if half and half_matrix:raise ValueError('Select factored or dense half storage')
         if batch<1 or not arrays or any(len(a)!=len(arrays[0]) for a in arrays):raise ValueError('Invalid streamed batch/arrays')
         self.arrays=arrays;self.device=device;self.batch=batch;self.half=half;self.half_matrix=half_matrix
         self.nf=len(arrays[0]);self.pool=pool
+        if trim_zero_rank and not half:raise ValueError('Zero-rank trimming requires encoded factors')
+        self.batch_ranks=exact_factor_batch_ranks(*arrays[:2],batch,cache_path=rank_cache) if trim_zero_rank else None
         self.transfer_bytes=sum(a.nbytes for a in arrays)
+        if self.batch_ranks is not None:
+            self.transfer_bytes=sum(sum(a.nbytes for a in factor_batch_views(arrays,first,min(batch,self.nf-first),rank))
+                                    for first,rank in zip(range(0,self.nf,batch),self.batch_ranks))
         if pool is not None:
             if torch.device(pool.device)!=torch.device(device):raise ValueError('Shared buffers are on another device')
             self.spec=pool.register(arrays,batch);self.copy_stream=pool.copy_stream
@@ -144,17 +194,27 @@ class StreamedSpectralBlock:
         def load(slot,first):
             if slot['used']:slot['consumed'].synchronize()
             count=min(self.batch,self.nf-first)
-            for target,source in zip(slot['host'],self.arrays):
-                target[:count].copy_(torch.from_numpy(source[first:first+count]))
+            if self.batch_ranks is None:
+                sources=[source[first:first+count] for source in self.arrays]
+                host=[a[:count] for a in slot['host']];gpu=[a[:count] for a in slot['gpu']]
+            else:
+                sources=factor_batch_views(self.arrays,first,count,self.batch_ranks[first//self.batch])
+                # Pack into contiguous prefixes; sliced rank axes in mmap
+                # factors are strided and must not trigger strided H2D copies.
+                host=[a.reshape(-1)[:s.size].reshape(s.shape) for a,s in zip(slot['host'],sources)]
+                gpu=[a.reshape(-1)[:s.size].reshape(s.shape) for a,s in zip(slot['gpu'],sources)]
+            for target,source in zip(host,sources):
+                target.copy_(torch.from_numpy(source))
             with torch.cuda.stream(self.copy_stream):
-                for target,source in zip(slot['gpu'],slot['host']):target[:count].copy_(source[:count],non_blocking=True)
+                for target,source in zip(gpu,host):target.copy_(source,non_blocking=True)
                 slot['ready'].record(self.copy_stream)
+            slot['active_gpu']=gpu
             return count
         count=load(slots[0],0)
         for number,first in enumerate(range(0,self.nf,self.batch)):
             slot=slots[number%2];next_first=first+count
             if next_first<self.nf:next_count=load(slots[(number+1)%2],next_first)
-            current.wait_event(slot['ready']);data=[a[:count] for a in slot['gpu']]
+            current.wait_event(slot['ready']);data=slot['active_gpu']
             if self.half:
                 left,right=[torch.view_as_complex(a.float()) for a in data[:2]]
                 result[first:first+count]=torch.bmm(left,torch.bmm(right,spectrum[first:first+count]))*data[2]

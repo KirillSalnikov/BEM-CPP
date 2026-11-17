@@ -1,0 +1,45 @@
+{
+  "date": "2026-11-17",
+  "scope": "Archival measurements, not rerun for this commit. Absolute repository prefixes replaced with relative paths in JSON; source hashes refer to the original raw receipts. Large local input artifacts are not distributed.",
+  "sources": {
+    "cpu_four_modes.json": {
+      "source": "benchmarks/dirac_cpu_until40_20261116/summary.json",
+      "original_sha256": "586d5c973407f3ddaa4fe766f731a7e33ef4fad4c0f5d7eb411b018aa6cc63bf",
+      "export_sha256": "c3d4cc326e2eaa90dcab15e67e73b90b5b85163b25f61bcad2e7b0ec0ee3d23c"
+    },
+    "dirac_gpu_ka80.json": {
+      "source": "benchmarks/dirac_gpu_fmm_20261116/operator_ref7_final.json",
+      "original_sha256": "092b2fdb825f199a38e606bad5bffabbe271e70c3ae558012fc6d522ce819ad2",
+      "export_sha256": "092b2fdb825f199a38e606bad5bffabbe271e70c3ae558012fc6d522ce819ad2"
+    },
+    "dirac_cpu_ka80.json": {
+      "source": "benchmarks/dirac_fmm_leaf_20261116/measured_report.json",
+      "original_sha256": "bc6ff180eb6f57d5342da1af80231878e5149521604485953cc0b5e517063921",
+      "export_sha256": "49f32ed38f6d96f533402ced7efd62d455b74bb297373599185e7bd966f2ab50"
+    },
+    "muller_strict_ka80.json": {
+      "source": "benchmarks/muller_ka80_week_20261116/current_native_comparison.json",
+      "original_sha256": "f387185b917851a9e34db3b92fd4b9eff0e847834b6f61d5e00ec3ae24d0d78b",
+      "export_sha256": "f387185b917851a9e34db3b92fd4b9eff0e847834b6f61d5e00ec3ae24d0d78b"
+    },
+    "muller_fft_ka80.json": {
+      "source": "benchmarks/muller_ka80_week_20261116/complete_fft_check.json",
+      "original_sha256": "51e9a5c657f0e35e74483cc6bbe98cc5e34be50c2610212c19e258629ff8ab3c",
+      "export_sha256": "51e9a5c657f0e35e74483cc6bbe98cc5e34be50c2610212c19e258629ff8ab3c"
+    },
+    "muller_interrupted_ka80.json": {
+      "source": "benchmarks/muller_ka80_week_20261116/interrupted_modal_analysis.json",
+      "original_sha256": "90bb67ae46ab4753ddf90df3531e4c3bdb0fd85b324e6bcec54c90a079c07940",
+      "export_sha256": "90bb67ae46ab4753ddf90df3531e4c3bdb0fd85b324e6bcec54c90a079c07940"
+    },
+    "ka80_budget.json": {
+      "source": "benchmarks/muller_ka80_week_20261116/budget.json",
+      "original_sha256": "114e263bb70bdf01c7f294b9442fe04bf8a6713376cf124ddc2b35beb03e40d1",
+      "export_sha256": "114e263bb70bdf01c7f294b9442fe04bf8a6713376cf124ddc2b35beb03e40d1"
+    },
+    "cpu_dirac_comparison.pdf": {
+      "source": "benchmarks/dirac_cpu_until40_20261116/cpu_dirac_comparison.pdf",
+      "original_sha256": "65d1a6337c84578080f3a83d9f2d135266e32bcf7b196ccd03b4e416fb49006f"
+    }
+  }
+}

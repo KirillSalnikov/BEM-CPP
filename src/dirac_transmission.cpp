@@ -364,7 +364,7 @@ void Transmission::apply_direct_panels(const C*h,int count,const int*ids,C*out)c
         for(int a=0;a<basis_count_;++a){Eight e{},v{};localize(panels_[i],ex[a],e.data());localize(panels_[i],in[a],v.data());
             for(int c=0;c<8;++c)out[(t*basis_count_+a)*8+c]=h[(i*basis_count_+a)*8+c]+scale_.p[c]*v[c]-scale_.n[c]*e[c];}}
 }
-void Transmission::build_near_rows(int count,const int*ids,size_t budget){
+void Transmission::build_near_rows(int count,const int*ids,size_t budget,bool share){
     if(correction_only_||!kernels_[0].empty()||!near_rows_.empty())throw std::logic_error("near rows require empty deferred geometry");
     if(target_order_!=13||far_order_!=13||count<1||size_t(count)>panels_.size())throw std::invalid_argument("near rows require target13");
     std::vector<int> selected(panels_.size(),0);
@@ -380,16 +380,43 @@ void Transmission::build_near_rows(int count,const int*ids,size_t budget){
                 auto it=bins.find(Key(std::get<0>(index)+x,std::get<1>(index)+y,std::get<2>(index)+z));if(it==bins.end())continue;
                 for(int j:it->second)if(within_near((panels_[i].center-panels_[j].center).norm(),near_radius_+1.,std::max(panels_[i].diameter,panels_[j].diameter)))neighbors.push_back(j);}
             std::sort(neighbors.begin(),neighbors.end());columns.insert(columns.end(),neighbors.begin(),neighbors.end());
-            if(columns.size()>budget/(2*sizeof(Kernel)*basis_count_*basis_count_))throw std::runtime_error("selected near cache exceeds budget");}
+            if(columns.size()>budget/(share ? sizeof(int)+sizeof(size_t) : 2*sizeof(Kernel)*basis_count_*basis_count_))throw std::runtime_error("selected near cache exceeds budget");}
         offsets.push_back(columns.size());
     }
-    const size_t entries=columns.size()*basis_count_*basis_count_;
-    if(entries*2*sizeof(Kernel)+columns.size()*sizeof(int)+offsets.size()*sizeof(size_t)>budget)throw std::runtime_error("selected near cache and indices exceed budget");
+    std::vector<std::pair<int,int>> unique;
+    std::vector<size_t> patterns;
+    if(share)patterns.reserve(columns.size());
+    using Signature=std::array<double,15>;
+    using Bucket=std::array<long long,15>;
+    std::map<Bucket,std::vector<size_t>> buckets;
+    std::vector<Signature> signatures;
+    double h=std::numeric_limits<double>::max();for(const auto&p:panels_)h=std::min(h,p.diameter);
+    auto signature=[&](int i,int j){Signature a;int at=0;
+        const auto&t=panels_[i];const auto&s=panels_[j];
+        for(int k=1;k<3;++k){auto v=t.vertex[k]-t.vertex[0];a[at++]=v.x;a[at++]=v.y;a[at++]=v.z;}
+        for(int k=0;k<3;++k){auto v=s.vertex[k]-t.vertex[0];a[at++]=v.x;a[at++]=v.y;a[at++]=v.z;}return a;};
+    for(int slot=0;slot<count;++slot){const int i=ids[slot];
+        for(size_t pair=offsets[i];pair<offsets[i+1];++pair){const int j=columns[pair];size_t id=unique.size();
+            if(share){auto a=signature(i,j);Bucket key;for(int k=0;k<15;++k)key[k]=std::llround(a[k]/(1e-8*h));
+                auto& candidates=buckets[key];
+                for(auto candidate:candidates){double error=0.;for(int k=0;k<15;++k)error=std::max(error,std::abs(a[k]-signatures[candidate][k]));
+                    // A hash match is insufficient: verify ordered geometry at
+                    // 1e-12 of the smallest panel, and preserve self omission.
+                    if(error<=1e-12*h && ((i==j)==(unique[candidate].first==unique[candidate].second))){id=candidate;break;}}
+                if(id==unique.size()){candidates.push_back(id);signatures.push_back(a);}
+                patterns.push_back(id);
+            }
+            if(id==unique.size())unique.emplace_back(i,j);
+            const size_t bytes=unique.size()*2*sizeof(Kernel)*basis_count_*basis_count_+columns.size()*sizeof(int)+(offsets.size()+patterns.size())*sizeof(size_t);
+            if(bytes>budget)throw std::runtime_error("selected near cache and indices exceed budget");
+        }
+    }
+    const size_t entries=unique.size()*basis_count_*basis_count_;
     std::array<std::vector<Kernel>,2> next;for(auto&v:next)v.resize(entries);
     const auto rule=tri_quadrature(13);const auto ordinary=target_points(13,0),refined=target_points(13,near_subdiv_);
 #pragma omp parallel for schedule(dynamic,1)
-    for(int slot=0;slot<count;++slot){const int i=ids[slot];const auto&t=panels_[i];
-        for(size_t pair=offsets[i];pair<offsets[i+1];++pair){const int j=columns[pair];const auto&s=panels_[j];
+    for(size_t block=0;block<unique.size();++block){const int i=unique[block].first,j=unique[block].second;
+        const auto&t=panels_[i];const auto&s=panels_[j];
             for(int medium=0;medium<2;++medium){auto total=reciprocal_pair(i,j,medium,ordinary,refined);
                 // FMM's complete 13x13 point rule is subtracted, including
                 // its self-source omission. No far pairs are stored here.
@@ -403,11 +430,10 @@ void Transmission::build_near_rows(int count,const int*ids,size_t budget){
                         for(int a=0;a<basis_count_;++a)for(int b=0;b<basis_count_;++b){auto&v=total[10*a+b];const double w=rule.wts[q]*phi[a]*source[b];
                             v.s-=w*pot;v.d[0]-=w*grad*r.x;v.d[1]-=w*grad*r.y;v.d[2]-=w*grad*r.z;}}
                 }
-                for(int a=0;a<basis_count_;++a)for(int b=0;b<basis_count_;++b)next[medium][pair*basis_count_*basis_count_+a*basis_count_+b]=total[10*a+b];
+                for(int a=0;a<basis_count_;++a)for(int b=0;b<basis_count_;++b)next[medium][block*basis_count_*basis_count_+a*basis_count_+b]=total[10*a+b];
             }
-        }
     }
-    kernels_.swap(next);near_rows_.swap(offsets);near_columns_.swap(columns);correction_only_=true;
+    kernels_.swap(next);near_rows_.swap(offsets);near_columns_.swap(columns);near_patterns_.swap(patterns);correction_only_=true;
 }
 void Transmission::near_correction_rows(int medium,const C*h,int count,const int*ids,C*out)const{
     if(!correction_only_||medium<0||medium>1||count<1||size_t(count)>panels_.size())throw std::invalid_argument("near row action controls");
@@ -417,7 +443,7 @@ void Transmission::near_correction_rows(int medium,const C*h,int count,const int
     for(int slot=0;slot<count;++slot){const int i=ids[slot];
         for(int a=0;a<basis_count_;++a){Eight sum{};
             for(size_t pair=near_rows_[i];pair<near_rows_[i+1];++pair)for(int b=0;b<basis_count_;++b){
-                auto v=action(kernels_[medium][pair*basis_count_*basis_count_+a*basis_count_+b],q.data()+8*(near_columns_[pair]*basis_count_+b));
+                auto v=action(kernels_[medium][(near_patterns_.empty()?pair:near_patterns_[pair])*basis_count_*basis_count_+a*basis_count_+b],q.data()+8*(near_columns_[pair]*basis_count_+b));
                 for(int c=0;c<8;++c)sum[c]+=v[c];}
             localize(panels_[i],sum,out+8*(slot*basis_count_+a));
         }
@@ -726,7 +752,7 @@ void Transmission::near_correction(int medium,const C*h,C*out)const{
 #pragma omp parallel for schedule(static)
     for(size_t i=0;i<panels_.size();++i)for(int a=0;a<basis_count_;++a){Eight sum{};
         for(size_t p=near_rows_[i];p<near_rows_[i+1];++p)for(int b=0;b<basis_count_;++b){
-            const auto v=action(kernels_[medium][p*basis_count_*basis_count_+a*basis_count_+b],q.data()+8*(near_columns_[p]*basis_count_+b));
+            const auto v=action(kernels_[medium][(near_patterns_.empty()?p:near_patterns_[p])*basis_count_*basis_count_+a*basis_count_+b],q.data()+8*(near_columns_[p]*basis_count_+b));
             for(int c=0;c<8;++c)sum[c]+=v[c];}
         localize(panels_[i],sum,out+8*(i*basis_count_+a));}
 }
@@ -743,6 +769,15 @@ void Transmission::project_cauchy(const C*field,C*out)const{
     for(size_t i=0;i<panels_.size();++i)for(int a=0;a<basis_count_;++a){Eight sum{};
         for(int t=0;t<13;++t){auto phi=polynomial(rule.pts[t][0],rule.pts[t][1]);for(int c=0;c<8;++c)sum[c]+=rule.wts[t]*phi[a]*field[8*(13*i+t)+c];}
         localize(panels_[i],sum,out+8*(i*basis_count_+a));}
+}
+void Transmission::project_cauchy_rows(const C*field,int count,const int*ids,C*out)const{
+    if(count<1||size_t(count)>panels_.size())throw std::invalid_argument("project selected count");
+    for(int j=0;j<count;++j)if(ids[j]<0||size_t(ids[j])>=panels_.size())throw std::invalid_argument("project selected panel");
+    const auto rule=tri_quadrature(13);
+#pragma omp parallel for schedule(static)
+    for(int i=0;i<count;++i)for(int a=0;a<basis_count_;++a){Eight sum{};
+        for(int t=0;t<13;++t){auto phi=polynomial(rule.pts[t][0],rule.pts[t][1]);for(int c=0;c<8;++c)sum[c]+=rule.wts[t]*phi[a]*field[8*(13*i+t)+c];}
+        localize(panels_[ids[i]],sum,out+8*(i*basis_count_+a));}
 }
 void Transmission::field(int medium,const C*h,const std::vector<Vec3>&x,C*out)const{
     if(medium!=0&&medium!=1)throw std::invalid_argument("medium");

@@ -1,0 +1,72 @@
+{
+  "ref": 7,
+  "ka": 80.0,
+  "degree": 3,
+  "panels": 758784,
+  "full_dofs": 60702720,
+  "sector_dofs": 5058560,
+  "depth": 7,
+  "digits": 6,
+  "threads": "32",
+  "setup_s": 42.98417717600023,
+  "workspace_bytes": 5341839360,
+  "records": [
+    {
+      "label": "random",
+      "repeat": 0,
+      "cpu_working_s": 66.41535100500187,
+      "gpu_working_s": 29.18010780199984,
+      "relative_error": 4.148710729530017e-11,
+      "peak_rss_gib": 37.026878356933594,
+      "gpu_plans": {
+        "(80+0j)": {
+          "sources": 9864192,
+          "targets": 822016,
+          "nodes": 69465,
+          "directions": 512,
+          "order": 15,
+          "device_bytes": 9810477056,
+          "actual_depth": 7
+        },
+        "(104.92800000000001+0j)": {
+          "sources": 9864192,
+          "targets": 822016,
+          "nodes": 69465,
+          "directions": 578,
+          "order": 16,
+          "device_bytes": 11616124928,
+          "actual_depth": 7
+        }
+      }
+    },
+    {
+      "label": "random",
+      "repeat": 1,
+      "cpu_working_s": 66.41535100500187,
+      "gpu_working_s": 29.18520568799795,
+      "relative_error": 4.148710579302045e-11,
+      "peak_rss_gib": 37.026878356933594,
+      "gpu_plans": {
+        "(80+0j)": {
+          "sources": 9864192,
+          "targets": 822016,
+          "nodes": 69465,
+          "directions": 512,
+          "order": 15,
+          "device_bytes": 9810477056,
+          "actual_depth": 7
+        },
+        "(104.92800000000001+0j)": {
+          "sources": 9864192,
+          "targets": 822016,
+          "nodes": 69465,
+          "directions": 578,
+          "order": 16,
+          "device_bytes": 11616124928,
+          "actual_depth": 7
+        }
+      }
+    }
+  ],
+  "gpu_setup_s": 31.02139879900278
+}

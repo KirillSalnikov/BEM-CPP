@@ -20,12 +20,19 @@ def main():
     p.add_argument('--backend',choices=['dense','fmm','fmm-sector'],default='dense');p.add_argument('--fmm-eps',type=float)
     p.add_argument('--fmm-strict-eps',type=float,default=1e-12)
     p.add_argument('--fmm-packet',type=int,choices=[1,2,4],default=1)
+    p.add_argument('--fmm-components',type=int,choices=[1,2,4,8],help='FMM density packet; auto streams large meshes')
+    p.add_argument('--fmm-reference-components',type=int,choices=[1,2,4,8],help='full-surface FMM density packet; auto caps large-mesh checks at four components')
+    p.add_argument('--fmm-working-device',choices=['cpu','cuda'],default='cpu',help='experimental CUDA scalar FMM for working actions; strict full-space checks stay on CPU')
+    p.add_argument('--gpu-fmm-depth',type=int,choices=range(3,8),help='CUDA tree depth; default clamps ref to 3..7')
+    p.add_argument('--radiation',choices=['auto','direct','face'],default='auto',help='planar-face NUFFT with the same 13-point quadrature; auto uses it for prisms if FINUFFT is installed')
+    p.add_argument('--radiation-threads',type=int,default=8)
+    p.add_argument('--radiation-eps',type=float,default=1e-14)
     p.add_argument('--near-subdiv',type=int,choices=[0,1,2],default=0)
     p.add_argument('--solver',choices=['standard','refined'],default='standard')
     p.add_argument('--tol',type=float,default=1e-8)
     p.add_argument('--dense-kernel',choices=['scalar','simd','mixed'],default='scalar')
     p.add_argument('--dense-cache',choices=['full','orbits12'],default='full')
-    p.add_argument('--reference-checks',choices=['scalar','batch'],default='batch')
+    p.add_argument('--reference-checks',choices=['scalar','batch','packed'],default='batch',help='packed recovers strict actions of distinct sectors using independently audited covariance')
     p.add_argument('--block-panels',type=int,choices=range(9),default=0)
     p.add_argument('--batch-size',type=int,choices=range(1,17),default=1)
     p.add_argument('--batch-tile',type=int,default=256)
@@ -40,6 +47,10 @@ def main():
     p.add_argument('--coarse-aggregate-groups',type=int,default=128)
     p.add_argument('--coarse-aggregate-basis',type=int,choices=[1,3],default=3)
     p.add_argument('--coarse-global-scope',choices=['coarse','full'],default='full')
+    p.add_argument('--coarse-global-storage',choices=['fp64','fp32'],default='fp64',help='hierarchical W storage only; FP32 uses streamed FP64 assembly and FP64 products, operator/audits unchanged')
+    p.add_argument('--coarse-lu-threads',type=int,default=1,help='BLAS threads during dense/hierarchical coarse LU only; >1 requires threadpoolctl')
+    p.add_argument('--coarse-eliminate-full-p1',action='store_true',help='Cancel redundant low-space ILU and omit its W rows; requires full P1 space and FP32 storage')
+    p.add_argument('--coarse-batch-correction',action='store_true',help='Reuse compressed W in a batched FP64 product for currents in the same sector')
     p.add_argument('--so3',choices=['reference','factored','mstm'],default='reference')
     p.add_argument('--no-average',action='store_true',help='Save the complete T; skip SO(3) contraction')
     p.add_argument('--ntheta',type=int,default=181,help='Scattering angles in the analytic average')
@@ -50,12 +61,36 @@ def main():
     p.add_argument('--ram-budget-gib',type=float,default=48,help='dense-driver peak planning budget, including workspace')
     p.add_argument('--out',type=Path,required=True);a=p.parse_args();a.out.mkdir(parents=True,exist_ok=True)
     if a.fmm_eps is None:a.fmm_eps=1e-10 if a.backend=='fmm-sector' else 1e-8
-    if not 1<=a.L<=128:raise ValueError('L must be in 1..128; convergence must be checked separately')
+    gpu_manifest=None
+    if a.fmm_working_device=='cuda':
+        if a.backend!='fmm-sector':raise ValueError('CUDA working actions require fmm-sector')
+        a.gpu_fmm_depth=a.gpu_fmm_depth or min(7,max(3,a.ref))
+        os.environ.setdefault('BEM_FMM_MULTILEVEL','1')
+        os.environ.setdefault('BEM_FMM_MAX_DEPTH','7')
+        os.environ.setdefault('BEM_FMM_SCALAR3_NEAR','2')
+        gp=B.parent/'dirac_gpu_fmm_20261116'
+        manifest=gp/'build.json'
+        if not manifest.exists():raise RuntimeError('Build the optional CUDA scalar backend: python3 benchmarks/dirac_gpu_fmm_20261116/build.py')
+        gpu_manifest=json.loads(manifest.read_text())
+        for name,digest in gpu_manifest['sha256'].items():
+            path=R/name
+            if not path.exists() or hashlib.sha256(path.read_bytes()).hexdigest()!=digest:
+                raise RuntimeError('CUDA scalar backend is stale; rebuild before solving: '+name)
+    elif a.gpu_fmm_depth is not None:raise ValueError('--gpu-fmm-depth requires --fmm-working-device cuda')
+    if not 1<=a.L<=256:raise ValueError('L must be in 1..256; convergence must be checked separately')
     if not 2<=a.ntheta<=100001:raise ValueError('ntheta must be in 2..100001')
     if a.max_columns<0:raise ValueError('max-columns must be nonnegative')
     if not 0<a.tol<1:raise ValueError('solver tolerance must be in (0,1)')
     if not np.isfinite(a.aspect) or a.aspect<=0:raise ValueError('aspect must be positive')
     if not 1<=a.so3_threads<=64:raise ValueError('SO3 threads must be in 1..64')
+    if not 1<=a.radiation_threads<=64 or not 1e-14<=a.radiation_eps<=1e-8:raise ValueError('invalid radiation accuracy or thread count')
+    if a.radiation=='face' and a.shape!='prism':raise ValueError('face radiation requires a planar prism')
+    if a.radiation=='auto':
+        a.radiation='direct'
+        if a.shape=='prism':
+            from radiation import load_finufft
+            try:load_finufft();a.radiation='face'
+            except ImportError:print('FINUFFT unavailable: using direct radiation; install finufft for large T projections',flush=True)
     if a.solver=='refined' and a.backend!='fmm':raise ValueError('refined solver requires FMM')
     if a.backend=='fmm' and (a.dense_kernel!='scalar' or a.block_panels):raise ValueError('legacy FMM does not support dense acceleration')
     if a.backend=='fmm-sector' and (a.shape!='prism' or a.symmetry not in ('c6v','c6hv') or a.block_panels!=1 or a.dense_kernel!='scalar'):
@@ -65,14 +100,25 @@ def main():
     if not 16<=a.batch_tile<=16384:raise ValueError('batch tile must be in 16..16384')
     if a.batch_size>1 and a.backend!='fmm-sector' and (a.backend!='dense' or a.dense_kernel!='simd'):raise ValueError('batch solves require dense FP64 SIMD or sector FMM')
     if a.symmetry!='none' and a.backend!='fmm-sector' and (a.backend!='dense' or a.dense_kernel!='simd' or a.block_panels!=1):raise ValueError('cyclic symmetry requires dense SIMD or sector FMM and one-panel LU')
+    if a.reference_checks=='packed' and a.symmetry=='none':raise ValueError('packed strict checks require cyclic symmetry')
+    if a.coarse_batch_correction and not (a.backend=='fmm-sector' and a.sector_coarse_basis and a.coarse_factorization=='hierarchical' and a.coarse_global_scope=='full' and a.coarse_global_storage=='fp32'):
+        raise ValueError('batched correction requires hierarchical full-level FP32 coarse storage with sector FMM')
+    if a.coarse_eliminate_full_p1 and not (a.backend=='fmm-sector' and a.sector_coarse_basis==3 and a.coarse_aggregate_basis==3 and a.degree>1 and a.coarse_factorization=='hierarchical' and a.coarse_global_scope=='full' and a.coarse_global_storage=='fp32'):
+        raise ValueError('full P1 elimination requires hierarchical full-level FP32 P1 correction and higher fine degree')
     if a.dense_cache!='full' and (a.backend!='dense' or a.symmetry!='c6hv'):raise ValueError('orbit cache requires dense backend and c6hv symmetry')
     if a.sector_coarse_basis and a.symmetry=='none':raise ValueError('coarse correction requires cyclic sectors')
     if not np.isfinite(a.coarse_budget_gib) or a.coarse_budget_gib<=0:raise ValueError('coarse cache budget must be positive')
     if a.sector_coarse_basis>[1,3,6,10][a.degree]:raise ValueError('coarse degree exceeds surface degree')
     if a.coarse_factorization!='dense':
         if a.backend!='fmm-sector' or not a.sector_coarse_basis:raise ValueError('sparse/hierarchical coarse requires fmm-sector and a coarse basis')
-        if not 0<a.coarse_near_radius<=8 or not 0<a.coarse_ilu_drop<1 or not 1<=a.coarse_ilu_fill<=20 or not 2<=a.coarse_aggregate_groups<=512:raise ValueError('invalid sparse coarse controls')
+        if not 0<a.coarse_near_radius<=8 or not 0<a.coarse_ilu_drop<1 or not 1<=a.coarse_ilu_fill<=20 or not 2<=a.coarse_aggregate_groups<=4096:raise ValueError('invalid sparse coarse controls')
         if a.coarse_factorization=='hierarchical' and a.coarse_aggregate_basis>a.sector_coarse_basis:raise ValueError('aggregate basis exceeds coarse basis')
+    if a.coarse_global_storage!='fp64' and a.coarse_factorization!='hierarchical':raise ValueError('compressed global storage requires hierarchical coarse correction')
+    parallel_lu_supported=a.sector_coarse_basis and (a.coarse_factorization=='hierarchical' or a.backend=='dense')
+    if not 1<=a.coarse_lu_threads<=64 or (a.coarse_lu_threads!=1 and not parallel_lu_supported):raise ValueError('coarse LU threads require dense/hierarchical correction and must be in 1..64')
+    if a.coarse_lu_threads>1:
+        try:import threadpoolctl
+        except ImportError as e:raise RuntimeError('--coarse-lu-threads > 1 requires optional threadpoolctl in this Python environment') from e
     if not np.isfinite(a.mixed_cache_gib) or a.mixed_cache_gib<0:raise ValueError('additional mixed-cache budget must be nonnegative')
     count=2*a.L*(a.L+2)
     if shutil.disk_usage(a.out).free<6*16*count*count+(1<<30):
@@ -88,10 +134,25 @@ def main():
     elif a.backend=='fmm-sector':
         from memory_plan import sector_fmm_memory_plan
         memory_plan=sector_fmm_memory_plan(a)
+        a.fmm_components=memory_plan['FMM_components']
+        a.fmm_reference_components=memory_plan['FMM_reference_components']
     signatures={str(path.relative_to(R)):hashlib.sha256(path.read_bytes()).hexdigest() for path in [R/'src/dirac_transmission.cpp',B/'solve.py',Path(__file__),R/'scripts/tmatrix_reference.py',R/'scripts/tmatrix_incident.py',R/'scripts/tmatrix_projection.py']}
     signatures['selected_Dirac_library']=hashlib.sha256(LIBRARY.read_bytes()).hexdigest()
     signatures['matrix_storage.py']=hashlib.sha256((B/'matrix_storage.py').read_bytes()).hexdigest()
     signatures['batch_checks.py']=hashlib.sha256((B/'batch_checks.py').read_bytes()).hexdigest()
+    if a.coarse_lu_threads>1:signatures['threadpoolctl_version']=threadpoolctl.__version__
+    if gpu_manifest is not None:
+        signatures.update({'gpu:'+name:digest for name,digest in gpu_manifest['sha256'].items()})
+        for name in ('native.py','engine.py'):
+            signatures['gpu:'+name]=hashlib.sha256((gp/name).read_bytes()).hexdigest()
+    if a.reference_checks=='packed':signatures['packed_reference.py']=hashlib.sha256((B/'packed_reference.py').read_bytes()).hexdigest()
+    if a.radiation=='face':
+        from radiation import load_finufft
+        finufft=load_finufft()
+        signatures['radiation.py']=hashlib.sha256((B/'radiation.py').read_bytes()).hexdigest()
+        signatures['FINUFFT_version']=finufft.__version__
+        from finufft._finufft import lib as finufft_native
+        signatures['FINUFFT_library']=hashlib.sha256(Path(finufft_native._name).read_bytes()).hexdigest()
     if a.batch_size>1:signatures['batch_gmres.py']=hashlib.sha256((B/'batch_gmres.py').read_bytes()).hexdigest()
     if a.symmetry!='none':
         for name in ['dirac_symmetry.py','batch_gmres.py']:signatures[name]=hashlib.sha256((B/name).read_bytes()).hexdigest()
@@ -103,7 +164,8 @@ def main():
     if a.sector_coarse_basis:signatures['sector_coarse.py']=hashlib.sha256((B/'sector_coarse.py').read_bytes()).hexdigest()
     if a.backend in ('fmm','fmm-sector'):
         for name in ['fmm.py','native.py','FMM3D/lib/libfmm3d.so']:
-            path=B.parent/'clifford_fmm_20261115'/name;signatures[str(path.relative_to(R))]=hashlib.sha256(path.read_bytes()).hexdigest()
+            path=(Path(os.environ['BEM_FMM3D_LIBRARY']).resolve() if name=='FMM3D/lib/libfmm3d.so' and os.environ.get('BEM_FMM3D_LIBRARY') else B.parent/'clifford_fmm_20261115'/name)
+            signatures[str(path.relative_to(R) if path.is_relative_to(R) else path)]=hashlib.sha256(path.read_bytes()).hexdigest()
     if a.backend=='fmm-sector':
         for name in ['sector_fmm.py','sector_coarse_fmm.py']:signatures[name]=hashlib.sha256((B/name).read_bytes()).hexdigest()
         if a.coarse_factorization!='dense':
@@ -114,9 +176,17 @@ def main():
     config.update(sector_coarse_basis=a.sector_coarse_basis)
     config.update(aspect=a.aspect)
     config.update(reference_checks=a.reference_checks)
-    if a.backend=='fmm-sector':config.update(fmm_strict_eps=a.fmm_strict_eps,fmm_packet=a.fmm_packet)
+    config.update(radiation=a.radiation,radiation_eps=a.radiation_eps,radiation_threads=a.radiation_threads)
+    if a.backend=='fmm-sector':config.update(fmm_strict_eps=a.fmm_strict_eps,fmm_packet=a.fmm_packet,fmm_components=a.fmm_components,fmm_reference_components=a.fmm_reference_components)
+    if gpu_manifest is not None:
+        config.update(fmm_working_device='cuda',gpu_fmm_depth=a.gpu_fmm_depth,gpu_fmm_digits=6,
+            gpu_environment={k:v for k,v in os.environ.items() if k.startswith(('BEM_FMM_','BEM_SCALAR_GPU_'))})
     if a.coarse_factorization!='dense':config.update(coarse_factorization=a.coarse_factorization,
         coarse_near_radius=a.coarse_near_radius,coarse_ilu_drop=a.coarse_ilu_drop,coarse_ilu_fill=a.coarse_ilu_fill,coarse_aggregate_groups=a.coarse_aggregate_groups,coarse_aggregate_basis=a.coarse_aggregate_basis,coarse_global_scope=a.coarse_global_scope)
+    if a.coarse_factorization=='hierarchical':config.update(coarse_global_storage=a.coarse_global_storage,coarse_lu_threads=a.coarse_lu_threads)
+    elif a.coarse_lu_threads!=1:config['coarse_lu_threads']=a.coarse_lu_threads
+    if a.coarse_batch_correction:config['coarse_batch_correction']=True
+    if a.coarse_eliminate_full_p1:config['coarse_eliminate_full_p1']=True
     config_path=a.out/'configuration.json';columns=a.out/'columns'
     if config_path.exists():
         if not a.resume:raise ValueError('output already initialized; use --resume to validate and continue')
@@ -131,7 +201,8 @@ def main():
         d=DiracFMM(a.shape,a.ref,a.ka,a.index,aspect=a.aspect,target_order=a.target_order,order=a.order,degree=a.degree,eps=a.fmm_eps,max_bytes=int(a.kernel_budget_gib*(1<<30)),near_subdiv=a.near_subdiv)
     elif a.backend=='fmm-sector':
         from sector_fmm import SectorFMM
-        d=SectorFMM(a.shape,a.ref,a.ka,a.index,aspect=a.aspect,target_order=a.target_order,order=a.order,degree=a.degree,eps=a.fmm_eps,strict_eps=a.fmm_strict_eps,fmm_packet=a.fmm_packet,max_bytes=int(a.kernel_budget_gib*(1<<30)),near_subdiv=a.near_subdiv,horizontal=a.symmetry=='c6hv')
+        d=SectorFMM(a.shape,a.ref,a.ka,a.index,aspect=a.aspect,target_order=a.target_order,order=a.order,degree=a.degree,eps=a.fmm_eps,strict_eps=a.fmm_strict_eps,fmm_packet=a.fmm_packet,max_bytes=int(a.kernel_budget_gib*(1<<30)),near_subdiv=a.near_subdiv,horizontal=a.symmetry=='c6hv',fmm_components=a.fmm_components,fmm_reference_components=a.fmm_reference_components)
+        if gpu_manifest is not None:d.enable_gpu_working(a.gpu_fmm_depth)
     else:d=Dirac(a.shape,a.ref,a.ka,a.index,aspect=a.aspect,target_order=a.target_order,order=a.order,degree=a.degree,max_bytes=int(a.kernel_budget_gib*(1<<30)),near_subdiv=a.near_subdiv,dense_kernel=a.dense_kernel,block_panels=a.block_panels,mixed_cache_bytes=int(a.mixed_cache_gib*(1<<30)),dense_cache=a.dense_cache)
     d.reference_checks=a.reference_checks
     solve=lambda f:(d.solve_refined(f,tol=a.tol) if a.solver=='refined' else d.solve_incident(f,tol=a.tol))
@@ -147,6 +218,7 @@ def main():
         err=float(np.linalg.norm(d.apply_reference(mirror.apply(x))-mirror.apply(ax))/np.linalg.norm(ax))
         if err>2e-11:raise ValueError('mirror operator covariance failed')
         symmetry_info['mirror_covariance']=err
+        x=ax=None
     symmetry_info['setup_audit_s']=time.perf_counter()-symmetry_start
     coarse=None
     if a.sector_coarse_basis:
@@ -156,12 +228,12 @@ def main():
             options=dict(radius=a.coarse_near_radius,drop_tol=a.coarse_ilu_drop,fill_factor=a.coarse_ilu_fill)
             if a.coarse_factorization=='hierarchical':
                 from sector_coarse_hierarchy import HierarchicalCoarse
-                coarse=HierarchicalCoarse(cyclic,a.sector_coarse_basis,int(a.coarse_budget_gib*(1<<30)),aggregate_groups=a.coarse_aggregate_groups,aggregate_basis=a.coarse_aggregate_basis,outer=a.coarse_global_scope=='full',**options)
+                coarse=HierarchicalCoarse(cyclic,a.sector_coarse_basis,int(a.coarse_budget_gib*(1<<30)),aggregate_groups=a.coarse_aggregate_groups,aggregate_basis=a.coarse_aggregate_basis,outer=a.coarse_global_scope=='full',storage=a.coarse_global_storage,lu_threads=a.coarse_lu_threads,batch_correction=a.coarse_batch_correction,eliminate_full_coarse=a.coarse_eliminate_full_p1,**options)
             elif a.coarse_factorization=='sparse':
                 from sector_coarse_sparse import SparseCoarse
                 coarse=SparseCoarse(cyclic,a.sector_coarse_basis,int(a.coarse_budget_gib*(1<<30)),**options)
             else:coarse=MatrixFreeCoarse(cyclic,a.sector_coarse_basis,int(a.coarse_budget_gib*(1<<30)))
-        else:coarse=CoarseCorrection(cyclic,a.sector_coarse_basis,int(a.coarse_budget_gib*(1<<30)))
+        else:coarse=CoarseCorrection(cyclic,a.sector_coarse_basis,int(a.coarse_budget_gib*(1<<30)),lu_threads=a.coarse_lu_threads)
         states=1 if a.coarse_cache_policy=='sector' else len({coarse.key(mode) for mode in modes(a.L)})
         memory=coarse.memory_plan()
         required=states*memory['persistent_bytes']+memory['workspace_bytes']+memory['panel_factors_bytes']
@@ -171,7 +243,11 @@ def main():
     zz,phi=np.meshgrid(z,np.arange(2*band)*np.pi/band,indexing='ij')
     directions=np.stack((np.sqrt(1-zz*zz)*np.cos(phi),np.sqrt(1-zz*zz)*np.sin(phi),zz),axis=-1).reshape(-1,3)
     _,_,et,ep=tangent_frame(directions);projector=SphericalProjector(a.L,z,w)
-    from matrix_storage import convert_projected,release_pages,norm_squared
+    radiation=None;radiation_report=dict(method=a.radiation)
+    if a.radiation=='face':
+        from radiation import DiracRadiation
+        radiation=DiracRadiation(d,directions,eps=a.radiation_eps,threads=a.radiation_threads)
+    from matrix_storage import convert_projected,release_pages,norm_squared,savez_bounded
     phase=np.asarray([1j**(l-p) for p,l,m in modal])
     # Columns remain the authoritative checkpoints. This disposable mapping is
     # rebuilt from them on resume, including after an interrupted conversion.
@@ -210,9 +286,12 @@ def main():
                 if hashlib.sha256(str(saved['statistics']).encode()).hexdigest()!=str(saved['statistics_sha256']):raise ValueError('saved T statistics checksum mismatch')
                 projected[:,j]=v;statistics[j]=stats;resumed_columns+=int(j not in created)
                 rhs_s+=stats.get('rhs_s',0.);far_s+=stats.get('far_projection_s',0.)
+                release_pages(projected)
             continue
         if a.max_columns and new_columns>=a.max_columns:
-            print(json.dumps(progress('checkpoint')));d.close();return
+            print(json.dumps(progress('checkpoint')))
+            if radiation is not None:radiation.close()
+            d.close();return
         if j not in pending_solutions:
             indices=[];reserved=0
             for k in column_order[position:]:
@@ -226,7 +305,9 @@ def main():
                 indices.append(k);reserved+=cost
                 if len(indices)>=a.batch_size:break
             if not indices:
-                print(json.dumps(progress('checkpoint')));d.close();return
+                print(json.dumps(progress('checkpoint')))
+                if radiation is not None:radiation.close()
+                d.close();return
             if coarse is not None and a.coarse_cache_policy=='sector':coarse.release_except([modal[k] for k in indices])
             incident_batch=[];rhs_times=[]
             for k in indices:
@@ -243,7 +324,7 @@ def main():
                 pending_mirrors.update(audit_mirror_batch(d,mirror,requests,a.tol))
             for k,f,h,s,rt in zip(indices,incident_batch,solutions,batch_stats,rhs_times):pending_solutions[k]=(f,h,s,rt)
         f,h,stats,rhs_time=pending_solutions.pop(j);rhs_s+=rhs_time;statistics[j]=stats
-        t=time.perf_counter();field=d.field(h,directions,far=True,incident=f)[:,5:8]
+        t=time.perf_counter();field=(radiation.apply(h,incident=f) if radiation is not None else d.field(h,directions,far=True,incident=f))[:,5:8]
         transverse=np.stack((np.einsum('ij,ij->i',field,et),np.einsum('ij,ij->i',field,ep)),axis=1).ravel()
         projected[:,j]=projector@transverse;far_time=time.perf_counter()-t;far_s+=far_time
         stats['rhs_s']=rhs_time;stats['far_projection_s']=far_time
@@ -252,8 +333,13 @@ def main():
             partner,ps=pending_mirrors.pop(j)
             pv=mirror_signs[j]*mirror_signs*projected[flip,j]
             save_column(partner,pv,ps)
+        release_pages(projected)
         progress('running');print(j+1,len(modal),mode,stats['iterations'],stats['residual'],flush=True)
     # Physical Cauchy radiation convention. No fitted sign or normalization.
+    if radiation is not None:
+        radiation_report.update(setup_s=radiation.setup_s,action_s=radiation.action_s,calls=radiation.calls,eps=radiation.eps,
+            coordinate_bytes=radiation.owned_bytes,coordinate_bytes_scope='Python coordinate storage, excludes native NUFFT workspace')
+        radiation.close();radiation=None
     T=convert_projected(projected,phase,a.ka,a.out/'tmatrix.npy');kernel=projected
     theta=np.linspace(0,180,a.ntheta)
     # The coarse cache is no longer needed once all columns are written.
@@ -284,6 +370,7 @@ def main():
         field=d.field(h,obs,far=True,incident=f)[:,5:8]
         direct[:,pol]=np.stack((np.einsum('ij,ij->i',field,ot),np.einsum('ij,ij->i',field,op)),axis=1).ravel()
     predicted=vout@kernel@vin.conj().T
+    release_pages(kernel)
     csca=2*np.pi/a.ka**2*norm_squared(T);cext=-2*np.pi/a.ka**2*np.trace(T).real
     from solve import lib
     kernel_bytes=int(lib.dirac_bytes(d.p));d.close()
@@ -312,8 +399,9 @@ def main():
         csca=float(csca),cext=float(cext),absorption_cross_section=float(cext-csca),
         lossless_energy_error=float(abs(cext-csca)/csca) if abs(complex(a.index).imag)<1e-14 else None)
     report['dense_acceleration']=d.acceleration
+    report['radiation']=radiation_report
     report['dense_cache']=d.cache_info
-    if a.backend=='fmm-sector':report['FMM']=dict(eps=a.fmm_eps,strict_eps=a.fmm_strict_eps,packet=a.fmm_packet,fmm_s=d.fmm_s,near_s=d.near_s,projection_s=d.projection_s,
+    if a.backend=='fmm-sector':report['FMM']=dict(eps=a.fmm_eps,strict_eps=a.fmm_strict_eps,packet=a.fmm_packet,components=a.fmm_components,reference_components=a.fmm_reference_components,working_device=a.fmm_working_device,fmm_s=d.fmm_s,near_s=d.near_s,projection_s=d.projection_s,
         reference_scope='Full-space FMM at strict epsilon plus exact near corrections, audited by independent direct panel quadrature',
         coarse_action_s=coarse_action_s,stored_fine_W_bytes=stored_fine_W_bytes)
     report['sector_preconditioner']=coarse_report
@@ -321,6 +409,9 @@ def main():
     report['coarse_factorization']=a.coarse_factorization
     report.update(reference_checks=a.reference_checks,column_reference_s=sum(s.get('full_reference_s',0.) for s in statistics),
                   column_reference_scope='Direct and mirrored final column audits; excludes setup/coarse/covariance audits')
+    if a.reference_checks=='packed':
+        report['column_reference_scope']='Strict full-space actions of sums in distinct sectors; per-column residuals recovered using independently audited covariance. Duplicate sectors use separate passes. Excludes setup/coarse/covariance audits.'
+        if a.backend=='fmm-sector':report['FMM']['reference_scope']=report['column_reference_scope']
     report.update(batch_size=a.batch_size,batch_tile=a.batch_tile,symmetry=a.symmetry,symmetry_info=symmetry_info,so3=a.so3,
         independent_columns=sum('mirror_from' not in s for s in statistics),mirror_columns=sum('mirror_from' in s for s in statistics))
     if a.shape=='sphere' and not a.no_average:
@@ -332,7 +423,7 @@ def main():
                   matrix_conversion_buffer_bytes=32*len(modal)*16)
     temporary=a.out/'solution.tmp'
     with temporary.open('wb') as stream:
-        np.savez(stream,T=T,kernel=kernel,theta=theta,mueller=mu,modes=modal)
+        savez_bounded(stream,T=T,kernel=kernel,theta=theta,mueller=mu,modes=modal)
         stream.flush();os.fsync(stream.fileno())
     os.replace(temporary,a.out/'solution.npz')
     (a.out/'report.json').write_text(json.dumps(report,indent=2)+'\n');print(json.dumps(report,indent=2),flush=True)

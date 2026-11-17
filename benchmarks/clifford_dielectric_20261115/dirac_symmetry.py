@@ -13,6 +13,28 @@ def polynomial(bary):
         np.sqrt(5)*(3*d*d-s*s)*(7*s-6),np.sqrt(7)*d*(5*d*d-3*s*s)],axis=-1)
 
 
+class IndexedBasis:
+    """Only six vertex permutations exist, even on a million-panel surface."""
+    def __init__(self,table,codes):
+        self.table=np.asarray(table);self.codes=np.asarray(codes,np.uint8)
+        self.nbytes=self.table.nbytes+self.codes.nbytes
+    def __getitem__(self,key):
+        if not isinstance(key,tuple):return self.table[self.codes[key]]
+        return self.table[(self.codes[key[0]],)+key[1:]]
+
+
+class FrameComponents:
+    """Recompute small exact frame transforms only for the requested panels."""
+    def __init__(self,d,image,matrix,parity):
+        self.d=d;self.image=image;self.matrix=matrix;self.parity=parity;self.nbytes=0
+    def __getitem__(self,key):
+        ids=key[0] if isinstance(key,tuple) else key
+        frames=np.einsum('...ij,jk,...lk->...il',self.d.frame[self.image[ids]],self.matrix,self.d.frame[ids])
+        result=np.zeros(frames.shape[:-2]+(8,8));result[...,0,0]=1;result[...,4,4]=self.parity
+        result[...,1:4,1:4]=self.parity*frames;result[...,5:8,5:8]=frames
+        return result[(...,)+key[1:]] if isinstance(key,tuple) else result
+
+
 class SurfaceTransform:
     def __init__(self,d,matrix):
         self.d=d;matrix=np.asarray(matrix,float);self.matrix=matrix
@@ -23,34 +45,38 @@ class SurfaceTransform:
         scale=max(np.linalg.norm(vertices,axis=-1).max(),1.)
         distances,image=cKDTree(d.xyz).query(d.xyz@matrix.T)
         if distances.max()>2e-11*scale or len(set(image))!=d.count:raise ValueError('surface panels do not possess requested symmetry')
-        self.image=image;self.geometry_error=float(distances.max()/scale)
+        self.image=image.astype(np.int32);self.geometry_error=float(distances.max()/scale)
         moved=vertices@matrix.T
         delta=np.linalg.norm(moved[:,:,None,:]-vertices[image][:,None,:,:],axis=-1)
         permutations=np.argmin(delta,axis=2)
-        if np.max(np.min(delta,axis=2))>2e-11*scale or any(len(set(v))!=3 for v in permutations):raise ValueError('surface triangles do not map under symmetry')
+        if np.max(np.min(delta,axis=2))>2e-11*scale or np.any(np.sort(permutations,axis=1)!=np.arange(3)):raise ValueError('surface triangles do not map under symmetry')
         degree={1:0,3:1,6:2,10:3}[d.basis_count]
         grid=np.array([[1/3,1/3,1/3]]) if not degree else np.array([[i/degree,j/degree,1-(i+j)/degree] for i in range(degree+1) for j in range(degree+1-i)])
-        v=polynomial(grid)[:,:d.basis_count];cache={};basis=[]
-        for perm in permutations:
-            key=tuple(perm)
-            if key not in cache:cache[key]=np.linalg.solve(v,polynomial(grid[:,perm])[:,:d.basis_count])
-            basis.append(cache[key])
-        self.basis=np.array(basis)
-        frames=np.einsum('pij,jk,plk->pil',d.frame[image],matrix,d.frame)
-        self.components=np.zeros((d.count,8,8));self.components[:,0,0]=1;self.components[:,4,4]=parity
-        self.components[:,1:4,1:4]=parity*frames;self.components[:,5:8,5:8]=frames
-        self.orthogonality_error=float(np.max(abs(np.einsum('pji,pjk->pik',self.basis,self.basis)-np.eye(d.basis_count))))
+        v=polynomial(grid)[:,:d.basis_count]
+        keys,codes=np.unique(9*permutations[:,0]+3*permutations[:,1]+permutations[:,2],return_inverse=True)
+        table=[]
+        for key in keys:
+            perm=(key//9,(key%9)//3,key%3)
+            table.append(np.linalg.solve(v,polynomial(grid[:,perm])[:,:d.basis_count]))
+        self.basis=IndexedBasis(table,codes)
+        self.components=FrameComponents(d,self.image,matrix,parity)
+        self.orthogonality_error=float(np.max(abs(np.einsum('pji,pjk->pik',self.basis.table,self.basis.table)-np.eye(d.basis_count))))
         if self.orthogonality_error>2e-11:raise ValueError('polynomial symmetry transform is not orthogonal')
 
     def apply(self,x):
         x=np.asarray(x,complex);shape=x.shape;x=x.reshape(*shape[:-1],self.d.count,self.d.basis_count,8)
         out=np.empty_like(x)
-        out[...,self.image,:,:]=np.einsum('pab,...pbc,pdc->...pad',self.basis,x,self.components,optimize=True)
+        for start in range(0,self.d.count,8192):
+            ids=slice(start,min(start+8192,self.d.count))
+            out[...,self.image[ids],:,:]=np.einsum('pab,...pbc,pdc->...pad',self.basis[ids],x[...,ids,:,:],self.components[ids],optimize=True)
         return out.reshape(shape)
 
     def inverse(self,x):
         x=np.asarray(x,complex);shape=x.shape;x=x.reshape(*shape[:-1],self.d.count,self.d.basis_count,8)
-        out=np.einsum('pba,...pbc,pcd->...pad',self.basis,x[...,self.image,:,:],self.components,optimize=True)
+        out=np.empty_like(x)
+        for start in range(0,self.d.count,8192):
+            ids=slice(start,min(start+8192,self.d.count))
+            out[...,ids,:,:]=np.einsum('pba,...pbc,pcd->...pad',self.basis[ids],x[...,self.image[ids],:,:],self.components[ids],optimize=True)
         return out.reshape(shape)
 
 
@@ -105,7 +131,7 @@ class CyclicGeometry:
         for transform in self.transforms:
             pulled=np.ascontiguousarray(transform.inverse(x));part=np.empty((len(x),self.size),complex)
             if reference:
-                if len(x)>1 and self.d.reference_checks=='batch' and hasattr(lib,'dirac_apply_rows_reference_batch'):
+                if len(x)>1 and self.d.reference_checks in ('batch','packed') and hasattr(lib,'dirac_apply_rows_reference_batch'):
                     check(lib.dirac_apply_rows_reference_batch(self.d.p,len(x),address(pulled),len(self.rows),address(self.rows),address(part)))
                 else:
                     for j in range(len(x)):check(lib.dirac_apply_rows_reference(self.d.p,address(pulled[j]),len(self.rows),address(self.rows),address(part[j])))
@@ -174,9 +200,8 @@ def solve_modal_batch(parent,geometry,incidents,modal,tol=1e-8,tile=256,precondi
         def __init__(self):
             self.size=geometry.size;self._dense_kernel=parent._dense_kernel;self._correction_only=False;self._matrix_free=getattr(parent,'_matrix_free',False)
             self.acceleration=dict(parent.acceleration);self.acceleration['inverse_s']=0.
-            factors,pivots=parent._dense_factors
-            self.lu=np.ascontiguousarray(factors[geometry.representatives]);self.piv=np.ascontiguousarray(pivots[geometry.representatives])
-            self.cache={};self._dense_inverse=self.inverse
+            self.lu,self.piv=parent.panel_factors(geometry.representatives)
+            self.cache={};self.packed_stats=None;self._dense_inverse=self.inverse
         def _batch_rhs(self,f):return (f.reshape(len(f),-1,8)*(2*parent.scaling[2])).reshape(f.shape)
         def inverse(self,x):
             x=np.ascontiguousarray(x);out=np.empty_like(x);t=time.perf_counter()
@@ -197,6 +222,12 @@ def solve_modal_batch(parent,geometry,incidents,modal,tol=1e-8,tile=256,precondi
         def _batch_reference(self,x,j):
             self.cache[j]=parent.apply_reference(geometry.expand_mode(x,modal[j]));return geometry.restrict(self.cache[j])
         def _batch_references(self,x,indices):
+            if parent.reference_checks=='packed':
+                from packed_reference import apply_packed
+                selected=[modal[j] for j in indices]
+                checked,self.packed_stats=apply_packed(geometry,x,selected)
+                for j,value,mode in zip(indices,checked,selected):self.cache[j]=geometry.expand_mode(value,mode)
+                return checked
             full=np.ascontiguousarray([geometry.expand_mode(v,modal[j]) for v,j in zip(x,indices)])
             checked=parent.apply_reference_batch(full)
             for j,value in zip(indices,checked):self.cache[j]=value
@@ -214,6 +245,9 @@ def solve_modal_batch(parent,geometry,incidents,modal,tol=1e-8,tile=256,precondi
             'independent full-space FP64; orbit cache audited against direct quadratures' if parent._compact_geometry is not None else 'full original stored FP64 operator')
         s.update(sector_coarse_basis=preconditioner.coarse_basis if preconditioner is not None else 0,
                  coarse_setup_s=coarse_setup_s/len(stats))
+        if op.packed_stats is not None:
+            s['packed_reference']=op.packed_stats
+            s['residual_scope']=op.packed_stats['scope']
         if not np.isfinite(residual) or residual>tol*1.01:raise RuntimeError('full FP64 cyclic residual failed '+str(s))
     wall=time.perf_counter()-start
     for s in stats:s.update(seconds=wall/len(stats),batch_wall_s=wall)
