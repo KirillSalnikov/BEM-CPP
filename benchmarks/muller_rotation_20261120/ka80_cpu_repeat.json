@@ -1,0 +1,22 @@
+[
+  {
+    "candidate": false,
+    "seconds": 16.219588264997583,
+    "relative_native_error": 1.4832747183390893e-05
+  },
+  {
+    "candidate": true,
+    "seconds": 7.925383898997097,
+    "relative_native_error": 4.728570274892263e-05
+  },
+  {
+    "candidate": true,
+    "seconds": 7.930811594000261,
+    "relative_native_error": 4.728570274892263e-05
+  },
+  {
+    "candidate": false,
+    "seconds": 16.30066860200168,
+    "relative_native_error": 1.4832747183390893e-05
+  }
+]

@@ -14,6 +14,23 @@ class PipelineTest(unittest.TestCase):
         self.modal=modes(12)
         self.group=[self.modal.index((p,8,m)) for m in range(6) for p in (0,1)]
 
+    def test_separable_incident_fields_on_and_near_axes_and_dual_polarizations(self):
+        points=np.vstack((self.points,[[1e-10,0.,-1.],[0.,-2e-9,1.]]))
+        modes=[(p,80,m) for m in (0,1,-1,-3,37,-80) for p in (0,1)]
+        for kind,indices in [('packed',[0,1,2,3,4,5,6,7]),('single',[3,2]),
+                             ('single',[5]),('single',[8,10]),('single',[11,1])]:
+            shape=(2,len(points),6)
+            reference=np.empty(shape,complex)
+            optimized=np.empty_like(reference)
+            basic=IncidentPreparation(points,modes,80,reference,cache=False)
+            compact=IncidentPreparation(points,modes,80,optimized,separable=True)
+            a=basic.get(kind,indices,kind=='packed')
+            b=compact.get(kind,indices,kind=='packed')
+            np.testing.assert_allclose(optimized,reference,rtol=3e-12,atol=3e-14)
+            np.testing.assert_allclose(a[0],b[0],rtol=3e-13)
+            if kind=='packed':
+                np.testing.assert_allclose(a[1],b[1],rtol=3e-13)
+
     def test_discarded_payload_is_regenerated_for_both_polarizations_and_packing(self):
         owner=IncidentFieldBuffer(len(self.points),releasable=True)
         prep=IncidentPreparation(self.points,self.modal,7.3,owner.fields,cache=False)

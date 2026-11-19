@@ -1,0 +1,54 @@
+{
+  "parameters": {
+    "degree": 7,
+    "edge": 8,
+    "stride": 2,
+    "groups": [
+      1,
+      2,
+      4,
+      5
+    ]
+  },
+  "setup_seconds": 2.19077438700333,
+  "stream_bytes_previous": 9510484728,
+  "stream_bytes_candidate": 6295563000,
+  "rows": [
+    {
+      "input": "random",
+      "m": 1,
+      "cpu_s_False": 12.957512943001348,
+      "previous_native_error": 4.728570274892263e-05,
+      "cpu_s_True": 6.827611264001462,
+      "relative_change": 6.894160469528288e-05,
+      "native_error": 8.272290142485872e-05
+    },
+    {
+      "input": "smooth",
+      "m": 0,
+      "cpu_s_False": 8.646533517996431,
+      "previous_native_error": 0.00024760395172052085,
+      "cpu_s_True": 6.713517364005384,
+      "relative_change": 0.0008866589632816613,
+      "native_error": 0.0009089882369153202
+    },
+    {
+      "input": "random",
+      "m": -1,
+      "cpu_s_False": 12.696728349001205,
+      "previous_native_error": 4.664232983486727e-05,
+      "cpu_s_True": 11.425330633006524,
+      "relative_change": 6.924921763129532e-05,
+      "native_error": 8.280032488983124e-05
+    },
+    {
+      "input": "smooth",
+      "m": -1,
+      "cpu_s_False": 12.841878687002463,
+      "previous_native_error": 0.00026432450977154076,
+      "cpu_s_True": 11.584462703998724,
+      "relative_change": 0.0008702808408997953,
+      "native_error": 0.0008970106719061732
+    }
+  ]
+}

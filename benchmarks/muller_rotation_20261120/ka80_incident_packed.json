@@ -1,0 +1,105 @@
+{
+  "points": 9864192,
+  "mode": "packed",
+  "modes": [
+    [
+      0,
+      80,
+      0
+    ],
+    [
+      1,
+      80,
+      0
+    ],
+    [
+      0,
+      80,
+      1
+    ],
+    [
+      1,
+      80,
+      1
+    ],
+    [
+      0,
+      80,
+      2
+    ],
+    [
+      1,
+      80,
+      2
+    ],
+    [
+      0,
+      80,
+      3
+    ],
+    [
+      1,
+      80,
+      3
+    ],
+    [
+      0,
+      80,
+      4
+    ],
+    [
+      1,
+      80,
+      4
+    ],
+    [
+      0,
+      80,
+      5
+    ],
+    [
+      1,
+      80,
+      5
+    ]
+  ],
+  "threads": 8,
+  "runs": [
+    {
+      "candidate": false,
+      "setup_s": 3.126006049569696e-06,
+      "prepare_s": 55.563259672999266,
+      "repeat": 0,
+      "relative_error": 0.0,
+      "max_absolute_error": 0.0,
+      "scale_error": 0.0,
+      "combined_scale_error": 0.0
+    },
+    {
+      "candidate": true,
+      "setup_s": 2.279313786995772,
+      "prepare_s": 16.040181178002967,
+      "repeat": 0,
+      "relative_error": 5.694329775160139e-16,
+      "max_absolute_error": 2.1556631856153973e-15,
+      "scale_error": 2.220446049250313e-16,
+      "combined_scale_error": 0.0,
+      "unique_radii": 1179309,
+      "unique_theta": 1269429,
+      "retained_cache_bytes": 245621160
+    },
+    {
+      "candidate": true,
+      "setup_s": 2.279313786995772,
+      "prepare_s": 16.396879488995182,
+      "repeat": 1,
+      "relative_error": 5.694329775160139e-16,
+      "max_absolute_error": 2.1556631856153973e-15,
+      "scale_error": 2.220446049250313e-16,
+      "combined_scale_error": 0.0,
+      "unique_radii": 1179309,
+      "unique_theta": 1269429,
+      "retained_cache_bytes": 245621160
+    }
+  ]
+}

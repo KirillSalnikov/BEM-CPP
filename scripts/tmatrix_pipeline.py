@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 import time
 import numpy as np
 import mmap
-from tmatrix_incident import regular_fields, RegularFieldCache
+from tmatrix_incident import fill_regular_field, RegularFieldCache, SeparableFieldCache
 from tmatrix_c6 import encode_fields
 
 
@@ -30,9 +30,10 @@ class IncidentFieldBuffer:
 
 
 class IncidentPreparation:
-    def __init__(self, positions, modal, ka, fields, cache=True, prefetch=False):
+    def __init__(self, positions, modal, ka, fields, cache=True, prefetch=False, separable=False):
         self.positions,self.modal,self.ka,self.fields=positions,modal,ka,fields
-        self.cache=RegularFieldCache(positions,ka) if cache else None
+        self.cache=(SeparableFieldCache if separable else RegularFieldCache)(positions,ka) if cache else None
+        self.separable=separable
         self.executor=ThreadPoolExecutor(max_workers=1,thread_name_prefix='incident') if prefetch else None
         self.pending=None
 
@@ -48,12 +49,19 @@ class IncidentPreparation:
             pair=group if len(group)==2 else group*2
             scales=[]
             for slot,index in enumerate(pair):
+                if self.separable and slot==1 and self.modal[index][1:]==self.modal[pair[0]][1:]:
+                    first,second=self.fields
+                    if self.modal[index][0]==self.modal[pair[0]][0]:
+                        second[:]=first
+                    else:
+                        np.multiply(first[:,3:],1j,out=second[:,:3])
+                        np.multiply(first[:,:3],-1j,out=second[:,3:])
+                    scales.append(scales[0])
+                    continue
                 if self.cache is not None:
                     self.cache.fill(self.modal[index],self.fields[slot])
                 else:
-                    for point in range(0,len(self.positions),65536):
-                        self.fields[slot,point:point+65536]=regular_fields(
-                            self.positions[point:point+65536],self.modal[index],self.ka)
+                    fill_regular_field(self.positions, self.modal[index], self.ka, self.fields[slot])
                 scale=float(np.max(np.abs(self.fields[slot])))
                 if not np.isfinite(scale) or scale<1e-280:
                     raise RuntimeError('regular-wave field underflow; reduce order or change normalization')

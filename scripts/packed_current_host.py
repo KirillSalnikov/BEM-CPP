@@ -36,16 +36,35 @@ class PackedHostCurrentCSR:
         self.pool=ThreadPoolExecutor(max_workers=1,thread_name_prefix='bem-local');self.pending=None
         self.copied=torch.cuda.Event();self.used=False
 
-    def begin(self,x):
+    def enable_rotation(self,perm,sign):
+        from prism_fft_rotation import local_rotation_rows
+        self.rotation_rows=local_rotation_rows(perm,sign)
+        self.host_bytes+=sum(table.nbytes for table in self.rotation_rows)
+        self.rotated=self.library.bem_packed_current_rotated
+        self.rotated.argtypes=self.function.argtypes+[ctypes.c_void_p,ctypes.c_int]+[ctypes.c_void_p]*3
+        self.rotated.restype=None
+
+    def begin(self,x,mode=-1,host_input=None):
         if self.pending is not None:raise RuntimeError('Host local action is already running')
         if x.shape!=self.gpu.shape or x.dtype!=self.gpu.dtype:raise ValueError('Host local input mismatch')
         if self.used:self.copied.synchronize()
-        self.input.copy_(x,non_blocking=False)
-        self.pending=self.pool.submit(self.function,self.n,self.rows.ctypes.data,self.columns.ctypes.data,
-            self.values.ctypes.data,self.input.data_ptr(),self.output.data_ptr(),self.threads)
+        if host_input is None:
+            self.input.copy_(x,non_blocking=False)
+            host_input=self.input
+        elif host_input.device.type!='cpu' or host_input.shape!=x.shape or host_input.dtype!=x.dtype or not host_input.is_contiguous():
+            raise ValueError('Invalid CPU mirror of local action input')
+        self.input_owner=host_input
+        args=(self.n,self.rows.ctypes.data,self.columns.ctypes.data,self.values.ctypes.data,
+              host_input.data_ptr(),self.output.data_ptr(),self.threads)
+        if mode<0:
+            self.pending=self.pool.submit(self.function,*args)
+        else:
+            reps,owner,ids,phases=self.rotation_rows
+            self.pending=self.pool.submit(self.rotated,*args,reps.ctypes.data,len(reps),owner.ctypes.data,
+                                         ids.ctypes.data,phases[mode].ctypes.data)
 
     def finish(self):
         if self.pending is None:raise RuntimeError('Host local action was not started')
-        self.pending.result();self.pending=None
+        self.pending.result();self.pending=None;self.input_owner=None
         self.gpu.copy_(self.output,non_blocking=True);self.copied.record();self.used=True
         return self.gpu

@@ -177,7 +177,7 @@ class LargeRunTest(unittest.TestCase):
             args=['runner','--out',temp,'--order','4','--sector-gmres','--orbit-nodes','100','--circulant-blend','.25',
                   '--sector-recycle-rank','8','--sector-recycle-mask','130','--vertical-preconditioner',
                   '--opposite-face-weight','.5','--opposite-face-mask','2',
-                  '--inner-local-coordinates','--sector-projected-factor','.25','--sector-first-pass-factor','8']
+                  '--inner-local-coordinates','--sector-projected-factor','.25','--sector-first-pass-factor','8','--sector-adaptive-check']
             with patch.object(sys,'argv',args), patch.object(runner,'frozen_runtime'), \
                  patch.object(runner.shutil,'disk_usage',return_value=SimpleNamespace(free=1024*2**30)), \
                  patch.object(runner.psutil,'virtual_memory',return_value=SimpleNamespace(available=60*2**30)), \
@@ -201,6 +201,8 @@ class LargeRunTest(unittest.TestCase):
             self.assertEqual(stage.call_args.kwargs['env']['BEM_FMM_P2P_LOCAL_COORDINATES'],'1')
             self.assertEqual(stage.call_args.kwargs['env']['BEM_SECTOR_PROJECTED_FACTOR'],'0.25')
             self.assertEqual(stage.call_args.kwargs['env']['BEM_SECTOR_FIRST_PASS_FACTOR'],'8.0')
+            self.assertTrue(plan['parameters']['sector_adaptive_check'])
+            self.assertIn('--sector-adaptive-check',plan['resume_command'])
             self.assertEqual(plan['parameters']['sector_first_pass_factor'],8.)
             self.assertEqual(plan['resume_command'][plan['resume_command'].index('--sector-first-pass-factor')+1],'8.0')
             self.assertEqual(stage.call_args.kwargs['env']['BEM_CIRCULANT_OPPOSITE_WEIGHT'],'0.5')

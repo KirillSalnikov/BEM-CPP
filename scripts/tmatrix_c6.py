@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 
 import numpy as np
-from tmatrix_incident import regular_fields
+from tmatrix_incident import fill_regular_field, regular_fields, SeparableFieldCache
 from tmatrix_symmetry import c2x_plan, c2x_partner_column
 
 VERSION = 3
@@ -101,16 +101,31 @@ def encode_fields(positions, modal, indices, ka, fields, field_function=regular_
     scales = []
     scratch = np.empty_like(fields[0])
     fields.fill(0)
+    previous = None
     for j, index in enumerate(indices):
+        mode = modal[index]
+        if (isinstance(field_cache, SeparableFieldCache) and previous is not None
+                and previous[1:]==mode[1:] and previous[0]!=mode[0]):
+            # The preceding scratch is normalized. Electromagnetic duality
+            # preserves its maximum and maps (E,H) to (i H,-i E).
+            scales.append(scales[-1])
+            for start in range(0,len(positions),chunk_size):
+                sl = slice(start,start+chunk_size)
+                e,h = scratch[sl,:3],scratch[sl,3:]
+                for slot,weight in enumerate(codes[:,j]):
+                    fields[slot,sl,:3] += (1j*weight)*h
+                    fields[slot,sl,3:] += (-1j*weight)*e
+            previous = None
+            continue
         if field_cache is not None:
             field_cache.fill(modal[index],scratch)
         else:
-            for start in range(0, len(positions), chunk_size):
-                scratch[start:start+chunk_size] = field_function(positions[start:start+chunk_size], modal[index], ka)
+            fill_regular_field(positions, modal[index], ka, scratch, chunk_size, field_function)
         scale = float(np.max(np.abs(scratch)))
         if not np.isfinite(scale) or scale < 1e-280:
             raise RuntimeError('regular-wave field underflow/nonfinite values in C6 packet')
         scales.append(scale)
+        previous = mode
         scratch /= scale
         for start in range(0, len(positions), chunk_size):
             values = scratch[start:start+chunk_size]

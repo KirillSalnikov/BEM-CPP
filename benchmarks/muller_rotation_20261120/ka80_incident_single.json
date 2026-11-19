@@ -1,0 +1,55 @@
+{
+  "points": 9864192,
+  "mode": "single",
+  "modes": [
+    [
+      0,
+      80,
+      0
+    ],
+    [
+      1,
+      80,
+      0
+    ]
+  ],
+  "threads": 8,
+  "runs": [
+    {
+      "candidate": false,
+      "setup_s": 2.4049950297921896e-06,
+      "prepare_s": 8.64827667499776,
+      "repeat": 0,
+      "relative_error": 0.0,
+      "max_absolute_error": 0.0,
+      "scale_error": 0.0,
+      "combined_scale_error": 0.0
+    },
+    {
+      "candidate": true,
+      "setup_s": 2.3900500910021947,
+      "prepare_s": 1.8577061480027623,
+      "repeat": 0,
+      "relative_error": 1.5485108889584871e-16,
+      "max_absolute_error": 5.569934575608038e-16,
+      "scale_error": 0.0,
+      "combined_scale_error": 0.0,
+      "unique_radii": 1179309,
+      "unique_theta": 1269429,
+      "retained_cache_bytes": 245621160
+    },
+    {
+      "candidate": true,
+      "setup_s": 2.3900500910021947,
+      "prepare_s": 1.1697135540016461,
+      "repeat": 1,
+      "relative_error": 1.5485108889584871e-16,
+      "max_absolute_error": 5.569934575608038e-16,
+      "scale_error": 0.0,
+      "combined_scale_error": 0.0,
+      "unique_radii": 1179309,
+      "unique_theta": 1269429,
+      "retained_cache_bytes": 245621160
+    }
+  ]
+}

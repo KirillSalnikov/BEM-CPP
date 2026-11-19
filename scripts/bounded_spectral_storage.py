@@ -158,7 +158,9 @@ class StreamedSpectralBlock:
         if half and half_matrix:raise ValueError('Select factored or dense half storage')
         if batch<1 or not arrays or any(len(a)!=len(arrays[0]) for a in arrays):raise ValueError('Invalid streamed batch/arrays')
         self.arrays=arrays;self.device=device;self.batch=batch;self.half=half;self.half_matrix=half_matrix
-        self.nf=len(arrays[0]);self.pool=pool
+        self.nf=len(arrays[0]);self.pool=pool;self.pinned_batches=None
+        self.transverse=None
+        self.direct_panels=False
         if trim_zero_rank and not half:raise ValueError('Zero-rank trimming requires encoded factors')
         self.batch_ranks=exact_factor_batch_ranks(*arrays[:2],batch,cache_path=rank_cache) if trim_zero_rank else None
         self.transfer_bytes=sum(a.nbytes for a in arrays)
@@ -182,9 +184,87 @@ class StreamedSpectralBlock:
         self.bytes=sum(t.numel()*t.element_size() for slot in self.slots for t in slot['gpu'])
         self.host_bytes=sum(t.numel()*t.element_size() for slot in self.slots for t in slot['host'])
 
+    def batch_sources(self,first):
+        count=min(self.batch,self.nf-first)
+        if self.batch_ranks is None:
+            return [a[first:first+count] for a in self.arrays]
+        return factor_batch_views(self.arrays,first,count,self.batch_ranks[first//self.batch])
+
+    def set_batch_ranks(self,ranks):
+        if self.pinned_batches is not None or getattr(self,'transverse',None) or not self.half or len(ranks)!=(self.nf+self.batch-1)//self.batch:
+            raise ValueError('Invalid factor rank schedule')
+        if any(type(r) is not int or not 1<=r<=self.arrays[0].shape[2] for r in ranks):
+            raise ValueError('Invalid retained rank')
+        self.batch_ranks=list(ranks)
+        self.transfer_bytes=sum(a.nbytes for first in range(0,self.nf,self.batch) for a in self.batch_sources(first))
+
+    def set_transverse_lines(self,target,source,guard=0):
+        """Restrict both stored factors before pinning their immutable panels."""
+        import torch
+        if self.pinned_batches is not None or not self.half or self.batch_ranks is None or getattr(self,'transverse',None):
+            raise ValueError('Transverse compression requires a fresh ranked factor block')
+        left,right,scale=self.arrays
+        if target.nx*target.channels*2!=left.shape[1] or source.nx*source.channels*2!=right.shape[2]:
+            raise ValueError('Transverse layout does not match factor dimensions')
+        if type(guard) is not int or not 0<=guard<=self.nf//2:
+            raise ValueError('Invalid transverse frequency guard')
+        self.compact_panels=[target.compact_batch(first,self.batch,self.nf,guard)
+                             for first in range(0,self.nf,self.batch)]
+        self.transverse=(target,source)
+        self.lift=torch.as_tensor(target.matrix,device=self.device)
+        self.restrict=torch.as_tensor(source.matrix.T.copy(),device=self.device)
+        self.bytes+=self.lift.numel()*self.lift.element_size()+self.restrict.numel()*self.restrict.element_size()
+        self.transfer_bytes=scale.nbytes
+        for j,(rank,compact) in enumerate(zip(self.batch_ranks,self.compact_panels)):
+            dimension=len(target.indices)+len(source.indices) if compact else left.shape[1]+right.shape[2]
+            self.transfer_bytes+=min(self.batch,self.nf-j*self.batch)*rank*dimension*2*left.itemsize
+
+    def enable_direct_panels(self):
+        """Decode streamed factors in registers for one or two right-hand sides."""
+        if not self.half and not (self.half_matrix and self.arrays is not None and self.arrays[0].ndim==5):
+            raise ValueError('Direct panels require encoded factors or packed current blocks')
+        if self.direct_panels:return
+        from spectral_panel_kernel import stencil_table
+        if self.transverse:
+            target,source=self.transverse
+            self.direct_lift=stencil_table(target.matrix,self.device)
+            self.direct_restrict=stencil_table(source.matrix.T,self.device)
+            self.bytes+=sum(t.numel()*t.element_size() for t in self.direct_lift+self.direct_restrict)
+        self.direct_panels=True
+
+    def pin_coefficients(self):
+        """Pack immutable coefficient panels once, then DMA directly from them."""
+        import torch
+        if self.pinned_batches is not None:
+            raise ValueError('Spectral coefficients already pinned')
+        raw=torch.empty(self.transfer_bytes,dtype=torch.uint8,pin_memory=True)
+        batches=[]
+        offset=0
+        for first in range(0,self.nf,self.batch):
+            panels=[]
+            sources=self.batch_sources(first)
+            if getattr(self,'transverse',None) and self.compact_panels[first//self.batch]:
+                left,right,scale=sources
+                target,source_lines=self.transverse
+                sources=(np.take(left,target.indices,axis=1),np.take(right,source_lines.indices,axis=2),scale)
+            for a in sources:
+                source=torch.from_numpy(a)
+                target=raw[offset:offset+a.nbytes].view(source.dtype).view(a.shape)
+                target.copy_(source)
+                panels.append(target)
+                offset+=a.nbytes
+            batches.append(panels)
+        if offset!=self.transfer_bytes:
+            raise ValueError('Pinned coefficient length mismatch')
+        self.pinned_batches=batches
+        self.host_bytes+=offset
+        self.arrays=None
+
     def __call__(self, spectrum, rows):
         import torch
         if len(spectrum)!=self.nf:raise ValueError('Spectral frequency count mismatch')
+        if self.transverse and self.pinned_batches is None:
+            raise RuntimeError('Pin the compact transverse factors before applying them')
         current=torch.cuda.current_stream(self.device)
         slots=self.pool.views(self.spec) if self.pool is not None else self.slots
         if self.pool is None:
@@ -192,8 +272,17 @@ class StreamedSpectralBlock:
                 for value in slot['gpu']:value.record_stream(current)
         result=torch.empty((self.nf,rows,spectrum.shape[-1]),dtype=spectrum.dtype,device=self.device)
         def load(slot,first):
-            if slot['used']:slot['consumed'].synchronize()
             count=min(self.batch,self.nf-first)
+            if self.pinned_batches is not None:
+                host=self.pinned_batches[first//self.batch]
+                gpu=[a.reshape(-1)[:s.numel()].view(s.shape) for a,s in zip(slot['gpu'],host)]
+                with torch.cuda.stream(self.copy_stream):
+                    if slot['used']:self.copy_stream.wait_event(slot['consumed'])
+                    for target,source in zip(gpu,host):target.copy_(source,non_blocking=True)
+                    slot['ready'].record(self.copy_stream)
+                slot['active_gpu']=gpu
+                return count
+            if slot['used']:slot['consumed'].synchronize()
             if self.batch_ranks is None:
                 sources=[source[first:first+count] for source in self.arrays]
                 host=[a[:count] for a in slot['host']];gpu=[a[:count] for a in slot['gpu']]
@@ -216,11 +305,31 @@ class StreamedSpectralBlock:
             if next_first<self.nf:next_count=load(slots[(number+1)%2],next_first)
             current.wait_event(slot['ready']);data=slot['active_gpu']
             if self.half:
-                left,right=[torch.view_as_complex(a.float()) for a in data[:2]]
-                result[first:first+count]=torch.bmm(left,torch.bmm(right,spectrum[first:first+count]))*data[2]
+                source=spectrum[first:first+count]
+                direct=self.direct_panels and source.shape[-1]<=2
+                if direct:
+                    from spectral_panel_kernel import half_product,interpolate
+                compact=self.transverse and self.compact_panels[number]
+                if compact:
+                    target,source_lines=self.transverse
+                    source=(interpolate(source,self.direct_restrict,source_lines.channels) if direct else
+                            source_lines.apply(source,self.restrict,source_lines.channels))
+                if direct:
+                    product=half_product(data[0],half_product(data[1],source))*data[2]
+                else:
+                    left,right=[torch.view_as_complex(a.float()) for a in data[:2]]
+                    product=torch.bmm(left,torch.bmm(right,source))*data[2]
+                if compact:
+                    product=(interpolate(product,self.direct_lift,target.channels) if direct else
+                             target.apply(product,self.lift,target.channels))
+                result[first:first+count]=product
             elif self.half_matrix:
-                symbol=decode_half_symbol(data[0])
-                result[first:first+count]=torch.bmm(symbol,spectrum[first:first+count])*data[1]
+                if self.direct_panels and spectrum.shape[-1]<=2:
+                    from spectral_panel_kernel import current_product
+                    result[first:first+count]=current_product(data[0],data[1],spectrum[first:first+count])
+                else:
+                    symbol=decode_half_symbol(data[0])
+                    result[first:first+count]=torch.bmm(symbol,spectrum[first:first+count])*data[1]
             else:torch.bmm(data[0],spectrum[first:first+count],out=result[first:first+count])
             slot['consumed'].record(current);slot['used']=True
             if next_first<self.nf:count=next_count

@@ -12,6 +12,24 @@ from symmetric_galerkin_fft import TorchSymmetricAction
 
 
 class HalfSymbolTests(unittest.TestCase):
+    def test_packed_rank_plan_preserves_selected_panels(self):
+        # Exercise the packing layout on a CPU-only host. GPU DMA is covered
+        # by the asynchronous test with alternating inputs below.
+        rng=np.random.default_rng(631)
+        block=StreamedSpectralBlock.__new__(StreamedSpectralBlock)
+        block.half=True;block.nf=5;block.batch=2;block.pinned_batches=None;block.host_bytes=0
+        block.arrays=[rng.normal(size=s).astype(t) for s,t in [
+            ((5,7,4,2),'f2'),((5,4,6,2),'f2'),((5,1,1),'f4')]]
+        block.set_batch_ranks([1,4,2])
+        expected=[[a.copy() for a in block.batch_sources(i)] for i in (0,2,4)]
+        empty=torch.empty
+        with patch('torch.empty',side_effect=lambda *args,**kw:empty(*args,dtype=kw['dtype'])):
+            block.pin_coefficients()
+        self.assertEqual(block.transfer_bytes,sum(a.nbytes for group in expected for a in group))
+        self.assertIsNone(block.arrays)
+        for group,targets in zip(expected,block.pinned_batches):
+            for a,t in zip(group,targets):np.testing.assert_array_equal(a,t.numpy())
+
     def test_zero_rank_cache_invalidated_by_factor_change(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp=Path(tmp);cache=tmp/'ranks.json'
@@ -82,6 +100,21 @@ class HalfSymbolTests(unittest.TestCase):
 
 @unittest.skipUnless(torch.cuda.is_available(),'CUDA required for asynchronous storage')
 class BoundedStorageTests(unittest.TestCase):
+    def test_pinned_rank_panels_repeat_on_shared_slots(self):
+        rng=np.random.default_rng(500)
+        arrays=[rng.normal(size=s).astype(t) for s,t in [
+            ((5,7,4,2),'f2'),((5,4,6,2),'f2'),((5,1,1),'f4')]]
+        pool=SharedStreamBuffers('cuda')
+        baseline=StreamedSpectralBlock(arrays,device='cuda',batch=2,half=True,pool=pool)
+        candidate=StreamedSpectralBlock(arrays,device='cuda',batch=2,half=True,pool=pool)
+        for block in (baseline,candidate):block.set_batch_ranks([2,4,1])
+        candidate.pin_coefficients()
+        outputs=[]
+        for _ in range(5):
+            x=torch.randn(5,6,3,device='cuda',dtype=torch.complex64)
+            outputs.append((baseline(x,7),candidate(x,7)))
+        for a,b in outputs:torch.testing.assert_close(a,b,atol=0,rtol=0)
+
     def test_trimmed_rank_shared_async_buffers(self):
         rng=np.random.default_rng(912)
         array=lambda shape:np.asarray(rng.normal(size=shape)+1j*rng.normal(size=shape),np.complex64)

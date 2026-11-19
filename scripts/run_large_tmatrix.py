@@ -30,12 +30,12 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ('run_large_tmatrix.py', 'bounded_bem_run.py', 'build_fmm_tmatrix.py', 'tmatrix_neural_prior.py',
            'tmatrix_reference.py', 'tmatrix_incident.py', 'tmatrix_projection.py',
            'tmatrix_so3_mstm.py', 'tmatrix_symmetry.py', 'tmatrix_c6.py', 'study_tmatrix_cutoff.py', 'select_tmatrix_order.py', 'tmatrix_checkpoint_migration.py','tmatrix_pipeline.py', 'tmatrix_order_shell.py', 'tmatrix_reciprocal_extension.py', 'complete_tmatrix_order_shell.py')
-SCRIPTS += ('compressed_fft_service.py','symmetric_galerkin_fft.py','closed_galerkin_fft.py',
+SCRIPTS += ('prism_fft_rotation.py','compressed_fft_service.py','symmetric_galerkin_fft.py','closed_galerkin_fft.py',
             'galerkin_cross_fft.py','streamed_galerkin_fft.py','tiled_galerkin_fft.py',
             'compressed_galerkin_fft.py','surface_symmetry.py','regular_surface_geometry.py')
 SCRIPTS += ('mbs_particle_geometry.py','scattering_frame.py')
 SCRIPTS += ('packed_current_csr.py','packed_current_csr_kernel.py','bounded_spectral_storage.py')
-SCRIPTS += ('packed_current_host.py','packed_current_cpu.cpp')
+SCRIPTS += ('packed_current_host.py','packed_current_cpu.cpp','transverse_fft_interpolation.py','spectral_panel_kernel.py')
 SCRIPTS += ('recompress_spectral_factors.py',)
 BINARIES = ('muller_tmatrix_fmm_server', 'tmatrix_so3_mstm', 'tmatrix_so3_mstm_fp32')
 GEOMETRY_DATA = ('mbs_fixed_aggregate.json',)
@@ -225,7 +225,9 @@ def main():
     parser.add_argument('--restart', type=int, default=80)
     parser.add_argument('--strict-interval', type=int, default=4)
     parser.add_argument('--incident-prefetch', action='store_true')
-    parser.add_argument('--no-incident-cache', action='store_true')
+    incident_cache=parser.add_mutually_exclusive_group()
+    incident_cache.add_argument('--no-incident-cache', action='store_true')
+    incident_cache.add_argument('--separable-incident-cache', action='store_true',help='Cache distinct radial and polar arguments for modal incident fields')
     parser.add_argument('--release-incident-buffer', action='store_true')
     parser.add_argument('--hybrid-cpu', action='store_true', help='Overlap two T packets with independent CPU FP64 gates')
     parser.add_argument('--gpu-assembly', action='store_true', help='Assemble operator actions on GPU, including with host sector GMRES')
@@ -254,6 +256,7 @@ def main():
     parser.add_argument('--vertical-preconditioner',action='store_true',help='Complete the inverse symmetry to D6h')
     parser.add_argument('--inner-local-coordinates',action='store_true',help='Use local coordinates in mixed near interactions')
     parser.add_argument('--sector-projected-factor',type=float,default=.5)
+    parser.add_argument('--sector-adaptive-check',action='store_true',help='Allow one extra restart cycle near tolerance after a strict residual replacement')
     parser.add_argument('--sector-first-pass-factor',type=float,default=0,help='Coarser first inner target; zero preserves the original target')
     parser.add_argument('--cutoff-orders', type=int, nargs='+', help='Analytic truncation controls after completion')
     parser.add_argument('--tol', type=float, default=1e-5)
@@ -286,6 +289,7 @@ def main():
         parser.error('sector recycling needs sector GMRES, rank 0..64 and mask 0..4095')
     if not 0<args.sector_projected_factor<=.5 or (args.vertical_preconditioner or args.sector_projected_factor!=.5) and not args.sector_gmres:
         parser.error('vertical inverse and projected factor (0,.5] require sector GMRES')
+    if args.sector_adaptive_check and not args.sector_gmres:parser.error('adaptive sector checks require sector GMRES')
     if not 0<=args.sector_first_pass_factor<=64 or args.sector_first_pass_factor and not args.sector_gmres:
         parser.error('first pass factor requires sector GMRES and a value in [0,64]')
     if not 0<=args.wave_rank<=512 or args.wave_rank%4 or args.mbj_overlap<0:
@@ -344,6 +348,7 @@ def main():
     if args.vertical_preconditioner:profile['BEM_TMATRIX_VERTICAL_PRECONDITIONER']='1'
     if args.inner_local_coordinates:profile['BEM_FMM_P2P_LOCAL_COORDINATES']='1'
     if args.sector_projected_factor!=.5:profile['BEM_SECTOR_PROJECTED_FACTOR']=str(args.sector_projected_factor)
+    if args.sector_adaptive_check:profile['BEM_SECTOR_ADAPTIVE_CHECK']='1'
     if args.sector_first_pass_factor:profile['BEM_SECTOR_FIRST_PASS_FACTOR']=str(args.sector_first_pass_factor)
     env.update(profile, BEM_SO3_TMPDIR=str(out/'scratch'))
     counts = task_counts(args.order)
@@ -367,6 +372,7 @@ def main():
     if args.vertical_preconditioner:parameters['vertical_preconditioner']=True
     if args.inner_local_coordinates:parameters['inner_local_coordinates']=True
     if args.sector_projected_factor!=.5:parameters['sector_projected_factor']=args.sector_projected_factor
+    if args.sector_adaptive_check:parameters['sector_adaptive_check']=True
     if args.sector_first_pass_factor:parameters['sector_first_pass_factor']=args.sector_first_pass_factor
     command = [sys.executable, str(runtime/'scripts/build_fmm_tmatrix.py'),
         '--shape', 'prism', '--ref', str(args.ref), '--ka', str(args.ka), '--ri', str(args.ri),
@@ -380,6 +386,7 @@ def main():
     if args.angular_band: command+=['--angular-band',str(args.angular_band)]
     if args.incident_prefetch:command+=['--incident-prefetch']
     if args.no_incident_cache:command+=['--no-incident-cache']
+    if args.separable_incident_cache:command+=['--separable-incident-cache']
     if args.release_incident_buffer:command+=['--release-incident-buffer']
     if args.hybrid_cpu:command+=['--hybrid-cpu']
     if args.adaptive_tight_tol is not None:
@@ -411,6 +418,7 @@ def main():
     if args.opposite_face_weight:plan['resume_command']+=['--opposite-face-weight',str(args.opposite_face_weight),'--opposite-face-mask',str(args.opposite_face_mask)]
     if args.incident_prefetch:plan['resume_command']+=['--incident-prefetch']
     if args.no_incident_cache:plan['resume_command']+=['--no-incident-cache']
+    if args.separable_incident_cache:plan['resume_command']+=['--separable-incident-cache']
     if args.release_incident_buffer:plan['resume_command']+=['--release-incident-buffer']
     if args.hybrid_cpu:plan['resume_command']+=['--hybrid-cpu']
     if args.adaptive_tight_tol is not None:plan['resume_command']+=['--adaptive-tight-tol',str(args.adaptive_tight_tol)]
@@ -423,6 +431,7 @@ def main():
     if args.vertical_preconditioner:plan['resume_command']+=['--vertical-preconditioner']
     if args.inner_local_coordinates:plan['resume_command']+=['--inner-local-coordinates']
     if args.sector_projected_factor!=.5:plan['resume_command']+=['--sector-projected-factor',str(args.sector_projected_factor)]
+    if args.sector_adaptive_check:plan['resume_command'].append('--sector-adaptive-check')
     if args.sector_first_pass_factor:plan['resume_command']+=['--sector-first-pass-factor',str(args.sector_first_pass_factor)]
     if args.worker_binary:plan['resume_command']+=['--worker-binary',str(args.worker_binary.resolve())]
     if args.farfield_backend=='face_nufft':

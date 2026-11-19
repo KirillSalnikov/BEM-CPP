@@ -2,6 +2,8 @@
 #define BEM_STREAMING_SECTOR_GMRES_H
 #include "streaming_host_gmres.h"
 #include <array>
+#include <cstdlib>
+#include <cstring>
 
 namespace bem_streaming {
 // Separate GCRO spaces for the irreducible symmetry sectors. The stored
@@ -34,6 +36,12 @@ struct SectorResult:HostResult {
     std::array<int,12> sector_iterations{};
     size_t basis_peak_bytes=0;
 };
+inline bool adaptive_sector_checks() {
+    const char* value=std::getenv("BEM_SECTOR_ADAPTIVE_CHECK");
+    if(!value || std::strcmp(value,"0")==0)return false;
+    if(std::strcmp(value,"1")==0)return true;
+    throw std::invalid_argument("BEM_SECTOR_ADAPTIVE_CHECK must be 0 or 1");
+}
 // All sectors share one batched operator call, but retain independent Arnoldi
 // coefficients and stopping tests. The action is already right-preconditioned
 // in unitary symmetry coordinates. Small symmetry defects are corrected by
@@ -60,6 +68,7 @@ inline SectorResult sector_gmres(const Action& action,const Action& strict,
     std::array<State,12> states;
     for(auto& q:states){q.h.resize(size_t(restart+1)*restart);q.c.resize(restart);q.s.resize(restart);q.g.resize(restart+1);q.y.resize(restart);q.rc.resize(restart+1);if(recycle)q.raw_h.resize(q.h.size());}
     const double target=tol*bn/std::sqrt(12.);int cycles=0;bool use_recycle=true;
+    const bool adaptive_checks=adaptive_sector_checks();
     double inner_factor=first_pass_factor>0?first_pass_factor:projected_factor;
     const auto check_strict=[&]() {
         const auto before=std::chrono::steady_clock::now();strict(x,w.data());
@@ -67,9 +76,10 @@ inline SectorResult sector_gmres(const Action& action,const Action& strict,
         for(int i=0;i<n;++i)r[i]=b[i]-w[i];
         result.residual=norm(r.data(),n)/bn;
         if(!std::isfinite(result.residual))throw std::runtime_error("nonfinite sector residual");
-        // A coarse first pass is only an inner stopping rule. After the
-        // first true residual, every correction uses the original target.
-        inner_factor=projected_factor;
+        // A correction starts with the residual of the original operator.
+        // Try the next gate closer to tolerance. If a near-target candidate
+        // fails the gate, return to the conservative projected tolerance.
+        inner_factor=adaptive_checks && result.residual>4*tol ? 1.7*projected_factor : projected_factor;
         if(verbose)std::printf("  [sector GMRES] full FP64 residual %.6e\n",result.residual);
     };
     while(result.iterations<limit && result.residual>tol) {
@@ -154,7 +164,15 @@ inline SectorResult sector_gmres(const Action& action,const Action& strict,
         }
         double projected2=0;bool any_active=false;
         for(const auto& q:states){projected2+=q.projected*q.projected;any_active=any_active||q.active;}
-        const bool verify=std::sqrt(projected2)<=std::max(1.,inner_factor)*tol*bn || result.iterations>=limit || ++cycles>=strict_interval || !any_active;
+        const double projected_norm=std::sqrt(projected2);
+        ++cycles;
+        // Defer at most one scheduled replacement after anchoring to a true
+        // residual. An early termination, final iteration or near-target
+        // acceptance attempt still performs the original strict action.
+        const bool extend_cycle=adaptive_checks && result.strict_checks>0 &&
+            result.residual>4*tol && cycles==strict_interval && projected_norm<=2*tol*bn;
+        const bool verify=projected_norm<=std::max(1.,inner_factor)*tol*bn ||
+            result.iterations>=limit || !any_active || (cycles>=strict_interval && !extend_cycle);
         for(int s=0;s<12;++s) {
             auto& q=states[s];const int used=q.used;
             for(int row=used-1;row>=0;--row) {

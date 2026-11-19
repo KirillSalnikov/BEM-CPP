@@ -101,5 +101,25 @@ int main()try {
    throw std::runtime_error("sector coarse model bypassed strict check");
   for(int s=1;s<12;++s)if(space.sector(s).rank())throw std::runtime_error("empty sector learned vectors");
  }
+ // At a scheduled restart just outside the tolerance, the extra cycle can
+ // avoid one replacement. The remaining checks still test the original RHS.
+ {
+  const int size=60;
+  std::array<int,13> off;off.fill(size);off[0]=0;
+  std::vector<Complex> rhs(size,1),answer(size),image(size);
+  const Action diag=[&](const Complex* a,Complex* out){
+      for(int i=0;i<size;++i)out[i]=a[i]*(1+15*i/double(size-1));
+  };
+  setenv("BEM_SECTOR_ADAPTIVE_CHECK","0",1);
+  const auto control=sector_gmres(diag,diag,rhs.data(),answer.data(),off,4,2e-6,300,false,2);
+  setenv("BEM_SECTOR_ADAPTIVE_CHECK","1",1);
+  const auto candidate=sector_gmres(diag,diag,rhs.data(),answer.data(),off,4,2e-6,300,false,2);
+  diag(answer.data(),image.data());
+  for(int i=0;i<size;++i)image[i]-=rhs[i];
+  const double measured=norm(image.data(),size)/norm(rhs.data(),size);
+  if(candidate.strict_checks>=control.strict_checks || candidate.iterations>control.iterations ||
+     measured>2e-6 || std::abs(candidate.residual-measured)>1e-13)
+      throw std::runtime_error("adaptive sector verification regression");
+ }
  std::puts("Independent sector Krylov, strict replacement with cross-sector perturbations, zero sectors/RHS and limits passed");return 0;
 }catch(const std::exception& e){std::fprintf(stderr,"%s\n",e.what());return 1;}

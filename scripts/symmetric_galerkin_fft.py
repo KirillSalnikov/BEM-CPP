@@ -276,11 +276,23 @@ class TorchSymmetricAction:
         self.local_storage=local_storage
         self.bytes+=self.local_bytes
 
+    def enable_rotation_folding(self,cpu):
+        from prism_fft_rotation import SingleRotationMode
+        if getattr(self,'rotation_folding',None) is None:
+            self.rotation_folding=SingleRotationMode(cpu,self.device,self.dtype)
+            self.bytes+=self.rotation_folding.bytes
+            if self.local_storage=='host_packed':
+                self.local.enable_rotation(self.rotation_folding.perm.cpu().numpy(),
+                                           self.rotation_folding.sign.cpu().numpy())
+
     @staticmethod
     def symbol_product(group,spectrum,rows):
         import torch
         from bounded_spectral_storage import decode_half_symbol
         if 'streamed' in group:return group['streamed'](spectrum,rows)
+        if group.get('direct_currents') and spectrum.shape[-1]<=2:
+            from spectral_panel_kernel import current_product
+            return current_product(group['symbol_half'],group['symbol_scale'],spectrum)
         if 'symbol_half' not in group:return torch.bmm(group['symbol'].reshape(len(spectrum),rows,-1),spectrum)
         result=torch.empty((len(spectrum),rows,spectrum.shape[-1]),device=spectrum.device,dtype=spectrum.dtype)
         for first in range(0,len(spectrum),512):
@@ -289,12 +301,22 @@ class TorchSymmetricAction:
             result[first:last]=torch.bmm(symbol,spectrum[first:last])*group['symbol_scale'][first:last]
         return result
 
-    def __call__(self,x):
+    def __call__(self,x,*,host_input=None):
         import torch
-        if self.local_storage=='host_packed':self.local.begin(x)
+        folding=getattr(self,'rotation_folding',None)
+        mode=folding.detect(x) if folding is not None else -1
+        if self.local_storage=='host_packed':self.local.begin(x,mode,host_input)
         y=torch.zeros(self.N,device=self.device,dtype=self.dtype)
-        for g in self.groups:
-            op=g['op'];count=g['count'];values=x[g['indices']]*g['signs']
+        for index,g in enumerate(self.groups):
+            op=g['op']
+            plan=folding.plans[index] if mode>=0 else None
+            if plan is None:
+                count=g['count']
+                values=x[g['indices']]*g['signs']
+            else:
+                reps,which,phase=plan
+                count=len(reps)
+                values=x[g['indices'][reps]]*g['signs'][reps]
             if isinstance(op,ParallelGalerkinFFT):
                 values=values.reshape(count,2,op.source.nx,op.sc//2,op.source.ny).permute(0,1,3,2,4).reshape(count,op.sc,op.source.nx,op.source.ny)
                 spectrum=torch.fft.fftn(values,s=(op.nfx,op.nfy),dim=(2,3)).permute(2,3,1,0).reshape(op.nfx*op.nfy,op.sc,count)
@@ -316,6 +338,10 @@ class TorchSymmetricAction:
                         result[first:last]=torch.bmm(left,torch.bmm(right,spectrum[first:last]))*g['factor_scale'][first:last]
                 else:result=torch.bmm(g['left'],torch.bmm(g['right'],spectrum)) if 'left' in g else self.symbol_product(g,spectrum,2*op.tc)
                 values=torch.fft.ifft(result,dim=0)[:op.target.ny].permute(2,1,0).reshape(-1)
+            if plan is not None:
+                expanded=values.reshape(count,-1)[which]
+                expanded*=phase[mode,:,None]
+                values=expanded.reshape(-1)
             y.index_add_(0,g['target_global'],g['target_sign']*values[g['target_local']])
         if self.local_storage=='host_packed':return y+self.local.finish()
         return y+(self.local(x) if self.local_storage=='packed' else torch.sparse.mm(self.local,x[:,None])[:,0])

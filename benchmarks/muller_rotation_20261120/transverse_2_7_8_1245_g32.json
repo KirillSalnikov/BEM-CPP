@@ -1,0 +1,69 @@
+{
+  "parameters": {
+    "degree": 7,
+    "edge": 8,
+    "stride": 2,
+    "guard": 32,
+    "groups": [
+      1,
+      2,
+      4,
+      5
+    ]
+  },
+  "setup_seconds": 1.202947737998329,
+  "stream_bytes_previous": 9510484728,
+  "stream_bytes_candidate": 7091149560,
+  "rows": [
+    {
+      "input": "smooth",
+      "m": 0,
+      "cpu_s_False": 8.944132425000134,
+      "previous_native_error": 0.00024760395172052085,
+      "cpu_s_True": 7.657940593999228,
+      "relative_change": 0.00011064549471484497,
+      "native_error": 0.0002581997832749039
+    },
+    {
+      "input": "smooth",
+      "m": -1,
+      "cpu_s_False": 12.930294126002991,
+      "previous_native_error": 0.00026432450977154076,
+      "cpu_s_True": 12.531818948998989,
+      "relative_change": 0.00011003274994436651,
+      "native_error": 0.00027313840109854937
+    },
+    {
+      "input": "random",
+      "m": 1,
+      "cpu_s_False": 9.03679431600176,
+      "previous_native_error": 4.728570274892263e-05,
+      "cpu_s_True": 7.748199898000166,
+      "relative_change": 1.3484484952641651e-05,
+      "native_error": 4.882053690380417e-05
+    },
+    {
+      "input": "random",
+      "m": -1,
+      "cpu_s_False": 12.434274213002936,
+      "previous_native_error": 4.664232983486727e-05,
+      "cpu_s_True": 10.772342103999108,
+      "relative_change": 1.3940324606664944e-05,
+      "native_error": 4.8332803999073803e-05
+    },
+    {
+      "input": "holdout",
+      "m": 3,
+      "cpu_s_False": 8.006121269994765,
+      "cpu_s_True": 6.617181592999259,
+      "relative_change": 1.2206999599584378e-05
+    },
+    {
+      "input": "holdout",
+      "m": -1,
+      "cpu_s_False": 11.279994141004863,
+      "cpu_s_True": 10.70699071600393,
+      "relative_change": 1.3708410733670462e-05
+    }
+  ]
+}

@@ -137,6 +137,59 @@ def load_operator(case):
                                shared_stream_buffers=config.get('shared_stream_buffers',False),
                                trim_zero_rank=config.get('trim_zero_rank',False),
                                symbol_storage=config.get('symbol_storage','full'),**options)
+    schedule=os.environ.get('BEM_TMATRIX_FFT_RANK_PLAN')
+    if schedule:
+        plan=json.loads(Path(schedule).read_text())
+        if plan['format']!=1 or plan['assets_sha256']!=file_digest(case/'service_assets.json'):
+            raise ValueError('FFT rank plan source mismatch')
+        factored={str(i):g['streamed'] for i,g in enumerate(result.groups)
+                  if 'streamed' in g and g['streamed'].half}
+        if set(plan['ranks'])!=set(factored):
+            raise ValueError('FFT rank plan does not match streamed factor blocks')
+        for key,block in factored.items():
+            if block.batch!=plan['batch']:
+                raise ValueError('FFT rank plan batch mismatch')
+            block.set_batch_ranks(plan['ranks'][key])
+        transverse=plan.get('transverse',{})
+        if not set(transverse)<=set(factored):
+            raise ValueError('Transverse plan contains unknown factor blocks')
+        if transverse:
+            from transverse_fft_interpolation import TransverseLines
+            for key,options in transverse.items():
+                g=result.groups[int(key)]
+                op=g['op']
+                block=factored[key]
+                before=block.bytes
+                options=dict(options)
+                guard=options.pop('guard',0)
+                block.set_transverse_lines(TransverseLines(op.target.nx,2*op.tc,**options),
+                                           TransverseLines(op.source.nx,2*op.sc,**options),guard)
+                result.bytes+=block.bytes-before
+        if plan.get('direct_panels',False):
+            for group in result.groups:
+                block=group.get('streamed')
+                if block is not None and (block.half or (block.half_matrix and block.arrays[0].ndim==5)):
+                    before=block.bytes
+                    block.enable_direct_panels()
+                    result.bytes+=block.bytes-before
+                elif 'symbol_half' in group and group['symbol_half'].ndim==5:
+                    group['direct_currents']=True
+        result.stream_transfer_bytes=sum(g['streamed'].transfer_bytes for g in result.groups if 'streamed' in g)
+    budget=int(os.environ.get('BEM_TMATRIX_FFT_PINNED_BUDGET_MIB','0'))*2**20
+    if budget<0:
+        raise ValueError('Invalid pinned coefficient budget')
+    result.pinned_coefficient_bytes=0
+    for group in result.groups:
+        block=group.get('streamed')
+        if block is not None and block.transfer_bytes<=budget:
+            block.pin_coefficients()
+            budget-=block.transfer_bytes
+            result.pinned_bytes+=block.transfer_bytes
+            result.pinned_coefficient_bytes+=block.transfer_bytes
+        elif block is not None and getattr(block,'transverse',None):
+            raise ValueError('Pinned budget is too small for the transverse plan')
+    if os.environ.get('BEM_TMATRIX_FFT_SINGLE_ROTATION')=='1':
+        result.enable_rotation_folding(cpu)
     torch.cuda.empty_cache()
     return result
 
@@ -163,7 +216,11 @@ def serve(case, socket_path, report_path):
             # Allocate Torch scratch now, before declaring the service ready.
             with torch.inference_mode():gpu(torch.zeros(n,device='cuda',dtype=torch.complex64))
             torch.cuda.synchronize()
-            report.update(status='ready',GPU_operator_bytes=gpu.bytes,setup_s=time.perf_counter()-start)
+            folding=getattr(gpu,'rotation_folding',None)
+            if folding is not None:
+                folding.hits=folding.fallbacks=0
+            report.update(status='ready',GPU_operator_bytes=gpu.bytes,stream_bytes_per_action=gpu.stream_transfer_bytes,
+                          pinned_coefficient_bytes=gpu.pinned_coefficient_bytes,setup_s=time.perf_counter()-start)
             save();connection.sendall(struct.pack('=QQ',MAGIC,n))
             previous=0
             while True:
@@ -186,13 +243,16 @@ def serve(case, socket_path, report_path):
                             'cpu',dtype=torch.complex128).numpy()
                     else:
                         device_input.copy_(compact_input,non_blocking=True)
-                        compact_output.copy_(gpu(device_input),non_blocking=True)
+                        compact_output.copy_(gpu(device_input,host_input=compact_input),non_blocking=True)
                         torch.cuda.current_stream().synchronize()
                         value=compact_output.numpy()
                 if not np.all(np.isfinite(value)):raise ValueError('Nonfinite FFT result')
                 report['action_s']+=time.perf_counter()-begin;report['calls']+=1
                 report['compact_calls']=report.get('compact_calls',0)+(operation==2)
                 connection.sendall(struct.pack('=QQ',sequence,0));connection.sendall(memoryview(value).cast('B'))
+                if getattr(gpu,'rotation_folding',None) is not None:
+                    report['folded_rotation_calls']=gpu.rotation_folding.hits
+                    report['mixed_rotation_calls']=gpu.rotation_folding.fallbacks
                 if report['calls']%32==0:save()
         report.update(status='complete',elapsed_s=time.perf_counter()-start);save()
     except BaseException as error:

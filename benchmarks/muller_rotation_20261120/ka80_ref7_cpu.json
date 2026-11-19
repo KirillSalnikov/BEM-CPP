@@ -1,0 +1,182 @@
+[
+  {
+    "input": "random",
+    "m": 1,
+    "detected": 1,
+    "cut": 0,
+    "seconds_cpu": 15.261167398995894,
+    "relative_native_error": 1.4832558917987626e-05,
+    "change_vs_untrimmed": 0.0
+  },
+  {
+    "input": "random",
+    "m": 1,
+    "detected": 1,
+    "cut": 0.0001,
+    "seconds_cpu": 8.992826431996946,
+    "relative_native_error": 1.755366611178033e-05,
+    "change_vs_untrimmed": 9.370921361551154e-06
+  },
+  {
+    "input": "random",
+    "m": 1,
+    "detected": 1,
+    "cut": 0.0005,
+    "seconds_cpu": 8.135530064995692,
+    "relative_native_error": 4.728570274892263e-05,
+    "change_vs_untrimmed": 4.4898817577632144e-05
+  },
+  {
+    "input": "random",
+    "m": 1,
+    "detected": 1,
+    "cut": 0.001,
+    "seconds_cpu": 7.757195204998425,
+    "relative_native_error": 0.00010561272210907191,
+    "change_vs_untrimmed": 0.0001045462631736882
+  },
+  {
+    "input": "random",
+    "m": 1,
+    "detected": 1,
+    "cut": 0.01,
+    "seconds_cpu": 5.989320535998559,
+    "relative_native_error": 0.0006796241505071521,
+    "change_vs_untrimmed": 0.0006794430664740503
+  },
+  {
+    "input": "smooth",
+    "m": 0,
+    "detected": 0,
+    "cut": 0,
+    "seconds_cpu": 13.98924197499582,
+    "relative_native_error": 0.0001595501962583512,
+    "change_vs_untrimmed": 0.0
+  },
+  {
+    "input": "smooth",
+    "m": 0,
+    "detected": 0,
+    "cut": 0.0001,
+    "seconds_cpu": 9.051021913997829,
+    "relative_native_error": 0.000162014490342699,
+    "change_vs_untrimmed": 2.8006037609884515e-05
+  },
+  {
+    "input": "smooth",
+    "m": 0,
+    "detected": 0,
+    "cut": 0.0005,
+    "seconds_cpu": 7.956990924998536,
+    "relative_native_error": 0.00024760395172052085,
+    "change_vs_untrimmed": 0.00019117498595733196
+  },
+  {
+    "input": "smooth",
+    "m": 0,
+    "detected": 0,
+    "cut": 0.001,
+    "seconds_cpu": 7.157346535997931,
+    "relative_native_error": 0.0004761686432175338,
+    "change_vs_untrimmed": 0.00044811327825300395
+  },
+  {
+    "input": "smooth",
+    "m": 0,
+    "detected": 0,
+    "cut": 0.01,
+    "seconds_cpu": 5.8023944570013555,
+    "relative_native_error": 0.003583016572520137,
+    "change_vs_untrimmed": 0.0035803152713924646
+  },
+  {
+    "input": "random",
+    "m": -1,
+    "detected": -1,
+    "cut": 0,
+    "seconds_cpu": 16.513066245999653,
+    "relative_native_error": 1.478256490372587e-05,
+    "change_vs_untrimmed": 0.0
+  },
+  {
+    "input": "random",
+    "m": -1,
+    "detected": -1,
+    "cut": 0.0001,
+    "seconds_cpu": 12.431219942001917,
+    "relative_native_error": 1.750162300595548e-05,
+    "change_vs_untrimmed": 9.37611093831947e-06
+  },
+  {
+    "input": "random",
+    "m": -1,
+    "detected": -1,
+    "cut": 0.0005,
+    "seconds_cpu": 11.887773578993801,
+    "relative_native_error": 4.664232983486727e-05,
+    "change_vs_untrimmed": 4.422293568495661e-05
+  },
+  {
+    "input": "random",
+    "m": -1,
+    "detected": -1,
+    "cut": 0.001,
+    "seconds_cpu": 11.363878233998548,
+    "relative_native_error": 0.00010607340664137155,
+    "change_vs_untrimmed": 0.00010500384087208658
+  },
+  {
+    "input": "random",
+    "m": -1,
+    "detected": -1,
+    "cut": 0.01,
+    "seconds_cpu": 9.99540681700455,
+    "relative_native_error": 0.0006836962420493364,
+    "change_vs_untrimmed": 0.0006835443782620132
+  },
+  {
+    "input": "smooth",
+    "m": -1,
+    "detected": -1,
+    "cut": 0,
+    "seconds_cpu": 16.78582749299676,
+    "relative_native_error": 0.0001611272746231407,
+    "change_vs_untrimmed": 0.0
+  },
+  {
+    "input": "smooth",
+    "m": -1,
+    "detected": -1,
+    "cut": 0.0001,
+    "seconds_cpu": 12.496091307002644,
+    "relative_native_error": 0.0001636476517887786,
+    "change_vs_untrimmed": 2.8631591703742743e-05
+  },
+  {
+    "input": "smooth",
+    "m": -1,
+    "detected": -1,
+    "cut": 0.0005,
+    "seconds_cpu": 11.900796061003348,
+    "relative_native_error": 0.00026432450977154076,
+    "change_vs_untrimmed": 0.00021123909391462803
+  },
+  {
+    "input": "smooth",
+    "m": -1,
+    "detected": -1,
+    "cut": 0.001,
+    "seconds_cpu": 11.216289248004614,
+    "relative_native_error": 0.0004953935858793557,
+    "change_vs_untrimmed": 0.000469170423457399
+  },
+  {
+    "input": "smooth",
+    "m": -1,
+    "detected": -1,
+    "cut": 0.01,
+    "seconds_cpu": 9.688814173001447,
+    "relative_native_error": 0.003655731910839677,
+    "change_vs_untrimmed": 0.0036529384087771177
+  }
+]

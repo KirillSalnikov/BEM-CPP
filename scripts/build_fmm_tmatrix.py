@@ -113,7 +113,9 @@ def main():
                         help='Use horizontal-reflection parity with C6; select a D6h-invariant prism mesh')
     parser.add_argument('--hybrid-cpu',action='store_true',help='Overlap independent T packets with CPU FP64 gates; requires sector GMRES')
     parser.add_argument('--incident-prefetch',action='store_true',help='Prepare the next packet while the worker solves')
-    parser.add_argument('--no-incident-cache',action='store_true',help='Disable shared geometry/radial incident-field cache')
+    incident_cache=parser.add_mutually_exclusive_group()
+    incident_cache.add_argument('--separable-incident-cache',action='store_true',help='Reuse identical radii and polar angles across the surface for modal incident fields')
+    incident_cache.add_argument('--no-incident-cache',action='store_true',help='Disable shared geometry/radial incident-field cache')
     parser.add_argument('--release-incident-buffer',action='store_true',
                         help='Release the sent incident payload from RAM while the worker solves; use without prefetch')
     parser.add_argument('--seed-from',type=Path,
@@ -362,6 +364,10 @@ def main():
     fingerprint.pop('hybrid_cpu')  # Captured by BEM_environment and worker digest.
     fingerprint.pop('incident_prefetch')
     fingerprint['incident_schedule_digest']=hashlib.sha256((ROOT/'scripts/tmatrix_pipeline.py').read_bytes()).hexdigest()
+    if args.separable_incident_cache:
+        fingerprint['separable_incident_digest']=hashlib.sha256((ROOT/'scripts/tmatrix_incident.py').read_bytes()).hexdigest()
+    else:
+        fingerprint.pop('separable_incident_cache')
     fingerprint.pop('no_incident_cache')
     fingerprint.pop('release_incident_buffer')
     if not args.c2_reuse:
@@ -379,6 +385,20 @@ def main():
         code=hashlib.sha256()
         for name in ('compressed_fft_service.py','symmetric_galerkin_fft.py','closed_galerkin_fft.py','galerkin_cross_fft.py','streamed_galerkin_fft.py','tiled_galerkin_fft.py','surface_symmetry.py','regular_surface_geometry.py'):
             code.update((ROOT/'scripts'/name).read_bytes())
+        if os.environ.get('BEM_TMATRIX_FFT_SINGLE_ROTATION')=='1':
+            for name in ('prism_fft_rotation.py','packed_current_host.py','packed_current_cpu.cpp'):
+                code.update(Path(__file__).with_name(name).read_bytes())
+        rank_plan=os.environ.get('BEM_TMATRIX_FFT_RANK_PLAN')
+        if rank_plan:
+            plan_bytes=Path(rank_plan).read_bytes()
+            fingerprint['compressed_fft_rank_plan_sha256']=hashlib.sha256(plan_bytes).hexdigest()
+            rank_options=json.loads(plan_bytes)
+            if rank_options.get('direct_panels'):
+                code.update(Path(__file__).with_name('spectral_panel_kernel.py').read_bytes())
+            if rank_options.get('transverse'):
+                code.update(Path(__file__).with_name('transverse_fft_interpolation.py').read_bytes())
+        if rank_plan or os.environ.get('BEM_TMATRIX_FFT_PINNED_BUDGET_MIB','0')!='0':
+            code.update(Path(__file__).with_name('bounded_spectral_storage.py').read_bytes())
         fingerprint['compressed_fft_code_digest']=code.hexdigest()
     if os.environ.get('BEM_TMATRIX_RITZ_PRIOR'):
         prior=Path(os.environ['BEM_TMATRIX_RITZ_PRIOR']).resolve()
@@ -670,7 +690,8 @@ def main():
             field_buffer=tmatrix_pipeline.IncidentFieldBuffer(len(positions),args.release_incident_buffer)
             fields=field_buffer.fields
             preparation=tmatrix_pipeline.IncidentPreparation(positions,modal_list,args.ka,fields,
-                cache=not args.no_incident_cache and not args.plane_only,prefetch=args.incident_prefetch)
+                cache=not args.no_incident_cache and not args.plane_only,prefetch=args.incident_prefetch,
+                separable=args.separable_incident_cache and not args.plane_only)
             plane_control=None
             if args.plane_only:
                 plane=np.ascontiguousarray(plane_frame,dtype=np.float64).ravel()
