@@ -1,0 +1,122 @@
+{
+  "geometry": "SciIce column, H/width 1.6495721976846451, n=1.3116",
+  "physical_ka20_ref3": [
+    {
+      "core": 50,
+      "halo": 32,
+      "bits": 32,
+      "iterations": [
+        39,
+        39,
+        40,
+        40
+      ],
+      "solve_times_s": [
+        13.25521,
+        13.39874
+      ],
+      "setup_times_s": [
+        0.0232179,
+        0.0229988
+      ],
+      "full_residual_max": 9.07377e-07
+    },
+    {
+      "core": 50,
+      "halo": 32,
+      "bits": 64,
+      "iterations": [
+        39,
+        39,
+        40,
+        40
+      ],
+      "solve_times_s": [
+        13.41747,
+        13.3682
+      ],
+      "setup_times_s": [
+        0.0338306,
+        0.0232226
+      ],
+      "full_residual_max": 9.07377e-07
+    },
+    {
+      "core": 50,
+      "halo": 96,
+      "bits": 16,
+      "iterations": [
+        35,
+        35,
+        36,
+        36
+      ],
+      "solve_times_s": [
+        12.21679,
+        12.27113
+      ],
+      "setup_times_s": [
+        0.0902938,
+        0.106508
+      ],
+      "full_residual_max": 9.66879e-07
+    },
+    {
+      "core": 50,
+      "halo": 144,
+      "bits": 16,
+      "iterations": [
+        32,
+        32,
+        33,
+        33
+      ],
+      "solve_times_s": [
+        11.0054,
+        11.04903
+      ],
+      "setup_times_s": [
+        0.268074,
+        0.255092
+      ],
+      "full_residual_max": 9.57757e-07
+    }
+  ],
+  "full_ref7_synthetic_blocks": [
+    {
+      "halo": 144,
+      "bits": 16,
+      "median_control_s": 0.04509405,
+      "median_candidate_s": 0.0730919,
+      "paired_median_ratio": 0.617197425887781,
+      "storage_bytes": 1273245504
+    },
+    {
+      "halo": 32,
+      "bits": 16,
+      "median_control_s": 0.04237155,
+      "median_candidate_s": 0.03015215,
+      "paired_median_ratio": 1.4150725495986107,
+      "storage_bytes": 541871168
+    },
+    {
+      "halo": 32,
+      "bits": 32,
+      "median_control_s": 0.046857949999999995,
+      "median_candidate_s": 0.032524449999999996,
+      "paired_median_ratio": 1.4601485953557831,
+      "storage_bytes": 1036902976
+    },
+    {
+      "halo": 96,
+      "bits": 16,
+      "median_control_s": 0.0459054,
+      "median_candidate_s": 0.053106,
+      "paired_median_ratio": 0.8449068264218116,
+      "storage_bytes": 959799360
+    }
+  ],
+  "control": "previous frozen 50+32 FP64 local preconditioner",
+  "local_scope": "FP64 GMRES, right preconditioning, full CPU dense physical residuals. The GPU FFT/FMM packet was not timed.",
+  "reference_storage_bytes": 2032904232
+}

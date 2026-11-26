@@ -1,4 +1,5 @@
 #include "prism_circulant_inverse.h"
+#include "prism_sample_cache.h"
 #include <cstdio>
 #include <limits>
 #include <stdexcept>
@@ -16,13 +17,14 @@ void PrismCirculantInverse::build_from_inverse_kernels(const MullerP2Mesh& mesh,
     }
 }
 
-void PrismCirculantInverse::build(const MullerP2Mesh& mesh,int ref,const Action& action,const Action& inverse,double shift,double opposite_weight,int opposite_mask) {
+void PrismCirculantInverse::build(const MullerP2Mesh& mesh,int ref,const Action& action,const Action& inverse,double shift,double opposite_weight,int opposite_mask,const std::string& cache_dir,const std::string& key) {
     if(!std::isfinite(opposite_weight) || opposite_weight<0 || opposite_weight>1 || opposite_mask<0 || opposite_mask>3)
         throw std::invalid_argument("opposite face coupling weight/mask");
     device_mapping_.reset();cpu_enabled_=false;
     opposite_weight_=opposite_weight;opposite_mask_=opposite_mask;symmetric_caps_ready=false;
     layout.build(mesh,ref);local=inverse;
-    std::vector<Complex> x(layout.system_dofs),y(layout.system_dofs);
+    std::vector<Complex> x,y;
+    const bool cache=!cache_dir.empty() && key.size()==64 && key.find_first_not_of("0123456789abcdef")==std::string::npos;
     for(int kind=0;kind<2;++kind) {
         const auto& p=layout.patches[kind?24:0];
         const int grid=p.nx*p.ny;
@@ -43,7 +45,16 @@ void PrismCirculantInverse::build(const MullerP2Mesh& mesh,int ref,const Action&
         }
         if(source<0)throw std::runtime_error("no complete circulant source cell");
         std::vector<Complex> kernel(size_t(144)*grid),cross(coupled(kind)?kernel.size():0);
-        for(int col=0;col<12;++col) {
+        const std::string file=cache_dir+"/"+key+"."+std::to_string(kind)+".samples";
+        const bool hit=cache && prism_samples::read(file,key,kernel,cross,kind);
+        if(!hit) {
+            // A partial or damaged file may already have overwritten entries
+            // outside the valid patch support. Reset those entries as well.
+            std::fill(kernel.begin(),kernel.end(),Complex{});std::fill(cross.begin(),cross.end(),Complex{});
+            x.resize(layout.system_dofs);y.resize(layout.system_dofs);
+        }
+        if(hit)std::printf("[circulant] kind=%d verified sample cache hit\n",kind);
+        for(int col=0;!hit && col<12;++col) {
             const int slot=col*grid+source,dof=p.dof[slot];
             x[dof]=p.solution_sign[slot];action(x.data(),y.data());x[dof]=0;
             for(int row=0;row<12;++row)for(int i=0;i<p.nx;++i)for(int j=0;j<p.ny;++j) {
@@ -55,6 +66,8 @@ void PrismCirculantInverse::build(const MullerP2Mesh& mesh,int ref,const Action&
             }
             std::printf("[circulant] kind=%d sampled column=%d/12\n",kind,col+1);
         }
+        if(cache && !hit && !prism_samples::write(file,key,kernel,cross,kind))
+            std::fprintf(stderr,"[circulant] could not retain sampled kernel %d\n",kind);
         if(coupled(kind)) {
             std::vector<Complex> negative(kernel);
             for(size_t j=0;j<kernel.size();++j){negative[j]-=opposite_weight_*cross[j];kernel[j]+=opposite_weight_*cross[j];}

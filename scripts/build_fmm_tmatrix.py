@@ -625,6 +625,24 @@ def main():
         # signature itself. Never share a recycle space across operators/runs.
         env['BEM_TMATRIX_RECYCLE_SIGNATURE']=signature
         env['BEM_TMATRIX_RECYCLE_PATH']=str(out/'krylov_recycle.bin')
+        env.pop('BEM_WORKER_CIRC_CACHE',None)
+        env.pop('BEM_WORKER_CIRC_KEY',None)
+        if compressed_case and args.operator_cache_prefix and float(env.get('BEM_TMATRIX_CIRCULANT_BLEND','0'))>0:
+            near=Path(str(args.operator_cache_prefix.resolve())+'.near')
+            if near.is_file():
+                st=near.stat()
+                identity=dict(worker=fingerprint['binary_digest'],assets=fingerprint['compressed_fft_assets_digest'],
+                    geometry=fingerprint['geometry_digest'],shape=args.shape,ref=args.ref,ka=args.ka,
+                    ri=[args.ri,args.ri_imag],aspect=args.prism_aspect,environment=fingerprint['BEM_environment'],
+                    near=[str(near.resolve()),st.st_dev,st.st_ino,st.st_size,st.st_mtime_ns,st.st_ctime_ns])
+                directory=compressed_case/'.circulant-cache'
+                try:
+                    directory.mkdir(exist_ok=True)
+                except OSError as error:
+                    print(f'Circulant sample cache unavailable: {error}',flush=True)
+                else:
+                    env['BEM_WORKER_CIRC_CACHE']=str(directory)
+                    env['BEM_WORKER_CIRC_KEY']=hashlib.sha256(json.dumps(identity,sort_keys=True).encode()).hexdigest()
         if compressed_case:
             from compressed_fft_service import Companion
             fft_socket=Path(temporary)/'compressed_fft.sock'
@@ -667,6 +685,7 @@ def main():
                 raise RuntimeError('mirror packing requires a worker with a verified D6h-invariant mesh')
             positions=np.empty((hello['rhs_points'],3),dtype=np.float64)
             receive_into(connection,positions)
+            hello['startup_to_geometry_s']=time.monotonic()-process_start
             atomic_json(out/'operator_metadata.json',hello)
             print(json.dumps(hello),flush=True)
             far=np.empty((2,len(directions),3),dtype=np.complex128)
@@ -840,11 +859,7 @@ def main():
             complete=all(valid_column(i) for i in range(count))
             validation=None
             if complete:
-                kernel=np.lib.format.open_memmap(out/'kernel.npy',mode='w+',dtype=np.complex128,shape=(count,count),fortran_order=True)
-                for index in range(count):
-                    kernel[:,index]=np.load(column_dir/f'{index:06d}.npy')
-                kernel.flush()
-                errors=[]; norms=[]
+                observed_fields=[]
                 # New incident directions excluded from the spherical projection.
                 for i in range(3):
                     direction_index=projection_points+i
@@ -854,10 +869,7 @@ def main():
                     result(plane_tolerance)
                     observed=np.stack((np.einsum('ni,pni->np',et[projection_points:],far[:,projection_points:]),
                                        np.einsum('ni,pni->np',ep[projection_points:],far[:,projection_points:])),axis=1).reshape(-1,2)
-                    predicted=check_basis@kernel@check_basis[2*i:2*i+2].conj().T
-                    errors.append(np.linalg.norm(predicted-observed)**2); norms.append(np.linalg.norm(observed)**2)
-                validation=float(np.sqrt(sum(errors)/sum(norms)))
-                print(f'new-direction field error vs direct FMM: {validation:.3e}',flush=True)
+                    observed_fields.append(observed)
             connection.sendall(struct.pack('=i',0)); connection.close()
             process.wait(timeout=60)
             if process.returncode:
@@ -883,6 +895,10 @@ def main():
         return
     all_status=[json.loads((column_dir/f'{i:06d}.json').read_text()) for i in range(count) if valid_column(i)]
     phase=np.array([1j**(l-p) for p,l,m in modal_list])
+    if complete:
+        from tmatrix_final_assembly import assemble
+        validation,power,extinction=assemble(out,column_dir,phase,args.ka,check_basis,observed_fields)
+        print(f'new-direction field error vs direct FMM: {validation:.3e}',flush=True)
     column_physics=[]
     for index in requested:
         if not (column_dir/f'{index:06d}.json').exists():
@@ -961,24 +977,18 @@ def main():
             'tight_attempts_this_run':sum(t['requested_tolerance']==args.adaptive_tight_tol for t in timings),
             'retries_recorded':len(list(adaptive_dir.glob('*.json')))}
     if complete:
-        kernel=np.load(out/'kernel.npy',mmap_mode='r')
-        t=np.lib.format.open_memmap(out/'tmatrix.npy',mode='w+',dtype=np.complex128,shape=(count,count),fortran_order=True)
-        for column in range(count):
-            t[:,column]=-1j*args.ka/(4*np.pi)*phase*kernel[:,column]*phase[column].conj()
-        t.flush()
-        power=sum(float(np.vdot(t[:,column],t[:,column]).real) for column in range(count))
+        t=np.load(out/'tmatrix.npy',mmap_mode='r')
         report['scattering_cross_section']=float(2*np.pi/args.ka**2*power)
-        report['extinction_cross_section']=float(-2*np.pi/args.ka**2*np.trace(t).real)
+        report['extinction_cross_section']=float(2*np.pi/args.ka**2*extinction)
         if not args.no_average:
             theta=np.linspace(0,180,args.ntheta)
             start=time.perf_counter()
             if args.average_backend=='mstm':
-                import mmap
-                kernel._mmap.madvise(mmap.MADV_DONTNEED)
                 mean,post=analytic_mueller_tmatrix(t,args.order,theta,threads=args.so3_threads,
                     precision=args.so3_precision,cyclic_order=6 if args.c6_pack and (builtin_prism or symmetry_allowed.get('c6_z'))
                     and not c6_individual_fallback and (particle_info is None or args.particle_symmetry=='auto') else 1)
             else:
+                kernel=np.load(out/'kernel.npy',mmap_mode='r')
                 mean=args.ka**2*analytic_mueller(kernel,args.order,theta)
                 post={'method':'analytic_full_SO3_reference','Euler_quadrature_nodes':0}
             report['analytic_so3_s']=time.perf_counter()-start

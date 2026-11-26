@@ -12,7 +12,8 @@ inline bem_streaming::HostResult solve_prism_sectors(
         const Complex* b,Complex* x,int restart,double tolerance,int limit,
         bool use_initial_guess=false,bool verbose=true,bem_streaming::SectorRecycleSpace* recycle=nullptr,
         std::array<int,12>* sector_iterations=nullptr,
-        const bem_streaming::Action& encoded_action=bem_streaming::Action()) {
+        const bem_streaming::Action& encoded_action=bem_streaming::Action(),
+        bool correcting_verified_residual=false) {
     const int n=sectors.size();
     if(sector_iterations)sector_iterations->fill(0);
     const auto start=std::chrono::steady_clock::now();
@@ -54,7 +55,7 @@ inline bem_streaming::HostResult solve_prism_sectors(
             std::array<int,12> part_iterations{};
             const auto part=solve_prism_sectors(action,correction_strict,inverse,sectors,residual.data(),correction.data(),
                 restart,relative_tolerance,limit-result.iterations,false,verbose,recycle,
-                sector_iterations?&part_iterations:nullptr,encoded_action);
+                sector_iterations?&part_iterations:nullptr,encoded_action,true);
             if(sector_iterations)for(int s=0;s<12;++s)(*sector_iterations)[s]+=part_iterations[s];
             for(int i=0;i<n;++i)x[i]+=correction[i];
             result.iterations+=part.iterations;result.strict_checks+=part.strict_checks;
@@ -100,6 +101,11 @@ inline bem_streaming::HostResult solve_prism_sectors(
         char* end=nullptr;first_pass_factor=std::strtod(value,&end);
         if(end==value || *end)throw std::invalid_argument("sector first pass factor");
     }
+    // The first FP64 application already anchored the warm correction. A
+    // loose cold-start gate (e.g. 64) can accept a projected norm near one
+    // for verification before any meaningful reduction of this residual.
+    if(correcting_verified_residual && first_pass_factor>1 && first_pass_factor<=64)
+        first_pass_factor=.85;
     auto result=bem_streaming::sector_gmres([&](const Complex* a,Complex* out){composite(a,out,false);},
         [&](const Complex* a,Complex* out){composite(a,out,true);},encoded.data(),coordinates.data(),sectors.offsets,
         restart,tolerance,limit,verbose,interval,recycle,factor,first_pass_factor);

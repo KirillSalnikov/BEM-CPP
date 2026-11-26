@@ -1,0 +1,14 @@
+{
+  "ka": 20,
+  "ref": 3,
+  "degree": 20,
+  "modes_per_packet": 12,
+  "theta_samples": 181,
+  "phi_samples": 12,
+  "reference_tol": 1e-09,
+  "candidate_tol": 2e-06,
+  "current_rel": 1.3499167087051524e-06,
+  "field_rel": 9.11368731886172e-07,
+  "max_vector_difference_over_peak": 1.2024623364467039e-06,
+  "max_amplitude_difference_over_peak": 8.597285379511522e-07
+}

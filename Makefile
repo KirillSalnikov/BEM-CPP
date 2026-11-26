@@ -199,7 +199,7 @@ TMATRIX_SERVER_HOST_OBJ ?= build/muller_tmatrix_server_host.o
 FINUFFT_CPPFLAGS ?=
 FINUFFT_LINK_FLAGS ?=
 STREAMING_HOST_HEADERS = $(SRCDIR)/streaming_host_gmres.h $(SRCDIR)/streaming_recycle_space.h $(SRCDIR)/streaming_two_level.h $(SRCDIR)/krylov_deflation.h
-$(BINDIR)/muller_tmatrix_fmm_server: tools/muller_tmatrix_fmm_server.cpp $(MULLER_FP32_OBJS) $(STREAMING_HOST_HEADERS) $(SRCDIR)/streaming_polynomial_inverse.h $(SRCDIR)/tmatrix_symmetry_warm_start.h $(SRCDIR)/tmatrix_rhs_assembly.h $(SRCDIR)/block_circulant_fft.cu $(SRCDIR)/prism_circulant_layout.cpp $(SRCDIR)/prism_circulant_inverse.cpp $(SRCDIR)/block_circulant_fft.h $(SRCDIR)/prism_circulant_layout.h $(SRCDIR)/prism_circulant_inverse.h $(SRCDIR)/global_coarse_inverse.cu $(SRCDIR)/global_coarse_inverse.h $(SRCDIR)/prism_wave_basis.h
+$(BINDIR)/muller_tmatrix_fmm_server: tools/muller_tmatrix_fmm_server.cpp $(MULLER_FP32_OBJS) $(STREAMING_HOST_HEADERS) $(SRCDIR)/streaming_polynomial_inverse.h $(SRCDIR)/tmatrix_symmetry_warm_start.h $(SRCDIR)/tmatrix_rhs_assembly.h $(SRCDIR)/block_circulant_fft.cu $(SRCDIR)/prism_circulant_layout.cpp $(SRCDIR)/prism_circulant_inverse.cpp $(SRCDIR)/prism_sample_cache.h $(SRCDIR)/block_circulant_fft.h $(SRCDIR)/prism_circulant_layout.h $(SRCDIR)/prism_circulant_inverse.h $(SRCDIR)/global_coarse_inverse.cu $(SRCDIR)/global_coarse_inverse.h $(SRCDIR)/prism_wave_basis.h
 	@mkdir -p $(BINDIR) build
 	@mkdir -p $(dir $(TMATRIX_SERVER_HOST_OBJ))
 	$(CXX) $(CXXFLAGS) $(FP32_PRECISION_FLAGS) $(FINUFFT_CPPFLAGS) $(if $(filter 1,$(OPENMP)),-fopenmp) -I$(SRCDIR) -c tools/muller_tmatrix_fmm_server.cpp -o $(TMATRIX_SERVER_HOST_OBJ)
@@ -716,6 +716,7 @@ host-symmetry-check: $(HOST_TEST_DIR)/prism_symmetry_sectors_check $(HOST_TEST_D
 	OMP_NUM_THREADS=4 $(HOST_TEST_DIR)/block_circulant_symmetry_check
 	OMP_NUM_THREADS=4 $(HOST_TEST_DIR)/prism_circulant_layout_check
 	OMP_NUM_THREADS=4 $(HOST_TEST_DIR)/prism_face_coarse_check
+	$(HOST_TEST_DIR)/prism_sample_cache_check
 
 $(BINDIR)/muller_tmatrix_fmm_server: $(SRCDIR)/prism_orbit_inverse.cpp $(SRCDIR)/prism_orbit_inverse.h $(SRCDIR)/prism_symmetry_sectors.h $(SRCDIR)/prism_symmetric_circulant.h $(SRCDIR)/prism_sector_solver.h $(SRCDIR)/streaming_sector_gmres.h
 $(BINDIR)/muller_tmatrix_fmm_server: $(SRCDIR)/resident_sector_operator.cu $(SRCDIR)/resident_sector_operator.h $(SRCDIR)/sector_transform_gpu.cu $(SRCDIR)/sector_transform_gpu.h $(SRCDIR)/host_sector_transform_layout.h $(SRCDIR)/resident_prism_inverse.cu $(SRCDIR)/resident_prism_inverse.h $(SRCDIR)/host_symmetric_inverse_layout.h $(SRCDIR)/orbit_inverse_gpu.cu $(SRCDIR)/orbit_inverse_gpu.h $(SRCDIR)/host_orbit_inverse_layout.h
@@ -741,6 +742,7 @@ $(HOST_TEST_DIR)/physical_ritz_prior_check: tests/physical_ritz_prior_check.cpp 
 	@mkdir -p $(HOST_TEST_DIR)
 	$(CXX) -O3 -Wall -std=c++11 -I$(SRCDIR) $< -o $@
 $(HOST_TEST_DIR)/prism_symmetry_sectors_check: $(SRCDIR)/prism_sector_solver.h $(SRCDIR)/streaming_sector_gmres.h $(STREAMING_HOST_HEADERS)
+$(BINDIR)/muller_tmatrix_fmm_server $(HOST_TEST_DIR)/prism_symmetry_sectors_check: $(SRCDIR)/prism_sparse_inverse.h
 $(HOST_TEST_DIR)/prism_symmetry_sectors_check: $(SRCDIR)/prism_vertical_inverse.h
 $(BINDIR)/muller_tmatrix_fmm_server: $(SRCDIR)/prism_vertical_inverse.h
 $(BINDIR)/muller_tmatrix_fmm_server: $(SRCDIR)/muller_fmm_cpu.h $(SRCDIR)/muller_fmm_cpu_avx512.h $(SRCDIR)/host_hybrid_scheduler.h $(SRCDIR)/host_thread_affinity.h $(SRCDIR)/host_spectral_inverse.h
@@ -878,7 +880,10 @@ $(HOST_TEST_DIR)/prism_face_coarse_check: tests/prism_face_coarse_check.cpp $(SR
 	$(CXX) $(HOST_CUDA_INCLUDE) -O3 -march=native -fopenmp -std=c++11 -I$(SRCDIR) $(filter-out %.h,$^) -o $@
 
 $(BINDIR)/muller_solver_fft_probe: $(SRCDIR)/prism_face_coarse.h
-host-symmetry-check: $(HOST_TEST_DIR)/prism_face_coarse_check
+$(HOST_TEST_DIR)/prism_sample_cache_check: tests/prism_sample_cache_check.cpp $(SRCDIR)/prism_sample_cache.h
+	$(CXX) -O2 -std=c++11 -I$(SRCDIR) $< -o $@
+
+host-symmetry-check: $(HOST_TEST_DIR)/prism_face_coarse_check $(HOST_TEST_DIR)/prism_sample_cache_check
 
 $(HOST_TEST_DIR)/resident_inverse_layout_check: tests/resident_inverse_layout_check.cpp $(SRCDIR)/host_symmetric_inverse_layout.h $(SRCDIR)/prism_orbit_inverse.h $(SRCDIR)/prism_circulant_layout.h $(SRCDIR)/prism_circulant_layout.cpp $(SRCDIR)/muller_nodal.cpp $(SRCDIR)/mesh.cpp
 	$(CXX) $(CXXFLAGS) $(if $(filter 1,$(OPENMP)),-fopenmp) -I$(SRCDIR) $(filter-out %.h,$^) -o $@

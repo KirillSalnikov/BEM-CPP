@@ -6,6 +6,37 @@
 #include <cstring>
 
 namespace bem_streaming {
+
+// Modified Gram-Schmidt with the DGKS norm-loss test. Keep the second
+// pass for near-dependent vectors. Each sector has a separate Hessenberg block.
+inline double sector_orthogonalize(const Complex* basis, Complex* image, int width,
+                                   int col, int stride, Complex* h) {
+    double before=0.;
+    #pragma omp simd reduction(+:before)
+    for(int i=0;i<width;++i)before+=std::norm(image[i]);
+    double after=0.;
+    for(int pass=0;pass<2;++pass) {
+        for(int row=0;row<=col;++row) {
+            const Complex* v=basis+size_t(row)*width;
+            double re=0.,im=0.;
+            #pragma omp simd reduction(+:re,im)
+            for(int i=0;i<width;++i) {
+                re+=v[i].real()*image[i].real()+v[i].imag()*image[i].imag();
+                im+=v[i].real()*image[i].imag()-v[i].imag()*image[i].real();
+            }
+            const Complex a(re,im);
+            h[size_t(row)*stride+col]+=a;
+            #pragma omp simd
+            for(int i=0;i<width;++i)image[i]-=a*v[i];
+        }
+        after=0.;
+        #pragma omp simd reduction(+:after)
+        for(int i=0;i<width;++i)after+=std::norm(image[i]);
+        if(after>=.5*before)break;
+    }
+    return std::sqrt(after);
+}
+
 // Separate GCRO spaces for the irreducible symmetry sectors. The stored
 // coordinates belong to the fixed, right-preconditioned operator, so a
 // caller must discard this object whenever that operator or its basis changes.
@@ -130,12 +161,7 @@ inline SectorResult sector_gmres(const Action& action,const Action& strict,
                 const int width=hi-lo;q.basis.resize(size_t(col+2)*width);
                 Complex* next_basis=q.basis.data()+size_t(col+1)*width;
                 if(q.rank)recycle->sector(s).project(w.data()+lo,col,restart,q.couplings);
-                for(int pass=0;pass<2;++pass)for(int row=0;row<=col;++row) {
-                    const Complex* v=q.basis.data()+size_t(row)*width;Complex a=0;
-                    for(int i=lo;i<hi;++i)a+=std::conj(v[i-lo])*w[i];
-                    q.h[size_t(row)*restart+col]+=a;for(int i=lo;i<hi;++i)w[i]-=a*v[i-lo];
-                }
-                double squared=0;for(int i=lo;i<hi;++i)squared+=std::norm(w[i]);const double next=std::sqrt(squared);
+                const double next=sector_orthogonalize(q.basis.data(),w.data()+lo,width,col,restart,q.h.data());
                 q.h[size_t(col+1)*restart+col]=next;
                 if(recycle)for(int row=0;row<=col+1;++row)q.raw_h[size_t(row)*restart+col]=q.h[size_t(row)*restart+col];
                 for(int i=lo;i<hi;++i)next_basis[i-lo]=next>1e-300?w[i]/next:Complex(0);

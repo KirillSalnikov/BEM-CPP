@@ -272,6 +272,12 @@ int main(int argc,char** argv) try {
     if(sector_recycle_capacity && !sector_solver)throw std::runtime_error("sector recycling requires sector GMRES");
     if(vertical_preconditioner && !sector_solver)throw std::runtime_error("vertical inverse requires sector GMRES");
     const int orbit_nodes=std::getenv("BEM_TMATRIX_ORBIT_NODES")?std::stoi(std::getenv("BEM_TMATRIX_ORBIT_NODES")):50;
+    const int orbit_halo=sector_integer("BEM_TMATRIX_ORBIT_HALO",0,512);
+    const int orbit_bits=sector_integer("BEM_TMATRIX_ORBIT_BITS",64,64);
+    if((orbit_bits!=16 && orbit_bits!=32 && orbit_bits!=64) || (orbit_bits!=64 && !orbit_halo))
+        throw std::invalid_argument("orbit row precision must be 64, or 16/32 with an orbit halo");
+    if(orbit_halo && (!sector_solver || resident_requested || orbit_nodes>512-orbit_halo))
+        throw std::invalid_argument("orbit halo requires host sector inverse and at most 512 edges per extended block");
     if(sector_solver && (device_solver || !d6h_geometry || fft_inner || recycle_capacity || mbj_overlap || orbit_nodes<1 || orbit_nodes>512))
         throw std::runtime_error("sector GMRES requires a verified D6h mesh, orbit blocks 1..512, and no overlap/inner FFT/recycling");
     bem_tmatrix::D6hOrbit symmetry_orbit;
@@ -279,7 +285,7 @@ int main(int argc,char** argv) try {
     PrismOrbitInverse orbit_inverse;
     if(sector_solver) {
         symmetry_orbit.build(op.mesh);bem_tmatrix::PrismGroupMaps maps;maps.build(symmetry_orbit);
-        symmetry_sectors.build(maps);orbit_inverse.build(op,maps,orbit_nodes);
+        symmetry_sectors.build(maps);orbit_inverse.build(op,maps,orbit_nodes,orbit_halo,orbit_bits);
         std::printf("[sector solver] orbit_nodes=%d local_MiB=%.3f transform_MiB=%.3f\n",orbit_nodes,
             orbit_inverse.storage_bytes()/1048576.,symmetry_sectors.storage_bytes()/1048576.);
     }else {
@@ -319,7 +325,9 @@ int main(int argc,char** argv) try {
             planar_kernel_bytes=kernels.kernel_bytes();
             circulant.build_from_inverse_kernels(op.mesh,ref,local_action,kernels.side.values,kernels.cap.values);
         }else circulant.build(op.mesh,ref,[&](const Complex* a,Complex* b){op.matvec(a,b);},
-            local_action,shift,opposite,opposite_mask);
+            local_action,shift,opposite,opposite_mask,
+            std::getenv("BEM_WORKER_CIRC_CACHE")?std::getenv("BEM_WORKER_CIRC_CACHE"):"",
+            std::getenv("BEM_WORKER_CIRC_KEY")?std::getenv("BEM_WORKER_CIRC_KEY"):"");
         circulant_seconds=seconds(before);
     }
     PrismSymmetricCirculant symmetric_circulant;
@@ -697,7 +705,7 @@ int main(int argc,char** argv) try {
          <<",\"radiation_threads\":"<<radiation_threads<<",\"radiation_eps\":"<<radiation_eps
          <<",\"radiation_parallel_faces\":"<<(radiation_parallel?"true":"false")
          <<",\"mbj_storage_mb\":"<<mbj.storage_megabytes()
-         <<",\"sector_gmres\":"<<(sector_solver?"true":"false")<<",\"orbit_nodes\":"<<(sector_solver?orbit_nodes:0)
+         <<",\"sector_gmres\":"<<(sector_solver?"true":"false")<<",\"orbit_nodes\":"<<(sector_solver?orbit_nodes:0)<<",\"orbit_halo\":"<<orbit_halo<<",\"orbit_row_bits\":"<<orbit_bits
          <<",\"hybrid_batch_capacity\":"<<(hybrid_requested?2:1)
          <<",\"hybrid_merge_recycle\":"<<(merge_lane_recycle?"true":"false")
          <<",\"hybrid_gpu_batch2\":"<<(gpu_batch2?"true":"false")

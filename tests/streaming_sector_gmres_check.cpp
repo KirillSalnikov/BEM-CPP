@@ -2,6 +2,31 @@
 #include <cstdio>
 using namespace bem_streaming;
 int main()try {
+ // The nearly dependent case exercises reorthogonalization. Check the
+ // conjugate phase, the residual direction, and Hessenberg reconstruction.
+ {
+    const int width=128;
+    std::vector<Complex> basis(2*width), original(width), image(width);
+    for(int i=0;i<width;++i) {
+        const Complex phase=std::polar(1./std::sqrt(double(width)),.123*i);
+        basis[i]=phase;
+        basis[width+i]=(i%2 ? -1. : 1.)*phase;
+    }
+    for(double independent:{1e-10,5.}) {
+        for(int i=0;i<width;++i)original[i]=Complex(1.,2.)*basis[i]
+            +Complex(.7,-.1)*basis[width+i]+independent*(i%4<2 ? 1. : -1.)*basis[i];
+        image=original;
+        Complex h[4]={};
+        const double length=sector_orthogonalize(basis.data(),image.data(),width,1,2,h);
+        if(std::abs(length-independent)>1e-13)throw std::runtime_error("sector residual length");
+        for(int row=0;row<2;++row)
+            if(std::abs(dot(basis.data()+row*width,image.data(),width))>1e-13*length)
+                throw std::runtime_error("sector basis lost orthogonality");
+        for(int i=0;i<width;++i)
+            if(std::abs(image[i]+h[1]*basis[i]+h[3]*basis[width+i]-original[i])>2e-14)
+                throw std::runtime_error("sector projection reconstruction");
+    }
+ }
  const int n=72;std::array<int,13> offsets;for(int s=0;s<=12;++s)offsets[s]=s*6;
  std::vector<Complex> matrix(n*n),expected(n),b(n),x(n),w(n);
  for(int s=0;s<12;++s)for(int i=0;i<6;++i)for(int j=0;j<6;++j)

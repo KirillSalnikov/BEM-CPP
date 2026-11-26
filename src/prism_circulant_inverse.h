@@ -3,6 +3,7 @@
 #include "prism_circulant_layout.h"
 #include "block_circulant_symmetry.h"
 #include <functional>
+#include <string>
 #include <stdexcept>
 
 // Experimental fixed Strang circulant: sampled self-face kernels, shared by
@@ -12,7 +13,7 @@ public:
     using Complex=std::complex<double>;
     using Action=std::function<void(const Complex*,Complex*)>;
     PrismCirculantLayout layout;
-    void build(const MullerP2Mesh& mesh,int ref,const Action& action,const Action& local,double shift=0,double opposite_weight=0,int opposite_mask=3);
+    void build(const MullerP2Mesh& mesh,int ref,const Action& action,const Action& local,double shift=0,double opposite_weight=0,int opposite_mask=3,const std::string& cache_dir="",const std::string& key="");
     // Experimental analytic-symbol path. Kernels already represent the inverse
     // convolution; no operator sampling or second inversion is performed.
     void build_from_inverse_kernels(const MullerP2Mesh& mesh,int ref,const Action& local,

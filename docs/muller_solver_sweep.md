@@ -332,6 +332,19 @@ requires fresh coded audits. The ka=40 handover retained 2388 columns and
 114 packed receipts, with no wall-time limit; its validation proof is in
 `benchmarks/symmetry_solver_20261029/migration_proof.json`.
 
+For the host-applied sector preconditioner with a GPU Müller operator,
+`BEM_TMATRIX_ORBIT_NODES` sets the number of core edges and
+`BEM_TMATRIX_ORBIT_HALO` adds neighboring edges to each local solve.
+With a positive halo, `BEM_TMATRIX_ORBIT_BITS` selects the representation of
+the retained inverse rows. The default is 64. A value of 32 stores the real
+and imaginary coefficients as floats. A value of 16 stores signed integers
+with one FP64 scale per row. All three modes factor the local systems,
+accumulate products and check the physical residual in double precision.
+For example, set `BEM_TMATRIX_ORBIT_NODES=50 BEM_TMATRIX_ORBIT_HALO=96
+BEM_TMATRIX_ORBIT_BITS=16` in the worker environment. These options apply to
+the host sector path with `BEM_TMATRIX_RESIDENT_COMPOSITE=0`.
+
+
 ## Sector recycling and restart controls (2026-10-30)
 
 `--sector-recycle-rank K` retains a separate GCRO space in each enabled

@@ -206,10 +206,21 @@ def serve(case, socket_path, report_path):
     # Never unlink another process's live socket.
     listener.bind(str(socket_path));listener.listen(1);save()
     try:
+        # Hash large immutable assets while the native worker builds its FMM.
+        # Delay GPU allocations until the native checker has reserved its scratch.
+        def asset_state():
+            paths=[case/'service_assets.json',*asset_files(case)]
+            return [(st.st_dev,st.st_ino,st.st_size,st.st_mtime_ns,st.st_ctime_ns)
+                    for st in (p.stat() for p in paths)]
+        check_start=time.perf_counter()
+        initial_assets=asset_state()
+        validate_manifest(case)
+        report['asset_check_s']=time.perf_counter()-check_start
         with listener.accept()[0] as connection:
             header=bytearray(80);receive_into(connection,header);check_handshake(header,meta)
             report['status']='loading';save()
-            validate_manifest(case)
+            if asset_state()!=initial_assets:
+                validate_manifest(case)
             gpu=load_operator(case);n=meta['system_dofs']
             current=np.empty(n,np.complex128)
             compact_input=compact_output=device_input=None

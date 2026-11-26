@@ -28,13 +28,44 @@ int main()try {
     }
     // Deliberately nonsymmetric, complex local matrices with pivoting. Group
     // invariance must follow from the construction, not local reciprocity.
-    PrismOrbitInverse inverse;inverse.build(mesh,maps,7,[&](const std::vector<int>& ids) {
+    const auto assemble_local=[&](const std::vector<int>& ids) {
         const int d=4*ids.size();Vector matrix(d*d);
         for(int i=0;i<d;++i)for(int j=0;j<d;++j)matrix[i*d+j]=Complex(.003*std::sin(i+2*j+ids[0]),.002*std::cos(2*i-j));
         for(int i=0;i<d;++i)matrix[i*d+i]+=Complex(2.+.01*i,.3);
         if(d>1)for(int j=0;j<d;++j)std::swap(matrix[j],matrix[d+j]);
         return matrix;
-    });
+    };
+    PrismOrbitInverse inverse;inverse.build(mesh,maps,7,assemble_local);
+    PrismOrbitInverse restricted;restricted.build(mesh,maps,7,assemble_local,5);
+    require(restricted.storage_bytes()==PrismOrbitInverse::estimated_storage_bytes(maps,n,7,5),
+            "restricted orbit inverse size");
+    restricted.apply(x.data(),a.data());
+    b=x;restricted.apply(b.data(),b.data());
+    require(error(a,b)<1e-14,"restricted orbit alias");
+    for(bool reflection:{false,true}){
+        group.transform(x,b,reflection,true);restricted.apply(b.data(),c.data());group.transform(a,d,reflection,false);
+        require(error(c,d)<2e-14,"restricted orbit covariance");
+    }
+    for(int i=0;i<n;++i)b[i]=Complex(std::cos(.33*i),std::sin(.51*i));
+    restricted.apply_adjoint(b.data(),c.data());
+    Complex lhs=0,rhs=0;
+    for(int i=0;i<n;++i){lhs+=std::conj(b[i])*a[i];rhs+=std::conj(c[i])*x[i];}
+    require(std::abs(lhs-rhs)<1e-13*norm(b.data(),n)*norm(a.data(),n),"restricted orbit adjoint");
+    for(int bits:{16,32}){
+        PrismOrbitInverse packed;
+        packed.build(mesh,maps,7,assemble_local,5,bits);
+        require(packed.storage_bytes()==PrismOrbitInverse::estimated_storage_bytes(maps,n,7,5,bits),
+                "compact orbit memory estimate");
+        packed.apply(x.data(),d.data());
+        require(error(d,a)<(bits==16?1e-3:1e-7),"compact orbit row precision");
+        packed.apply_adjoint(b.data(),c.data());
+        lhs=0;rhs=0;
+        for(int i=0;i<n;++i){lhs+=std::conj(b[i])*d[i];rhs+=std::conj(c[i])*x[i];}
+        require(std::abs(lhs-rhs)<1e-13*norm(b.data(),n)*norm(d.data(),n),"compact orbit adjoint");
+        group.transform(x,b,true,true);packed.apply(b.data(),c.data());group.transform(d,b,true,false);
+        require(error(c,b)<2e-14,"compact orbit mirror");
+        for(int i=0;i<n;++i)b[i]=Complex(std::cos(.33*i),std::sin(.51*i));
+    }
     require(inverse.storage_bytes()==PrismOrbitInverse::estimated_storage_bytes(maps,n,7),"orbit inverse storage estimate");
     inverse.apply(x.data(),a.data());b=x;inverse.apply(b.data(),b.data());require(error(a,b)<1e-14,"orbit inverse alias");
     for(bool reflection:{false,true}) {
@@ -114,6 +145,22 @@ int main()try {
         sectors.decode(encoded.data(),output,true);
     };
     varied(x.data(),b.data());
+    // Reproduce the production packet with a verified warm residual twice
+    // the requested tolerance and a very loose first pass for cold starts.
+    {
+        const double tolerance=2e-6;
+        const char* prior=std::getenv("BEM_SECTOR_FIRST_PASS_FACTOR");
+        const bool had_prior=prior!=nullptr;
+        const std::string saved=prior?prior:"";
+        setenv("BEM_SECTOR_FIRST_PASS_FACTOR","64",1);
+        for(int j=0;j<n;++j)a[j]=(1.+2*tolerance)*x[j];
+        solved=solve_prism_sectors(varied,varied,precondition,sectors,b.data(),a.data(),12,tolerance,40,true,false);
+        if(had_prior)setenv("BEM_SECTOR_FIRST_PASS_FACTOR",saved.c_str(),1);
+        else unsetenv("BEM_SECTOR_FIRST_PASS_FACTOR");
+        varied(a.data(),c.data());
+        require(solved.iterations>0 && solved.strict_checks==2 && error(c,b)<=tolerance,
+                "warm solve repeated the cold-start FP64 gate");
+    }
     bem_streaming::SectorRecycleSpace recycle(sectors.offsets,4);
     for(int j=0;j<n;++j)a[j]=x[j]+Complex(.12*std::cos(.17*j),.08*std::sin(.21*j));
     solved=solve_prism_sectors(varied,varied,precondition,sectors,b.data(),a.data(),12,1e-10,40,true,false,&recycle);
